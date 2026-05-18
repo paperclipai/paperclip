@@ -25,7 +25,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "all" | "blocked";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -484,9 +484,12 @@ export function getInboxSearchSupplementIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id));
 }
 
-function formatDefaultWorkspaceGroupLabel(name: string | null | undefined): string {
+function formatDefaultWorkspaceGroupLabel(name: string | null | undefined, t?: any): string {
   const normalizedName = name?.trim();
-  return normalizedName ? `${normalizedName} (default)` : "Default workspace";
+  if (normalizedName) {
+    return t ? t("inbox.defaultWorkspaceWithName", { name: normalizedName, defaultValue: `${normalizedName} (default)` }) : `${normalizedName} (default)`;
+  }
+  return t ? t("inbox.defaultWorkspace", { defaultValue: "Default workspace" }) : "Default workspace";
 }
 
 function resolveDefaultProjectWorkspaceInfo(
@@ -494,14 +497,15 @@ function resolveDefaultProjectWorkspaceInfo(
   {
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
-  }: Pick<InboxWorkspaceGroupingOptions, "projectWorkspaceById" | "defaultProjectWorkspaceIdByProjectId">,
+    t,
+  }: Pick<InboxWorkspaceGroupingOptions, "projectWorkspaceById" | "defaultProjectWorkspaceIdByProjectId"> & { t?: any },
 ): { id: string; label: string } | null {
   if (!issue.projectId) return null;
   const defaultProjectWorkspaceId = defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null;
   if (!defaultProjectWorkspaceId) return null;
   return {
     id: defaultProjectWorkspaceId,
-    label: formatDefaultWorkspaceGroupLabel(projectWorkspaceById?.get(defaultProjectWorkspaceId)?.name),
+    label: formatDefaultWorkspaceGroupLabel(projectWorkspaceById?.get(defaultProjectWorkspaceId)?.name, t),
   };
 }
 
@@ -544,11 +548,13 @@ export function resolveIssueWorkspaceGroup(
     executionWorkspaceById,
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
-  }: InboxWorkspaceGroupingOptions = {},
+    t,
+  }: InboxWorkspaceGroupingOptions & { t?: any } = {},
 ): { key: string; label: string } {
   const defaultProjectWorkspace = resolveDefaultProjectWorkspaceInfo(issue, {
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
+    t,
   });
 
   if (issue.executionWorkspaceId) {
@@ -602,7 +608,7 @@ export function resolveIssueWorkspaceGroup(
 
   return {
     key: "workspace:none",
-    label: "No workspace",
+    label: t ? t("inbox.noWorkspace", { defaultValue: "No workspace" }) : "No workspace",
   };
 }
 
@@ -630,13 +636,7 @@ export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile:
 export function loadLastInboxTab(): InboxTab {
   try {
     const raw = localStorage.getItem(INBOX_LAST_TAB_KEY);
-    if (
-      raw === "all"
-      || raw === "unread"
-      || raw === "recent"
-      || raw === "mine"
-      || raw === "blocked"
-    ) return raw;
+    if (raw === "all" || raw === "unread" || raw === "recent" || raw === "mine" || raw === "blocked") return raw;
     if (raw === "new") return "mine";
     return "mine";
   } catch {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   AlertTriangle,
@@ -157,20 +158,20 @@ function providerVaultFormFromConfig(config: CompanySecretProviderConfig): Provi
   };
 }
 
-function formatRelative(value: Date | string | null | undefined): string {
+function formatRelative(t: any, value: Date | string | null | undefined): string {
   if (!value) return "—";
   const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return "—";
   const diff = Date.now() - date.getTime();
   if (diff < 0) return date.toLocaleString();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return `${seconds}s ${t('secrets.ago')}`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes}m ${t('secrets.ago')}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
+  if (hours < 48) return `${hours}h ${t('secrets.ago')}`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days}d ${t('secrets.ago')}`;
   return date.toLocaleDateString();
 }
 
@@ -203,14 +204,14 @@ function normalizeSecretKeyForPreview(input: string) {
 }
 
 
-function modeLabel(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
+function modeLabel(t: any, managedMode: SecretManagedMode) {
+  return managedMode === "paperclip_managed" ? t('secrets.paperclipManaged') : t('secrets.linkedExternal');
 }
 
-function modeDescription(managedMode: SecretManagedMode) {
+function modeDescription(t: any, managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
-    : "Paperclip resolves this provider reference but does not rotate the provider value.";
+    ? t('secrets.paperclipManagedDesc')
+    : t('secrets.linkedExternalDesc');
 }
 
 function healthEntryForProvider(
@@ -221,26 +222,27 @@ function healthEntryForProvider(
 }
 
 export function getCreateProviderBlockReason(
+  t: any,
   provider: SecretProviderDescriptor | null | undefined,
   mode: CreateMode,
   health: SecretProviderHealthResponse | null,
 ) {
-  if (!provider) return "Select a provider.";
+  if (!provider) return t('secrets.selectProvider');
   if (mode === "managed" && provider.supportsManagedValues === false) {
-    return `${provider.label} does not support Paperclip-managed secret values.`;
+    return t('secrets.providerNotSupportedManaged', { label: provider.label });
   }
   if (mode === "external" && provider.supportsExternalReferences === false) {
-    return `${provider.label} does not support linked external references.`;
+    return t('secrets.providerNotSupportedExternal', { label: provider.label });
   }
   if (provider.configured === false) {
     const healthEntry = healthEntryForProvider(health, provider.id);
     return healthEntry?.message
-      ? `${provider.label} is not configured in this deployment. ${healthEntry.message}`
-      : `${provider.label} is not configured in this deployment.`;
+      ? t('secrets.providerNotConfigured', { label: provider.label }) + " " + healthEntry.message
+      : t('secrets.providerNotConfigured', { label: provider.label });
   }
   const healthEntry = healthEntryForProvider(health, provider.id);
   if (healthEntry?.status === "error") {
-    return `${provider.label} health check failed: ${healthEntry.message}`;
+    return t('secrets.healthCheckFailed', { label: provider.label, message: healthEntry.message });
   }
   return null;
 }
@@ -262,23 +264,25 @@ function detailString(details: Record<string, unknown> | undefined, key: string)
 }
 
 export function getProviderConfigBlockReason(
+  t: any,
   config: CompanySecretProviderConfig | null | undefined,
 ) {
   if (!config) return null;
-  if (config.status === "disabled") return "This provider vault is disabled.";
-  if (config.status === "coming_soon") return "This provider vault is saved as draft metadata only.";
+  if (config.status === "disabled") return t('secrets.providerVaultDisabled');
+  if (config.status === "coming_soon") return t('secrets.providerVaultDraft');
   if (config.healthStatus === "error") {
-    return config.healthMessage ?? "This provider vault health check failed.";
+    return config.healthMessage ?? t('secrets.providerVaultHealthFailed');
   }
   return null;
 }
 
 export function getDefaultProviderConfigId(
+  t: any,
   configs: CompanySecretProviderConfig[],
   provider: SecretProvider,
 ) {
   const providerConfigs = configs.filter((config) => config.provider === provider);
-  const selectable = providerConfigs.filter((config) => !getProviderConfigBlockReason(config));
+  const selectable = providerConfigs.filter((config) => !getProviderConfigBlockReason(t, config));
   return (
     selectable.find((config) => config.isDefault)?.id ??
     selectable[0]?.id ??
@@ -287,9 +291,9 @@ export function getDefaultProviderConfigId(
   );
 }
 
-function providerVaultLabel(configs: CompanySecretProviderConfig[], id: string | null | undefined) {
-  if (!id) return "Deployment default";
-  return configs.find((config) => config.id === id)?.displayName ?? "Unknown vault";
+function providerVaultLabel(t: any, configs: CompanySecretProviderConfig[], id: string | null | undefined) {
+  if (!id) return t('secrets.deploymentDefault');
+  return configs.find((config) => config.id === id)?.displayName ?? t('secrets.unknownVault');
 }
 
 function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unknown> {
@@ -340,6 +344,7 @@ export function getAwsManagedPathPreview(input: {
 }
 
 export function Secrets() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -376,8 +381,8 @@ export function Secrets() {
   const [vaultError, setVaultError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Secrets" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t('secrets.title') }]);
+  }, [setBreadcrumbs, t]);
 
   const secretsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -447,11 +452,12 @@ export function Secrets() {
     [providerConfigs, rotateProviderConfigId],
   );
   const createProviderBlockReason = getCreateProviderBlockReason(
+    t,
     selectedCreateProvider,
     createMode,
     providerHealthQuery.data ?? null,
-  ) ?? getProviderConfigBlockReason(selectedCreateProviderConfig);
-  const rotateProviderBlockReason = getProviderConfigBlockReason(selectedRotateProviderConfig);
+  ) ?? getProviderConfigBlockReason(t, selectedCreateProviderConfig);
+  const rotateProviderBlockReason = getProviderConfigBlockReason(t, selectedRotateProviderConfig);
   const createProviderHealthText = providerHealthText(
     selectedCreateProvider,
     providerHealthQuery.data ?? null,
@@ -528,7 +534,7 @@ export function Secrets() {
       return secretsApi.create(selectedCompanyId!, input);
     },
     onSuccess: (created) => {
-      pushToast({ title: "Secret created", body: created.name, tone: "success" });
+      pushToast({ title: t('secrets.secretCreated'), body: created.name, tone: "success" });
       setCreateOpen(false);
       setCreateForm({
         name: "",
@@ -537,7 +543,7 @@ export function Secrets() {
         description: "",
         externalRef: "",
         provider: createForm.provider,
-        providerConfigId: getDefaultProviderConfigId(providerConfigs, createForm.provider),
+        providerConfigId: getDefaultProviderConfigId(t, providerConfigs, createForm.provider),
       });
       setCreateError(null);
       setSelectedSecretId(created.id);
@@ -563,7 +569,7 @@ export function Secrets() {
       });
     },
     onSuccess: (updated) => {
-      pushToast({ title: "Rotated", body: `${updated.name} → v${updated.latestVersion}`, tone: "success" });
+      pushToast({ title: t('secrets.rotated'), body: `${updated.name} → v${updated.latestVersion}`, tone: "success" });
       setRotateOpen(false);
       setRotateValue("");
       setRotateExternalRef("");
@@ -590,7 +596,7 @@ export function Secrets() {
       }
     },
     onSuccess: (updated) => {
-      pushToast({ title: `Secret ${updated.status}`, body: updated.name, tone: "info" });
+      pushToast({ title: t('secrets.statusUpdated'), body: updated.name, tone: "info" });
       invalidateAll([updated.id]);
     },
     onError: (error) => {
@@ -605,7 +611,7 @@ export function Secrets() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => secretsApi.remove(id),
     onSuccess: (_response, id) => {
-      pushToast({ title: "Secret deleted", tone: "info" });
+      pushToast({ title: t('secrets.secretDeleted'), tone: "info" });
       setDeleteConfirm(null);
       if (selectedSecretId === id) setSelectedSecretId(null);
       invalidateAll([id]);
@@ -636,7 +642,7 @@ export function Secrets() {
       } as CreateSecretProviderConfigInput);
     },
     onSuccess: (saved) => {
-      pushToast({ title: editingVault ? "Provider vault updated" : "Provider vault created", body: saved.displayName, tone: "success" });
+      pushToast({ title: editingVault ? t('secrets.providerVaultUpdated') : t('secrets.providerVaultCreated'), body: saved.displayName, tone: "success" });
       setVaultDialogOpen(false);
       setEditingVault(null);
       setVaultForm(emptyProviderVaultForm());
@@ -651,7 +657,7 @@ export function Secrets() {
   const disableVaultMutation = useMutation({
     mutationFn: (id: string) => secretsApi.disableProviderConfig(id),
     onSuccess: (updated) => {
-      pushToast({ title: "Provider vault disabled", body: updated.displayName, tone: "info" });
+      pushToast({ title: t('secrets.providerVaultDisabledToast'), body: updated.displayName, tone: "info" });
       invalidateAll();
     },
     onError: (error) => {
@@ -666,7 +672,7 @@ export function Secrets() {
   const defaultVaultMutation = useMutation({
     mutationFn: (id: string) => secretsApi.setDefaultProviderConfig(id),
     onSuccess: (updated) => {
-      pushToast({ title: "Default vault set", body: updated.displayName, tone: "success" });
+      pushToast({ title: t('secrets.defaultVaultSet'), body: updated.displayName, tone: "success" });
       invalidateAll();
     },
     onError: (error) => {
@@ -681,7 +687,7 @@ export function Secrets() {
   const healthVaultMutation = useMutation({
     mutationFn: (id: string) => secretsApi.checkProviderConfigHealth(id),
     onSuccess: (health) => {
-      pushToast({ title: "Health checked", body: health.message, tone: health.status === "error" ? "error" : "info" });
+      pushToast({ title: t('secrets.healthChecked'), body: health.message, tone: health.status === "error" ? "error" : "info" });
       invalidateAll();
     },
     onError: (error) => {
@@ -696,6 +702,7 @@ export function Secrets() {
   useEffect(() => {
     if (!createOpen || providers.length === 0) return;
     const currentBlockReason = getCreateProviderBlockReason(
+      t,
       providers.find((provider) => provider.id === createForm.provider) ?? null,
       createMode,
       providerHealthQuery.data ?? null,
@@ -703,13 +710,13 @@ export function Secrets() {
     if (!currentBlockReason) return;
     const replacement = providers.find(
       (provider) =>
-        !getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
+        !getCreateProviderBlockReason(t, provider, createMode, providerHealthQuery.data ?? null),
     );
     if (replacement && replacement.id !== createForm.provider) {
       setCreateForm((current) => ({
         ...current,
         provider: replacement.id,
-        providerConfigId: getDefaultProviderConfigId(providerConfigs, replacement.id),
+        providerConfigId: getDefaultProviderConfigId(t, providerConfigs, replacement.id),
       }));
     }
   }, [createForm.provider, createMode, createOpen, providerConfigs, providerHealthQuery.data, providers]);
@@ -720,14 +727,14 @@ export function Secrets() {
     if (current?.provider === createForm.provider) return;
     setCreateForm((form) => ({
       ...form,
-      providerConfigId: getDefaultProviderConfigId(providerConfigs, form.provider),
+      providerConfigId: getDefaultProviderConfigId(t, providerConfigs, form.provider),
     }));
   }, [createForm.provider, createForm.providerConfigId, createOpen, providerConfigs]);
 
   useEffect(() => {
     if (!rotateOpen || !selectedSecret) return;
     setRotateProviderConfigId(
-      selectedSecret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
+      selectedSecret.providerConfigId ?? getDefaultProviderConfigId(t, providerConfigs, selectedSecret.provider),
     );
   }, [providerConfigs, rotateOpen, selectedSecret]);
 
@@ -747,7 +754,7 @@ export function Secrets() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
+      <div className="p-6 text-sm text-muted-foreground">{t('secrets.selectCompany')}</div>
     );
   }
 
@@ -755,7 +762,7 @@ export function Secrets() {
     <div className="flex h-full min-h-0 flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Secrets</h1>
+        <h1 className="text-lg font-semibold">{t('secrets.title')}</h1>
       </div>
 
       <Tabs
@@ -765,8 +772,8 @@ export function Secrets() {
       >
         <PageTabBar
           items={[
-            { value: "secrets", label: "Secrets" },
-            { value: "vaults", label: "Provider vaults" },
+            { value: "secrets", label: t('secrets.tabs.secrets') },
+            { value: "vaults", label: t('secrets.tabs.vaults') },
           ]}
           align="start"
           value={activeTab}
@@ -781,9 +788,9 @@ export function Secrets() {
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by name, key, ref"
+                placeholder={t('secrets.searchPlaceholder')}
                 className="pl-7 text-xs sm:text-sm"
-                aria-label="Search secrets"
+                aria-label={t('secrets.searchAria')}
                 data-page-search-target="true"
               />
             </div>
@@ -802,40 +809,40 @@ export function Secrets() {
               className="ml-auto"
             />
             <Button onClick={() => setCreateOpen(true)} size="sm">
-              <Plus className="h-3.5 w-3.5 mr-1" /> New secret
+              <Plus className="h-3.5 w-3.5 mr-1" /> {t('secrets.newSecret')}
             </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {secretsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
-                <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
+                <AlertCircle className="h-4 w-4" /> {t('secrets.failedToLoad')}:{" "}
                 {(secretsQuery.error as Error).message}
                 <Button variant="ghost" size="sm" onClick={() => secretsQuery.refetch()}>
-                  Retry
+                  {t('secrets.retry')}
                 </Button>
               </div>
             ) : secrets.length === 0 && !secretsQuery.isPending ? (
               <EmptyState
                 icon={KeyRound}
-                message="No secrets yet. Create your first managed secret or link an external reference."
-                action="New secret"
+                message={t('secrets.noSecretsYet')}
+                action={t('secrets.newSecret')}
                 onAction={() => setCreateOpen(true)}
               />
             ) : filtered.length === 0 ? (
-              <EmptyState icon={Search} message="No secrets match your filters." />
+              <EmptyState icon={Search} message={t('secrets.noMatches')} />
             ) : (
               <table className="w-full text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Name</th>
-                  <th className="px-2 py-2 text-left font-medium">Mode</th>
-                  <th className="px-2 py-2 text-left font-medium">Provider</th>
-                  <th className="px-2 py-2 text-left font-medium">Status</th>
-                  <th className="px-2 py-2 text-left font-medium">Version</th>
-                  <th className="px-2 py-2 text-left font-medium">Last rotated</th>
-                  <th className="px-2 py-2 text-left font-medium">Last resolved</th>
-                  <th className="px-2 py-2 text-left font-medium">References</th>
-                  <th className="px-2 py-2 text-left font-medium">Reference</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('secrets.table.name')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.mode')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.provider')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.status')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.version')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.lastRotated')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.lastResolved')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.references')}</th>
+                  <th className="px-2 py-2 text-left font-medium">{t('secrets.table.reference')}</th>
                   <th className="px-3 py-2"></th>
                 </tr>
               </thead>
@@ -853,7 +860,7 @@ export function Secrets() {
                       <div className="font-medium text-foreground">{secret.name}</div>
                     </td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {modeLabel(secret.managedMode)}
+                      {modeLabel(t, secret.managedMode)}
                     </td>
                     <td className="px-2 py-2.5 text-xs">
                       <div>{providerLabel(providers, secret.provider)}</div>
@@ -865,10 +872,10 @@ export function Secrets() {
                     </td>
                     <td className="px-2 py-2.5 text-xs font-mono">v{secret.latestVersion}</td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {formatRelative(secret.lastRotatedAt)}
+                      {formatRelative(t, secret.lastRotatedAt)}
                     </td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {formatRelative(secret.lastResolvedAt)}
+                      {formatRelative(t, secret.lastResolvedAt)}
                     </td>
                     <td className="px-2 py-2.5 text-xs">
                       <Button
@@ -891,7 +898,7 @@ export function Secrets() {
                           {secret.externalRef ?? "—"}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">Owned</span>
+                        <span className="text-muted-foreground">{t('secrets.table.owned')}</span>
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-right">
@@ -903,7 +910,7 @@ export function Secrets() {
                           setSelectedSecretId(secret.id);
                         }}
                       >
-                        Open
+                        {t('secrets.table.open')}
                       </Button>
                     </td>
                   </tr>
@@ -948,7 +955,7 @@ export function Secrets() {
                   </span>
                 </SheetTitle>
                 <SheetDescription>
-                  {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} · {modeLabel(selectedSecret.managedMode)}
+                  {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} · {modeLabel(t, selectedSecret.managedMode)}
                 </SheetDescription>
               </SheetHeader>
               <div className="flex flex-wrap gap-2 px-4 pb-2">
@@ -961,13 +968,13 @@ export function Secrets() {
                     setRotateExternalRef("");
                     setRotateProviderConfigId(
                       selectedSecret.providerConfigId ??
-                        getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
+                        getDefaultProviderConfigId(t, providerConfigs, selectedSecret.provider),
                     );
                     setRotateError(null);
                   }}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                  {selectedSecret.managedMode === "external_reference" ? t('secrets.sheet.updateReference') : t('secrets.sheet.updateValue')}
                 </Button>
                 {selectedSecret.status === "active" ? (
                   <Button
@@ -976,7 +983,7 @@ export function Secrets() {
                     onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "disabled" })}
                     disabled={statusMutation.isPending}
                   >
-                    <Ban className="h-3.5 w-3.5 mr-1" /> Disable
+                    <Ban className="h-3.5 w-3.5 mr-1" /> {t('secrets.sheet.disable')}
                   </Button>
                 ) : (
                   <Button
@@ -985,7 +992,7 @@ export function Secrets() {
                     onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "active" })}
                     disabled={statusMutation.isPending}
                   >
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Activate
+                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> {t('secrets.sheet.activate')}
                   </Button>
                 )}
                 {selectedSecret.status === "archived" ? (
@@ -995,7 +1002,7 @@ export function Secrets() {
                     onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "active" })}
                     disabled={statusMutation.isPending}
                   >
-                    <ArchiveRestore className="h-3.5 w-3.5 mr-1" /> Unarchive
+                    <ArchiveRestore className="h-3.5 w-3.5 mr-1" /> {t('secrets.sheet.unarchive')}
                   </Button>
                 ) : (
                   <Button
@@ -1004,7 +1011,7 @@ export function Secrets() {
                     onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "archived" })}
                     disabled={statusMutation.isPending}
                   >
-                    <Archive className="h-3.5 w-3.5 mr-1" /> Archive
+                    <Archive className="h-3.5 w-3.5 mr-1" /> {t('secrets.sheet.archive')}
                   </Button>
                 )}
                 <Button
@@ -1013,16 +1020,16 @@ export function Secrets() {
                   className="text-destructive hover:text-destructive"
                   onClick={() => setDeleteConfirm(selectedSecret)}
                 >
-                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete
+                  <Trash2 className="h-3.5 w-3.5 mr-1" /> {t('secrets.sheet.delete')}
                 </Button>
               </div>
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
                   <PageTabBar
                     items={[
-                      { value: "details", label: "Details" },
-                      { value: "usage", label: usageQuery.data ? `Usage (${usageQuery.data.bindings.length})` : "Usage" },
-                      { value: "events", label: "Access events" },
+                      { value: "details", label: t('secrets.details') },
+                      { value: "usage", label: usageQuery.data ? `${t('secrets.usage')} (${usageQuery.data.bindings.length})` : t('secrets.usage') },
+                      { value: "events", label: t('secrets.events') },
                     ]}
                     align="start"
                     value={secretDetailTab}
@@ -1052,12 +1059,14 @@ export function Secrets() {
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Secret references</DialogTitle>
+            <DialogTitle>{t('secrets.usageDialog.title')}</DialogTitle>
             <DialogDescription>
               {usageDialogSecret
-                ? `${usageDialogSecret.name} is referenced by ${usageDialogSecret.referenceCount ?? 0} ${
-                    (usageDialogSecret.referenceCount ?? 0) === 1 ? "place" : "places"
-                  }.`
+                ? t('secrets.usageDialog.description', {
+                    name: usageDialogSecret.name,
+                    count: usageDialogSecret.referenceCount ?? 0,
+                    place: t('secrets.usageDialog.place', { count: usageDialogSecret.referenceCount ?? 0 })
+                  })
                 : null}
             </DialogDescription>
           </DialogHeader>
@@ -1088,22 +1097,21 @@ export function Secrets() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Create secret</DialogTitle>
+            <DialogTitle>{t('secrets.createDialog.title')}</DialogTitle>
             <DialogDescription>
-              Choose whether Paperclip should own future provider writes, or only resolve an existing
-              provider reference at runtime.
+              {t('secrets.createDialog.description')}
             </DialogDescription>
           </DialogHeader>
           <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)}>
             <TabsList className="w-full grid grid-cols-2">
-              <TabsTrigger value="managed">Managed value</TabsTrigger>
-              <TabsTrigger value="external">External reference</TabsTrigger>
+              <TabsTrigger value="managed">{t('secrets.createDialog.managedValue')}</TabsTrigger>
+              <TabsTrigger value="external">{t('secrets.createDialog.externalReference')}</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium" htmlFor="new-secret-name">Name</label>
+                <label className="text-xs font-medium" htmlFor="new-secret-name">{t('secrets.createDialog.name')}</label>
                 <Input
                   id="new-secret-name"
                   value={createForm.name}
@@ -1116,7 +1124,7 @@ export function Secrets() {
               </div>
               <div>
                 <label className="text-xs font-medium" htmlFor="new-secret-key">
-                  Key <span className="text-muted-foreground/70">(optional)</span>
+                  Key <span className="text-muted-foreground/70">({t('secrets.createDialog.optional')})</span>
                 </label>
                 <Input
                   id="new-secret-key"
@@ -1124,12 +1132,12 @@ export function Secrets() {
                   onChange={(event) =>
                     setCreateForm((current) => ({ ...current, key: event.target.value }))
                   }
-                  placeholder="auto from name"
+                  placeholder={t('secrets.createDialog.autoFromName')}
                 />
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium" htmlFor="new-secret-provider">Provider</label>
+              <label className="text-xs font-medium" htmlFor="new-secret-provider">{t('secrets.createDialog.provider')}</label>
               <select
                 id="new-secret-provider"
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
@@ -1140,7 +1148,7 @@ export function Secrets() {
                     return {
                       ...current,
                       provider,
-                      providerConfigId: getDefaultProviderConfigId(providerConfigs, provider),
+                      providerConfigId: getDefaultProviderConfigId(t, providerConfigs, provider),
                     };
                   })
                 }
@@ -1150,14 +1158,14 @@ export function Secrets() {
                     key={provider.id}
                     value={provider.id}
                     disabled={Boolean(
-                      getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
+                      getCreateProviderBlockReason(t, provider, createMode, providerHealthQuery.data ?? null),
                     )}
                   >
                     {provider.label}
                     {provider.configured === false
-                      ? " (not configured)"
+                      ? ` (${t('secrets.createDialog.notConfigured')})`
                       : provider.requiresExternalRef
-                        ? " (external only)"
+                        ? ` (${t('secrets.createDialog.externalOnly')})`
                         : ""}
                   </option>
                 ))}
@@ -1172,7 +1180,7 @@ export function Secrets() {
               ) : null}
             </div>
             <div>
-              <label className="text-xs font-medium" htmlFor="new-secret-vault">Provider vault</label>
+              <label className="text-xs font-medium" htmlFor="new-secret-vault">{t('secrets.createDialog.providerVault')}</label>
               <select
                 id="new-secret-vault"
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
@@ -1181,13 +1189,13 @@ export function Secrets() {
                   setCreateForm((current) => ({ ...current, providerConfigId: event.target.value }))
                 }
               >
-                <option value="">Deployment default</option>
+                <option value="">{t('secrets.createDialog.deploymentDefault')}</option>
                 {createProviderConfigs.map((config) => {
-                  const blockReason = getProviderConfigBlockReason(config);
+                  const blockReason = getProviderConfigBlockReason(t, config);
                   return (
                     <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
                       {config.displayName}
-                      {config.isDefault ? " (default)" : ""}
+                      {config.isDefault ? ` (${t('secrets.createDialog.default')})` : ""}
                       {blockReason ? ` (${blockReason})` : ""}
                     </option>
                   );
@@ -1197,18 +1205,17 @@ export function Secrets() {
                 <ProviderVaultInlineWarning config={selectedCreateProviderConfig} />
               ) : (
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Existing deployment-level provider settings stay available for backwards compatibility.
+                  {t('secrets.createDialog.resolveOnly')}
                 </p>
               )}
             </div>
             {createMode === "managed" ? (
               <>
-                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Paperclip-managed secrets are created in the selected provider and future rotations
-                  write a new provider version through Paperclip.
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {t('secrets.createDialog.managedValueDesc')}
                   {awsManagedPathPreview ? (
                     <div className="mt-1">
-                      AWS managed path:{" "}
+                      {t('secrets.createDialog.awsManagedPath')}:{" "}
                       <code className="break-all rounded bg-background/70 px-1 py-0.5">
                         {awsManagedPathPreview}
                       </code>
@@ -1216,7 +1223,7 @@ export function Secrets() {
                   ) : null}
                 </div>
                 <div>
-                  <label className="text-xs font-medium" htmlFor="new-secret-value">Value</label>
+                  <label className="text-xs font-medium" htmlFor="new-secret-value">{t('secrets.createDialog.value')}</label>
                   <Textarea
                     id="new-secret-value"
                     value={createForm.value}
@@ -1225,13 +1232,13 @@ export function Secrets() {
                     }
                     rows={3}
                     className="min-w-0 overflow-x-hidden break-all font-mono text-xs"
-                    placeholder="Stored once, never re-displayed"
+                    placeholder={t('secrets.createDialog.storedOnce')}
                   />
                 </div>
               </>
             ) : (
               <div>
-                <label className="text-xs font-medium" htmlFor="new-secret-ref">External reference</label>
+                <label className="text-xs font-medium" htmlFor="new-secret-ref">{t('secrets.createDialog.externalRef')}</label>
                 <Input
                   id="new-secret-ref"
                   value={createForm.externalRef}
@@ -1242,14 +1249,13 @@ export function Secrets() {
                   className="font-mono text-xs"
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,
-                  then update this reference only if the path, ARN, or version changes.
+                  {t('secrets.createDialog.resolveOnly')}
                 </p>
               </div>
             )}
             <div>
               <label className="text-xs font-medium" htmlFor="new-secret-description">
-                Description <span className="text-muted-foreground/70">(optional)</span>
+                Description <span className="text-muted-foreground/70">({t('secrets.createDialog.optional')})</span>
               </label>
               <Input
                 id="new-secret-description"
@@ -1257,14 +1263,14 @@ export function Secrets() {
                 onChange={(event) =>
                   setCreateForm((current) => ({ ...current, description: event.target.value }))
                 }
-                placeholder="What is this secret used for? (no values)"
+                placeholder={t('secrets.createDialog.usageDescription')}
               />
             </div>
             {createError ? <p className="text-xs text-destructive">{createError}</p> : null}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
-              Cancel
+              {t('secrets.cancel')}
             </Button>
             <Button
               onClick={() => {
@@ -1279,7 +1285,7 @@ export function Secrets() {
               }
             >
               {createMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {createMode === "managed" ? "Create secret" : "Link reference"}
+              {createMode === "managed" ? t('secrets.createDialog.createSecret') : t('secrets.createDialog.linkReference')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1288,15 +1294,15 @@ export function Secrets() {
       <Dialog open={vaultDialogOpen} onOpenChange={setVaultDialogOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingVault ? "Edit provider vault" : "Create provider vault"}</DialogTitle>
+            <DialogTitle>{editingVault ? t('secrets.vaultDialog.editTitle') : t('secrets.vaultDialog.createTitle')}</DialogTitle>
             <DialogDescription>
-              Save only non-sensitive routing metadata. Credentials stay in the runtime environment or provider identity.
+              {t('secrets.vaultDialog.description')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <label className="text-xs font-medium" htmlFor="vault-provider">Provider</label>
+                <label className="text-xs font-medium" htmlFor="vault-provider">{t('secrets.createDialog.provider')}</label>
                 <select
                   id="vault-provider"
                   className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none disabled:opacity-60"
@@ -1315,18 +1321,18 @@ export function Secrets() {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium" htmlFor="vault-name">Display name</label>
+                <label className="text-xs font-medium" htmlFor="vault-name">{t('secrets.vaultDialog.displayName')}</label>
                 <Input
                   id="vault-name"
                   value={vaultForm.displayName}
                   onChange={(event) =>
                     setVaultForm((current) => ({ ...current, displayName: event.target.value }))
                   }
-                  placeholder="Production local vault"
+                  placeholder={t('secrets.vaultDialog.productionLocal')}
                 />
               </div>
               <div>
-                <label className="text-xs font-medium" htmlFor="vault-status">Status</label>
+                <label className="text-xs font-medium" htmlFor="vault-status">{t('secrets.vaultDialog.status')}</label>
                 <select
                   id="vault-status"
                   className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
@@ -1342,13 +1348,13 @@ export function Secrets() {
                   }}
                 >
                   <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
-                    Ready
+                    {t('secrets.vaultDialog.ready')}
                   </option>
                   <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
-                    Warning
+                    {t('secrets.vaultDialog.warning')}
                   </option>
-                  <option value="coming_soon">Coming soon</option>
-                  <option value="disabled">Disabled</option>
+                  <option value="coming_soon">{t('secrets.vaultDialog.comingSoon')}</option>
+                  <option value="disabled">{t('secrets.vaultDialog.disabled')}</option>
                 </select>
               </div>
               <label className="flex items-center gap-2 pt-6 text-sm">
@@ -1361,7 +1367,7 @@ export function Secrets() {
                     setVaultForm((current) => ({ ...current, isDefault: event.target.checked }))
                   }
                 />
-                Default for {providerLabel(providers, vaultForm.provider)}
+                {t('secrets.vaultDialog.defaultFor', { provider: providerLabel(providers, vaultForm.provider) })}
               </label>
             </div>
 
@@ -1377,7 +1383,7 @@ export function Secrets() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setVaultDialogOpen(false)}>
-              Cancel
+              {t('secrets.cancel')}
             </Button>
             <Button
               onClick={() => {
@@ -1391,7 +1397,7 @@ export function Secrets() {
               }
             >
               {saveVaultMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {editingVault ? "Save vault" : "Create vault"}
+              {editingVault ? t('secrets.vaultDialog.saveVault') : t('secrets.vaultDialog.createVault')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1401,12 +1407,12 @@ export function Secrets() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
+              {selectedSecret?.managedMode === "external_reference" ? t('secrets.rotateDialog.updateReference') : t('secrets.rotateDialog.updateValue')}
             </DialogTitle>
             <DialogDescription>
               {selectedSecret?.managedMode === "external_reference"
-                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
-                : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
+                ? t('secrets.rotateDialog.descriptionExternal')
+                : t('secrets.rotateDialog.descriptionManaged')}
             </DialogDescription>
           </DialogHeader>
           <div>
@@ -1419,11 +1425,11 @@ export function Secrets() {
             >
               <option value="">Deployment default</option>
               {selectedRotateProviderConfigs.map((config) => {
-                const blockReason = getProviderConfigBlockReason(config);
+                const blockReason = getProviderConfigBlockReason(t, config);
                 return (
                   <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
                     {config.displayName}
-                    {config.isDefault ? " (default)" : ""}
+                    {config.isDefault ? ` (${t('secrets.createDialog.default')})` : ""}
                     {blockReason ? ` (${blockReason})` : ""}
                   </option>
                 );
@@ -1444,7 +1450,7 @@ export function Secrets() {
                 id="rotate-ref"
                 value={rotateExternalRef}
                 onChange={(event) => setRotateExternalRef(event.target.value)}
-                placeholder={selectedSecret.externalRef ?? "Updated reference"}
+                placeholder={selectedSecret.externalRef ?? t('secrets.rotateDialog.updatedReference')}
                 className="font-mono text-xs"
               />
               <p className="mt-1 text-[11px] text-muted-foreground">
@@ -1460,14 +1466,14 @@ export function Secrets() {
                 onChange={(event) => setRotateValue(event.target.value)}
                 rows={3}
                 className="font-mono text-xs"
-                placeholder="Paste the new value"
+                placeholder={t('secrets.rotateDialog.pasteNewValue')}
               />
             </div>
           )}
           {rotateError ? <p className="text-xs text-destructive">{rotateError}</p> : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRotateOpen(false)}>
-              Cancel
+              {t('secrets.cancel')}
             </Button>
             <Button
               onClick={() => {
@@ -1483,7 +1489,7 @@ export function Secrets() {
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Update value"}
+              {selectedSecret?.managedMode === "external_reference" ? t('secrets.sheet.updateReference') : t('secrets.sheet.updateValue')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1492,20 +1498,20 @@ export function Secrets() {
       <Dialog open={Boolean(deleteConfirm)} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Delete secret</DialogTitle>
+            <DialogTitle>{t('secrets.deleteDialog.title')}</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{deleteConfirm?.name}</strong>. Active bindings will fail until you remap them.
+              {t('secrets.deleteDialog.description', { name: deleteConfirm?.name })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>{t('secrets.cancel')}</Button>
             <Button
               variant="destructive"
               onClick={() => deleteConfirm && deleteMutation.mutate(deleteConfirm.id)}
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              Delete
+              {t('secrets.sheet.delete')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1515,19 +1521,18 @@ export function Secrets() {
 }
 
 function SecretsHowToUse() {
+  const { t } = useTranslation();
   return (
     <div className="flex items-start gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
       <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <div className="space-y-1">
-        <p className="font-medium text-foreground">Use secrets by binding them to runtime environment variables.</p>
+        <p className="font-medium text-foreground">{t('secrets.howToUseDesc.title')}</p>
         <p>
-          Create or link a secret here, then open an agent&apos;s Environment variables or a project&apos;s Env field.
-          Add the env key the process expects, for example <code className="font-mono">GH_TOKEN</code>, choose{" "}
-          <span className="font-medium text-foreground">Secret</span>, and select the stored secret version.
+          {t('secrets.howToUseDesc.p1')}
+          {t('secrets.howToUseDesc.p2')}
         </p>
         <p>
-          Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env
-          applies to every issue in the project and overrides agent env on matching keys.
+          {t('secrets.howToUseDesc.p3')}
         </p>
       </div>
     </div>
@@ -1554,11 +1559,13 @@ function SecretsFiltersPopover({
     onProviderChange("all");
   };
 
+  const { t } = useTranslation();
+
   const statusOptions: Array<{ value: SecretStatus | "all"; label: string }> = [
-    { value: "active", label: "Active" },
-    { value: "all", label: "All statuses" },
-    { value: "disabled", label: "Disabled" },
-    { value: "archived", label: "Archived" },
+    { value: "active", label: t('secrets.active') },
+    { value: "all", label: t('secrets.filtersList.allStatuses') },
+    { value: "disabled", label: t('secrets.disabled') },
+    { value: "archived", label: t('secrets.archived') },
   ];
 
   return (
@@ -1568,7 +1575,7 @@ function SecretsFiltersPopover({
           variant="outline"
           size="icon"
           className={cn("relative h-8 w-8 shrink-0", activeFilterCount > 0 && "text-blue-600 dark:text-blue-400")}
-          title={activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
+          title={activeFilterCount > 0 ? t('issues.filters.filtersCount', { count: activeFilterCount }) : t('issues.filters.filter')}
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
@@ -1584,7 +1591,7 @@ function SecretsFiltersPopover({
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Filters</span>
+            <span className="text-sm font-medium">{t('secrets.filtersList.filters')}</span>
             {activeFilterCount > 0 ? (
               <button
                 type="button"
@@ -1592,7 +1599,7 @@ function SecretsFiltersPopover({
                 onClick={resetFilters}
               >
                 <X className="h-3 w-3" />
-                Clear
+                {t('secrets.filtersList.clear')}
               </button>
             ) : null}
           </div>
@@ -1621,7 +1628,7 @@ function SecretsFiltersPopover({
                     checked={providerFilter === "all"}
                     onCheckedChange={() => onProviderChange("all")}
                   />
-                  <span className="text-sm">All providers</span>
+                  <span className="text-sm">{t('secrets.filtersList.allProviders')}</span>
                 </label>
                 {providers.map((provider) => (
                   <label key={provider.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -1672,12 +1679,13 @@ function providerFamilyIcon(provider: SecretProvider) {
 }
 
 function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderConfig }) {
-  const blockReason = getProviderConfigBlockReason(config);
+  const { t } = useTranslation();
+  const blockReason = getProviderConfigBlockReason(t, config);
   const message = blockReason ?? config.healthMessage;
   if (!message) {
     return (
       <p className="mt-1 text-[11px] text-muted-foreground">
-        {config.isDefault ? "Default vault" : "Vault"} · {config.status.replace("_", " ")}
+        {config.isDefault ? t('secrets.createDialog.default') : t('secrets.vaultDialog.vault')} · {config.status.replace("_", " ")}
       </p>
     );
   }
@@ -1703,6 +1711,7 @@ function ImportFromVaultButton({
   onManageVaults,
   className,
 }: ImportFromVaultButtonProps) {
+  const { t } = useTranslation();
   const awsConfigs = providerConfigs.filter(
     (config) => config.provider === "aws_secrets_manager",
   );
@@ -1719,9 +1728,9 @@ function ImportFromVaultButton({
         size="sm"
         onClick={onManageVaults}
         className={cn("text-xs text-muted-foreground", className)}
-        title="Configure an AWS provider vault to enable remote import"
+        title={t('secrets.vaultDialog.configureAwsHint')}
       >
-        <Cloud className="h-3.5 w-3.5 mr-1" /> AWS vault disabled — manage
+        <Cloud className="h-3.5 w-3.5 mr-1" /> {t('secrets.vaultDialog.awsVaultDisabled')}
       </Button>
     );
   }
@@ -1734,7 +1743,7 @@ function ImportFromVaultButton({
       className={className}
       data-testid="import-from-vault-button"
     >
-      <Cloud className="h-3.5 w-3.5 mr-1" /> Import from vault
+      <Cloud className="h-3.5 w-3.5 mr-1" /> {t('secrets.importFromVault')}
     </Button>
   );
 }
@@ -1764,11 +1773,12 @@ export function ProviderVaultsTab({
   onHealthCheck: (config: CompanySecretProviderConfig) => void;
   pendingActionId: string | null;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading provider vaults
+        {t('secrets.vaultDialog.loadingVaults')}
       </div>
     );
   }
@@ -1776,9 +1786,9 @@ export function ProviderVaultsTab({
   if (error) {
     return (
       <div className="py-4 text-sm text-destructive flex items-center gap-2">
-        <AlertCircle className="h-4 w-4" /> Failed to load provider vaults: {(error as Error).message}
+        <AlertCircle className="h-4 w-4" /> {t('secrets.vaultDialog.failedToLoadVaults')}: {(error as Error).message}
         <Button variant="ghost" size="sm" onClick={onRetry}>
-          Retry
+          {t('secrets.retry')}
         </Button>
       </div>
     );
@@ -1817,19 +1827,19 @@ export function ProviderVaultsTab({
               <Icon className="h-4 w-4 text-muted-foreground" />
               <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
               {isComingSoonFamily ? (
-                <span className="ml-auto text-xs text-muted-foreground">Coming soon</span>
+                <span className="ml-auto text-xs text-muted-foreground">{t('secrets.vaultDialog.comingSoon')}</span>
               ) : (
                 <Button variant="outline" size="sm" className="ml-auto" onClick={() => onCreate(id)}>
                   <Plus className="h-3.5 w-3.5 mr-1" />
-                  Add vault
+                  {t('secrets.vaultDialog.addVault')}
                 </Button>
               )}
             </div>
             {configs.length === 0 ? (
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
-                  ? "Not yet supported."
-                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+                  ? t('secrets.vaultDialog.notSupported')
+                  : t('secrets.vaultDialog.noVaults')}
               </div>
             ) : (
               <div className="space-y-3">
@@ -1868,7 +1878,8 @@ function ProviderVaultCard({
   onSetDefault: () => void;
   onHealthCheck: () => void;
 }) {
-  const blockReason = getProviderConfigBlockReason(config);
+  const { t } = useTranslation();
+  const blockReason = getProviderConfigBlockReason(t, config);
   const details = config.healthDetails;
   return (
     <div className="rounded-md border border-border bg-background p-4">
@@ -1879,7 +1890,7 @@ function ProviderVaultCard({
             {config.isDefault ? (
               <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
                 <Star className="h-3 w-3 fill-current" />
-                Default
+                {t('secrets.createDialog.default')}
               </span>
             ) : null}
           </div>
@@ -1889,10 +1900,10 @@ function ProviderVaultCard({
             </Badge>
             {config.healthStatus ? (
               <span className="text-xs text-muted-foreground">
-                Health {config.healthStatus.replace("_", " ")} · {formatRelative(config.healthCheckedAt)}
+                {t('secrets.vaultDialog.health')} {config.healthStatus.replace("_", " ")} · {formatRelative(t, config.healthCheckedAt)}
               </span>
             ) : (
-              <span className="text-xs text-muted-foreground">Health not checked</span>
+              <span className="text-xs text-muted-foreground">{t('secrets.vaultDialog.healthNotChecked')}</span>
             )}
           </div>
         </div>
@@ -1915,7 +1926,7 @@ function ProviderVaultCard({
       <div className="mt-3 flex flex-wrap gap-2">
         <Button variant="outline" size="sm" onClick={onHealthCheck} disabled={pending}>
           {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <RefreshCw className="h-3.5 w-3.5 mr-1" />}
-          Check health
+          {t('secrets.vaultDialog.checkHealth')}
         </Button>
         <Button
           variant="outline"
@@ -1924,7 +1935,7 @@ function ProviderVaultCard({
           disabled={pending || Boolean(blockReason) || config.isDefault}
         >
           <Star className="h-3.5 w-3.5 mr-1" />
-          Make default
+          {t('secrets.vaultDialog.makeDefault')}
         </Button>
         <Button
           variant="outline"
@@ -1934,7 +1945,7 @@ function ProviderVaultCard({
           disabled={pending || config.status === "disabled"}
         >
           <Ban className="h-3.5 w-3.5 mr-1" />
-          Disable
+          {t('secrets.sheet.disable')}
         </Button>
       </div>
     </div>
@@ -1948,6 +1959,7 @@ function ProviderVaultFields({
   form: ProviderVaultForm;
   onChange: React.Dispatch<React.SetStateAction<ProviderVaultForm>>;
 }) {
+  const { t } = useTranslation();
   const setField = (key: keyof ProviderVaultForm, value: string | boolean) => {
     onChange((current) => ({ ...current, [key]: value }));
   };
@@ -1962,7 +1974,7 @@ function ProviderVaultFields({
           onChange={(event) => setField("backupReminderAcknowledged", event.target.checked)}
         />
         <span>
-          I understand backup and restore require both the database metadata and the local encrypted master key file.
+          {t('secrets.vaultDialog.backupWarning')}
         </span>
       </label>
     );
@@ -2015,12 +2027,13 @@ function TextField({
   placeholder?: string;
   required?: boolean;
 }) {
+  const { t } = useTranslation();
   const id = `provider-vault-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   return (
     <div>
       <label className="text-xs font-medium" htmlFor={id}>
         {label}
-        {required ? null : <span className="text-muted-foreground/70"> (optional)</span>}
+        {required ? null : <span className="text-muted-foreground/70"> ({t('secrets.createDialog.optional')})</span>}
       </label>
       <Input id={id} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
     </div>
@@ -2034,23 +2047,24 @@ function SecretDetailsTab({
   secret: CompanySecret;
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  const { t } = useTranslation();
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-      <DetailRow label="Description">
+      <DetailRow label={t('secrets.createDialog.description')}>
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
-      <DetailRow label="Provider">{secret.provider.replaceAll("_", " ")}</DetailRow>
-      <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>
-      <DetailRow label="Latest version">v{secret.latestVersion}</DetailRow>
-      <DetailRow label="Created">{formatRelative(secret.createdAt)}</DetailRow>
-      <DetailRow label="Updated">{formatRelative(secret.updatedAt)}</DetailRow>
-      <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
-      <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
+      <DetailRow label={t('secrets.sheet.custody')}>{modeLabel(t, secret.managedMode)}</DetailRow>
+      <DetailRow label={t('secrets.table.provider')}>{secret.provider.replaceAll("_", " ")}</DetailRow>
+      <DetailRow label={t('secrets.createDialog.providerVault')}>{providerVaultLabel(t, providerConfigs, secret.providerConfigId)}</DetailRow>
+      <DetailRow label={t('secrets.table.version')}>v{secret.latestVersion}</DetailRow>
+      <DetailRow label={t('secrets.table.created')}>{formatRelative(t, secret.createdAt)}</DetailRow>
+      <DetailRow label={t('secrets.table.updated')}>{formatRelative(t, secret.updatedAt)}</DetailRow>
+      <DetailRow label={t('secrets.table.lastRotated')}>{formatRelative(t, secret.lastRotatedAt)}</DetailRow>
+      <DetailRow label={t('secrets.table.lastResolved')}>{formatRelative(t, secret.lastResolvedAt)}</DetailRow>
       {secret.externalRef ? (
         <div className="col-span-2">
           <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-            {secret.managedMode === "external_reference" ? "Linked provider reference" : "Provider-managed path"}
+            {secret.managedMode === "external_reference" ? t('secrets.detailsTab.linkedRef') : t('secrets.detailsTab.managedPath')}
           </dt>
           <dd className="font-mono text-xs break-all flex items-center gap-1">
             <ExternalLink className="h-3 w-3" /> {secret.externalRef}
@@ -2058,7 +2072,7 @@ function SecretDetailsTab({
         </div>
       ) : null}
       <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(t, secret.managedMode)} {t('secrets.detailsTab.noRedisplay')}
       </div>
     </dl>
   );
@@ -2074,13 +2088,14 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
+  const { t } = useTranslation();
   if (loading) {
-    return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
+    return <div className="py-6 text-center text-xs text-muted-foreground">{t('secrets.usageTab.loading')}</div>;
   }
   if (bindings.length === 0) {
     return (
       <div className="py-6 text-center text-xs text-muted-foreground">
-        No active bindings. Add this secret in agent, project, environment, or plugin config to start using it.
+        {t('secrets.usageTab.noBindings')}
       </div>
     );
   }
@@ -2113,7 +2128,7 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
             {binding.targetId}
           </div>
           <div className="text-[11px] text-muted-foreground">
-            {binding.configPath} {binding.required ? "· required" : "· optional"}
+            {binding.configPath} {binding.required ? `· ${t('secrets.usageTab.required')}` : `· ${t('secrets.usageTab.optional')}`}
           </div>
         </div>
       ))}
@@ -2122,13 +2137,14 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
 }
 
 function SecretEventsTab({ loading, events }: { loading: boolean; events: SecretAccessEvent[] }) {
+  const { t } = useTranslation();
   if (loading) {
-    return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
+    return <div className="py-6 text-center text-xs text-muted-foreground">{t('secrets.eventsTab.loading')}</div>;
   }
   if (events.length === 0) {
     return (
       <div className="py-6 text-center text-xs text-muted-foreground">
-        No access events recorded yet. Each runtime resolution writes a redacted entry here.
+        {t('secrets.eventsTab.noEvents')}
       </div>
     );
   }
@@ -2140,7 +2156,7 @@ function SecretEventsTab({ loading, events }: { loading: boolean; events: Secret
             <span className="capitalize">
               {event.consumerType} · {event.outcome}
             </span>
-            <span className="text-[11px] text-muted-foreground">{formatRelative(event.createdAt)}</span>
+            <span className="text-[11px] text-muted-foreground">{formatRelative(t, event.createdAt)}</span>
           </div>
           <div className="font-mono text-[11px] text-muted-foreground break-all">
             {event.consumerId}

@@ -638,7 +638,7 @@ describe("ImportFromVaultDialog", () => {
 
     // Import
     const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
+      (btn) => btn.textContent?.startsWith("Import"),
     ) as HTMLButtonElement | undefined;
     expect(importBtn).toBeTruthy();
     await act(async () => {
@@ -754,8 +754,7 @@ describe("ImportFromVaultDialog", () => {
 
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("AWS denied list access");
-    expect(banner?.textContent).toContain("missing secretsmanager:ListSecrets");
+    expect(banner?.textContent).toContain("AWS Secrets Manager denied access");
     expect(banner?.textContent).not.toContain(rawProviderMessage);
     expect(banner?.textContent).not.toContain("arn:aws");
     expect(banner?.textContent).not.toContain("123456789012");

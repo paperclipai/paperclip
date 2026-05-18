@@ -2686,6 +2686,7 @@ describe("IssueChatThread", () => {
       authorUserId: "user-1",
       currentUserId: "user-1",
       userProfileMap,
+      t: (k: string) => k,
     })).toEqual({
       isCurrentUser: true,
       authorName: "Dotta",
@@ -2697,6 +2698,7 @@ describe("IssueChatThread", () => {
       authorUserId: "user-2",
       currentUserId: "user-1",
       userProfileMap,
+      t: (k: string) => k,
     })).toEqual({
       isCurrentUser: false,
       authorName: "Alice",

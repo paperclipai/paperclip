@@ -2,6 +2,7 @@ import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEve
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { IssueWorkMode } from "@paperclipai/shared";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
+import { useTranslation } from "react-i18next";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
@@ -139,14 +140,7 @@ function isIssueWorkMode(value: unknown): value is IssueWorkMode {
   return value === "standard" || value === "planning";
 }
 
-const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
-  value: IssueWorkMode;
-  label: string;
-  icon: typeof Hammer;
-}> = [
-  { value: "standard", label: "Standard", icon: Hammer },
-  { value: "planning", label: "Planning", icon: ClipboardList },
-];
+
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -219,36 +213,45 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses: ReadonlyArray<{ value: string; label: string; color: string; description?: string }> = [
+const getStatuses = (t: (k: string) => string): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> => [
   {
     value: "backlog",
-    label: "Backlog",
+    label: t('issues.backlog'),
     color: issueStatusText.backlog ?? issueStatusTextDefault,
-    description: "Parked — assignee will not be woken",
+    description: t('newIssue.backlogDesc'),
   },
   {
     value: "todo",
     label: "Todo",
     color: issueStatusText.todo ?? issueStatusTextDefault,
-    description: "Executable — assignee will be woken",
+    description: t('newIssue.todoDesc'),
   },
-  { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
-  { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
+  { value: "in_progress", label: t('issues.in_progress'), color: issueStatusText.in_progress ?? issueStatusTextDefault },
+  { value: "in_review", label: t('issues.in_review'), color: issueStatusText.in_review ?? issueStatusTextDefault },
+  { value: "done", label: t('issues.done'), color: issueStatusText.done ?? issueStatusTextDefault },
 ];
 
-const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+const getPriorities = (t: (k: string) => string) => [
+  { value: "critical", label: t('newIssue.critical'), icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+  { value: "high", label: t('newIssue.high'), icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+  { value: "medium", label: t('newIssue.medium'), icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+  { value: "low", label: t('newIssue.low'), icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
-const EXECUTION_WORKSPACE_MODES = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+const getExecutionWorkspaceModes = (t: (k: string) => string) => [
+  { value: "shared_workspace", label: t('newIssue.sharedWorkspace') },
+  { value: "isolated_workspace", label: t('newIssue.isolatedWorkspace') },
+  { value: "reuse_existing", label: t('newIssue.reuseExisting') },
 ] as const;
+
+const getIssueWorkModeOptions = (t: (k: string) => string): ReadonlyArray<{
+  value: IssueWorkMode;
+  label: string;
+  icon: typeof Hammer;
+}> => [
+  { value: "standard", label: t('newIssue.standard'), icon: Hammer },
+  { value: "planning", label: t('newIssue.planning'), icon: ClipboardList },
+];
 
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
   if (!project) return "";
@@ -304,6 +307,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -313,7 +317,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Issue title"
+      placeholder={t("newIssue.titlePlaceholder")}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -367,6 +371,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   imageUploadHandler: (file: File) => Promise<string>;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -381,7 +386,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
-      placeholder="Add description..."
+      placeholder={t("newIssue.descriptionPlaceholder")}
       bordered={false}
       mentions={mentions}
       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -401,6 +406,7 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 }
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -1069,8 +1075,8 @@ export function NewIssueDialog() {
   }
 
   const hasDraft = draftHasText || stagedFiles.length > 0;
-  const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
-  const currentPriority = priorities.find((p) => p.value === priority);
+  const currentStatus = getStatuses(t).find((s) => s.value === status) ?? getStatuses(t)[1]!;
+  const currentPriority = getPriorities(t).find((p) => p.value === priority);
   const currentAssignee = selectedAssigneeAgentId
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
@@ -1189,7 +1195,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = ISSUE_WORK_MODE_OPTIONS[workMode === "planning" ? 1 : 0]!;
+  const currentWorkMode = getIssueWorkModeOptions(t)[workMode === "planning" ? 1 : 0]!;
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
@@ -1289,7 +1295,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? t('newIssue.newSubIssue') : t('newIssue.newIssue')}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1331,17 +1337,17 @@ export function NewIssueDialog() {
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span className="w-6 shrink-0 text-center">For</span>
-              <InlineEntitySelector
-                ref={assigneeSelectorRef}
-                value={assigneeValue}
-                options={assigneeOptions}
-                recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
-                disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                <span className="w-6 shrink-0 text-center">{t("newIssue.for")}</span>
+                <InlineEntitySelector
+                  ref={assigneeSelectorRef}
+                  value={assigneeValue}
+                  options={assigneeOptions}
+                  recentOptionIds={recentAssigneeOptionIds}
+                  placeholder={t('newIssue.assignee')}
+                  disablePortal
+                  noneLabel={t('newIssue.notAssigned')}
+                  searchPlaceholder={t('newIssue.searchAssignees')}
+                  emptyMessage={t('newIssue.noResults')}
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1371,7 +1377,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{t("newIssue.assignee")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1387,7 +1393,7 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+                <span>{t("newIssue.in")}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
@@ -1412,7 +1418,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t("newIssue.project")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1600,7 +1606,7 @@ export function NewIssueDialog() {
                   }
                 }}
               >
-                {EXECUTION_WORKSPACE_MODES.map((option) => (
+                {getExecutionWorkspaceModes(t).map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -1844,7 +1850,7 @@ export function NewIssueDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
-              {statuses.map((s) => (
+              {getStatuses(t).map((s) => (
                 <button
                   key={s.value}
                   className={cn(
@@ -1877,13 +1883,13 @@ export function NewIssueDialog() {
                 ) : (
                   <>
                     <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
+                    {t('newIssue.priority')}
                   </>
                 )}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
-              {priorities.map((p) => (
+              {getPriorities(t).map((p) => (
                 <button
                   key={p.value}
                   className={cn(
@@ -1919,7 +1925,7 @@ export function NewIssueDialog() {
             disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            Upload
+            {t('newIssue.upload')}
           </button>
 
           {/* Work mode chip */}
@@ -1940,7 +1946,7 @@ export function NewIssueDialog() {
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
-              {ISSUE_WORK_MODE_OPTIONS.map((option) => {
+              {getIssueWorkModeOptions(t).map((option) => {
                 const Icon = option.icon;
                 return (
                   <button
@@ -1991,7 +1997,7 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">{t("newIssue.todo")}</span> or <span className="font-medium">{t("issues.statuses.in_progress")}</span>.
             </span>
           </div>
         ) : null}
@@ -2005,14 +2011,14 @@ export function NewIssueDialog() {
             onClick={discardDraft}
             disabled={createIssue.isPending || !canDiscardDraft}
           >
-            Discard Draft
+            {t("newIssue.discardDraft")}
           </Button>
           <div className="flex items-center gap-3">
             <div className="min-h-5 text-right">
               {createIssue.isPending ? (
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
+                  {t('newIssue.creatingIssue')}
                 </span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
@@ -2027,7 +2033,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                <span>{createIssue.isPending ? t('newIssue.creating') : isSubIssueMode ? t('newIssue.createSubIssue') : t('newIssue.create')}</span>
               </span>
             </Button>
           </div>
