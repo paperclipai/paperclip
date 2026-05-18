@@ -26,6 +26,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "../components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { NicheOpportunity, NicheOpportunityStatus } from "@paperclipai/shared";
 
 type StatusFilter = "unreviewed" | "all";
@@ -261,6 +262,24 @@ const TIER_COLOR: Record<string, string> = {
   B: "bg-blue-500/20 text-blue-500 border-blue-500/30",
 };
 
+const TIER_INFO: Record<string, { label: string; range: string; meaning: string }> = {
+  S: {
+    label: "High Confidence",
+    range: "80–100",
+    meaning: "Top-ranked niche — eligible for immediate analysis.",
+  },
+  A: {
+    label: "Strong Candidate",
+    range: "65–79",
+    meaning: "High-quality opportunity — prioritise when Tier S queue clears.",
+  },
+  B: {
+    label: "Viable",
+    range: "50–64",
+    meaning: "Solid niche — board review determines analysis priority.",
+  },
+};
+
 const STATUS_COLOR: Record<NicheOpportunityStatus, string> = {
   unreviewed: "bg-muted text-muted-foreground",
   approved_for_analysis: "bg-green-500/20 text-green-500",
@@ -274,6 +293,36 @@ const STATUS_LABEL: Record<NicheOpportunityStatus, string> = {
   deferred: "Deferred",
   rejected: "Rejected",
 };
+
+function TierBadge({ tier, className }: { tier: string; className?: string }) {
+  const info = TIER_INFO[tier];
+  const badge = (
+    <span
+      tabIndex={0}
+      className={cn(
+        "mt-0.5 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wider shrink-0 cursor-default",
+        TIER_COLOR[tier] ?? TIER_COLOR.B,
+        className,
+      )}
+    >
+      {tier}
+    </span>
+  );
+  if (!info) return badge;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{badge}</TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[220px] py-2 space-y-1">
+        <p className="font-semibold">Tier {tier} · {info.label}</p>
+        <p className="opacity-70">Composite score: {info.range}</p>
+        <p>{info.meaning}</p>
+        <p className="opacity-60 text-[10px] pt-0.5">
+          Scoring: Demand 30% · Competition 25% · Monetization 20% · Defensibility 15% · Risk 10%
+        </p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function MiniBar({
   score,
@@ -411,9 +460,7 @@ function NicheDetailSheet({
           <SheetHeader className="px-5 pt-5 pb-3 border-b border-border/50 space-y-1">
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-start gap-2 min-w-0">
-                <span className={cn("mt-0.5 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wider shrink-0", TIER_COLOR[opp.tier] ?? TIER_COLOR.B)}>
-                  {opp.tier}
-                </span>
+                <TierBadge tier={opp.tier} />
                 <SheetTitle className="text-base font-semibold leading-snug">{opp.headKeyword}</SheetTitle>
               </div>
               <span className={cn("mt-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0", STATUS_COLOR[opp.status])}>
@@ -550,14 +597,7 @@ function NicheCard({
       <div className="px-4 pt-4 pb-3 flex-1 space-y-3">
         {/* Title row */}
         <div className="flex items-start gap-2">
-          <span
-            className={cn(
-              "mt-0.5 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wider shrink-0",
-              TIER_COLOR[opp.tier] ?? TIER_COLOR.B,
-            )}
-          >
-            {opp.tier}
-          </span>
+          <TierBadge tier={opp.tier} />
           <span className="text-sm font-semibold leading-snug flex-1 min-w-0">
             {opp.headKeyword}
           </span>
