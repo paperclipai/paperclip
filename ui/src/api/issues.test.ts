@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
 }));
 
 vi.mock("./client", () => ({
@@ -13,7 +14,9 @@ import { issuesApi } from "./issues";
 describe("issuesApi.list", () => {
   beforeEach(() => {
     mockApi.get.mockReset();
+    mockApi.post.mockReset();
     mockApi.get.mockResolvedValue([]);
+    mockApi.post.mockResolvedValue({});
   });
 
   it("passes parentId through to the company issues endpoint", async () => {
@@ -45,6 +48,23 @@ describe("issuesApi.list", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith(
       "/companies/company-1/issues?limit=500&offset=1500",
+    );
+  });
+
+  it("posts recovery action resolution to the source issue endpoint", async () => {
+    await issuesApi.resolveRecoveryAction("issue-1", {
+      actionId: "00000000-0000-0000-0000-0000000000aa",
+      outcome: "restored",
+      sourceIssueStatus: "done",
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/recovery-actions/resolve",
+      {
+        actionId: "00000000-0000-0000-0000-0000000000aa",
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      },
     );
   });
 });

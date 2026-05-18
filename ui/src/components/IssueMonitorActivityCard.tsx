@@ -5,7 +5,7 @@ import { formatDateTime } from "@/lib/utils";
 
 function resolveScheduledMonitor(issue: Issue) {
   const nextCheckAt =
-    issue.monitorNextCheckAt?.toISOString() ??
+    issue.monitorNextCheckAt ??
     issue.executionPolicy?.monitor?.nextCheckAt ??
     issue.executionState?.monitor?.nextCheckAt ??
     null;

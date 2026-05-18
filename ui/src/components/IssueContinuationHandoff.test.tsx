@@ -38,6 +38,9 @@ function createHandoffDocument(): IssueDocument {
     createdByUserId: null,
     updatedByAgentId: "agent-1",
     updatedByUserId: null,
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
     createdAt: new Date("2026-04-19T12:00:00.000Z"),
     updatedAt: new Date("2026-04-19T12:05:00.000Z"),
   };

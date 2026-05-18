@@ -20,12 +20,14 @@ import type {
   IssueComment,
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
+  PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
@@ -44,10 +46,12 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 import {
   assertConfiguredLocalFolder,
   assertWritableConfiguredLocalFolder,
   getStoredLocalFolders,
+  deletePluginLocalFolderFile,
   inspectPluginLocalFolder,
   listPluginLocalFolderEntries,
   preparePluginLocalFolder,
@@ -509,10 +513,16 @@ export function buildHostServices(
     manifest: options.manifest,
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const managedSkills = pluginManagedSkillService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const projects = projectService(db);
+  const executionWorkspaces = executionWorkspaceService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
@@ -580,6 +590,35 @@ export function buildHostServices(
     record: T | null | undefined,
     companyId: string,
   ): record is T => Boolean(record && record.companyId === companyId);
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  const readProviderMetadata = (metadata: Record<string, unknown> | null | undefined) => {
+    if (!isRecord(metadata)) return null;
+    if (isRecord(metadata.providerMetadata)) return { ...metadata.providerMetadata };
+    const rebuild = metadata.rebuild;
+    if (!isRecord(rebuild)) return null;
+    const rebuildMetadata = rebuild.metadata;
+    if (!isRecord(rebuildMetadata) || !isRecord(rebuildMetadata.providerMetadata)) return null;
+    return { ...rebuildMetadata.providerMetadata };
+  };
+
+  const toPluginExecutionWorkspaceMetadata = (
+    workspace: NonNullable<Awaited<ReturnType<typeof executionWorkspaces.getById>>>,
+  ): PluginExecutionWorkspaceMetadata => ({
+    id: workspace.id,
+    companyId: workspace.companyId,
+    projectId: workspace.projectId,
+    projectWorkspaceId: workspace.projectWorkspaceId,
+    path: workspace.cwd ?? workspace.providerRef,
+    cwd: workspace.cwd,
+    repoUrl: workspace.repoUrl,
+    baseRef: workspace.baseRef,
+    branchName: workspace.branchName,
+    providerType: workspace.providerType,
+    providerMetadata: readProviderMetadata(workspace.metadata),
+  });
 
   const requireInCompany = <T extends { companyId: string | null | undefined }>(
     entityName: string,
@@ -882,10 +921,15 @@ export function buildHostServices(
         });
         const status = await inspectStoredLocalFolder(companyId, params.folderKey);
         assertWritableConfiguredLocalFolder(status);
-        if (status.access !== "readWrite" || !status.writable) {
-          throw new Error("Local folder is not configured for writes");
-        }
         await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
+      },
+
+      async deleteFile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await deletePluginLocalFolderFile(status.realPath!, params.relativePath, params.folderKey);
         return inspectStoredLocalFolder(companyId, params.folderKey);
       },
     },
@@ -1104,6 +1148,9 @@ export function buildHostServices(
             projectId: row.projectId,
             name,
             path,
+            repoUrl: row.repoUrl,
+            repoRef: row.repoRef,
+            defaultRef: row.defaultRef,
             isPrimary: row.isPrimary,
             createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
@@ -1123,6 +1170,9 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
@@ -1146,6 +1196,9 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
@@ -1185,6 +1238,18 @@ export function buildHostServices(
       },
     },
 
+    executionWorkspaces: {
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const workspace = await executionWorkspaces.getById(params.workspaceId);
+        if (inCompany(workspace, companyId)) {
+          return toPluginExecutionWorkspaceMetadata(workspace);
+        }
+        return null;
+      },
+    },
+
     routines: {
       async managedGet(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1221,6 +1286,24 @@ export function buildHostServices(
           assigneeAgentId: params.assigneeAgentId,
           projectId: params.projectId,
         });
+      },
+    },
+
+    skills: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.get(params.skillKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reconcile(params.skillKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reset(params.skillKey, companyId);
       },
     },
 

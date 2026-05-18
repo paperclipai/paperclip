@@ -4,5 +4,5 @@
     "outDir": "dist",
     "rootDir": ".."
   },
-  "include": ["src", "../packages/shared/src"]
+  "include": ["src", "../packages/shared/src", "../packages/plugins/create-paperclip-plugin/src"]
 }

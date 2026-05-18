@@ -57,8 +57,8 @@ import { logger } from "../middleware/logger.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
-const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
+/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
@@ -1006,7 +1006,7 @@ export function createPluginWorkerHandle(
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]> {
-    return new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
+    const rpcPromise = new Promise<HostToWorkerMethods[M][1]>((resolve, reject) => {
       if (!childProcess?.stdin?.writable) {
         reject(
           new Error(
@@ -1076,6 +1076,14 @@ export function createPluginWorkerHandle(
         );
       }
     });
+
+    // Some call sites hand these promises across async boundaries before
+    // attaching their own handlers. Mark the promise as handled here so a
+    // worker-side JSON-RPC error can fail the caller without killing the host
+    // process via an unhandled rejection.
+    void rpcPromise.catch(() => undefined);
+
+    return rpcPromise;
   }
 
   // -----------------------------------------------------------------------

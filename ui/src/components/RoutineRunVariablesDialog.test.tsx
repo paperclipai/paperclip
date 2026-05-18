@@ -224,6 +224,74 @@ describe("RoutineRunVariablesDialog", () => {
     });
   });
 
+  it("keeps the mobile dialog bounded with an internal form scroll region", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RoutineRunVariablesDialog
+            open
+            onOpenChange={() => {}}
+            companyId="company-1"
+            projects={[createProject()]}
+            agents={[createAgent()]}
+            defaultProjectId="project-1"
+            defaultAssigneeAgentId="agent-1"
+            variables={[
+              {
+                name: "notes",
+                label: "notes",
+                type: "textarea",
+                defaultValue: null,
+                required: false,
+                options: [],
+              },
+            ]}
+            isPending={false}
+            onSubmit={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+    );
+    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("overflow-hidden");
+
+    const notesInput = document.querySelector("textarea");
+    const formScrollRegion = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("overscroll-contain"),
+    );
+    expect(formScrollRegion?.className).toContain("min-h-0");
+    expect(formScrollRegion?.className).toContain("flex-1");
+    expect(formScrollRegion?.className).toContain("overflow-y-auto");
+    expect(formScrollRegion?.contains(notesInput)).toBe(true);
+
+    const footer = Array.from(document.body.querySelectorAll("div")).find((element) =>
+      typeof element.className === "string" && element.className.includes("pb-[calc(1rem+env(safe-area-inset-bottom))]"),
+    );
+    expect(footer?.className).toContain("shrink-0");
+    expect(footer?.contains(formScrollRegion ?? null)).toBe(false);
+    expect(footer?.textContent).toContain("Run routine");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders workspaceBranch as a read-only selected workspace value", async () => {
     issueWorkspaceDraft = {
       executionWorkspaceId: "workspace-1",
