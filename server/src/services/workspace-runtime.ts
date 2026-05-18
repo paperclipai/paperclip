@@ -529,6 +529,16 @@ function gitErrorIncludes(error: unknown, needle: string) {
   return message.toLowerCase().includes(needle.toLowerCase());
 }
 
+function gitErrorIndicatesExistingRef(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("already exists") ||
+    normalized.includes("existe déjà") ||
+    normalized.includes("existe deja")
+  );
+}
+
 type GitWorktreeListEntry = {
   worktree: string;
   branch: string | null;
@@ -618,6 +628,16 @@ async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
 
 async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+}
+
+async function nextAvailableSiblingPath(targetPath: string): Promise<string> {
+  for (let suffix = 2; suffix <= 100; suffix += 1) {
+    const candidate = `${targetPath}-${suffix}`;
+    if (!await directoryExists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unable to allocate a free worktree path near "${targetPath}".`);
 }
 
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
@@ -1019,7 +1039,7 @@ export async function realizeExecutionWorkspace(input: {
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
-  const worktreePath = path.join(worktreeParentDir, branchName);
+  let worktreePath = path.join(worktreeParentDir, branchName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
     : input.base.repoRef ?? null;
@@ -1085,8 +1105,34 @@ export async function realizeExecutionWorkspace(input: {
     if (validation?.valid) {
       return await reuseExistingWorktree(worktreePath);
     }
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    if (validation && !validation.valid && validation.reason.startsWith("worktree HEAD is on ")) {
+      const originalWorktreePath = worktreePath;
+      worktreePath = await nextAvailableSiblingPath(worktreePath);
+      if (input.recorder) {
+        await input.recorder.recordOperation({
+          phase: "worktree_prepare",
+          cwd: repoRoot,
+          metadata: {
+            repoRoot,
+            worktreePath,
+            originalWorktreePath,
+            branchName,
+            baseRef,
+            created: false,
+            pathCollision: true,
+            collisionReason: validation.reason,
+          },
+          run: async () => ({
+            status: "succeeded",
+            exitCode: 0,
+            system: `Selected alternate git worktree path ${worktreePath}; ${originalWorktreePath} is on another branch.\n`,
+          }),
+        });
+      }
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
+    }
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
@@ -1115,7 +1161,7 @@ export async function realizeExecutionWorkspace(input: {
       failureLabel: `git worktree add ${worktreePath}`,
     });
   } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
+    if (!gitErrorIndicatesExistingRef(error)) {
       throw error;
     }
     try {

@@ -449,7 +449,7 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
   });
 
-  it("rejects reusing a linked worktree whose branch drifted from the expected issue branch", async () => {
+  it("uses an alternate path when the expected worktree path is occupied by another branch", async () => {
     const repoRoot = await createTempRepo();
 
     const initial = await realizeExecutionWorkspace({
@@ -481,34 +481,36 @@ describe("realizeExecutionWorkspace", () => {
 
     await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
 
-    await expect(
-      realizeExecutionWorkspace({
-        base: {
-          baseCwd: repoRoot,
-          source: "project_primary",
-          projectId: "project-1",
-          workspaceId: "workspace-1",
-          repoUrl: null,
-          repoRef: "HEAD",
+    const second = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
         },
-        config: {
-          workspaceStrategy: {
-            type: "git_worktree",
-            branchTemplate: "{{issue.identifier}}-{{slug}}",
-          },
-        },
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-447",
-          title: "Add Worktree Support",
-        },
-        agent: {
-          id: "agent-1",
-          name: "Codex Coder",
-          companyId: "company-1",
-        },
-      }),
-    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(second.created).toBe(true);
+    expect(second.branchName).toBe("PAP-447-add-worktree-support");
+    expect(path.basename(second.cwd)).toBe("PAP-447-add-worktree-support-2");
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
