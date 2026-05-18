@@ -15,6 +15,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  silenceTimedOut?: boolean;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -1904,6 +1905,7 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    silenceTimeoutSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -1960,6 +1962,8 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let silenceTimedOut = false;
+        let silenceTimer: NodeJS.Timeout | null = null;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -1969,6 +1973,28 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+
+        const clearSilenceTimer = () => {
+          if (silenceTimer) {
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+          }
+        };
+
+        const armSilenceGuard = () => {
+          const silenceSec = opts.silenceTimeoutSec ?? 0;
+          if (silenceSec <= 0 || timedOut) return;
+          clearSilenceTimer();
+          silenceTimer = setTimeout(() => {
+            silenceTimer = null;
+            if (timedOut) return;
+            timedOut = true;
+            silenceTimedOut = true;
+            clearTerminalCleanupTimers();
+            if (timeout) clearTimeout(timeout);
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, silenceSec * 1000);
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2012,10 +2038,13 @@ export async function runChildProcess(
           }, graceMs);
         };
 
+        armSilenceGuard();
+
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                clearSilenceTimer();
                 clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
@@ -2030,6 +2059,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          armSilenceGuard();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2046,6 +2076,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          armSilenceGuard();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -2067,6 +2098,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearSilenceTimer();
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
@@ -2085,6 +2117,7 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          clearSilenceTimer();
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
@@ -2095,6 +2128,7 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                silenceTimedOut,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,
