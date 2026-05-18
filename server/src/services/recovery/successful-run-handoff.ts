@@ -340,6 +340,11 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasExplicitBlockerPath: boolean;
+  /** True when the issue has at least one child issue in an actively-progressing status (todo, in_progress, in_review).
+   * Indicates the run ended a delegation heartbeat — the orchestrator stays in_progress while children are in flight.
+   * "blocked" is intentionally excluded: a blocked child has no guaranteed forward-progress path and should not
+   * permanently suppress corrective wakes on the parent. */
+  hasNonTerminalChildren: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   budgetBlocked: boolean;
@@ -376,6 +381,7 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  if (input.hasNonTerminalChildren) return { kind: "skip", reason: "delegated non-terminal children own the active execution path" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
