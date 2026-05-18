@@ -1,4 +1,4 @@
-app = "paperclip-staging"
+app = "paperclip-3arywg"
 primary_region = "lax"
 [build]
   dockerfile = "Dockerfile"
