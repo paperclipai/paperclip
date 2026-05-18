@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -60,6 +61,54 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
+async function waitForHeartbeatIdle(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns);
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const activeRuns = await db
+      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+    if (activeRuns.length === 0) return;
+    const now = new Date();
+    const runIds = activeRuns.map((run) => run.id);
+    const wakeupRequestIds = activeRuns
+      .map((run) => run.wakeupRequestId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        updatedAt: now,
+        errorCode: "test_cleanup",
+        error: "Cancelled by active-run watchdog test cleanup",
+      })
+      .where(inArray(heartbeatRuns.id, runIds));
+    if (wakeupRequestIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled by active-run watchdog test cleanup",
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -78,17 +127,19 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     db = createDb(tempDb.connectionString);
   }, 30_000);
 
+  // scanSilentActiveRuns -> enqueueWakeup -> startNextQueuedRunForAgent
+  // fires `void executeRun(...)` background work that the test never awaits
+  // (heartbeat.ts ~line 7304). The old naive 2.5s poll + bare TRUNCATE
+  // raced with the in-flight executeRun's open transactions, deadlocking
+  // `TRUNCATE companies CASCADE` until the 10s hook timeout. Mirrors the
+  // working drain pattern in heartbeat-process-recovery.test.ts — cancel
+  // active runs first so executeRun observes the cancellation and exits,
+  // then poll until idle before truncating.
   afterEach(async () => {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const activeRuns = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(sql`${heartbeatRuns.status} in ('queued', 'running')`);
-      if (activeRuns.length === 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    await cancelActiveRunsForCleanup(db, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
