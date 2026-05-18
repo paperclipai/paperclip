@@ -1,5 +1,6 @@
 ---
 name: paperclip-create-agent
+required: false
 description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
