@@ -135,7 +135,14 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // Per-task worktree wins over everything else when present. Eliminates the
+  // recurring "Worker output landed in main repo CWD" incident class (cases
+  // AA-770, AA-796, AA-982, AA-1039) where Workers spawned with a project-root
+  // cwd would do their edits in the wrong directory despite their INSTRUCTIONS
+  // telling them to cd into the worktree first. Setting the cwd here gives the
+  // Worker no place to drift to — Bash, Edit, Write, and Read all resolve
+  // relative paths against the worktree from the first turn.
+  const cwd = workspaceWorktreePath || effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
