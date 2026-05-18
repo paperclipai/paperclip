@@ -28,7 +28,7 @@ Configure Modal from `Company Settings -> Environments`, not from the plugin's i
 | --- | --- | --- |
 | `appName` | yes | Modal App name. The plugin calls `modal.apps.fromName(appName, { createIfMissing: true })`, so the App is created on first acquire if it does not already exist. |
 | `image` | yes | Container image passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:20`. |
-| `tokenId` / `tokenSecret` | conditional | Modal auth tokens. Both must be provided together. Falls back to `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` env vars when omitted. Paperclip stores pasted values as company secrets. |
+| `tokenId` / `tokenSecret` | yes | Modal auth tokens. Both must be provided together. Paperclip stores pasted values as company secrets. The plugin worker runs in a child process that does not inherit host env vars, so `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` set on the Paperclip server are **not** read by the plugin — provide the tokens in this form. |
 | `environment` | no | Optional Modal environment name. Falls back to the SDK profile default. |
 | `workdir` | no | Remote working directory inside the sandbox. Defaults to `/workspace/paperclip`. |
 | `sandboxTimeoutMs` | no | Maximum sandbox lifetime in milliseconds. Must be a positive multiple of `1000` between `1000` and `86_400_000` (24 hours). Defaults to `3_600_000` (1 hour). |

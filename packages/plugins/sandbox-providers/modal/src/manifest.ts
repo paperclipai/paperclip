@@ -41,13 +41,12 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Modal token ID. Paste a token or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Falls back to MODAL_TOKEN_ID when omitted.",
+              "Modal token ID. Paste a token or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Required.",
           },
           tokenSecret: {
             type: "string",
             format: "secret-ref",
-            description:
-              "Modal token secret paired with tokenId. Falls back to MODAL_TOKEN_SECRET when omitted.",
+            description: "Modal token secret paired with tokenId. Required.",
           },
           environment: {
             type: "string",

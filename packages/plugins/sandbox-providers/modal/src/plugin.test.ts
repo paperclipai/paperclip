@@ -109,6 +109,12 @@ const baseConfig = {
   reuseLease: false,
 };
 
+const baseConfigWithTokens = {
+  ...baseConfig,
+  tokenId: "config-id",
+  tokenSecret: "config-secret",
+};
+
 beforeEach(() => {
   mockAppFromName.mockReset();
   mockImageFromRegistry.mockReset();
@@ -133,15 +139,14 @@ describe("Modal sandbox provider plugin", () => {
     expect(plugin.definition.onEnvironmentResumeLease).toBeTypeOf("function");
   });
 
-  it("normalizes config and accepts host MODAL_TOKEN_* fallback", async () => {
-    process.env.MODAL_TOKEN_ID = "host-id";
-    process.env.MODAL_TOKEN_SECRET = "host-secret";
-
+  it("normalizes config when both tokens are provided", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "modal",
       config: {
         appName: "  app-1  ",
         image: " node:20 ",
+        tokenId: " token-id ",
+        tokenSecret: " token-secret ",
         environment: " main ",
         workdir: " /srv/work ",
         sandboxTimeoutMs: "1800000",
@@ -158,8 +163,8 @@ describe("Modal sandbox provider plugin", () => {
       normalizedConfig: {
         appName: "app-1",
         image: "node:20",
-        tokenId: null,
-        tokenSecret: null,
+        tokenId: "token-id",
+        tokenSecret: "token-secret",
         environment: "main",
         workdir: "/srv/work",
         sandboxTimeoutMs: 1_800_000,
@@ -169,6 +174,21 @@ describe("Modal sandbox provider plugin", () => {
         cidrAllowlist: ["10.0.0.0/8"],
         reuseLease: true,
       },
+    });
+  });
+
+  it("ignores host MODAL_TOKEN_* env vars (plugin worker does not inherit them)", async () => {
+    process.env.MODAL_TOKEN_ID = "host-id";
+    process.env.MODAL_TOKEN_SECRET = "host-secret";
+
+    const result = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "modal",
+      config: { ...baseConfig },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errors: ["Modal sandbox environments require tokenId and tokenSecret."],
     });
   });
 
@@ -201,16 +221,14 @@ describe("Modal sandbox provider plugin", () => {
     });
   });
 
-  it("requires both tokens via config or env", async () => {
+  it("requires both tokens in config", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
       driverKey: "modal",
       config: { ...baseConfig },
     });
     expect(result).toEqual({
       ok: false,
-      errors: [
-        "Modal sandbox environments require tokenId and tokenSecret (config or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET).",
-      ],
+      errors: ["Modal sandbox environments require tokenId and tokenSecret."],
     });
   });
 

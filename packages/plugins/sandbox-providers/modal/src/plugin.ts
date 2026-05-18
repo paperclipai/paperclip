@@ -91,13 +91,15 @@ function isMultipleOf1000(value: number): boolean {
 }
 
 function resolveAuth(config: ModalDriverConfig): { tokenId: string; tokenSecret: string } | null {
-  const tokenId = config.tokenId ?? process.env.MODAL_TOKEN_ID?.trim() ?? "";
-  const tokenSecret = config.tokenSecret ?? process.env.MODAL_TOKEN_SECRET?.trim() ?? "";
+  // The plugin worker runs in a child process that does not inherit host env
+  // vars (see PluginWorkerManager.spawnProcess), so MODAL_TOKEN_ID /
+  // MODAL_TOKEN_SECRET cannot be read here. Credentials must come from the
+  // environment config, which Paperclip stores as company secrets.
+  const tokenId = config.tokenId ?? "";
+  const tokenSecret = config.tokenSecret ?? "";
   if (!tokenId && !tokenSecret) return null;
   if (!tokenId || !tokenSecret) {
-    throw new Error(
-      "Modal sandbox environments require both tokenId and tokenSecret to be configured (either via config or MODAL_TOKEN_ID / MODAL_TOKEN_SECRET).",
-    );
+    throw new Error("Modal sandbox environments require both tokenId and tokenSecret to be configured.");
   }
   return { tokenId, tokenSecret };
 }
@@ -367,19 +369,12 @@ const plugin = definePlugin({
     if (config.blockNetwork && config.cidrAllowlist && config.cidrAllowlist.length > 0) {
       errors.push("cidrAllowlist cannot be combined with blockNetwork.");
     }
-    const hasConfigTokens = Boolean(config.tokenId) || Boolean(config.tokenSecret);
-    const hasBothConfigTokens = Boolean(config.tokenId) && Boolean(config.tokenSecret);
-    if (hasConfigTokens && !hasBothConfigTokens) {
+    const hasTokenId = Boolean(config.tokenId);
+    const hasTokenSecret = Boolean(config.tokenSecret);
+    if (hasTokenId !== hasTokenSecret) {
       errors.push("tokenId and tokenSecret must both be provided when either is set.");
-    }
-    if (!hasConfigTokens) {
-      const envTokenId = process.env.MODAL_TOKEN_ID?.trim() ?? "";
-      const envTokenSecret = process.env.MODAL_TOKEN_SECRET?.trim() ?? "";
-      if (!envTokenId || !envTokenSecret) {
-        errors.push(
-          "Modal sandbox environments require tokenId and tokenSecret (config or MODAL_TOKEN_ID/MODAL_TOKEN_SECRET).",
-        );
-      }
+    } else if (!hasTokenId) {
+      errors.push("Modal sandbox environments require tokenId and tokenSecret.");
     }
 
     if (errors.length > 0) {
