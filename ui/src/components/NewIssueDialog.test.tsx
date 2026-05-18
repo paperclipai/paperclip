@@ -340,7 +340,7 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
+    expect(container.textContent).toContain("New Issue");
     expect(container.textContent).toContain("Create Issue");
     expect(container.textContent).not.toContain("Sub-issue of");
 
@@ -495,7 +495,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
+    expect(container.textContent).toContain("New Issue");
     expect(container.textContent).not.toContain("New sub-issue");
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Reusing PAP-100");
@@ -543,7 +543,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
-    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add a description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
@@ -600,7 +600,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
-    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add a description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
 
@@ -717,7 +717,7 @@ describe("NewIssueDialog", () => {
     expect(dialogContent?.className).toContain("overflow-hidden");
 
     const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
-    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
+    const descriptionInput = container.querySelector('textarea[aria-label="Add a description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
     );

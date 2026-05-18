@@ -138,7 +138,8 @@ export interface AvailablePluginExample {
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  isLocalPath: boolean;
+  tag: "example" | "recommended";
 }
 
 export interface PluginLocalFolderProblem {

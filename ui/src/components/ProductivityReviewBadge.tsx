@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Eye } from "lucide-react";
 import type { IssueProductivityReview } from "@paperclipai/shared";
 import { Link } from "../lib/router";
@@ -35,10 +36,11 @@ export function ProductivityReviewBadge({
   className?: string;
   hideLabel?: boolean;
 }) {
+  const { t } = useTranslation();
   const label = productivityReviewTriggerLabel(review.trigger);
   const reviewIdentifier = review.reviewIdentifier ?? review.reviewIssueId.slice(0, 8);
   const reviewPath = createIssueDetailPath(review.reviewIdentifier ?? review.reviewIssueId);
-  const statusLabel = REVIEW_STATUS_LABELS[review.status] ?? review.status.replace(/_/g, " ");
+  const statusLabel = t(`issue.status.${review.status}`, REVIEW_STATUS_LABELS[review.status] ?? review.status.replace(/_/g, " "));
 
   return (
     <Tooltip>

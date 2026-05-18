@@ -1,3 +1,4 @@
+import { i18n } from "../i18n";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -597,21 +598,21 @@ function runDurationLabel(run: {
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText ? `${i18n.t("run.workedFor")} ${durationText}` : i18n.t("run.finishedWork");
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText ? `${i18n.t("run.failedAfter")} ${durationText}` : i18n.t("run.runFailed");
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText ? `${i18n.t("run.timedOutAfter")} ${durationText}` : i18n.t("run.runTimedOut");
     case "cancelled":
       if (stopReason === "paused") {
-        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+        return durationText ? `${i18n.t("run.pausedByBoardAfter")} ${durationText}` : i18n.t("run.pausedByBoard");
       }
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText ? `${i18n.t("run.cancelledAfter")} ${durationText}` : i18n.t("run.runCancelled");
     case "queued":
-      return "Queued";
+      return i18n.t("run.queued");
     case "running":
-      return "Working...";
+      return i18n.t("run.working");
     default:
       return formatStatusLabel(run.status);
   }
@@ -848,7 +849,7 @@ function createLiveRunMessage(args: {
       ? "Queued..."
       : parts.length > 0
         ? ""
-        : "Working...";
+        : i18n.t("run.working");
 
   const content = parts;
 

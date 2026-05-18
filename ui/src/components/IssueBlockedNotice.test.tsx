@@ -165,6 +165,6 @@ describe("IssueBlockedNotice", () => {
     );
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
-    expect(indicator?.textContent).toContain("Recovery needed");
+    expect(indicator?.textContent).toContain("RECOVERY NEEDED");
   });
 });

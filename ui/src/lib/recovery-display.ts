@@ -1,3 +1,4 @@
+import { i18n } from "../i18n";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { Eye, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 
@@ -12,29 +13,29 @@ export type ActiveRecoveryDisplayState = Exclude<RecoveryDisplayState, "resolved
 
 export const RECOVERY_CHIP_DEFAULT_TONE: Record<
   ActiveRecoveryDisplayState,
-  { className: string; icon: typeof TriangleAlert; label: string }
+  { className: string; icon: typeof TriangleAlert; labelKey: string }
 > = {
   needed: {
     className:
       "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
     icon: TriangleAlert,
-    label: "Recovery needed",
+    labelKey: "recovery.tone.RECOVERY NEEDED",
   },
   in_progress: {
     className:
       "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300",
     icon: RefreshCw,
-    label: "Recovery in progress",
+    labelKey: "recovery.tone.RECOVERY IN PROGRESS",
   },
   observe_only: {
     className: "border-border bg-muted text-muted-foreground",
     icon: Eye,
-    label: "Observing active run",
+    labelKey: "recovery.tone.OBSERVING ACTIVE RUN",
   },
   escalated: {
     className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
     icon: OctagonAlert,
-    label: "Recovery escalated",
+    labelKey: "recovery.tone.RECOVERY ESCALATED",
   },
 };
 
