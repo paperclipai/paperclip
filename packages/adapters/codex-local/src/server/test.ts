@@ -24,7 +24,7 @@ import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import { buildApiKeyAuthContents, prepareManagedCodexHome } from "./codex-home.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -140,7 +140,7 @@ async function prepareCodexHelloProbe(input: {
       env: {
         ...input.env,
         CODEX_HOME: probeHome,
-        _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+        _PAPERCLIP_CODEX_AUTH_JSON: buildApiKeyAuthContents(input.probeApiKey),
       },
       cleanup,
     };
@@ -202,6 +202,12 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  if (configuredCodexHome) {
+    env.CODEX_HOME = configuredCodexHome;
+  } else if (!targetIsRemote) {
+    env.CODEX_HOME = await prepareManagedCodexHome({ ...process.env, ...env }, async () => {}, ctx.companyId);
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
@@ -248,7 +254,9 @@ export async function testEnvironment(
         code: "codex_native_auth_present",
         level: "info",
         message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+        detail: codexAuth.email
+          ? `Logged in as ${codexAuth.email}.`
+          : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
       });
     } else {
       checks.push({
