@@ -58,6 +58,8 @@ The agent request is built as:
 
 Set `includePaperclipPayload=false` when the target gateway uses strict validation and rejects unknown top-level fields. In that mode, the adapter still includes the structured wake/context information in the rendered message, but omits the extra top-level `paperclip` object.
 
+In the Paperclip agent configuration UI, enable **Omit Paperclip payload** to write this setting for a gateway agent.
+
 ## Timeouts
 
 - `timeoutSec` controls adapter-level request budget
