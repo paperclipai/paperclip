@@ -943,10 +943,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
+    // Retry with a fresh session on unknown-session / invalid-previous_message_id errors.
+    // The exit-code check is intentionally omitted: when context compaction passes an ID
+    // that doesn't start with "msg_", the Claude CLI exits with code 0 (it successfully
+    // reported the 400 response) but is_error:true appears in the parsed stream.
+    // Gating on exitCode != 0 caused all such runs to stall instead of falling back.
     if (
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
       isClaudeUnknownSessionError(initial.parsed)
     ) {
