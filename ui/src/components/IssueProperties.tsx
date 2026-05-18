@@ -475,6 +475,13 @@ export function IssueProperties({
     enabled: !!companyId && parentOpen,
   });
 
+  const { data: currentParentIssue } = useQuery({
+    queryKey: queryKeys.issues.detail(issue.parentId!),
+    queryFn: () => issuesApi.get(issue.parentId!),
+    enabled: !!issue.parentId,
+    staleTime: 30_000,
+  });
+
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
     onSuccess: async (created) => {
@@ -1590,10 +1597,6 @@ export function IssueProperties({
     }
     return descendants;
   }, [parentPickerIssues, issue.id]);
-  const currentParentIssue = useMemo(() => {
-    if (!issue.parentId) return null;
-    return parentPickerIssues?.find((candidate) => candidate.id === issue.parentId) ?? null;
-  }, [parentPickerIssues, issue.parentId]);
   const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
   const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
