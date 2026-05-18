@@ -1,8 +1,7 @@
-// BEY-1737: Self-Wake-Filter und Heartbeat-Mute-Window im Heartbeat-Service.
+// BEY-1737: Self-Wake-Filter im Heartbeat-Service.
 // Verifiziert, dass enqueueWakeup einen Wake skippt, sobald die ausloesende
-// Comment-Author-Agent-Id mit der Empfaenger-Agent-Id uebereinstimmt, und dass
-// nach diesem Skip waehrend 5 Minuten kein weiterer Comment-getriebener Wake
-// fuer denselben Agent durchgeht.
+// Comment-Author-Agent-Id mit der Empfaenger-Agent-Id uebereinstimmt.
+// User-Kommentare gehen ungehindert durch (kein Mute-Window).
 
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -123,7 +122,7 @@ describe("heartbeat self-wake filter", () => {
     expect(skipped[0]?.reason).toBe("self_comment_wake_skipped");
   });
 
-  it("blockiert weitere Comment-Wakes innerhalb des 5-Min-Mute-Windows", async () => {
+  it("laesst User-Comments direkt nach einem Self-Skip durch (kein Mute-Window)", async () => {
     const { companyId, agentId, issueId } = await seedAgentAndIssue();
     const heartbeat = heartbeatService(db);
 
@@ -133,7 +132,7 @@ describe("heartbeat self-wake filter", () => {
         companyId,
         issueId,
         authorAgentId: agentId,
-        body: "Self-comment, oeffnet Mute-Window",
+        body: "Self-comment, soll Wake skippen",
       })
       .returning()
       .then((rows) => rows[0]);
@@ -154,14 +153,14 @@ describe("heartbeat self-wake filter", () => {
     });
     expect(firstRun).toBeNull();
 
-    // Innerhalb des Mute-Windows: Comment von einem Nutzer darf nicht aufwecken.
+    // Direkt nach Self-Skip: User-Comment muss aufwecken (kein Mute-Window).
     const userComment = await db
       .insert(issueComments)
       .values({
         companyId,
         issueId,
-        authorUserId: "user-during-mute",
-        body: "Nutzer-Comment waehrend Mute-Window",
+        authorUserId: "user-after-self-skip",
+        body: "Nutzer-Comment direkt nach Self-Skip",
       })
       .returning()
       .then((rows) => rows[0]);
@@ -178,10 +177,11 @@ describe("heartbeat self-wake filter", () => {
         wakeReason: "issue_commented",
       },
       requestedByActorType: "user",
-      requestedByActorId: "user-during-mute",
+      requestedByActorId: "user-after-self-skip",
     });
 
-    expect(secondRun).toBeNull();
+    // Wake darf NICHT geskippt werden, also liefert wakeup einen Run zurueck.
+    expect(secondRun).not.toBeNull();
 
     const skipped = await db
       .select()
@@ -190,11 +190,11 @@ describe("heartbeat self-wake filter", () => {
         and(
           eq(agentWakeupRequests.companyId, companyId),
           eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "skipped"),
         ),
       );
 
-    expect(skipped).toHaveLength(2);
-    const reasons = skipped.map((r) => r.reason).sort();
-    expect(reasons).toEqual(["self_comment_mute_window_active", "self_comment_wake_skipped"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.reason).toBe("self_comment_wake_skipped");
   });
 });
