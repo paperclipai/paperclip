@@ -166,7 +166,29 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     runningProcesses.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    // The stale-queue tests need the dispatcher (verify queued → succeeded
+    // transitions), so we can't use skipQueuedRunDispatch. Terminate any
+    // backends in 'idle in transaction' before TRUNCATE — these are the
+    // fire-and-forget postRun lifecycle hook connections the row-status
+    // idle poll is blind to. Embedded postgres is per-suite, contained.
+    // Retry on 40P01 (deadlock) as defense-in-depth.
+    await db.execute(sql.raw(`
+      SELECT pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND state = 'idle in transaction'
+        AND pid <> pg_backend_pid()
+    `)).catch(() => undefined);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+        break;
+      } catch (err) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== "40P01" || attempt === 2) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
   }, 30_000);
 
   afterAll(async () => {
