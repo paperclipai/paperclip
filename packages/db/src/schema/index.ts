@@ -66,6 +66,7 @@ export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export { companySkills } from "./company_skills.js";
+export { companyTools, agentToolGrants } from "./company_tools.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
