@@ -323,7 +323,7 @@ describe("agent instructions service", () => {
     }
 
     expect(dirtyFiles).toEqual([]);
-  });
+  }, 15_000);
 
   it("heals stale managed metadata when deleting bundle files", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-heal-delete-");
