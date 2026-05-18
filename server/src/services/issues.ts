@@ -3385,8 +3385,58 @@ export function issueService(db: Db) {
     });
   }
 
+  // Symmetric to clearExecutionRunIfTerminal. Clears checkoutRunId (and the
+  // bundled execution lock cols) when the row's checkoutRunId points at a
+  // heartbeat run that is terminal or no longer exists. No assignee/status
+  // precondition: a terminal run holds no real claim regardless of who is
+  // assigned or what status the issue is currently in.
+  async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({ checkoutRunId: issues.checkoutRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue?.checkoutRunId) return false;
+
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
+      );
+      const run = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+      const updated = await tx
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.checkoutRunId, issue.checkoutRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(updated);
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
+    clearCheckoutRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
@@ -4632,6 +4682,7 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -4761,6 +4812,7 @@ export function issueService(db: Db) {
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
       await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
       const current = await db
         .select({
           id: issues.id,
@@ -4839,6 +4891,7 @@ export function issueService(db: Db) {
 
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
       await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
       const existing = await db
         .select()
         .from(issues)

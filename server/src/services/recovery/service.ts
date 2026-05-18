@@ -3443,6 +3443,112 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
+  // or executionRunId points at a heartbeat_runs row that is either missing or
+  // in a terminal status. Provides self-heal for stale locks that fell outside
+  // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
+  // Idempotent and safe: clears at most one row's worth of lock columns per
+  // candidate, and only when the referenced run row is unambiguously terminal.
+  async function sweepStaleIssueLocks() {
+    const TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+    const result = {
+      cleared: 0,
+      issueIds: [] as string[],
+    };
+
+    const candidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
+      );
+
+    for (const issue of candidates) {
+      const referencedRunIds = [issue.checkoutRunId, issue.executionRunId].filter(
+        (id): id is string => !!id,
+      );
+      if (referencedRunIds.length === 0) continue;
+
+      const runRows = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, referencedRunIds));
+
+      const runStatusById = new Map<string, string>();
+      for (const row of runRows) runStatusById.set(row.id, row.status);
+
+      const isCleanable = (runId: string | null) => {
+        if (!runId) return true;
+        const status = runStatusById.get(runId);
+        if (!status) return true; // missing run row → no real claim
+        return (TERMINAL_STATUSES as readonly string[]).includes(status);
+      };
+
+      if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
+        continue;
+      }
+
+      const updated = await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            issue.checkoutRunId
+              ? eq(issues.checkoutRunId, issue.checkoutRunId)
+              : isNull(issues.checkoutRunId),
+            issue.executionRunId
+              ? eq(issues.executionRunId, issue.executionRunId)
+              : isNull(issues.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) continue;
+
+      result.cleared += 1;
+      result.issueIds.push(updated.id);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.stale_lock_cleared",
+        entityType: "issue",
+        entityId: updated.id,
+        details: {
+          source: "recovery.sweep_stale_issue_locks",
+          clearedCheckoutRunId: issue.checkoutRunId,
+          clearedExecutionRunId: issue.executionRunId,
+          referencedRunStatuses: Object.fromEntries(runStatusById),
+        },
+      });
+    }
+
+    if (result.cleared > 0) {
+      logger.warn(
+        { cleared: result.cleared, issueIds: result.issueIds },
+        "swept stale issue lock columns",
+      );
+    }
+
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3450,6 +3556,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,

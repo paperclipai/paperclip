@@ -283,4 +283,65 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       },
     });
   });
+
+  it("self-heals a stale checkoutRunId via clearCheckoutRunIfTerminal on checkout (Fix B path)", async () => {
+    // Reproduces the recurrence pattern: prior owning run died, executionRunId
+    // was cleared by releaseIssueExecutionAndPromote, but checkoutRunId stayed
+    // pinned to the dead run. The new agent's POST /checkout would 409 forever
+    // without the clearCheckoutRunIfTerminal helper in svc.checkout.
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock after reassignment",
+      // Status off in_progress + checkoutRunId still set — adoptStaleCheckoutRun
+      // cannot recover from this; only clearCheckoutRunIfTerminal can.
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: otherAgentId,
+      checkoutRunId: failedRunId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const res = await request(createApp(agentActor(companyId, otherAgentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId: otherAgentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: otherAgentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
 });
