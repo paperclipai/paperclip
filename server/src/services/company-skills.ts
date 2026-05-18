@@ -151,6 +151,50 @@ type RuntimeSkillEntryOptions = {
 
 const skillInventoryRefreshPromises = new Map<string, Promise<void>>();
 
+export function truncateSkillDescription(content: string): string {
+  if (!content.startsWith("---\n")) return content;
+  const frontmatterEnd = content.indexOf("\n---", 4);
+  if (frontmatterEnd === -1) return content;
+
+  const frontmatter = content.slice(4, frontmatterEnd);
+  const rest = content.slice(frontmatterEnd);
+
+  const newFrontmatter = frontmatter.replace(
+    /^(description:[ \t]*)(.*)$/m,
+    (_match, prefix, rawValue) => {
+      const stripped = rawValue.trim();
+      let value: string;
+      if (stripped.startsWith('"') && stripped.endsWith('"')) {
+        value = stripped.slice(1, -1);
+      } else if (stripped.startsWith("'") && stripped.endsWith("'")) {
+        value = stripped.slice(1, -1).replace(/''/g, "'");
+      } else if (stripped.startsWith(">") || stripped.startsWith("|")) {
+        return `${prefix}${rawValue}`;
+      } else {
+        value = stripped;
+      }
+
+      const firstNewline = value.indexOf("\\n");
+      const oneLine = firstNewline >= 0 ? value.slice(0, firstNewline) : value;
+      const sentenceEnd = oneLine.search(/\.\s/);
+      const firstSentence = sentenceEnd >= 0 ? oneLine.slice(0, sentenceEnd + 1) : oneLine;
+      const truncated =
+        firstSentence.length > 120
+          ? (() => {
+              const boundary = firstSentence.lastIndexOf(" ", 120);
+              return (boundary > 0 ? firstSentence.slice(0, boundary) : firstSentence.slice(0, 120)).trimEnd();
+            })()
+          : firstSentence;
+
+      const needsQuotes =
+        /[:"'{}[\],|>&*!%@`]/.test(truncated) || /^\s|\s$/.test(truncated);
+      return `${prefix}${needsQuotes ? `"${truncated.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : truncated}`;
+    },
+  );
+
+  return `---\n${newFrontmatter}${rest}`;
+}
+
 function selectCompanySkillColumns() {
   return {
     id: companySkills.id,
@@ -1676,6 +1720,19 @@ export function companySkillService(db: Db) {
     return rows.map((row) => toCompanySkill(row));
   }
 
+  async function searchSkills(companyId: string, query: string): Promise<CompanySkillListItem[]> {
+    const all = await list(companyId);
+    if (!query.trim()) return all;
+    const q = query.toLowerCase();
+    return all.filter((skill) => {
+      return (
+        skill.key.toLowerCase().includes(q) ||
+        (skill.name ?? "").toLowerCase().includes(q) ||
+        (skill.description ?? "").toLowerCase().includes(q)
+      );
+    });
+  }
+
   async function listReferenceTargets(companyId: string): Promise<SkillReferenceTarget[]> {
     const rows = await db
       .select({
@@ -2115,6 +2172,65 @@ export function companySkillService(db: Db) {
     };
   }
 
+  function resolveLazyRuntimeSkillPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
+    const lazyRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime-lazy__");
+    return path.resolve(lazyRoot, buildSkillRuntimeName(skill.key, skill.slug));
+  }
+
+  async function materializeLazyRuntimeSkillFiles(companyId: string, skill: CompanySkill): Promise<string> {
+    const lazyRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime-lazy__");
+    const lazyDir = path.resolve(lazyRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    await fs.rm(lazyDir, { recursive: true, force: true });
+    await fs.mkdir(lazyDir, { recursive: true });
+
+    for (const entry of skill.fileInventory) {
+      const detail = await readFile(companyId, skill.id, entry.path).catch(() => null);
+      if (!detail) continue;
+      const targetPath = path.resolve(lazyDir, entry.path);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      const outputContent =
+        entry.path === "SKILL.md" ? truncateSkillDescription(detail.content) : detail.content;
+      await fs.writeFile(targetPath, outputContent, "utf8");
+    }
+
+    return lazyDir;
+  }
+
+  async function materializeLazyLocalSkillFiles(companyId: string, skill: CompanySkill, sourceDir: string): Promise<string> {
+    const lazyRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime-lazy__");
+    const lazyDir = path.resolve(lazyRoot, buildSkillRuntimeName(skill.key, skill.slug));
+
+    const skillMdPath = path.join(sourceDir, "SKILL.md");
+    const skillMdStat = await fs.stat(skillMdPath).catch(() => null);
+    const sourceMtime = skillMdStat?.mtimeMs ?? 0;
+
+    const lazySkillMdPath = path.join(lazyDir, "SKILL.md");
+    const lazyStat = await fs.stat(lazySkillMdPath).catch(() => null);
+
+    if (lazyStat && lazyStat.mtimeMs >= sourceMtime) {
+      return lazyDir;
+    }
+
+    await fs.rm(lazyDir, { recursive: true, force: true });
+    await fs.mkdir(lazyDir, { recursive: true });
+
+    const sourceEntries = await fs.readdir(sourceDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of sourceEntries) {
+      const src = path.join(sourceDir, entry.name);
+      const target = path.join(lazyDir, entry.name);
+      if (entry.name === "SKILL.md") {
+        const raw = await fs.readFile(src, "utf8").catch(() => null);
+        if (raw !== null) {
+          await fs.writeFile(target, truncateSkillDescription(raw), "utf8");
+        }
+      } else {
+        await fs.symlink(src, target);
+      }
+    }
+
+    return lazyDir;
+  }
+
   async function materializeCatalogSkillFiles(
     companyId: string,
     skill: ImportedSkill,
@@ -2163,6 +2279,10 @@ export function companySkillService(db: Db) {
     return path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
   }
 
+  function resolveLazySkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
+    return resolveLazyRuntimeSkillPath(companyId, skill);
+  }
+
   async function listRuntimeSkillEntries(
     companyId: string,
     options: RuntimeSkillEntryOptions = {},
@@ -2172,11 +2292,17 @@ export function companySkillService(db: Db) {
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
       const sourceKind = asString(getSkillMeta(skill).sourceKind);
-      let source = normalizeSkillDirectory(skill);
-      if (!source) {
+      const localSourceDir = normalizeSkillDirectory(skill);
+
+      let source: string | null;
+      if (localSourceDir) {
         source = options.materializeMissing === false
-          ? resolveRuntimeSkillMaterializedPath(companyId, skill)
-          : await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
+          ? resolveLazySkillMaterializedPath(companyId, skill)
+          : await materializeLazyLocalSkillFiles(companyId, skill, localSourceDir).catch(() => localSourceDir);
+      } else {
+        source = options.materializeMissing === false
+          ? resolveLazySkillMaterializedPath(companyId, skill)
+          : await materializeLazyRuntimeSkillFiles(companyId, skill).catch(() => null);
       }
       if (!source) continue;
 
@@ -2474,5 +2600,6 @@ export function companySkillService(db: Db) {
     importPackageFiles,
     installUpdate,
     listRuntimeSkillEntries,
+    searchSkills,
   };
 }

@@ -8,6 +8,7 @@ import {
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  truncateSkillDescription,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -225,5 +226,92 @@ describe("missing local skill reconciliation", () => {
     ]);
 
     expect(missingIds).toEqual(["skill-1"]);
+  });
+});
+
+describe("truncateSkillDescription", () => {
+  it("returns content unchanged when no YAML frontmatter", () => {
+    const content = "# My Skill\n\nSome body.";
+    expect(truncateSkillDescription(content)).toBe(content);
+  });
+
+  it("returns content unchanged when frontmatter has no closing ---", () => {
+    const content = "---\nname: my-skill\ndescription: A skill.";
+    expect(truncateSkillDescription(content)).toBe(content);
+  });
+
+  it("returns content unchanged when description field is absent", () => {
+    const content = "---\nname: my-skill\n---\n\n# Body";
+    expect(truncateSkillDescription(content)).toBe(content);
+  });
+
+  it("keeps a short single-sentence description unchanged", () => {
+    const input = "---\nname: my-skill\ndescription: Does one thing well.\n---\n\n# Body";
+    const output = truncateSkillDescription(input);
+    expect(output).toContain("description: Does one thing well.");
+  });
+
+  it("truncates to the first sentence when there are multiple sentences", () => {
+    const input = "---\nname: my-skill\ndescription: Does one thing well. Then it does another. And more.\n---\n\n# Body";
+    const output = truncateSkillDescription(input);
+    expect(output).toContain("description: Does one thing well.");
+    expect(output).not.toContain("Then it does another");
+  });
+
+  it("truncates descriptions longer than 120 chars at a word boundary", () => {
+    const longWord = "word ".repeat(30); // 150 chars
+    const input = `---\nname: my-skill\ndescription: ${longWord.trim()}\n---\n\n# Body`;
+    const output = truncateSkillDescription(input);
+    const match = output.match(/^description:\s*(.+)$/m);
+    expect(match).not.toBeNull();
+    const descValue = match![1].trim();
+    expect(descValue.length).toBeLessThanOrEqual(120);
+  });
+
+  it("hard-slices at 120 chars when the first sentence has no word boundary within 120 chars", () => {
+    const longToken = "a".repeat(150);
+    const input = `---\nname: my-skill\ndescription: ${longToken}\n---\n\n# Body`;
+    const output = truncateSkillDescription(input);
+    const match = output.match(/^description:\s*(.+)$/m);
+    expect(match).not.toBeNull();
+    const descValue = match![1].replace(/^"(.*)"$/, "$1").trim();
+    expect(descValue).not.toBe("");
+    expect(descValue).toBe(longToken.slice(0, 120));
+  });
+
+  it("unwraps quoted description values before truncating", () => {
+    const input = `---\nname: my-skill\ndescription: "Does one thing. Then another."\n---\n# Body`;
+    const output = truncateSkillDescription(input);
+    expect(output).toContain("Does one thing.");
+    expect(output).not.toContain("Then another");
+  });
+
+  it("quotes the truncated value when it contains YAML-special characters", () => {
+    const input = `---\nname: my-skill\ndescription: "Calls the API: does stuff. Then more."\n---\n# Body`;
+    const output = truncateSkillDescription(input);
+    const match = output.match(/^description:\s*(.+)$/m);
+    expect(match).not.toBeNull();
+    const descValue = match![1].trim();
+    expect(descValue.startsWith('"') && descValue.endsWith('"')).toBe(true);
+  });
+
+  it("unescapes YAML single-quoted apostrophes ('' -> ') before re-quoting", () => {
+    const input = `---\nname: my-skill\ndescription: 'It''s a skill that does things.'\n---\n# Body`;
+    const output = truncateSkillDescription(input);
+    expect(output).toContain("It's a skill");
+    expect(output).not.toContain("It''s");
+  });
+
+  it("passes block scalar descriptions (> |) through unchanged", () => {
+    const input = `---\nname: my-skill\ndescription: >\n  Long description here.\n  Spans multiple lines.\n---\n# Body`;
+    const output = truncateSkillDescription(input);
+    expect(output).toBe(input);
+  });
+
+  it("preserves all content after the closing --- delimiter", () => {
+    const body = "\n\n# My Skill\n\nSome body text.\n";
+    const input = `---\nname: my-skill\ndescription: First sentence. Second sentence.\n---${body}`;
+    const output = truncateSkillDescription(input);
+    expect(output.endsWith(body)).toBe(true);
   });
 });
