@@ -588,6 +588,49 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
+    const title = "验证中文任务";
+    const description = [
+      "请用中文回复。",
+      "日本語: 次の手順を書いてください。",
+      "हिन्दी: कृपया स्थिति बताएं।",
+    ].join("\n");
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, title);
+    await typeTextareaValue(descriptionInput!, description);
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title,
+        description,
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("submits planning work mode when planning is selected", async () => {
     const { root } = renderDialog(container);
     await flush();

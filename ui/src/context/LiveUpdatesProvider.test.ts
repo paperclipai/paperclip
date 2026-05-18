@@ -100,6 +100,94 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     });
   });
 
+  it("refreshes issue document caches when a document activity event arrives", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.document_updated",
+        actorType: "agent",
+        actorId: "agent-1",
+        details: {
+          identifier: "PAP-9403",
+          key: "plan",
+        },
+      },
+      { userId: "user-1", agentId: null },
+      { pathname: "/PAP/issues/PAP-9403", isForegrounded: true },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.detail("issue-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.documents("issue-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.document("issue-1", "plan"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.documentRevisions("issue-1", "plan"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.documents("PAP-9403"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.document("PAP-9403", "plan"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.documentRevisions("PAP-9403", "plan"),
+    });
+    expect(invalidations).not.toContainEqual({
+      queryKey: queryKeys.issues.documents("issue-1"),
+      refetchType: "inactive",
+    });
+  });
+
+  it("refreshes all issue document caches when document activity omits a document key", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "issue",
+        entityId: "issue-1",
+        action: "issue.document_deleted",
+        actorType: "agent",
+        actorId: "agent-1",
+        details: null,
+      },
+      { userId: "user-1", agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.documents("issue-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document", "issue-1"],
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: ["issues", "document-revisions", "issue-1"],
+    });
+  });
+
   it("keeps self-authored comment events from refetching the active issue tree", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

@@ -332,6 +332,82 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const existingEscalationId = randomUUID();
+
+    await db.insert(issues).values({
+      id: existingEscalationId,
+      companyId,
+      title: "Existing liveness unblock work",
+      status: "todo",
+      priority: "high",
+      parentId: blockerIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 5,
+      identifier: `${`P${companyId.replace(/-/g, "").slice(0, 4)}`}-5`,
+      originKind: "harness_liveness_escalation",
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "in_review_without_action_path",
+        blockerIssueId,
+      ].join(":"),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.existingEscalations).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+  });
+
+  it("keeps active invalid_review_participant recoveries from being retired", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const existingEscalationId = randomUUID();
+
+    await db.insert(issues).values({
+      id: existingEscalationId,
+      companyId,
+      title: "Existing invalid review participant unblock work",
+      status: "todo",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 5,
+      identifier: `${`P${companyId.replace(/-/g, "").slice(0, 4)}`}-5`,
+      originKind: "harness_liveness_escalation",
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "invalid_review_participant",
+        blockerIssueId,
+      ].join(":"),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.existingEscalations).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+  });
+
   it("creates one manager escalation, preserves blockers, and records owner selection", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

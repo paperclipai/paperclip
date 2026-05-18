@@ -12,14 +12,12 @@ import {
   createAgentHireSchema,
   createAgentSchema,
   deriveAgentUrlKey,
-  documentKeySchema,
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
-  upsertAgentDocumentSchema,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsBundleSchema,
   updateAgentPermissionsSchema,
@@ -45,6 +43,7 @@ import {
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
+  issueRecoveryActionService,
   issueService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
@@ -1744,16 +1743,18 @@ export function agentRoutes(
     }
 
     const issuesSvc = issueService(db);
+    const recoveryActionsSvc = issueRecoveryActionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
-    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-      req.actor.companyId,
-      rows.map((issue) => issue.id),
-    );
+    const issueIds = rows.map((issue) => issue.id);
+    const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
+      issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
+      recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
+    ]);
 
     res.json(
       rows.map((issue) => ({
@@ -1767,6 +1768,7 @@ export function agentRoutes(
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
+        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
@@ -1792,185 +1794,6 @@ export function agentRoutes(
     res.json(rows);
   });
 
-
-  // ── Agent Documents (self-reference) ─────────────────────────────
-
-  const documentsSvc = documentService(db);
-
-  router.get("/agents/me/documents", async (req, res) => {
-    if (req.actor.type !== "agent" || !req.actor.agentId) {
-      res.status(401).json({ error: "Agent authentication required" });
-      return;
-    }
-    const docs = await documentsSvc.listAgentDocuments(req.actor.agentId);
-    res.json(docs);
-  });
-
-  router.get("/agents/me/documents/:key", async (req, res) => {
-    if (req.actor.type !== "agent" || !req.actor.agentId) {
-      res.status(401).json({ error: "Agent authentication required" });
-      return;
-    }
-    const keyParsed = documentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
-    if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
-      return;
-    }
-    const doc = await documentsSvc.getAgentDocumentByKey(req.actor.agentId, keyParsed.data);
-    if (!doc) {
-      res.status(404).json({ error: "Document not found" });
-      return;
-    }
-    res.json(doc);
-  });
-
-  // ── Agent Documents (by ID) ────────────────────────────────────
-
-  router.get("/agents/:id/documents", async (req, res) => {
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
-    const docs = await documentsSvc.listAgentDocuments(agent.id);
-    res.json(docs);
-  });
-
-  router.get("/agents/:id/documents/:key", async (req, res) => {
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
-    const keyParsed = documentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
-    if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
-      return;
-    }
-    const doc = await documentsSvc.getAgentDocumentByKey(agent.id, keyParsed.data);
-    if (!doc) {
-      res.status(404).json({ error: "Document not found" });
-      return;
-    }
-    res.json(doc);
-  });
-
-  router.put("/agents/:id/documents/:key", validate(upsertAgentDocumentSchema), async (req, res) => {
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
-    if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agents can only write their own documents" });
-      return;
-    }
-    const keyParsed = documentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
-    if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
-      return;
-    }
-
-    const actor = getActorInfo(req);
-    const result = await documentsSvc.upsertAgentDocument({
-      agentId: agent.id,
-      key: keyParsed.data,
-      title: req.body.title ?? null,
-      format: req.body.format,
-      body: req.body.body,
-      changeSummary: req.body.changeSummary ?? null,
-      baseRevisionId: req.body.baseRevisionId ?? null,
-      createdByAgentId: actor.agentId ?? null,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
-
-    const doc = result.document;
-    await logActivity(db, {
-      companyId: agent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: result.created ? "agent.document_created" : "agent.document_updated",
-      entityType: "agent",
-      entityId: agent.id,
-      details: {
-        key: doc.key,
-        documentId: doc.id,
-        title: doc.title,
-        format: doc.format,
-        revisionNumber: doc.latestRevisionNumber,
-      },
-    });
-
-    res.status(result.created ? 201 : 200).json(doc);
-  });
-
-  router.get("/agents/:id/documents/:key/revisions", async (req, res) => {
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
-    const keyParsed = documentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
-    if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
-      return;
-    }
-    const revisions = await documentsSvc.listAgentDocumentRevisions(agent.id, keyParsed.data);
-    res.json(revisions);
-  });
-
-  router.delete("/agents/:id/documents/:key", async (req, res) => {
-    const id = req.params.id as string;
-    const agent = await svc.getById(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    const keyParsed = documentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
-    if (!keyParsed.success) {
-      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
-      return;
-    }
-    const removed = await documentsSvc.deleteAgentDocument(agent.id, keyParsed.data);
-    if (!removed) {
-      res.status(404).json({ error: "Document not found" });
-      return;
-    }
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: agent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "agent.document_deleted",
-      entityType: "agent",
-      entityId: agent.id,
-      details: {
-        key: keyParsed.data,
-        documentId: removed.id,
-        title: removed.title,
-      },
-    });
-
-    res.json({ ok: true });
-  });
 
   // ── Agent Detail ────────────────────────────────────────────────
 

@@ -111,11 +111,15 @@ function formatEmbeddedPostgresError(error: unknown): string {
 }
 
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
-  const { dataDir, instance } = await createEmbeddedPostgresTestInstance(
-    "paperclip-embedded-postgres-probe-",
-  );
+  let dataDir: string | null = null;
+  let instance: EmbeddedPostgresInstance | null = null;
 
   try {
+    const created = await createEmbeddedPostgresTestInstance(
+      "paperclip-embedded-postgres-probe-",
+    );
+    dataDir = created.dataDir;
+    instance = created.instance;
     await instance.initialise();
     await instance.start();
     return { supported: true };
@@ -125,8 +129,8 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
       reason: formatEmbeddedPostgresError(error),
     };
   } finally {
-    await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await instance?.stop().catch(() => {});
+    if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
   }
 }
 
@@ -140,9 +144,14 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
-  const { dataDir, port, instance } = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+  let dataDir: string | null = null;
+  let instance: EmbeddedPostgresInstance | null = null;
 
   try {
+    const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+    dataDir = created.dataDir;
+    instance = created.instance;
+    const { port } = created;
     await instance.initialise();
     await instance.start();
 
@@ -154,13 +163,13 @@ export async function startEmbeddedPostgresTestDatabase(
     return {
       connectionString,
       cleanup: async () => {
-        await instance.stop().catch(() => {});
-        cleanupEmbeddedPostgresTestDirs(dataDir);
+        await instance?.stop().catch(() => {});
+        if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
       },
     };
   } catch (error) {
-    await instance.stop().catch(() => {});
-    cleanupEmbeddedPostgresTestDirs(dataDir);
+    await instance?.stop().catch(() => {});
+    if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${formatEmbeddedPostgresError(error)}`,
     );
