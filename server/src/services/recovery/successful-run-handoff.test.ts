@@ -309,7 +309,7 @@ describe("successful run handoff decision", () => {
     });
   });
 
-  it("still enqueues for routine-execution pickup that produced cross-issue progress", () => {
+  it("still enqueues for routine-execution pickup with non-bookkeeping tool/action events", () => {
     const routineIssue = { ...issue, originKind: "routine_execution" } as any;
     const decision = decide({
       issue: routineIssue,
