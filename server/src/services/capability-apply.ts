@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -14,6 +14,7 @@ import {
   type CapabilityApplyApprovalPayload,
   type CapabilityApplyPlanBuilderResult,
   type CapabilityApplyPlanInput,
+  type CapabilityApplyPlanState,
   type CapabilityApplyPlanSummary,
   type CapabilityApplyRiskClass,
   type CapabilityApplyScopeSummary,
@@ -23,6 +24,12 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
+
+// A handle that may be either the root Db or an in-flight transaction. Drizzle's
+// tx object is structurally compatible at the query-method surface; we type the
+// helpers down to the methods actually used so plan + step + event writes can
+// share a single transaction.
+type DbHandle = Pick<Db, "select" | "insert" | "update">;
 
 // ── Stub executor ─────────────────────────────────────────────────────────────
 // When capability.apply.live is OFF (always in this slice), the stub adapter
@@ -46,9 +53,11 @@ class StubExecutorAdapter implements ExecutorAdapter {
 
 function getExecutorAdapter(capabilityApplyLive: boolean): ExecutorAdapter {
   if (capabilityApplyLive) {
-    // The real executor is not implemented in this slice (G.2 adds it).
-    // Throw to prevent accidental live execution.
-    throw new Error("capability.apply.live is ON but no real executor exists in G.1; upgrade to G.2 first");
+    // The real executor is not implemented in this slice (G.2 keeps the live
+    // flag OFF and only ships the internal_safe state machine).
+    // Throw to prevent accidental live execution if the flag is flipped before
+    // a future slice (G.3+) wires real adapters in.
+    throw new Error("capability.apply.live is ON but no real executor exists in G.2; upgrade to G.3 first");
   }
   return new StubExecutorAdapter();
 }
@@ -91,7 +100,7 @@ interface EventContext {
 }
 
 async function recordEvent(
-  db: Db,
+  dbOrTx: DbHandle,
   ctx: EventContext,
   kind: string,
   payload: Record<string, unknown>,
@@ -112,7 +121,7 @@ async function recordEvent(
     },
     `capability_apply_event: ${kind}`,
   );
-  await db.insert(capabilityApplyEvents).values({
+  await dbOrTx.insert(capabilityApplyEvents).values({
     planId: ctx.planId,
     stepId: ctx.stepId ?? null,
     companyId: ctx.companyId,
@@ -141,14 +150,26 @@ function planRowToSummary(row: typeof capabilityApplyPlans.$inferSelect): Capabi
   };
 }
 
+// Plan states a fresh /execute may transition out of. Anything else means the
+// plan has already been consumed, cancelled, or has not reached approval yet.
+const EXECUTE_ALLOWED_PRIOR_STATES: ReadonlyArray<CapabilityApplyPlanState> = [
+  "approval_requested",
+  "approved",
+];
+
+// Plan states that already represent a terminal or post-execute outcome.
+const TERMINAL_OR_POST_EXECUTE_STATES: ReadonlyArray<CapabilityApplyPlanState> = [
+  "executing",
+  "applied",
+  "partially_applied",
+  "cancelled",
+  "declined",
+  "expired",
+];
+
 // ── Service factory ──────────────────────────────────────────────────────────
 
 export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: boolean }) {
-  function stubExecutor() {
-    // Expose for test spy assertions — the real adapter is never instantiated in G.1
-    return getExecutorAdapter(opts.capabilityApplyLive);
-  }
-
   return {
     /** Expose stub getter so tests can spy on adapter construction. */
     _getExecutorAdapter: () => getExecutorAdapter(opts.capabilityApplyLive),
@@ -156,6 +177,10 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
     /**
      * POST /plans — build a plan from the effective delta. Idempotent on
      * (companyId, agentId, dryRunHash). Refuses governance_critical steps.
+     *
+     * LET-395 hardening: plan + steps + initial event are inserted in a single
+     * transaction so a partial insert cannot leave an executable plan with
+     * missing steps or no created-event audit row.
      */
     async createPlan(
       input: CapabilityApplyPlanInput,
@@ -187,76 +212,87 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
 
       const idempotencyKey = `plan:apply:${input.companyId}:${input.agentId}:${built.dryRunHash}`;
 
-      // Idempotent: if a plan with this hash already exists, return it
-      const [existing] = await db
-        .select()
-        .from(capabilityApplyPlans)
-        .where(
-          and(
-            eq(capabilityApplyPlans.companyId, input.companyId),
-            eq(capabilityApplyPlans.agentId, input.agentId),
-            eq(capabilityApplyPlans.dryRunHash, built.dryRunHash),
+      return db.transaction(async (tx) => {
+        // Idempotent: if a plan with this (companyId, agentId, hash) tuple
+        // already exists, return it. Index `cap_apply_plans_company_agent_hash_uidx`
+        // makes this a single point-lookup and DB-enforces uniqueness if two
+        // concurrent inserts race past this check.
+        const [existing] = await tx
+          .select()
+          .from(capabilityApplyPlans)
+          .where(
+            and(
+              eq(capabilityApplyPlans.companyId, input.companyId),
+              eq(capabilityApplyPlans.agentId, input.agentId),
+              eq(capabilityApplyPlans.dryRunHash, built.dryRunHash),
+            ),
+          )
+          .limit(1);
+
+        if (existing) {
+          return planRowToSummary(existing);
+        }
+
+        const redactionSummary = {
+          namedSecretRefCount: built.steps.reduce(
+            (acc, s) => acc + s.target.namedSecretRefs.length,
+            0,
           ),
-        )
-        .limit(1);
+          targetLabelsRedacted: false,
+          catalogIdsRedacted: false,
+          valuesPersisted: false,
+        };
 
-      if (existing) {
-        return planRowToSummary(existing);
-      }
+        const [plan] = await tx
+          .insert(capabilityApplyPlans)
+          .values({
+            companyId: input.companyId,
+            agentId: input.agentId,
+            baseDesiredConfigRevisionId: input.proposalIdentity ?? null,
+            dryRunHash: built.dryRunHash,
+            state: "pending",
+            stepsJson: built.steps as unknown[],
+            redactionSummaryJson: redactionSummary as Record<string, unknown>,
+            idempotencyKey,
+            createdByUserId: actor.userId ?? null,
+            createdByAgentId: actor.agentId ?? null,
+          })
+          .returning();
 
-      // Redaction summary — what we redacted vs preserved; never contains values.
-      const redactionSummary = {
-        namedSecretRefCount: built.steps.reduce(
-          (acc, s) => acc + s.target.namedSecretRefs.length,
-          0,
-        ),
-        targetLabelsRedacted: false,
-        catalogIdsRedacted: false,
-        valuesPersisted: false,
-      };
+        if (!plan) throw new Error("Failed to insert plan");
 
-      const [plan] = await db
-        .insert(capabilityApplyPlans)
-        .values({
-          companyId: input.companyId,
-          agentId: input.agentId,
-          baseDesiredConfigRevisionId: input.proposalIdentity ?? null,
-          dryRunHash: built.dryRunHash,
-          state: "pending",
-          stepsJson: built.steps as unknown[],
-          redactionSummaryJson: redactionSummary as Record<string, unknown>,
-          idempotencyKey,
-          createdByUserId: actor.userId ?? null,
-          createdByAgentId: actor.agentId ?? null,
-        })
-        .returning();
+        if (built.steps.length > 0) {
+          await tx.insert(capabilityApplySteps).values(
+            built.steps.map((s) => ({
+              planId: plan.id,
+              ordinal: s.ordinal,
+              kind: s.kind,
+              targetRefJson: { ...s.target } as Record<string, unknown>,
+              riskClass: s.riskClass,
+              annotationsJson: s.annotations as Record<string, unknown>,
+              expectedNamedSecretsJson: s.target.namedSecretRefs,
+              state: "pending" as const,
+            })),
+          );
+        }
 
-      if (!plan) throw new Error("Failed to insert plan");
-
-      // Insert step rows
-      if (built.steps.length > 0) {
-        await db.insert(capabilityApplySteps).values(
-          built.steps.map((s) => ({
+        await recordEvent(
+          tx,
+          {
+            companyId: input.companyId,
+            agentId: input.agentId,
             planId: plan.id,
-            ordinal: s.ordinal,
-            kind: s.kind,
-            targetRefJson: { ...s.target } as Record<string, unknown>,
-            riskClass: s.riskClass,
-            annotationsJson: s.annotations as Record<string, unknown>,
-            expectedNamedSecretsJson: s.target.namedSecretRefs,
-            state: "pending" as const,
-          })),
+            dryRunHash: built.dryRunHash,
+            actorUserId: actor.userId,
+            actorAgentId: actor.agentId,
+            runId: actor.runId,
+          },
+          "capability_apply_plan_created",
+          { dryRunHash: built.dryRunHash, stepCount: built.steps.length },
         );
-      }
 
-      await recordEvent(
-        db,
-        { companyId: input.companyId, agentId: input.agentId, planId: plan.id, dryRunHash: built.dryRunHash, actorUserId: actor.userId, actorAgentId: actor.agentId, runId: actor.runId },
-        "capability_apply_plan_created",
-        { dryRunHash: built.dryRunHash, stepCount: built.steps.length },
-      );
-
-      return planRowToSummary(plan);
+        return planRowToSummary(plan);
+      });
     },
 
     /** GET /plans/:planId — read plan (redacted). */
@@ -305,7 +341,6 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
 
       const steps = (row.stepsJson as CapabilityApplyStep[]) ?? [];
 
-      // Structured scopeSummary per LET-353 §2.2
       const stepsByRiskClass = CAPABILITY_APPLY_RISK_CLASSES.reduce(
         (acc, rc) => {
           acc[rc] = 0;
@@ -315,7 +350,6 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
       );
       for (const s of steps) stepsByRiskClass[s.riskClass]++;
 
-      // Look up agent label for the scope summary (label only — never a UUID inline)
       const [agentRow] = await db
         .select({ name: agents.name })
         .from(agents)
@@ -362,57 +396,66 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
         noLiveActionAttestation: true,
       };
 
-      // Idempotent durable approval row binding per LET-353 §3.2
-      // Key: approval:apply:{planId}:{dryRunHash}
-      // If an approval already exists for this plan, reuse it; otherwise create one.
-      let approvalId: string = row.approvalId ?? "";
-      if (!approvalId) {
-        const [createdApproval] = await db
-          .insert(approvals)
-          .values({
-            companyId,
-            type: "capability_apply",
-            status: "pending",
-            payload: approvalPayload as unknown as Record<string, unknown>,
-            requestedByAgentId: actor.agentId ?? null,
-            requestedByUserId: actor.userId ?? null,
+      // LET-395: bind approval creation + plan state transition in one
+      // transaction so a crash between the two cannot leave an orphaned
+      // approval row or a plan stuck in `pending` with an approvalId set.
+      return db.transaction(async (tx) => {
+        let approvalId: string = row.approvalId ?? "";
+        if (!approvalId) {
+          const [createdApproval] = await tx
+            .insert(approvals)
+            .values({
+              companyId,
+              type: "capability_apply",
+              status: "pending",
+              payload: approvalPayload as unknown as Record<string, unknown>,
+              requestedByAgentId: actor.agentId ?? null,
+              requestedByUserId: actor.userId ?? null,
+            })
+            .returning({ id: approvals.id });
+          if (!createdApproval) throw new Error("Failed to create approval row");
+          approvalId = createdApproval.id;
+        }
+
+        const [updated] = await tx
+          .update(capabilityApplyPlans)
+          .set({
+            state: "approval_requested",
+            approvalId,
+            optimisticVersion: row.optimisticVersion + 1,
+            updatedAt: new Date(),
           })
-          .returning({ id: approvals.id });
-        if (!createdApproval) throw new Error("Failed to create approval row");
-        approvalId = createdApproval.id;
-      }
+          .where(
+            and(
+              eq(capabilityApplyPlans.id, planId),
+              eq(capabilityApplyPlans.optimisticVersion, ifMatchVersion),
+            ),
+          )
+          .returning();
 
-      // Transition to approval_requested AND bind approvalId atomically
-      const [updated] = await db
-        .update(capabilityApplyPlans)
-        .set({
-          state: "approval_requested",
-          approvalId,
-          optimisticVersion: row.optimisticVersion + 1,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(capabilityApplyPlans.id, planId),
-            eq(capabilityApplyPlans.optimisticVersion, ifMatchVersion),
-          ),
-        )
-        .returning();
+        if (!updated) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT, {
+            code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
+          });
+        }
 
-      if (!updated) {
-        throw conflict(CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT, {
-          code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
-        });
-      }
+        await recordEvent(
+          tx,
+          {
+            companyId,
+            agentId: row.agentId,
+            planId: row.id,
+            dryRunHash: row.dryRunHash,
+            actorUserId: actor.userId,
+            actorAgentId: actor.agentId,
+            runId: actor.runId,
+          },
+          "capability_apply_approval_requested",
+          { liveExecutionFlagState: "off", approvalId },
+        );
 
-      await recordEvent(
-        db,
-        { companyId, agentId: row.agentId, planId: row.id, dryRunHash: row.dryRunHash, actorUserId: actor.userId, actorAgentId: actor.agentId, runId: actor.runId },
-        "capability_apply_approval_requested",
-        { liveExecutionFlagState: "off", approvalId },
-      );
-
-      return { plan: planRowToSummary(updated), approvalPayload };
+        return { plan: planRowToSummary(updated), approvalPayload };
+      });
     },
 
     /**
@@ -432,7 +475,6 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
 
       if (!row) throw notFound("Apply plan not found");
 
-      // Creator check
       const creatorUserId = row.createdByUserId;
       const creatorAgentId = row.createdByAgentId;
       const isCreator =
@@ -447,7 +489,7 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
         });
       }
 
-      const terminal = ["applied", "cancelled", "declined", "expired"];
+      const terminal = ["applied", "cancelled", "declined", "expired", "partially_applied"];
       if (terminal.includes(row.state)) {
         throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED, {
           code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED,
@@ -486,6 +528,335 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
       return planRowToSummary(updated);
     },
 
+    /**
+     * POST /plans/:planId/execute — LET-395 G.2 deterministic apply state machine.
+     *
+     * Contract:
+     *   - Requires company + agent ownership (caller enforces companyAccess; we
+     *     re-check the agent boundary against the plan row).
+     *   - Requires hash-bound approved approval. The approval payload's
+     *     dryRunHash and planRevisionId must match the locked plan.
+     *   - Refuses stale/declined/cancelled/expired approvals with stable error
+     *     codes (APPROVAL_NOT_ACCEPTED / APPROVAL_CONSUMED / PLAN_HASH_MISMATCH).
+     *   - Optimistic If-Match required on the plan version.
+     *   - State machine: approval_requested|approved -> executing -> applied
+     *     (all internal_safe steps completed) | partially_applied (any step
+     *     skipped/failed). Non-internal_safe steps are skipped with a stable
+     *     LIVE_EXECUTION_DISABLED error code while capability.apply.live is OFF.
+     *   - All effects (plan + step transitions + audit events) run inside one
+     *     DB transaction so partial state cannot leak.
+     *   - The stub executor never performs external network/MCP calls; the
+     *     real adapter is never instantiated while live OFF.
+     */
+    async executePlan(
+      planId: string,
+      companyId: string,
+      agentId: string,
+      actor: { userId?: string; agentId?: string; runId?: string },
+      ifMatchVersion: number,
+    ): Promise<CapabilityApplyPlanSummary> {
+      return db.transaction(async (tx) => {
+        // Lock the plan row for the duration of the transaction so concurrent
+        // executes cannot both pass the state check.
+        await tx.execute(
+          sql`select 1 from ${capabilityApplyPlans} where ${capabilityApplyPlans.id} = ${planId} for update`,
+        );
+        const [row] = await tx
+          .select()
+          .from(capabilityApplyPlans)
+          .where(and(eq(capabilityApplyPlans.id, planId), eq(capabilityApplyPlans.companyId, companyId)))
+          .limit(1);
+
+        if (!row) throw notFound("Apply plan not found");
+        if (row.agentId !== agentId) throw forbidden("Plan does not belong to this agent");
+        if (row.optimisticVersion !== ifMatchVersion) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT, {
+            code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
+            currentVersion: row.optimisticVersion,
+          });
+        }
+        if (TERMINAL_OR_POST_EXECUTE_STATES.includes(row.state as CapabilityApplyPlanState)) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED,
+            currentState: row.state,
+          });
+        }
+        if (!EXECUTE_ALLOWED_PRIOR_STATES.includes(row.state as CapabilityApplyPlanState)) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+            currentState: row.state,
+          });
+        }
+        if (!row.approvalId) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+            reason: "no_approval_bound",
+          });
+        }
+
+        const [approval] = await tx
+          .select()
+          .from(approvals)
+          .where(and(eq(approvals.id, row.approvalId), eq(approvals.companyId, companyId)))
+          .limit(1);
+
+        if (!approval) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+            reason: "approval_missing",
+          });
+        }
+
+        if (approval.status === "rejected") {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+            approvalStatus: approval.status,
+          });
+        }
+        if (approval.status === "cancelled") {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED,
+            approvalStatus: approval.status,
+          });
+        }
+        if (approval.status !== "approved") {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED, {
+            code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+            approvalStatus: approval.status,
+          });
+        }
+
+        const approvalPayload = approval.payload as Partial<CapabilityApplyApprovalPayload> | null;
+        if (!approvalPayload || approvalPayload.dryRunHash !== row.dryRunHash) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH, {
+            code: CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH,
+          });
+        }
+        if (approvalPayload.planRevisionId !== row.id) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH, {
+            code: CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH,
+            reason: "plan_revision_mismatch",
+          });
+        }
+
+        // Atomic transition to executing. The `state IN (...)` clause combined
+        // with the optimistic version check makes a second concurrent execute
+        // either trip OPTIMISTIC_CONFLICT or APPROVAL_CONSUMED.
+        const [executingPlan] = await tx
+          .update(capabilityApplyPlans)
+          .set({
+            state: "executing",
+            optimisticVersion: row.optimisticVersion + 1,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(capabilityApplyPlans.id, planId),
+              eq(capabilityApplyPlans.optimisticVersion, ifMatchVersion),
+            ),
+          )
+          .returning();
+
+        if (!executingPlan) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT, {
+            code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
+          });
+        }
+
+        const eventCtxBase: EventContext = {
+          companyId,
+          agentId: row.agentId,
+          planId: row.id,
+          dryRunHash: row.dryRunHash,
+          actorUserId: actor.userId,
+          actorAgentId: actor.agentId,
+          runId: actor.runId,
+        };
+
+        await recordEvent(tx, eventCtxBase, "capability_apply_execute_started", {
+          liveExecutionFlagState: opts.capabilityApplyLive ? "on" : "off",
+          approvalId: row.approvalId,
+        });
+
+        const stepRows = await tx
+          .select()
+          .from(capabilityApplySteps)
+          .where(eq(capabilityApplySteps.planId, planId))
+          .orderBy(capabilityApplySteps.ordinal);
+
+        // Construct the executor adapter. While live OFF this is the stub —
+        // a real executor adapter is intentionally NOT wired in this slice
+        // and getExecutorAdapter throws if the flag is flipped, so this
+        // service is the no-live-action enforcement point.
+        const executor = getExecutorAdapter(opts.capabilityApplyLive);
+
+        let completedCount = 0;
+        let skippedCount = 0;
+        let failedCount = 0;
+
+        for (const step of stepRows) {
+          if (step.state !== "pending") {
+            // Defensive: a non-pending step at execute time means earlier work
+            // has touched this plan. Skip to preserve idempotency.
+            skippedCount++;
+            continue;
+          }
+
+          // Non-internal_safe risk classes never execute while live OFF.
+          if (step.riskClass !== "internal_safe") {
+            await tx
+              .update(capabilityApplySteps)
+              .set({
+                state: "skipped",
+                attempts: step.attempts + 1,
+                lastErrorCode: CAPABILITY_APPLY_ERROR_CODES.LIVE_EXECUTION_DISABLED,
+                lastErrorMessage: "non-internal_safe step skipped while capability.apply.live=OFF",
+                updatedAt: new Date(),
+              })
+              .where(eq(capabilityApplySteps.id, step.id));
+
+            await recordEvent(
+              tx,
+              { ...eventCtxBase, stepId: step.id },
+              "capability_apply_step_skipped",
+              {
+                code: CAPABILITY_APPLY_ERROR_CODES.LIVE_EXECUTION_DISABLED,
+                riskClass: step.riskClass,
+                ordinal: step.ordinal,
+                kind: step.kind,
+              },
+            );
+            skippedCount++;
+            continue;
+          }
+
+          // Mark executing + emit started event.
+          await tx
+            .update(capabilityApplySteps)
+            .set({
+              state: "executing",
+              attempts: step.attempts + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(capabilityApplySteps.id, step.id));
+
+          await recordEvent(
+            tx,
+            { ...eventCtxBase, stepId: step.id },
+            "capability_apply_step_started",
+            { ordinal: step.ordinal, kind: step.kind, riskClass: step.riskClass },
+          );
+
+          try {
+            const stepView: CapabilityApplyStep = {
+              stepId: `step-${step.ordinal}`,
+              ordinal: step.ordinal,
+              kind: step.kind as CapabilityApplyStep["kind"],
+              target: {
+                catalogId: (step.targetRefJson as Record<string, unknown>).catalogId as string | undefined,
+                label: ((step.targetRefJson as Record<string, unknown>).label as string) ?? "",
+                transport: (step.targetRefJson as Record<string, unknown>).transport as
+                  | "stdio"
+                  | "sse"
+                  | "streamable_http"
+                  | undefined,
+                namedSecretRefs: (step.expectedNamedSecretsJson as string[]) ?? [],
+              },
+              riskClass: step.riskClass as CapabilityApplyStep["riskClass"],
+              annotations: (step.annotationsJson as Record<string, boolean>) ?? {},
+              sideEffects: [],
+              secretSummary: [],
+              state: "executing",
+            };
+            const result = await executor.executeStep(stepView, row.id);
+
+            await tx
+              .update(capabilityApplySteps)
+              .set({ state: "completed", updatedAt: new Date() })
+              .where(eq(capabilityApplySteps.id, step.id));
+
+            await recordEvent(
+              tx,
+              { ...eventCtxBase, stepId: step.id },
+              "capability_apply_step_completed",
+              {
+                ordinal: step.ordinal,
+                kind: step.kind,
+                wouldExecute: result.wouldExecute,
+                liveExecutionFlagState: opts.capabilityApplyLive ? "on" : "off",
+              },
+            );
+            completedCount++;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await tx
+              .update(capabilityApplySteps)
+              .set({
+                state: "failed",
+                lastErrorCode: "step_execution_failed",
+                lastErrorMessage: message.slice(0, 1024),
+                updatedAt: new Date(),
+              })
+              .where(eq(capabilityApplySteps.id, step.id));
+
+            await recordEvent(
+              tx,
+              { ...eventCtxBase, stepId: step.id },
+              "capability_apply_step_failed",
+              {
+                ordinal: step.ordinal,
+                kind: step.kind,
+                errorCode: "step_execution_failed",
+              },
+            );
+            failedCount++;
+          }
+        }
+
+        const terminalState: CapabilityApplyPlanState =
+          failedCount === 0 && skippedCount === 0 ? "applied" : "partially_applied";
+
+        const [finalPlan] = await tx
+          .update(capabilityApplyPlans)
+          .set({
+            state: terminalState,
+            optimisticVersion: executingPlan.optimisticVersion + 1,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(capabilityApplyPlans.id, planId),
+              eq(capabilityApplyPlans.optimisticVersion, executingPlan.optimisticVersion),
+            ),
+          )
+          .returning();
+
+        if (!finalPlan) {
+          throw conflict(CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT, {
+            code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
+            phase: "execute_finalize",
+          });
+        }
+
+        await recordEvent(
+          tx,
+          eventCtxBase,
+          terminalState === "applied"
+            ? "capability_apply_plan_completed"
+            : "capability_apply_plan_partially_applied",
+          {
+            terminalState,
+            completedCount,
+            skippedCount,
+            failedCount,
+            stepCount: stepRows.length,
+          },
+        );
+
+        return planRowToSummary(finalPlan);
+      });
+    },
+
     /** GET /plans/:planId/events */
     async getPlanEvents(planId: string, companyId: string) {
       const [plan] = await db
@@ -516,6 +887,6 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
       }));
     },
 
-    stubExecutor,
+    stubExecutor: () => getExecutorAdapter(opts.capabilityApplyLive),
   };
 }

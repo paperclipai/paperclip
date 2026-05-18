@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, integer, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { approvals } from "./approvals.js";
@@ -25,6 +26,10 @@ export const capabilityApplyPlans = pgTable(
   (table) => ({
     companyAgentHashUidx: uniqueIndex("cap_apply_plans_company_agent_hash_uidx").on(table.companyId, table.agentId, table.dryRunHash),
     idempotencyKeyUidx: uniqueIndex("cap_apply_plans_idempotency_key_uidx").on(table.idempotencyKey),
+    // LET-395: single-use approval — at most one plan may bind a given approval row.
+    approvalIdUidx: uniqueIndex("cap_apply_plans_approval_id_uidx")
+      .on(table.approvalId)
+      .where(sql`${table.approvalId} IS NOT NULL`),
     companyAgentIdx: index("cap_apply_plans_company_agent_idx").on(table.companyId, table.agentId),
   }),
 );

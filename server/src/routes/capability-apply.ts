@@ -3,8 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
-import { CAPABILITY_APPLY_ERROR_CODES } from "@paperclipai/shared";
-import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { capabilityApplyService } from "../services/capability-apply.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -129,6 +128,41 @@ export function capabilityApplyRoutes(db: Db, opts: { capabilityApplyLive: boole
       );
 
       res.json(result);
+    },
+  );
+
+  // POST /companies/:companyId/agents/:agentId/capability-apply/plans/:planId/execute
+  // LET-395 G.2: deterministic apply state machine, internal_safe only,
+  // capability.apply.live=OFF. Server enforces hash-bound approval + ownership.
+  router.post(
+    "/companies/:companyId/agents/:agentId/capability-apply/plans/:planId/execute",
+    async (req, res) => {
+      const { companyId, agentId, planId } = req.params as {
+        companyId: string;
+        agentId: string;
+        planId: string;
+      };
+      assertCompanyAccess(req, companyId);
+
+      const agentCompanyId = await resolveAgentCompany(db, agentId);
+      if (agentCompanyId !== companyId) throw forbidden("Agent does not belong to this company");
+
+      const ifMatch = parseIfMatchVersion(req);
+      const actor = getActorInfo(req);
+
+      const plan = await svc.executePlan(
+        planId,
+        companyId,
+        agentId,
+        {
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          agentId: actor.agentId ?? undefined,
+          runId: actor.runId ?? undefined,
+        },
+        ifMatch,
+      );
+
+      res.json(plan);
     },
   );
 

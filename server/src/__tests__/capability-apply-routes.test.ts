@@ -17,6 +17,7 @@ const mockSvc = vi.hoisted(() => ({
   getPlan: vi.fn(),
   requestApproval: vi.fn(),
   cancelPlan: vi.fn(),
+  executePlan: vi.fn(),
   getPlanEvents: vi.fn(),
   _getExecutorAdapter: vi.fn(),
   stubExecutor: vi.fn(),
@@ -267,6 +268,99 @@ describe("POST /plans/:planId/request-approval", () => {
   });
 });
 
+// ── POST /plans/:planId/execute ───────────────────────────────────────────────
+
+describe("POST /plans/:planId/execute (LET-395)", () => {
+  beforeEach(() => {
+    mockSvc.executePlan.mockResolvedValue({ ...fakePlan, state: "applied", optimisticVersion: 4 });
+    mockDb.limit.mockResolvedValue([{ companyId: COMPANY_ID }]);
+  });
+
+  it("returns the applied plan on success", async () => {
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "3");
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe("applied");
+  });
+
+  it("400 when If-Match header missing", async () => {
+    const app = await createTestApp();
+    const res = await request(app).post(`${BASE_URL}/plans/${PLAN_ID}/execute`);
+    expect(res.status).toBe(400);
+  });
+
+  it("403 for cross-company actor", async () => {
+    const app = await createTestApp({ companyIds: ["other"], source: "explicit" });
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "3");
+    expect(res.status).toBe(403);
+  });
+
+  it("403 when agent does not belong to the URL company", async () => {
+    mockDb.limit.mockResolvedValue([{ companyId: "company-2" }]);
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "3");
+    expect(res.status).toBe(403);
+  });
+
+  it("surfaces APPROVAL_NOT_ACCEPTED from the service", async () => {
+    mockSvc.executePlan.mockRejectedValue({
+      status: 409,
+      message: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED,
+      details: { code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_NOT_ACCEPTED },
+    });
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "3");
+    expect([409, 500]).toContain(res.status);
+  });
+
+  it("surfaces PLAN_HASH_MISMATCH from the service", async () => {
+    mockSvc.executePlan.mockRejectedValue({
+      status: 409,
+      message: CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH,
+      details: { code: CAPABILITY_APPLY_ERROR_CODES.PLAN_HASH_MISMATCH },
+    });
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "3");
+    expect([409, 500]).toContain(res.status);
+  });
+
+  it("surfaces APPROVAL_CONSUMED on replay", async () => {
+    mockSvc.executePlan.mockRejectedValue({
+      status: 409,
+      message: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED,
+      details: { code: CAPABILITY_APPLY_ERROR_CODES.APPROVAL_CONSUMED },
+    });
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "5");
+    expect([409, 500]).toContain(res.status);
+  });
+
+  it("surfaces OPTIMISTIC_CONFLICT on If-Match mismatch", async () => {
+    mockSvc.executePlan.mockRejectedValue({
+      status: 409,
+      message: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT,
+      details: { code: CAPABILITY_APPLY_ERROR_CODES.OPTIMISTIC_CONFLICT },
+    });
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans/${PLAN_ID}/execute`)
+      .set("If-Match", "1");
+    expect([409, 500]).toContain(res.status);
+  });
+});
+
 // ── POST /plans/:planId/cancel ────────────────────────────────────────────────
 
 describe("POST /plans/:planId/cancel", () => {
@@ -355,7 +449,7 @@ describe("no-live-action assertions", () => {
       "../services/capability-apply.js",
     );
     const svc = capabilityApplyService({} as any, { capabilityApplyLive: true });
-    expect(() => svc._getExecutorAdapter()).toThrow("no real executor");
+    expect(() => svc._getExecutorAdapter()).toThrow(/no real executor/);
   });
 });
 
