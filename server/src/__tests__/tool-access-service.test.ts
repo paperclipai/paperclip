@@ -1,0 +1,92 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { agentToolGrants, agents, companies, companyTools, createDb } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { toolAccessService } from "../services/tool-access.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres tool access service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("toolAccessService", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof toolAccessService>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("tool-access-service");
+    stopDb = started.stop;
+    db = createDb(started.connectionString);
+    svc = toolAccessService(db);
+  });
+
+  afterEach(async () => {
+    await db.delete(agentToolGrants);
+    await db.delete(companyTools);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  async function seedCompanyAndAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "GBrain Researcher",
+      role: "researcher",
+      status: "active",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return { companyId, agentId };
+  }
+
+  it("lists an empty matrix, creates a tool, and validates grant modes", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+
+    expect(await svc.listMatrix(companyId)).toMatchObject({ tools: [], grants: [] });
+
+    const created = await svc.createTool(companyId, {
+      key: "mcp.gbrain.query",
+      label: "GBrain query",
+      source: "mcp_tool",
+      adapter: "hermes_local",
+      serverKey: "gbrain",
+      toolName: "query",
+      risk: "read",
+      supportedModes: ["off", "read"],
+      render: { hermes: { mcpServer: "gbrain", includeTool: "query" } },
+    });
+
+    expect(created.key).toBe("mcp.gbrain.query");
+
+    const grant = await svc.setGrant(companyId, agentId, created.id, "read", null);
+
+    expect(grant.mode).toBe("read");
+    await expect(svc.setGrant(companyId, agentId, created.id, "write", null)).rejects.toThrow(/does not support mode/);
+  });
+});
