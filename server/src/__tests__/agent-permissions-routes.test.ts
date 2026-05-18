@@ -46,6 +46,7 @@ const mockAgentService = vi.hoisted(() => ({
   update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
+  hasDirectReports: vi.fn(),
   resolveByReference: vi.fn(),
 }));
 
@@ -300,6 +301,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
+    mockAgentService.hasDirectReports.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.hasPermission.mockReset();
@@ -333,6 +335,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(false);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
     mockAgentService.activatePendingApproval.mockResolvedValue({
@@ -1371,6 +1374,75 @@ describe.sequential("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("grants reporting-chain task assignment when the agent has a manager", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      reportsTo: "44444444-4444-4444-8444-444444444444",
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("reporting_chain");
+  });
+
+  it("grants reporting-chain task assignment when the agent has direct reports", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      reportsTo: null,
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("reporting_chain");
+  });
+
+  it("keeps task assignment disabled when an agent has no manager and no direct reports", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      reportsTo: null,
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(false);
+    expect(res.body.access.taskAssignSource).toBe("none");
   });
 
   it("exposes a dedicated agent route for the inbox mine view", async () => {

@@ -1204,7 +1204,11 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(
+    req: Request,
+    companyId: string,
+    targets?: { assigneeAgentId?: string | null; assigneeUserId?: string | null },
+  ) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -1217,7 +1221,28 @@ export function issueRoutes(
       const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
       if (allowedByGrant) return;
       const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
+      if (actorAgent && actorAgent.companyId === companyId) {
+        if (canCreateAgentsLegacy(actorAgent)) return;
+
+        // Reporting-chain assignment: an agent may assign tasks to its
+        // manager (own reportsTo) or to any direct report. Peers without a
+        // manager relationship still need an explicit grant.
+        const targetAgentId = targets?.assigneeAgentId ?? null;
+        const targetUserId = targets?.assigneeUserId ?? null;
+        if (targetAgentId && !targetUserId) {
+          if (actorAgent.reportsTo && actorAgent.reportsTo === targetAgentId) return;
+          if (targetAgentId !== actorAgent.id) {
+            const targetAgent = await agentsSvc.getById(targetAgentId);
+            if (
+              targetAgent &&
+              targetAgent.companyId === companyId &&
+              targetAgent.reportsTo === actorAgent.id
+            ) {
+              return;
+            }
+          }
+        }
+      }
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
@@ -2999,7 +3024,10 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, {
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3094,7 +3122,10 @@ export function issueRoutes(
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId);
+      await assertCanAssignTasks(req, parent.companyId, {
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3457,7 +3488,10 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, {
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        });
       }
     }
 

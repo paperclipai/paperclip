@@ -501,6 +501,17 @@ export function agentRoutes(
       };
     }
 
+    const hasReportsTo = typeof agent.reportsTo === "string" && agent.reportsTo.length > 0;
+    const hasReports = hasReportsTo ? true : await svc.hasDirectReports(agent.id);
+    if (hasReportsTo || hasReports) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "reporting_chain" as const,
+        membership,
+        grants,
+      };
+    }
+
     return {
       canAssignTasks: false,
       taskAssignSource: "none" as const,

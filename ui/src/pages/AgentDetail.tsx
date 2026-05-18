@@ -1705,7 +1705,8 @@ function ConfigurationTab({
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignLocked =
+    agent.role === "ceo" || canCreateAgents || taskAssignSource === "reporting_chain";
   const taskAssignHint =
     taskAssignSource === "ceo_role"
       ? "Enabled automatically for CEO agents."
@@ -1713,7 +1714,9 @@ function ConfigurationTab({
         ? "Enabled automatically while this agent can create new agents."
         : taskAssignSource === "explicit_grant"
           ? "Enabled via explicit company permission grant."
-          : "Disabled unless explicitly granted.";
+          : taskAssignSource === "reporting_chain"
+            ? "Enabled for the agent's manager and direct reports via the reporting chain."
+            : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">
