@@ -129,7 +129,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       expect(pendingState.appliedMigrations.at(-2)).toBe("0050_tiresome_gambit.sql");
       expect(pendingState.appliedMigrations.at(-1)).toBe("0051_calm_puff_adder.sql");
       expect(pendingState.pendingMigrations[0]).toBe("0052_stiff_luckman.sql");
-      expect(pendingState.pendingMigrations.at(-1)).toBe("0088_routine_env_runtime_contract.sql");
+      expect(pendingState.pendingMigrations.at(-1)).toBe("0089_direct_exec_contract.sql");
 
       await applyPendingMigrations(connectionString);
 
@@ -148,13 +148,17 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
                 'standup_responses',
                 'issue_execution_decisions',
                 'inbox_dismissals',
-                'company_secret_provider_configs'
+                'company_secret_provider_configs',
+                'direct_exec_threads',
+                'direct_exec_context_bundles'
               )
             ORDER BY table_name
           `,
         );
         expect(tables.map((row) => row.table_name)).toEqual([
           "company_secret_provider_configs",
+          "direct_exec_context_bundles",
+          "direct_exec_threads",
           "inbox_dismissals",
           "issue_execution_decisions",
           "standup_responses",

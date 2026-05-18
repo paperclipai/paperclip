@@ -203,6 +203,7 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
+  "direct_exec",
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
@@ -256,6 +257,40 @@ export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOr
 export function isPluginOperationIssueOriginKind(originKind: string | null | undefined): boolean {
   return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
 }
+
+export const DIRECT_EXEC_LIFECYCLE_STATUSES = [
+  "accepted",
+  "queued",
+  "pending",
+  "completed",
+  "failed",
+  "paused",
+  "timed-out",
+] as const;
+export type DirectExecLifecycleStatus = (typeof DIRECT_EXEC_LIFECYCLE_STATUSES)[number];
+
+export const DIRECT_EXEC_SURFACE_TYPES = ["private", "shared", "team"] as const;
+export type DirectExecSurfaceType = (typeof DIRECT_EXEC_SURFACE_TYPES)[number];
+
+export const DIRECT_EXEC_VISIBILITIES = ["private", "shared", "team-visible"] as const;
+export type DirectExecVisibility = (typeof DIRECT_EXEC_VISIBILITIES)[number];
+
+export const DIRECT_EXEC_SCRUB_STATUSES = [
+  "not_required",
+  "pending",
+  "scrubbed",
+  "failed",
+] as const;
+export type DirectExecScrubStatus = (typeof DIRECT_EXEC_SCRUB_STATUSES)[number];
+
+export const DIRECT_EXEC_ANSWER_CATEGORIES = [
+  "never_saw_it",
+  "did_not_act",
+  "lacked_authority",
+  "delegated",
+  "runtime_tooling_failed",
+] as const;
+export type DirectExecAnswerCategory = (typeof DIRECT_EXEC_ANSWER_CATEGORIES)[number];
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];

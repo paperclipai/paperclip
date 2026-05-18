@@ -24,6 +24,7 @@ import {
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  ISSUE_ORIGIN_KINDS,
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
@@ -127,6 +128,11 @@ export const issueAssigneeAdapterOverridesSchema = z
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();
+
+export const issueOriginKindSchema = z.union([
+  z.enum(ISSUE_ORIGIN_KINDS),
+  z.string().trim().regex(/^plugin:[^:]+(?::[^:]+)*$/, "Invalid plugin issue origin kind"),
+]);
 
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
@@ -382,6 +388,10 @@ const createIssueBaseSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
+  originKind: issueOriginKindSchema.optional(),
+  originId: z.string().trim().min(1).max(500).optional().nullable(),
+  originRunId: z.string().trim().min(1).max(500).optional().nullable(),
+  originFingerprint: z.string().trim().min(1).max(500).optional(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),

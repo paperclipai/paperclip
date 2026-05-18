@@ -13,6 +13,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import type { Config } from "../config.js";
+import { scrubExpiredDirectExecPayloads } from "./direct-exec.js";
 
 /** Maximum rows to delete per batch to avoid long-running transactions. */
 const DELETE_BATCH_SIZE = 5_000;
@@ -181,6 +182,17 @@ export async function pruneRunData(
   const runLogBasePath = options?.runLogBasePath
     ? path.resolve(options.runLogBasePath)
     : path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+
+  const directExecScrub = await scrubExpiredDirectExecPayloads(db);
+  if (directExecScrub.scrubbedThreadIds.length > 0) {
+    logger.info(
+      {
+        scrubbedThreads: directExecScrub.scrubbedThreadIds.length,
+        scrubbedContextBundles: directExecScrub.scrubbedContextBundleCount,
+      },
+      "Scrubbed expired direct-exec payload fields",
+    );
+  }
 
   // 1. finance_events (occurredAt, financeEventsDays)
   const financeCutoff = cutoffDate(config.retentionFinanceEventsDays);

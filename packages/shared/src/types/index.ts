@@ -226,6 +226,20 @@ export type {
   IssueLabel,
 } from "./issue.js";
 export type {
+  DirectExecAnswerEvidence,
+  DirectExecAnswerEvidenceByCategory,
+  DirectExecContextBundle,
+  DirectExecContextConflict,
+  DirectExecContextItem,
+  DirectExecContextSourceFreshness,
+  DirectExecDeliveryReceipt,
+  DirectExecLifecycle,
+  DirectExecSourceMetadata,
+  DirectExecTargetMetadata,
+  DirectExecThread,
+  DirectExecThresholds,
+} from "./direct-exec.js";
+export type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueTreeHoldMember,

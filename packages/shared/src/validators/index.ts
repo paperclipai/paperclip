@@ -158,6 +158,7 @@ export {
   issueBlockedInboxReasonSchema,
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
+  issueOriginKindSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
@@ -220,6 +221,33 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
 } from "./issue.js";
+
+export {
+  DIRECT_EXEC_DEFAULT_THRESHOLDS,
+  assembleDirectExecContextBundleSchema,
+  createDirectExecThreadSchema,
+  directExecAnswerCategorySchema,
+  directExecAnswerEvidenceByCategorySchema,
+  directExecAnswerEvidenceSchema,
+  directExecContextConflictSchema,
+  directExecContextItemSchema,
+  directExecContextSourceSchema,
+  directExecDeliveryReceiptSchema,
+  directExecLifecycleStatusSchema,
+  directExecScrubStatusSchema,
+  directExecSourceMetadataSchema,
+  directExecSurfaceTypeSchema,
+  directExecTargetMetadataSchema,
+  directExecThresholdsSchema,
+  directExecVisibilitySchema,
+  updateDirectExecLifecycleSchema,
+  upsertDirectExecContextBundleSchema,
+  type AssembleDirectExecContextBundle,
+  type CreateDirectExecThread,
+  type DirectExecThresholdsInput,
+  type UpdateDirectExecLifecycle,
+  type UpsertDirectExecContextBundle,
+} from "./direct-exec.js";
 
 export {
   COMPANY_SEARCH_DEFAULT_LIMIT,
