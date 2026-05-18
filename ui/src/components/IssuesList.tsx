@@ -1250,7 +1250,9 @@ export function IssuesList({
       }
       else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
       else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
-        const representativeIssue = group?.items.find((issue) => issue.executionWorkspaceId === groupKey) ?? null;
+        const representativeIssue = group?.items.find((issue) =>
+          issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
+        ) ?? null;
         const executionWorkspace = executionWorkspaceById.get(groupKey);
         if (executionWorkspace) {
           defaults.executionWorkspaceId = groupKey;

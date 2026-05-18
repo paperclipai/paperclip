@@ -25,6 +25,7 @@ export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
 
 export type RecoveryResolveOutcome =
+  | "todo"
   | "done"
   | "in_review"
   | "false_positive_done"
@@ -292,6 +293,11 @@ const RESOLVE_OPTIONS: Array<{
   destructive?: boolean;
   boardOnly?: boolean;
 }> = [
+  {
+    outcome: "todo",
+    label: "Try again",
+    description: "Dismiss recovery and return the source issue to todo.",
+  },
   {
     outcome: "done",
     label: "Mark issue done",

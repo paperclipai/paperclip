@@ -184,7 +184,7 @@ A valid recovery action must name:
 - the wake, monitor, timeout, retry, or escalation policy that will move the action forward
 - the resolution outcome when closed, such as restored, delegated, false positive, blocked, escalated, or cancelled
 
-A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: restore a wake path, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
+A source-scoped recovery action is the default form. Use it when the next safe move is to repair the source issue's liveness directly: move the source issue back to `todo` so it can be retried, clarify disposition, re-establish a monitor, record a false positive, or delegate real follow-up work from the source issue.
 
 Use an issue-backed recovery action only when the recovery is genuinely independent work or when source-scoped handling would be unsafe or unclear. Examples include:
 
@@ -195,6 +195,14 @@ Use an issue-backed recovery action only when the recovery is genuinely independ
 - cases where source issue ownership cannot be changed or restored safely
 
 A comment or system notice can be evidence for a recovery action, but it is not a recovery action by itself. Comment-only recovery is not a healthy liveness path because it does not define a typed owner, wake or monitor policy, retry bound, timeout, escalation path, or resolution outcome.
+
+#### Recovery action freshness
+
+Source-scoped recovery actions are snapshots of the source issue's liveness state at the time the action was opened. They must be revalidated after newer durable source activity, including source issue status changes, assignee changes, blocker changes, execution policy or monitor changes, document or work-product updates that define a valid waiting path, and structured resume or disposition updates.
+
+When newer source activity restores a valid live or waiting path, the recovery action is stale and should be folded through the explicit recovery lifecycle instead of being hidden or deleted. Folding means resolving or cancelling the recovery action with a resolution outcome and note that preserve the audit trail.
+
+Plain comments alone do not make a recovery action stale. A comment can provide evidence, but the recovery action should remain visible when the source issue is still stalled and the comment does not create a valid action-path primitive such as a wake, monitor, interaction, approval, blocker, human owner, execution participant, terminal disposition, or delegated follow-up.
 
 ### Agent-assigned `todo`
 
@@ -326,14 +334,15 @@ This is an active-work continuity recovery.
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does four things in sequence:
+On startup and on the periodic recovery loop, Paperclip now does five things in sequence:
 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
-4. scan silent active runs and create or update explicit watchdog recovery actions
+4. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
+5. reconcile productivity reviews
 
-The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
+The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
 ## 10. Silent Active-Run Watchdog
 
@@ -359,6 +368,33 @@ Watchdog decisions are explicit operator/recovery-owner decisions:
 Operators should prefer `snooze` for known time-bounded quiet periods. `continue` is only a short acknowledgement of the current evidence; if the run remains silent after the re-arm window, the periodic watchdog scan can create or update review work again.
 
 The board can record watchdog decisions. The assigned owner of an issue-backed watchdog evaluation can also record them. Other agents cannot.
+
+### Source-aware watchdog folding
+
+Active-run watchdog work is source-aware. Before the watchdog creates, refreshes, escalates, or blocks on reviewer work, it must re-read the linked source issue and decide whether the watchdog signal is still about productive source work or only about stale run/process bookkeeping.
+
+Fold watchdog work when all of these are true:
+
+- the run is linked to a source issue in the same company
+- the source issue is terminal (`done` or `cancelled`)
+- durable source activity from the same run proves the source issue reached that terminal disposition after the stale-run or output-silence evidence point
+- there is no independent evidence that the still-running or detached process is doing harmful work, still owns external cleanup that needs an operator decision, or needs a separate security/ownership review
+
+Folding means resolving or cancelling the watchdog recovery action or issue-backed evaluation through the explicit recovery lifecycle. It must preserve the run id, source issue, detected silence or detached-process evidence, terminal source activity, decision reason, and best-effort process cleanup result. It must be idempotent for the `(companyId, runId, sourceIssueId)` signal and must not recursively recover the watchdog evaluation issue itself.
+
+Do not fold watchdog work only because the run is quiet. The watchdog must still create or continue reviewer work when:
+
+- the source issue is still `todo` or `in_progress`, because productive work may still be happening or stuck
+- the source issue remains `in_progress` after a successful run with no valid disposition, because the successful-run handoff path owns that bounded correction
+- the run terminated or disappeared while the source issue remains `in_progress` without a live path, because stranded assigned recovery owns that continuity repair
+- the source issue is terminal but there is no durable same-run terminal activity after the stale evidence point
+- there is independent evidence that the process may still be mutating external state, leaking resources, crossing company or ownership boundaries, or otherwise needs operator review
+
+In the normal non-terminal case, critical silence can still create issue-backed evaluation work and block the source issue when blocking is necessary for correctness. In the source-resolved case, a completed source issue should not acquire a new manager review or blocker merely because an old run handle stayed active; only real unresolved work should block work.
+
+This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, long active duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
+
+Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 
 ## 11. Auto-Recover vs Explicit Recovery vs Human Escalation
 

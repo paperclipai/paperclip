@@ -205,6 +205,116 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
+  it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `routine-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "routine-super-secret",
+    });
+    const env = {
+      ROUTINE_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "routine",
+      consumerId: "routine-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(resolved.env.ROUTINE_API_KEY).toBe("routine-super-secret");
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        configPath: "env.ROUTINE_API_KEY",
+        envKey: "ROUTINE_API_KEY",
+        secretId: secret.id,
+        outcome: "success",
+      }),
+    ]);
+
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "routine",
+      consumerId: "routine-1",
+      configPath: "env.ROUTINE_API_KEY",
+      actorType: "agent",
+      actorId: "agent-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("records stable redacted failure codes for routine env secret resolution", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `routine-failure-codes-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "routine-super-secret",
+    });
+    const env = {
+      ROUTINE_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    const context = {
+      consumerType: "routine" as const,
+      consumerId: "routine-1",
+      actorType: "agent" as const,
+      actorId: "agent-1",
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, { ...context, consumerId: "routine-2" }),
+    ).rejects.toThrow(/not bound/i);
+
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/not active/i);
+
+    await db.update(companySecrets).set({ status: "active" }).where(eq(companySecrets.id, secret.id));
+    await expect(
+      svc.resolveSecretValue(companyId, secret.id, 999, {
+        ...context,
+        configPath: "env.ROUTINE_API_KEY",
+      }),
+    ).rejects.toThrow(/version not found/i);
+
+    await db
+      .update(companySecretVersions)
+      .set({ status: "disabled" })
+      .where(eq(companySecretVersions.secretId, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/version is not active/i);
+
+    await db
+      .update(companySecretVersions)
+      .set({ status: "current" })
+      .where(eq(companySecretVersions.secretId, secret.id));
+    vi.spyOn(localEncryptedProvider, "resolveVersion").mockRejectedValueOnce(
+      new Error("provider leaked value routine-super-secret"),
+    );
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/provider leaked value/i);
+
+    await db.update(companySecrets).set({ status: "deleted" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/not found/i);
+
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events.map((event) => event.errorCode).sort()).toEqual([
+      "binding_missing",
+      "provider_error",
+      "secret_deleted",
+      "secret_inactive",
+      "version_inactive",
+      "version_missing",
+    ]);
+    expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+    expect(JSON.stringify(events)).not.toContain("provider leaked value");
+  });
+
   it("scopes env binding sync deletes to the env path prefix", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
