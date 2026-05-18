@@ -6581,15 +6581,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const hasRecordedLocalProcess =
+        tracksLocalChild &&
+        ((typeof run.processPid === "number" && run.processPid > 0) ||
+          (typeof run.processGroupId === "number" && run.processGroupId > 0));
+      const processPidAlive = Boolean(
+        tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
+      );
+      const processGroupAlive = Boolean(
+        tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId),
+      );
+      const staleDetachedDeadProcess =
+        run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+        hasRecordedLocalProcess &&
+        !processPidAlive &&
+        !processGroupAlive;
+
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      if (staleThresholdMs > 0 && !staleDetachedDeadProcess) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
-      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;

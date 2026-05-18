@@ -344,6 +344,13 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
+Detached local process handles are a special orphan-run case. When a `running` local-adapter run has `errorCode: process_detached`, Paperclip must distinguish an objectively live OS process from stale bookkeeping:
+
+- if the recorded PID or process group is still alive, the run remains active and cancellation stays board/manual/watchdog-controlled
+- if the server has no in-memory handle and the recorded PID/process group are both no longer alive, the reaper may bypass the normal `updatedAt` staleness delay, because timer/comment coalescing can refresh `updatedAt` without reviving the process
+
+Dead detached processes must still be reconciled through the normal heartbeat lifecycle: terminal run state, terminal wakeup state, lifecycle event, agent status finalization, lease/runtime cleanup, and issue execution release or promotion where applicable.
+
 ## 10. Silent Active-Run Watchdog
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
