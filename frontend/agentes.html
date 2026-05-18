@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>DiscontrolCreator | Agentes</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0d0d0f;--surface:#161618;--border:#222226;--muted:#3a3a40;--text:#e8e8ec;--sub:#7a7a90;--accent:#a855f7;--accent2:#7c3aed;--green:#22c55e;--teal:#3cddc7}
+  body{background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  .material-symbols-outlined{font-variation-settings:'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24}
+  .bg-blobs{position:fixed;inset:0;pointer-events:none;z-index:-1;overflow:hidden}
+  .bg-blob{position:absolute;border-radius:50%;filter:blur(100px)}
+  .b1{width:600px;height:600px;background:rgba(120,40,220,.07);top:-100px;left:-100px;animation:blobDrift 18s ease-in-out infinite alternate}
+  .b2{width:500px;height:500px;background:rgba(80,20,180,.05);bottom:-80px;right:-80px;animation:blobDrift 22s ease-in-out infinite alternate-reverse}
+  @keyframes blobDrift{0%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-20px) scale(1.06)}100%{transform:translate(-20px,30px) scale(.96)}}
+  @keyframes dotPulse{0%,100%{box-shadow:0 0 6px var(--accent)}50%{box-shadow:0 0 14px var(--accent),0 0 28px rgba(168,85,247,.35)}}
+
+  /* Header */
+  header{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:56px;background:linear-gradient(90deg,rgba(13,13,15,.97) 0%,rgba(22,10,38,.97) 50%,rgba(13,13,15,.97) 100%);border-bottom:1px solid rgba(168,85,247,.2);backdrop-filter:blur(12px)}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:dotPulse 2.5s ease-in-out infinite}
+  .logo-brand{font-family:'Space Grotesk',sans-serif;font-weight:900;font-size:16px;letter-spacing:-.02em;color:#fff}
+  .logo-brand span{color:var(--accent)}
+  .header-nav{display:flex;gap:4px}
+  .nav-link{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub);text-decoration:none;padding:5px 12px;border-radius:6px;transition:color .15s,background .15s}
+  .nav-link:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .nav-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .header-right{display:flex;align-items:center;gap:8px}
+  .h-icon{font-size:18px!important;color:var(--sub);cursor:pointer;transition:color .15s}
+  .h-icon:hover{color:var(--text)}
+  .vbadge{font-size:11px;color:var(--sub);background:var(--surface);border:1px solid var(--border);padding:3px 10px;border-radius:20px;font-family:'DM Mono',monospace}
+
+  /* Layout */
+  .layout{display:flex;min-height:100vh;padding-top:56px}
+  aside{width:220px;flex-shrink:0;background:rgba(13,13,15,.9);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto}
+  .aside-brand{margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+  .aside-brand-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;color:var(--accent)}
+  .aside-brand-sub{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-top:2px;opacity:.6}
+  .aside-label{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin:14px 4px 6px;opacity:.5}
+  .aside-link{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;text-decoration:none;color:var(--sub);font-size:12.5px;font-weight:500;transition:color .15s,background .15s;margin-bottom:2px}
+  .aside-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .aside-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .aside-link .material-symbols-outlined{font-size:16px!important}
+  .aside-bottom{margin-top:auto;padding-top:14px;border-top:1px solid var(--border)}
+  .btn-pipeline{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;border-radius:8px;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;transition:box-shadow .2s,transform .1s;box-shadow:0 2px 16px rgba(168,85,247,.2)}
+  .btn-pipeline:hover{box-shadow:0 4px 24px rgba(168,85,247,.4);transform:translateY(-1px)}
+
+  /* Main */
+  main{flex:1;padding:32px 40px;min-width:0}
+  .page-h1{font-family:'Barlow Condensed',sans-serif;font-size:36px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff;margin-bottom:6px}
+  .page-sub{font-size:13.5px;color:var(--sub);max-width:540px;line-height:1.6;margin-bottom:28px}
+
+  /* Status bar */
+  .status-bar{display:flex;flex-wrap:wrap;align-items:center;gap:16px;margin-bottom:32px;padding:12px 20px;background:var(--surface);border:1px solid var(--border);border-radius:10px}
+  .sb-item{display:flex;align-items:center;gap:7px;font-size:12px}
+  .sb-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green);flex-shrink:0}
+  .sb-label{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub)}
+  .sb-val{font-family:'DM Mono',monospace;font-size:11px;color:var(--text)}
+  .sb-sep{width:1px;height:14px;background:var(--border)}
+
+  /* Section title */
+  .sec-title{font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .sec-title::after{content:'';flex:1;height:1px;background:var(--border)}
+
+  /* Agent grid */
+  .agents-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-bottom:28px}
+
+  /* Director card — full width */
+  .director-wrap{margin-bottom:28px}
+  .director-card{background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.25);border-radius:12px;padding:22px;position:relative;overflow:hidden}
+  .director-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,rgba(168,85,247,.6),transparent)}
+  .director-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px;flex-wrap:wrap}
+  .director-identity{display:flex;align-items:center;gap:14px}
+  .big-icon{width:52px;height:52px;border-radius:12px;background:rgba(168,85,247,.2);border:1px solid rgba(168,85,247,.35);display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0}
+  .director-name{font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:800;letter-spacing:.04em;color:#fff}
+  .director-role{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-top:2px}
+  .badge-pipeline{display:flex;align-items:center;gap:5px;font-family:'DM Mono',monospace;font-size:9px;color:var(--accent);padding:4px 10px;border-radius:20px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);white-space:nowrap}
+  .badge-pipeline .dot{width:5px;height:5px;border-radius:50%;background:var(--accent);animation:dotPulse 1.5s ease-in-out infinite}
+  .director-desc{font-size:13px;color:var(--sub);line-height:1.7;margin-bottom:16px;max-width:680px}
+  .director-tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px}
+  .tag{font-family:'DM Mono',monospace;font-size:9px;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);color:var(--sub)}
+  .btn-run{display:inline-flex;align-items:center;gap:7px;padding:10px 22px;border-radius:8px;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;transition:box-shadow .2s,transform .1s;box-shadow:0 2px 16px rgba(168,85,247,.25)}
+  .btn-run:hover{box-shadow:0 4px 28px rgba(168,85,247,.5);transform:translateY(-1px)}
+  .btn-run .material-symbols-outlined{font-size:16px!important}
+
+  /* Agent card */
+  .agent-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column;gap:12px;transition:border-color .2s,box-shadow .2s;position:relative;overflow:hidden}
+  .agent-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(168,85,247,0),transparent);transition:background .3s}
+  .agent-card:hover{border-color:rgba(168,85,247,.3);box-shadow:0 0 20px rgba(168,85,247,.07)}
+  .agent-card:hover::before{background:linear-gradient(90deg,transparent,rgba(168,85,247,.35),transparent)}
+  .card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+  .card-left{display:flex;align-items:center;gap:11px}
+  .card-icon{width:40px;height:40px;border-radius:9px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+  .card-name{font-family:'Barlow Condensed',sans-serif;font-size:14px;font-weight:700;letter-spacing:.04em;color:#fff}
+  .card-role{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin-top:1px;opacity:.8}
+  .status-badge{display:flex;align-items:center;gap:4px;font-family:'DM Mono',monospace;font-size:9px;color:var(--sub);white-space:nowrap}
+  .sdot{width:5px;height:5px;border-radius:50%;background:var(--green);box-shadow:0 0 4px var(--green)}
+  .card-desc{font-size:12px;color:var(--sub);line-height:1.65;flex:1}
+  .card-tags{display:flex;flex-wrap:wrap;gap:5px}
+  .btn-usar{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;padding:7px;border-radius:7px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);color:var(--accent);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;transition:background .2s,border-color .2s}
+  .btn-usar:hover{background:rgba(168,85,247,.2);border-color:rgba(168,85,247,.4)}
+
+  /* Cost table */
+  .cost-section{margin-top:36px;padding:22px;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+  .cost-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:14px}
+  .cost-item{padding:14px;background:rgba(168,85,247,.05);border:1px solid rgba(168,85,247,.12);border-radius:8px}
+  .cost-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--sub);letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}
+  .cost-val{font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:700;color:#fff}
+  .cost-total{background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(124,58,237,.12));border-color:rgba(168,85,247,.3)}
+  .cost-total .cost-val{color:var(--accent);font-size:28px;font-weight:800}
+  .cost-note{margin-top:12px;font-size:11.5px;color:var(--sub)}
+</style>
+</head>
+<body>
+
+<div class="bg-blobs" aria-hidden="true">
+  <div class="bg-blob b1"></div>
+  <div class="bg-blob b2"></div>
+</div>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <span class="logo-brand">DISCONTROL<span>CREATOR</span></span>
+  </div>
+  <nav class="header-nav">
+    <a class="nav-link" href="/studio">Studio</a>
+    <a class="nav-link" href="/biblioteca">Biblioteca</a>
+    <a class="nav-link active" href="/agentes">Agentes</a>
+    <a class="nav-link" href="/estadisticas">Métricas</a>
+  </nav>
+  <div class="header-right">
+    <span class="material-symbols-outlined h-icon">notifications</span>
+    <span class="material-symbols-outlined h-icon">settings</span>
+    <div class="vbadge">V.04.2</div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="aside-brand">
+      <div class="aside-brand-name">historias.en.sombra</div>
+      <div class="aside-brand-sub">V.04.2 · Control Engine</div>
+    </div>
+    <div class="aside-label">Navegación</div>
+    <a class="aside-link" href="/studio"><span class="material-symbols-outlined">movie</span>Studio</a>
+    <a class="aside-link" href="/biblioteca"><span class="material-symbols-outlined">video_library</span>Biblioteca</a>
+    <a class="aside-link active" href="/agentes"><span class="material-symbols-outlined">smart_toy</span>Agentes</a>
+    <a class="aside-link" href="/estadisticas"><span class="material-symbols-outlined">bar_chart</span>Métricas</a>
+    <div class="aside-bottom">
+      <a class="btn-pipeline" href="/studio">
+        <span class="material-symbols-outlined" style="font-size:15px!important">add</span>Nuevo Pipeline
+      </a>
+    </div>
+  </aside>
+
+  <main>
+    <h1 class="page-h1">Agentes IA</h1>
+    <p class="page-sub">Los 10 agentes especializados del pipeline de contenido de Discontrol Historys. Cada uno es independiente o trabaja en cadena bajo el Director.</p>
+
+    <div class="status-bar">
+      <div class="sb-item"><div class="sb-dot"></div><span class="sb-label">Sistema</span><span class="sb-val">Operativo</span></div>
+      <div class="sb-sep"></div>
+      <div class="sb-item"><span class="sb-label">Canal</span><span class="sb-val">@Discontrolhistorys</span></div>
+      <div class="sb-sep"></div>
+      <div class="sb-item"><span class="sb-label">Agentes</span><span class="sb-val">10 / 10 disponibles</span></div>
+      <div class="sb-sep"></div>
+      <div class="sb-item"><span class="sb-label">Coste / vídeo</span><span class="sb-val">~$2.30</span></div>
+      <div class="sb-sep"></div>
+      <div class="sb-item"><span class="sb-label">Backend</span><span class="sb-val">Railway · Paperclip</span></div>
+    </div>
+
+    <!-- Director -->
+    <div class="sec-title">Orquestador principal</div>
+    <div class="director-wrap">
+      <div class="director-card">
+        <div class="director-top">
+          <div class="director-identity">
+            <div class="big-icon">🎬</div>
+            <div>
+              <div class="director-name">Director</div>
+              <div class="director-role">Orquestador del pipeline completo</div>
+            </div>
+          </div>
+          <div class="badge-pipeline"><div class="dot"></div>PIPELINE AGENT</div>
+        </div>
+        <p class="director-desc">
+          Coordina los 9 agentes especializados en secuencia automática: busca tendencias virales, analiza la competencia, crea el guión cinematográfico, genera prompts visuales, produce 16 imágenes coherentes con Popcorn, narra con ElevenLabs, anima cada imagen con Higgsfield DoP y ensambla el MP4 final. Un solo prompt → vídeo 9:16 de 60-90 segundos listo para TikTok/Reels/Shorts.
+        </p>
+        <div class="director-tags">
+          <span class="tag">OpenRouter LLM</span><span class="tag">Higgsfield Popcorn</span><span class="tag">DoP Lite/Turbo/Standard</span><span class="tag">ElevenLabs TTS</span><span class="tag">FFmpeg</span><span class="tag">Paperclip Orchestrator</span>
+        </div>
+        <a class="btn-run" href="/studio">
+          <span class="material-symbols-outlined">play_arrow</span>Ejecutar Director en Studio
+        </a>
+      </div>
+    </div>
+
+    <!-- Agentes individuales -->
+    <div class="sec-title">Agentes especializados</div>
+    <div class="agents-grid">
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🔍</div>
+            <div><div class="card-name">Deep Search</div><div class="card-role">Tendencias virales</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Rastrea TikTok, YouTube, Reddit y Google Trends en tiempo real. Identifica qué formatos, hooks y nichos están explotando para maximizar el alcance desde el primer día.</p>
+        <div class="card-tags"><span class="tag">YouTube API</span><span class="tag">Google Trends</span><span class="tag">Claude Haiku</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">📊</div>
+            <div><div class="card-name">Channel Analyzer</div><div class="card-role">Análisis de competencia</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Disecciona canales del nicho: hooks ganadores, estructura de vídeos, ritmo de cortes, thumbnails y fórmula de retención. Identifica patrones replicables para superar a la competencia.</p>
+        <div class="card-tags"><span class="tag">YouTube API</span><span class="tag">Claude Sonnet</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">✍️</div>
+            <div><div class="card-name">Storytelling</div><div class="card-role">Guionista cinematográfico</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Crea guiones de 4-5 escenas con hook brutal en los primeros 3 segundos, narración en primera persona y CTA al final. Estructura dramática optimizada para máxima retención.</p>
+        <div class="card-tags"><span class="tag">Claude Sonnet</span><span class="tag">Estructura 4 actos</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🎨</div>
+            <div><div class="card-name">Prompt Generator</div><div class="card-role">Ingeniería de prompts</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Convierte el guión en prompts visuales ultra-detallados para Higgsfield. Mantiene coherencia estética entre escenas y selecciona el estilo Soul más adecuado para el nicho.</p>
+        <div class="card-tags"><span class="tag">Claude Sonnet</span><span class="tag">106 Soul Styles</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🍿</div>
+            <div><div class="card-name">Imagen AI</div><div class="card-role">Generación visual</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Genera sets de 8-16 imágenes 9:16 coherentes entre sí con Higgsfield Popcorn Auto. Sistema anti-NSFW activo. Retry automático x3 en errores de servidor.</p>
+        <div class="card-tags"><span class="tag">Higgsfield Popcorn</span><span class="tag">Soul API</span><span class="tag">~$0.25/set</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🎞️</div>
+            <div><div class="card-name">Video Prompt</div><div class="card-role">Motion engineering</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Analiza cada imagen y asigna motion prompts cinematográficos según su posición narrativa (apertura→tensión→resolución). 121 movimientos DoP disponibles.</p>
+        <div class="card-tags"><span class="tag">Claude Haiku</span><span class="tag">121 motions DoP</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🎬</div>
+            <div><div class="card-name">Img → Video</div><div class="card-role">Animación First-Last Frame</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Anima cada imagen en un clip de 5 segundos con Higgsfield DoP. Procesa lotes de 3 en paralelo. Timeout de 30 min. Modelos: Lite (2cr), Turbo (6.5cr) o Standard (9cr).</p>
+        <div class="card-tags"><span class="tag">DoP Lite/Turbo/Standard</span><span class="tag">~$1.87/vídeo</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">🎙️</div>
+            <div><div class="card-name">TTS — Voz en off</div><div class="card-role">Narración dramática</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Narración en español con ElevenLabs, configurada para máxima expresividad dramática (stability 0.20, style 0.80). Extrae automáticamente la sección de narración del guión.</p>
+        <div class="card-tags"><span class="tag">ElevenLabs</span><span class="tag">~$0.15/vídeo</span><span class="tag">ES-MX</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+      <div class="agent-card">
+        <div class="card-top">
+          <div class="card-left">
+            <div class="card-icon">📱</div>
+            <div><div class="card-name">Video Assembler</div><div class="card-role">Ensamblado final MP4</div></div>
+          </div>
+          <div class="status-badge"><div class="sdot"></div>Listo</div>
+        </div>
+        <p class="card-desc">Ensambla todos los clips + audio narración en un MP4 9:16 con FFmpeg. Duración dinámica calculada por escenas. El resultado sube automáticamente y se guarda en Supabase.</p>
+        <div class="card-tags"><span class="tag">FFmpeg</span><span class="tag">9:16 vertical</span><span class="tag">60-90s</span><span class="tag">Supabase</span></div>
+        <a class="btn-usar" href="/studio">Usar en Studio</a>
+      </div>
+
+    </div><!-- /agents-grid -->
+
+    <!-- Coste de producción -->
+    <div class="cost-section">
+      <div class="sec-title" style="margin-bottom:0">Coste de producción por vídeo completo</div>
+      <div class="cost-grid">
+        <div class="cost-item"><div class="cost-label">Popcorn 16 imgs</div><div class="cost-val">~$0.25</div></div>
+        <div class="cost-item"><div class="cost-label">DoP Lite 15 clips</div><div class="cost-val">~$1.87</div></div>
+        <div class="cost-item"><div class="cost-label">ElevenLabs TTS</div><div class="cost-val">~$0.15</div></div>
+        <div class="cost-item"><div class="cost-label">LLM (4 agentes)</div><div class="cost-val">~$0.03</div></div>
+        <div class="cost-item cost-total"><div class="cost-label">TOTAL / VÍDEO</div><div class="cost-val">~$2.30</div></div>
+      </div>
+      <p class="cost-note">500 créditos Higgsfield (~$31) = aprox. 13-14 vídeos completos · OpenRouter Haiku/Sonnet vía API</p>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

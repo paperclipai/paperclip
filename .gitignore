@@ -34,6 +34,8 @@ server/src/**/*.js
 server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
+# Exception: hand-written type declarations (not build artifacts)
+!server/src/types/express.d.ts
 tmp/
 feedback-export-*
 diagnostics/

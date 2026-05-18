@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Discontrol Creator — Contenido viral con IA</title>
+  <meta name="description" content="Genera 8, 20 o 50 vídeos al mes en piloto automático con agentes IA especializados. Guión, voz, vídeo y publicación." />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700;800&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d0d0f;
+      --surface: #161618;
+      --surface2:#1c1c1f;
+      --border:  #2a2a2e;
+      --muted:   #3a3a40;
+      --text:    #e8e8ec;
+      --sub:     #8888a0;
+      --accent:  #a855f7;
+      --accent2: #7c3aed;
+      --green:   #22c55e;
+      --yellow:  #eab308;
+      --red:     #ef4444;
+    }
+
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: 'Barlow', system-ui, sans-serif; overflow-x: hidden; }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(13,13,15,0.92); backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 40px;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: 17px; font-weight: 800; letter-spacing: 0.04em;
+      color: var(--text); text-decoration: none; text-transform: uppercase;
+    }
+    .nav-logo .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 10px var(--accent);
+    }
+    .nav-links { display: flex; gap: 28px; }
+    .nav-links a { font-size: 14px; color: var(--sub); text-decoration: none; transition: color .2s; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta { display: flex; gap: 10px; align-items: center; }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 9px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; transition: all .2s;
+      text-decoration: none; font-family: 'Barlow', sans-serif; line-height: 1;
+    }
+    .btn-ghost { background: transparent; color: var(--sub); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent2); transform: translateY(-1px); box-shadow: 0 6px 24px rgba(168,85,247,.4); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btn-outline:hover { border-color: rgba(168,85,247,.5); color: var(--accent); }
+    .btn-lg { padding: 13px 28px; font-size: 15px; border-radius: 10px; }
+
+    /* ── HERO ── */
+    .hero {
+      min-height: calc(100vh - 57px);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 80px 24px;
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: ''; position: absolute; top: -240px; left: 50%; transform: translateX(-50%);
+      width: 900px; height: 900px;
+      background: radial-gradient(ellipse, rgba(168,85,247,.13) 0%, transparent 68%);
+      pointer-events: none;
+    }
+    .hero::after {
+      content: ''; position: absolute; bottom: -100px; right: -200px;
+      width: 500px; height: 500px;
+      background: radial-gradient(ellipse, rgba(124,58,237,.07) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 16px; border-radius: 20px;
+      background: rgba(168,85,247,.08); border: 1px solid rgba(168,85,247,.22);
+      font-size: 11px; color: var(--accent); font-weight: 700;
+      letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 32px;
+      position: relative; z-index: 1;
+    }
+    .hero-badge .pulse {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.4)} }
+
+    .hero h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(40px, 7.5vw, 84px); font-weight: 900;
+      line-height: 1.03; letter-spacing: -0.035em;
+      max-width: 920px; margin-bottom: 24px;
+      position: relative; z-index: 1;
+    }
+    .hero h1 em { font-style: normal; color: var(--accent); }
+    .hero p {
+      font-size: 18px; color: var(--sub); max-width: 540px;
+      line-height: 1.65; margin-bottom: 44px;
+      position: relative; z-index: 1;
+    }
+    .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 72px; position: relative; z-index: 1; }
+
+    .hero-stats {
+      display: flex; gap: 56px; flex-wrap: wrap; justify-content: center;
+      padding-top: 56px; border-top: 1px solid var(--border);
+      position: relative; z-index: 1; width: 100%; max-width: 700px;
+    }
+    .stat-item { text-align: center; }
+    .stat-value { font-family: 'Barlow Condensed', sans-serif; font-size: 40px; font-weight: 800; color: var(--text); line-height: 1; }
+    .stat-label { font-size: 13px; color: var(--sub); margin-top: 6px; }
+
+    /* ── SECTION WRAPPERS ── */
+    .section-wrap { width: 100%; }
+    .section-wrap.alt { background: var(--surface); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .section-inner { max-width: 1100px; margin: 0 auto; padding: 96px 24px; }
+
+    .section-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--accent); margin-bottom: 14px;
+    }
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(28px, 3.5vw, 44px); font-weight: 900;
+      letter-spacing: -0.025em; margin-bottom: 16px; line-height: 1.1;
+    }
+    .section-sub { font-size: 16px; color: var(--sub); max-width: 520px; line-height: 1.65; }
+    .section-head { margin-bottom: 60px; }
+
+    /* ── HOW IT WORKS ── */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .step-card {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+      padding: 32px; position: relative; overflow: hidden;
+      transition: border-color .25s, transform .25s;
+    }
+    .step-card:hover { border-color: rgba(168,85,247,.4); transform: translateY(-4px); }
+    .step-num {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 72px; font-weight: 800;
+      color: rgba(168,85,247,.07); position: absolute; top: 8px; right: 16px; line-height: 1;
+      user-select: none;
+    }
+    .step-icon { font-size: 30px; margin-bottom: 20px; }
+    .step-title { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
+    .step-desc { font-size: 14px; color: var(--sub); line-height: 1.65; }
+    .step-connector {
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 20px;
+      padding: 0 4px; margin-top: 56px;
+    }
+
+    /* ── AGENTS ── */
+    .agents-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .agent-card {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 14px;
+      padding: 24px; display: flex; flex-direction: column; gap: 12px;
+      transition: border-color .2s, transform .2s;
+    }
+    .agent-card:hover { border-color: rgba(168,85,247,.3); transform: translateY(-3px); }
+    .agent-icon {
+      font-size: 22px; width: 46px; height: 46px; border-radius: 11px;
+      background: rgba(168,85,247,.1); border: 1px solid rgba(168,85,247,.15);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .agent-name { font-size: 15px; font-weight: 700; }
+    .agent-desc { font-size: 13px; color: var(--sub); line-height: 1.6; flex: 1; }
+    .agent-tag {
+      font-size: 10px; font-weight: 700; color: var(--accent);
+      background: rgba(168,85,247,.1); padding: 3px 10px; border-radius: 20px;
+      width: fit-content; letter-spacing: 0.06em; text-transform: uppercase;
+    }
+
+    /* ── PRICING ── */
+    .billing-toggle-row { display: flex; align-items: center; gap: 14px; margin-bottom: 52px; }
+    .toggle-label { font-size: 14px; color: var(--sub); font-weight: 500; transition: color .2s; }
+    .toggle-label.on { color: var(--text); font-weight: 600; }
+    .badge-save {
+      background: var(--green); color: #000; font-size: 10px; font-weight: 800;
+      padding: 3px 9px; border-radius: 20px; margin-left: 7px; letter-spacing: 0.04em;
+    }
+    .toggle-track {
+      width: 48px; height: 26px; background: var(--muted); border-radius: 13px;
+      position: relative; cursor: pointer; transition: background .2s; flex-shrink: 0;
+    }
+    .toggle-track.on { background: var(--accent); }
+    .toggle-thumb {
+      width: 20px; height: 20px; background: #fff; border-radius: 50%;
+      position: absolute; top: 3px; left: 3px;
+      transition: transform .2s; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+    }
+    .toggle-track.on .toggle-thumb { transform: translateX(22px); }
+
+    .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: start; }
+    .pricing-card {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 20px;
+      padding: 36px 32px; display: flex; flex-direction: column;
+      position: relative; transition: transform .25s, border-color .25s;
+    }
+    .pricing-card:hover { transform: translateY(-5px); }
+    .pricing-card.featured {
+      border-color: var(--accent);
+      background: linear-gradient(160deg, rgba(168,85,247,.08) 0%, var(--bg) 55%);
+      transform: scale(1.03);
+    }
+    .pricing-card.featured:hover { transform: scale(1.03) translateY(-5px); }
+    .pricing-popular {
+      position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+      background: var(--accent); color: #fff; font-size: 10px; font-weight: 800;
+      padding: 5px 16px; border-radius: 20px; letter-spacing: 0.08em;
+      text-transform: uppercase; white-space: nowrap;
+    }
+    .pricing-plan { font-size: 12px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--sub); margin-bottom: 12px; }
+    .pricing-price {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 52px; font-weight: 900; letter-spacing: -0.03em; line-height: 1;
+      margin-bottom: 6px;
+    }
+    .pricing-price sup { font-size: 24px; font-weight: 700; vertical-align: super; line-height: 0; }
+    .pricing-price .per { font-size: 16px; font-weight: 500; color: var(--sub); }
+    .pricing-videos { font-size: 14px; color: var(--sub); margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid var(--border); }
+    .pricing-videos strong { color: var(--text); font-weight: 700; }
+    .pricing-features { display: flex; flex-direction: column; gap: 13px; flex: 1; margin-bottom: 32px; }
+    .pricing-feat { display: flex; gap: 10px; font-size: 14px; align-items: flex-start; line-height: 1.4; }
+    .pricing-feat .ck { color: var(--green); font-size: 14px; flex-shrink: 0; margin-top: 1px; font-weight: 700; }
+
+    /* ── CTA BANNER ── */
+    .cta-banner-wrap { padding: 0 24px 96px; max-width: 1100px; margin: 0 auto; }
+    .cta-banner {
+      background: linear-gradient(135deg, rgba(168,85,247,.12) 0%, rgba(124,58,237,.05) 100%);
+      border: 1px solid rgba(168,85,247,.2); border-radius: 24px;
+      padding: 80px 40px; text-align: center;
+    }
+    .cta-banner .section-title { margin-bottom: 16px; }
+    .cta-banner p { font-size: 17px; color: var(--sub); margin-bottom: 40px; line-height: 1.65; }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px; max-width: 100%;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;
+    }
+    .footer-logo { font-family: 'Barlow Condensed', sans-serif; font-size: 15px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+    .footer-links { display: flex; gap: 24px; flex-wrap: wrap; }
+    .footer-links a { font-size: 13px; color: var(--sub); text-decoration: none; transition: color .2s; }
+    .footer-links a:hover { color: var(--text); }
+    .footer-copy { font-size: 12px; color: var(--muted); }
+
+    /* ── AUTH MODAL ── */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.72); backdrop-filter: blur(10px);
+      z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px;
+      opacity: 0; pointer-events: none; transition: opacity .2s;
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      padding: 40px; width: 100%; max-width: 420px;
+      transform: translateY(24px) scale(.98); transition: transform .25s;
+    }
+    .modal-overlay.open .modal { transform: translateY(0) scale(1); }
+    .modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+    .modal-title { font-family: 'Space Grotesk', sans-serif; font-size: 22px; font-weight: 900; }
+    .modal-sub { font-size: 13px; color: var(--sub); margin-top: 5px; }
+    .modal-close {
+      background: none; border: none; color: var(--sub); cursor: pointer;
+      font-size: 18px; line-height: 1; padding: 6px; border-radius: 6px; transition: color .2s, background .2s;
+    }
+    .modal-close:hover { color: var(--text); background: var(--bg); }
+    .modal-tabs {
+      display: flex; gap: 4px; background: var(--bg);
+      border-radius: 10px; padding: 4px; margin-bottom: 28px;
+    }
+    .modal-tab {
+      flex: 1; padding: 9px; text-align: center; font-size: 13px; font-weight: 600;
+      color: var(--sub); cursor: pointer; border-radius: 7px;
+      border: none; background: transparent; transition: all .2s; font-family: 'Barlow', sans-serif;
+    }
+    .modal-tab.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 6px rgba(0,0,0,.35); }
+    .form-group { margin-bottom: 16px; }
+    .form-label { font-size: 12px; font-weight: 700; color: var(--sub); margin-bottom: 7px; display: block; letter-spacing: 0.04em; text-transform: uppercase; }
+    .form-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 9px; padding: 11px 14px; font-size: 14px;
+      color: var(--text); font-family: 'Barlow', sans-serif;
+      transition: border-color .2s, box-shadow .2s; outline: none;
+    }
+    .form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(168,85,247,.12); }
+    .form-input::placeholder { color: var(--muted); }
+    .form-footer { text-align: center; margin-top: 20px; font-size: 13px; color: var(--sub); }
+    .form-footer a { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    .modal-msg {
+      font-size: 13px; padding: 11px 14px; border-radius: 9px;
+      margin-bottom: 18px; display: none; line-height: 1.5;
+    }
+    .modal-msg.success { background: rgba(34,197,94,.1); color: var(--green); border: 1px solid rgba(34,197,94,.22); display: block; }
+    .modal-msg.error   { background: rgba(239,68,68,.1); color: var(--red); border: 1px solid rgba(239,68,68,.22); display: block; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 900px) {
+      nav { padding: 14px 20px; }
+      .nav-links { display: none; }
+      .steps { grid-template-columns: 1fr; gap: 16px; }
+      .agents-grid { grid-template-columns: repeat(2, 1fr); }
+      .pricing-grid { grid-template-columns: 1fr; gap: 16px; }
+      .pricing-card.featured { transform: none; }
+      .pricing-card.featured:hover { transform: translateY(-5px); }
+      .cta-banner { padding: 56px 28px; }
+      footer { padding: 32px 20px; flex-direction: column; text-align: center; justify-content: center; }
+    }
+    @media (max-width: 600px) {
+      .hero h1 { font-size: 38px; }
+      .agents-grid { grid-template-columns: 1fr; }
+      .hero-stats { gap: 32px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="/" class="nav-logo"><span class="dot"></span>Discontrol Creator</a>
+  <div class="nav-links">
+    <a href="#como-funciona">Cómo funciona</a>
+    <a href="#agentes">Agentes</a>
+    <a href="#precios">Precios</a>
+  </div>
+  <div class="nav-cta">
+    <button class="btn btn-ghost" onclick="openModal('login')">Iniciar sesión</button>
+    <button class="btn btn-primary" onclick="openModal('signup')">Empieza gratis</button>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div style="max-width:1100px;margin:0 auto;width:100%">
+  <div class="hero">
+    <div class="hero-badge"><span class="pulse"></span>10 agentes IA activos</div>
+    <h1>Crea contenido viral<br>en <em>piloto automático</em></h1>
+    <p>Guión, voz, vídeo y publicación. Tu agencia IA genera hasta 50 vídeos al mes sin que muevas un dedo.</p>
+    <div class="hero-cta">
+      <button class="btn btn-primary btn-lg" onclick="openModal('signup')">Empieza gratis →</button>
+      <a href="#como-funciona" class="btn btn-outline btn-lg">Ver cómo funciona</a>
+    </div>
+    <div class="hero-stats">
+      <div class="stat-item"><div class="stat-value">500+</div><div class="stat-label">Vídeos creados</div></div>
+      <div class="stat-item"><div class="stat-value">10</div><div class="stat-label">Agentes IA</div></div>
+      <div class="stat-item"><div class="stat-value">48h</div><div class="stat-label">Entrega máxima</div></div>
+      <div class="stat-item"><div class="stat-value">3</div><div class="stat-label">Plataformas</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- HOW IT WORKS -->
+<div class="section-wrap alt" id="como-funciona">
+  <div class="section-inner">
+    <div class="section-head">
+      <div class="section-label">Cómo funciona</div>
+      <div class="section-title">Del brief al vídeo en 3 pasos</div>
+      <div class="section-sub">Sin edición manual. Sin grabación. Los agentes hacen todo el trabajo por ti.</div>
+    </div>
+    <div class="steps">
+      <div class="step-card">
+        <div class="step-num">01</div>
+        <div class="step-icon">🎯</div>
+        <div class="step-title">Elige tu nicho</div>
+        <div class="step-desc">Selecciona el agente adecuado y define la temática. El Director coordina todo el proceso de producción desde aquí.</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">02</div>
+        <div class="step-icon">⚡</div>
+        <div class="step-title">Los agentes trabajan</div>
+        <div class="step-desc">Guionista, narrador, generador de imágenes y montador se ejecutan en cadena de forma completamente automática.</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">03</div>
+        <div class="step-icon">🚀</div>
+        <div class="step-title">Recibe y publica</div>
+        <div class="step-desc">Vídeo listo en formato vertical para TikTok y Reels. En el plan Agency, subida directa a los canales del cliente.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- AGENTS -->
+<div class="section-wrap" id="agentes">
+  <div class="section-inner">
+    <div class="section-head">
+      <div class="section-label">Los agentes</div>
+      <div class="section-title">Tu equipo IA completo</div>
+      <div class="section-sub">10 agentes especializados que trabajan en cadena para producir contenido de calidad consistente.</div>
+    </div>
+    <div class="agents-grid">
+      <div class="agent-card">
+        <div class="agent-icon">🎬</div>
+        <div><div class="agent-name">Director</div><div class="agent-tag">Orquestador</div></div>
+        <div class="agent-desc">Coordina el pipeline completo: asigna tareas, supervisa el progreso y entrega el resultado final.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon">✍️</div>
+        <div><div class="agent-name">Storytelling</div><div class="agent-tag">Guionista</div></div>
+        <div class="agent-desc">Genera guiones virales adaptados al nicho, con hooks de atención y estructura narrativa probada.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon">🎙️</div>
+        <div><div class="agent-name">TTS</div><div class="agent-tag">Narrador</div></div>
+        <div class="agent-desc">Convierte el guión en narración con ElevenLabs. Voces naturales, múltiples tonos y estilos disponibles.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon">🖼️</div>
+        <div><div class="agent-name">Imagen Video</div><div class="agent-tag">Visual IA</div></div>
+        <div class="agent-desc">Genera clips cinematográficos con Higgsfield DoP a partir de keyframes seleccionados por IA.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon">🎞️</div>
+        <div><div class="agent-name">Popcorn Auto</div><div class="agent-tag">Generador</div></div>
+        <div class="agent-desc">Crea vídeos coherentes con Higgsfield Popcorn. Estilo visual consistente en toda la serie de contenido.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon">⚙️</div>
+        <div><div class="agent-name">Assembler</div><div class="agent-tag">Montador</div></div>
+        <div class="agent-desc">Ensambla clips, audio y subtítulos con FFmpeg. Entrega el MP4 final listo para publicar en cualquier plataforma.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PRICING -->
+<div class="section-wrap alt" id="precios">
+  <div class="section-inner">
+    <div class="section-head">
+      <div class="section-label">Precios</div>
+      <div class="section-title">Simple y predecible</div>
+      <div class="section-sub">Sin costes por vídeo. Sin sorpresas. Cancela cuando quieras.</div>
+    </div>
+
+    <div class="billing-toggle-row">
+      <span class="toggle-label on" id="lbl-monthly">Mensual</span>
+      <div class="toggle-track" id="billing-toggle" onclick="toggleBilling()" role="switch" aria-checked="false" tabindex="0">
+        <div class="toggle-thumb"></div>
+      </div>
+      <span class="toggle-label" id="lbl-annual">Anual <span class="badge-save">2 MESES GRATIS</span></span>
+    </div>
+
+    <div class="pricing-grid">
+      <!-- STARTER -->
+      <div class="pricing-card">
+        <div class="pricing-plan">Starter</div>
+        <div class="pricing-price"><sup>€</sup><span id="num-starter">29</span><span class="per">/mes</span></div>
+        <div class="pricing-videos"><strong id="vids-starter">8 vídeos</strong> al mes</div>
+        <div class="pricing-features">
+          <div class="pricing-feat"><span class="ck">✓</span>Guión generado por IA</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Voz automatizada (ElevenLabs)</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Imágenes con Higgsfield</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Formato vertical (TikTok / Reels)</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Entrega en 48h por vídeo</div>
+        </div>
+        <button class="btn btn-outline" style="width:100%" onclick="openModal('signup','starter')">Empezar con Starter</button>
+      </div>
+
+      <!-- PRO -->
+      <div class="pricing-card featured">
+        <div class="pricing-popular">Más popular</div>
+        <div class="pricing-plan">Pro</div>
+        <div class="pricing-price"><sup>€</sup><span id="num-pro">65</span><span class="per">/mes</span></div>
+        <div class="pricing-videos"><strong id="vids-pro">20 vídeos</strong> al mes</div>
+        <div class="pricing-features">
+          <div class="pricing-feat"><span class="ck">✓</span>Todo lo del Starter</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Formato horizontal (YouTube)</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Subtítulos automáticos</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Eliges nicho y temática</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Entrega en 24h por vídeo</div>
+        </div>
+        <button class="btn btn-primary" style="width:100%" onclick="openModal('signup','pro')">Empezar con Pro</button>
+      </div>
+
+      <!-- AGENCY -->
+      <div class="pricing-card">
+        <div class="pricing-plan">Agency</div>
+        <div class="pricing-price"><sup>€</sup><span id="num-agency">149</span><span class="per">/mes</span></div>
+        <div class="pricing-videos"><strong id="vids-agency">50 vídeos</strong> al mes</div>
+        <div class="pricing-features">
+          <div class="pricing-feat"><span class="ck">✓</span>Todo lo del Pro</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Marca blanca (sin logo Diskontrol)</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Subida directa a canales del cliente</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Panel de estado de vídeos</div>
+          <div class="pricing-feat"><span class="ck">✓</span>Soporte prioritario por WhatsApp</div>
+        </div>
+        <button class="btn btn-outline" style="width:100%" onclick="openModal('signup','agency')">Empezar con Agency</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CTA BANNER -->
+<div class="cta-banner-wrap" style="padding-top:96px">
+  <div class="cta-banner">
+    <div class="section-label" style="text-align:center">¿Listo para escalar?</div>
+    <div class="section-title" style="text-align:center">Empieza hoy, sin tarjeta de crédito</div>
+    <p>Crea tu cuenta y lanza tu primer vídeo IA en menos de 5 minutos.</p>
+    <button class="btn btn-primary btn-lg" onclick="openModal('signup')">Crear cuenta gratis →</button>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">⬡ Discontrol Creator</div>
+  <div class="footer-links">
+    <a href="/terms">Términos de uso</a>
+    <a href="/privacy">Privacidad</a>
+    <a href="#precios">Precios</a>
+    <a href="mailto:alejandrojesusperezblanco4@gmail.com">Contacto</a>
+  </div>
+  <div class="footer-copy">© 2026 Diskontrol. Todos los derechos reservados.</div>
+</footer>
+
+<!-- AUTH MODAL -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModalOnBg(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-title">Crear cuenta</div>
+        <div class="modal-sub"  id="modal-sub">Empieza gratis, sin tarjeta de crédito</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()" aria-label="Cerrar">✕</button>
+    </div>
+
+    <div class="modal-tabs">
+      <button class="modal-tab active" id="tab-signup" onclick="switchTab('signup')">Crear cuenta</button>
+      <button class="modal-tab"        id="tab-login"  onclick="switchTab('login')">Iniciar sesión</button>
+    </div>
+
+    <div id="modal-msg" class="modal-msg" role="alert"></div>
+
+    <!-- SIGNUP -->
+    <form id="form-signup" onsubmit="handleSignup(event)">
+      <div class="form-group">
+        <label class="form-label" for="signup-name">Nombre</label>
+        <input class="form-input" type="text" id="signup-name" placeholder="Tu nombre" autocomplete="name" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-email">Email</label>
+        <input class="form-input" type="email" id="signup-email" placeholder="tu@email.com" autocomplete="email" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="signup-password">Contraseña</label>
+        <input class="form-input" type="password" id="signup-password" placeholder="Mínimo 8 caracteres" minlength="8" autocomplete="new-password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg" style="width:100%;margin-top:8px" id="btn-signup">
+        Crear cuenta gratis
+      </button>
+      <div class="form-footer">¿Ya tienes cuenta? <a onclick="switchTab('login')">Inicia sesión</a></div>
+    </form>
+
+    <!-- LOGIN -->
+    <form id="form-login" style="display:none" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label class="form-label" for="login-email">Email</label>
+        <input class="form-input" type="email" id="login-email" placeholder="tu@email.com" autocomplete="email" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="login-password">Contraseña</label>
+        <input class="form-input" type="password" id="login-password" placeholder="Tu contraseña" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg" style="width:100%;margin-top:8px" id="btn-login">
+        Iniciar sesión
+      </button>
+      <div class="form-footer">¿No tienes cuenta? <a onclick="switchTab('signup')">Regístrate gratis</a></div>
+    </form>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+  let supabaseClient = null;
+  let selectedPlan   = null;
+  let annualBilling  = false;
+
+  const PRICES = {
+    monthly: { starter: 29,  pro: 65,  agency: 149 },
+    annual:  { starter: 24,  pro: 54,  agency: 124 },
+  };
+
+  /* ── Init ── */
+  async function initAuth() {
+    try {
+      const r = await fetch('/api/creator/config');
+      if (!r.ok) return;
+      const cfg = await r.json();
+      if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
+        supabaseClient = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) window.location.href = '/studio';
+      }
+    } catch (_) { /* auth not configured yet */ }
+  }
+
+  /* ── Pricing toggle ── */
+  function toggleBilling() {
+    annualBilling = !annualBilling;
+    const track = document.getElementById('billing-toggle');
+    track.classList.toggle('on', annualBilling);
+    track.setAttribute('aria-checked', String(annualBilling));
+
+    document.getElementById('lbl-monthly').classList.toggle('on', !annualBilling);
+    document.getElementById('lbl-annual').classList.toggle('on',   annualBilling);
+
+    const p = annualBilling ? PRICES.annual : PRICES.monthly;
+    document.getElementById('num-starter').textContent = p.starter;
+    document.getElementById('num-pro').textContent     = p.pro;
+    document.getElementById('num-agency').textContent  = p.agency;
+  }
+  document.getElementById('billing-toggle').addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleBilling(); }
+  });
+
+  /* ── Modal ── */
+  function openModal(tab = 'signup', plan = null) {
+    if (plan) selectedPlan = plan;
+    switchTab(tab);
+    clearMsg();
+    document.getElementById('modal-overlay').classList.add('open');
+    document.body.style.overflow = 'hidden';
+    setTimeout(() => {
+      const first = document.querySelector('#form-' + tab + ' .form-input');
+      if (first) first.focus();
+    }, 250);
+  }
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('open');
+    document.body.style.overflow = '';
+  }
+  function closeModalOnBg(e) {
+    if (e.target === document.getElementById('modal-overlay')) closeModal();
+  }
+  function switchTab(tab) {
+    const isSignup = tab === 'signup';
+    document.getElementById('tab-signup').className = 'modal-tab' + (isSignup ? ' active' : '');
+    document.getElementById('tab-login').className  = 'modal-tab' + (!isSignup ? ' active' : '');
+    document.getElementById('form-signup').style.display = isSignup ? '' : 'none';
+    document.getElementById('form-login').style.display  = isSignup ? 'none' : '';
+    document.getElementById('modal-title').textContent   = isSignup ? 'Crear cuenta' : 'Bienvenido de vuelta';
+    document.getElementById('modal-sub').textContent     = isSignup ? 'Empieza gratis, sin tarjeta de crédito' : 'Accede a tu Studio';
+    clearMsg();
+  }
+
+  /* ── Messages ── */
+  function showMsg(text, type) {
+    const el = document.getElementById('modal-msg');
+    el.textContent = text;
+    el.className   = 'modal-msg ' + type;
+  }
+  function clearMsg() {
+    const el = document.getElementById('modal-msg');
+    el.textContent = '';
+    el.className   = 'modal-msg';
+  }
+
+  /* ── Loading state ── */
+  function setLoading(btnId, loading) {
+    const btn = document.getElementById(btnId);
+    btn.disabled = loading;
+    if (loading) {
+      btn.dataset.orig = btn.textContent;
+      btn.textContent  = 'Cargando…';
+    } else {
+      btn.textContent = btn.dataset.orig || btn.textContent;
+    }
+  }
+
+  /* ── Signup ── */
+  async function handleSignup(e) {
+    e.preventDefault();
+    if (!supabaseClient) { showMsg('Servicio temporalmente no disponible. Inténtalo de nuevo.', 'error'); return; }
+    setLoading('btn-signup', true);
+    clearMsg();
+    try {
+      const { error } = await supabaseClient.auth.signUp({
+        email:    document.getElementById('signup-email').value,
+        password: document.getElementById('signup-password').value,
+        options:  { data: { full_name: document.getElementById('signup-name').value, plan: selectedPlan || 'starter' } },
+      });
+      if (error) throw error;
+      showMsg('¡Cuenta creada! Revisa tu email para confirmar y luego accede al Studio.', 'success');
+    } catch (err) {
+      showMsg(err.message || 'Error al crear la cuenta. Inténtalo de nuevo.', 'error');
+    } finally {
+      setLoading('btn-signup', false);
+    }
+  }
+
+  /* ── Login ── */
+  async function handleLogin(e) {
+    e.preventDefault();
+    if (!supabaseClient) { showMsg('Servicio temporalmente no disponible. Inténtalo de nuevo.', 'error'); return; }
+    setLoading('btn-login', true);
+    clearMsg();
+    try {
+      const { error } = await supabaseClient.auth.signInWithPassword({
+        email:    document.getElementById('login-email').value,
+        password: document.getElementById('login-password').value,
+      });
+      if (error) throw error;
+      window.location.href = '/studio';
+    } catch (err) {
+      showMsg(err.message || 'Credenciales incorrectas. Revisa tu email y contraseña.', 'error');
+    } finally {
+      setLoading('btn-login', false);
+    }
+  }
+
+  /* ── Keyboard ── */
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+  initAuth();
+</script>
+</body>
+</html>

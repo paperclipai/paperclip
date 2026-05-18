@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { companyMemberships, authUsers, principalPermissionGrants } from "@paperclipai/db";
+import { eq, and } from "drizzle-orm";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -407,6 +409,124 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  // ── Member management ────────────────────────────────────────────────────────
+
+  // GET /api/companies/:companyId/members — list user members with email + name
+  router.get("/:companyId/members", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    try {
+      const rows = await (db as any)
+        .select({
+          membershipId: companyMemberships.id,
+          userId: companyMemberships.principalId,
+          role: companyMemberships.membershipRole,
+          status: companyMemberships.status,
+          createdAt: companyMemberships.createdAt,
+          name: authUsers.name,
+          email: authUsers.email,
+        })
+        .from(companyMemberships)
+        .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.status, "active"),
+          )
+        );
+      res.json({ members: rows });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // POST /api/companies/:companyId/members — add member by email
+  router.post("/:companyId/members", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const { email, role } = req.body as { email?: string; role?: string };
+    if (!email) { res.status(400).json({ error: "email required" }); return; }
+    try {
+      const [user] = await (db as any)
+        .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+        .from(authUsers)
+        .where(eq(authUsers.email, email.toLowerCase().trim()))
+        .limit(1);
+      if (!user) { res.status(404).json({ error: "No user found with that email" }); return; }
+      await (db as any)
+        .insert(companyMemberships)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: user.id,
+          status: "active",
+          membershipRole: role || "member",
+        })
+        .onConflictDoNothing();
+      await (db as any)
+        .insert(principalPermissionGrants)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: user.id,
+          permissionKey: "tasks:assign",
+          scope: null,
+          grantedByUserId: null,
+        })
+        .onConflictDoNothing();
+      res.json({ ok: true, user: { id: user.id, name: user.name, email: user.email } });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // POST /api/companies/:companyId/members/:userId/grant — grant tasks:assign to existing member
+  router.post("/:companyId/members/:userId/grant", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId } = req.params as { companyId: string; userId: string };
+    assertCompanyAccess(req, companyId);
+    try {
+      await (db as any)
+        .insert(principalPermissionGrants)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: userId,
+          permissionKey: "tasks:assign",
+          scope: null,
+          grantedByUserId: null,
+        })
+        .onConflictDoNothing();
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // DELETE /api/companies/:companyId/members/:userId — remove member
+  router.delete("/:companyId/members/:userId", async (req, res) => {
+    assertBoard(req);
+    const { companyId, userId } = req.params as { companyId: string; userId: string };
+    assertCompanyAccess(req, companyId);
+    try {
+      await (db as any)
+        .delete(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, userId),
+          )
+        );
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
   });
 
   return router;

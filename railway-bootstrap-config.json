@@ -1,0 +1,17 @@
+{
+  "$meta": { "version": 1, "updatedAt": "2026-04-11T20:00:00.000Z", "source": "configure" },
+  "database": { "mode": "postgres" },
+  "logging": { "mode": "file", "logDir": "/paperclip/logs" },
+  "server": {
+    "deploymentMode": "authenticated",
+    "exposure": "public",
+    "host": "0.0.0.0",
+    "port": 3100,
+    "allowedHostnames": ["spirited-charm-production.up.railway.app"],
+    "serveUi": true
+  },
+  "telemetry": { "enabled": false },
+  "auth": { "baseUrlMode": "explicit", "publicBaseUrl": "https://spirited-charm-production.up.railway.app", "disableSignUp": false },
+  "storage": { "provider": "local_disk", "localDisk": { "baseDir": "/paperclip/storage" } },
+  "secrets": { "provider": "local_encrypted", "strictMode": false, "localEncrypted": { "keyFilePath": "/paperclip/secrets/master.key" } }
+}

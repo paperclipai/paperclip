@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>DiscontrolCreator | Biblioteca</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0d0d0f;--surface:#161618;--border:#222226;--muted:#3a3a40;--text:#e8e8ec;--sub:#7a7a90;--accent:#a855f7;--accent2:#7c3aed;--green:#22c55e;--teal:#3cddc7}
+  body{background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  .material-symbols-outlined{font-variation-settings:'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24}
+  .bg-blobs{position:fixed;inset:0;pointer-events:none;z-index:-1;overflow:hidden}
+  .bg-blob{position:absolute;border-radius:50%;filter:blur(100px)}
+  .b1{width:600px;height:600px;background:rgba(120,40,220,.07);top:-100px;left:-100px;animation:blobDrift 18s ease-in-out infinite alternate}
+  .b2{width:500px;height:500px;background:rgba(80,20,180,.05);bottom:-80px;right:-80px;animation:blobDrift 22s ease-in-out infinite alternate-reverse}
+  @keyframes blobDrift{0%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-20px) scale(1.06)}100%{transform:translate(-20px,30px) scale(.96)}}
+  @keyframes dotPulse{0%,100%{box-shadow:0 0 6px var(--accent)}50%{box-shadow:0 0 14px var(--accent),0 0 28px rgba(168,85,247,.35)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+  header{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:56px;background:linear-gradient(90deg,rgba(13,13,15,.97) 0%,rgba(22,10,38,.97) 50%,rgba(13,13,15,.97) 100%);border-bottom:1px solid rgba(168,85,247,.2);backdrop-filter:blur(12px)}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:dotPulse 2.5s ease-in-out infinite}
+  .logo-brand{font-family:'Space Grotesk',sans-serif;font-weight:900;font-size:16px;letter-spacing:-.02em;color:#fff}
+  .logo-brand span{color:var(--accent)}
+  .header-nav{display:flex;gap:4px}
+  .nav-link{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub);text-decoration:none;padding:5px 12px;border-radius:6px;transition:color .15s,background .15s}
+  .nav-link:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .nav-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .header-right{display:flex;align-items:center;gap:8px}
+  .h-icon{font-size:18px!important;color:var(--sub);cursor:pointer;transition:color .15s}
+  .h-icon:hover{color:var(--text)}
+  .vbadge{font-size:11px;color:var(--sub);background:var(--surface);border:1px solid var(--border);padding:3px 10px;border-radius:20px;font-family:'DM Mono',monospace}
+
+  .layout{display:flex;min-height:100vh;padding-top:56px}
+  aside{width:220px;flex-shrink:0;background:rgba(13,13,15,.9);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto}
+  .aside-brand{margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+  .aside-brand-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;color:var(--accent)}
+  .aside-brand-sub{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-top:2px;opacity:.6}
+  .aside-label{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin:14px 4px 6px;opacity:.5}
+  .aside-link{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;text-decoration:none;color:var(--sub);font-size:12.5px;font-weight:500;transition:color .15s,background .15s;margin-bottom:2px}
+  .aside-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .aside-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .aside-link .material-symbols-outlined{font-size:16px!important}
+  .aside-bottom{margin-top:auto;padding-top:14px;border-top:1px solid var(--border)}
+  .btn-pipeline{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;border-radius:8px;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;transition:box-shadow .2s,transform .1s;box-shadow:0 2px 16px rgba(168,85,247,.2)}
+  .btn-pipeline:hover{box-shadow:0 4px 24px rgba(168,85,247,.4);transform:translateY(-1px)}
+
+  main{flex:1;padding:28px 36px;min-width:0}
+
+  /* Page header */
+  .page-top{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:20px}
+  .page-h1{font-family:'Barlow Condensed',sans-serif;font-size:36px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff;margin-bottom:4px}
+  .page-sub{font-size:13px;color:var(--sub);line-height:1.5}
+  .stats-pills{display:flex;gap:10px;flex-wrap:wrap}
+  .stat-pill{padding:8px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:8px;font-size:12.5px}
+  .stat-val{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;color:var(--accent)}
+  .stat-label{color:var(--sub);font-size:11px}
+
+  /* Toolbar */
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:22px;flex-wrap:wrap}
+  .filter-btn{display:flex;align-items:center;gap:5px;padding:7px 14px;background:var(--surface);border:1px solid var(--border);border-radius:7px;color:var(--sub);font-size:12px;font-weight:500;cursor:pointer;transition:color .15s,border-color .15s}
+  .filter-btn:hover,.filter-btn.active{color:var(--text);border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.08)}
+  .filter-btn.active{color:var(--accent)}
+  .filter-btn .material-symbols-outlined{font-size:14px!important}
+  .search-wrap{margin-left:auto;display:flex;align-items:center;gap:7px;padding:7px 14px;background:var(--surface);border:1px solid var(--border);border-radius:7px;min-width:200px}
+  .search-wrap .material-symbols-outlined{font-size:15px!important;color:var(--sub)}
+  #searchInput{background:none;border:none;outline:none;color:var(--text);font-size:12px;flex:1;font-family:'Barlow',sans-serif}
+  #searchInput::placeholder{color:var(--muted)}
+
+  /* Content grid */
+  .content-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+
+  /* Video card */
+  .video-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;cursor:pointer;transition:border-color .2s,transform .2s,box-shadow .2s;animation:fadeIn .3s ease both}
+  .video-card:hover{border-color:rgba(168,85,247,.4);transform:translateY(-3px);box-shadow:0 8px 30px rgba(168,85,247,.1)}
+  .card-thumb{aspect-ratio:9/16;background:var(--muted);position:relative;overflow:hidden}
+  .card-thumb img,.card-thumb video{width:100%;height:100%;object-fit:cover;display:block;transition:opacity .2s}
+  .card-thumb .no-thumb{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:8px;color:var(--sub)}
+  .card-thumb .no-thumb span{font-size:32px;opacity:.3}
+  .card-thumb .no-thumb div{font-size:11px}
+  .card-thumb-overlay{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.7) 0%,transparent 50%);opacity:0;transition:opacity .2s;display:flex;align-items:center;justify-content:center}
+  .video-card:hover .card-thumb-overlay{opacity:1}
+  .play-btn{width:44px;height:44px;border-radius:50%;background:rgba(168,85,247,.9);display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;font-family:'Material Symbols Outlined';font-variation-settings:'FILL' 1,'wght' 300,'GRAD' 0,'opsz' 24}
+  .card-type-badge{position:absolute;top:8px;left:8px;padding:2px 7px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;backdrop-filter:blur(4px)}
+  .badge-video{background:rgba(168,85,247,.7);color:#fff}
+  .badge-images{background:rgba(34,197,94,.6);color:#fff}
+  .badge-audio{background:rgba(60,221,199,.6);color:#000}
+  .card-body{padding:10px 12px}
+  .card-tema{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+  .card-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--sub)}
+  .card-date{font-family:'DM Mono',monospace}
+  .card-actions{display:flex;gap:6px;margin-top:8px}
+  .btn-card{flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 0;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;text-decoration:none;transition:background .15s}
+  .btn-card-play{background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.2);color:var(--accent)}
+  .btn-card-play:hover{background:rgba(168,85,247,.2)}
+  .btn-card-dl{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--sub)}
+  .btn-card-dl:hover{color:var(--text);border-color:var(--muted)}
+  .btn-card .material-symbols-outlined{font-size:12px!important}
+
+  /* Empty / loading */
+  .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:64px;text-align:center;gap:12px;color:var(--sub);grid-column:1/-1}
+  .empty-icon{font-size:40px;opacity:.25}
+  .empty-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;color:rgba(255,255,255,.3);letter-spacing:.04em}
+  .empty-sub{font-size:12.5px;max-width:280px;line-height:1.6}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(168,85,247,.3);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+
+  /* Modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;opacity:0;visibility:hidden;transition:opacity .2s,visibility .2s}
+  .modal-overlay.open{opacity:1;visibility:visible}
+  .modal{background:var(--surface);border:1px solid rgba(168,85,247,.25);border-radius:14px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;animation:fadeIn .2s ease}
+  .modal-close{position:absolute;top:14px;right:14px;background:none;border:none;cursor:pointer;color:var(--sub);font-size:20px;transition:color .15s}
+  .modal-close:hover{color:var(--text)}
+  .modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;letter-spacing:.03em;color:#fff;margin-bottom:16px;padding-right:32px}
+  .modal-video-wrap{background:#000;border-radius:8px;overflow:hidden;max-width:240px;margin:0 auto 16px;aspect-ratio:9/16}
+  .modal-video-wrap video{width:100%;height:100%;object-fit:contain;display:block}
+  .modal-imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:16px}
+  .modal-img{aspect-ratio:9/16;border-radius:6px;overflow:hidden;background:var(--muted)}
+  .modal-img img{width:100%;height:100%;object-fit:cover;display:block;cursor:pointer;transition:opacity .2s}
+  .modal-img img:hover{opacity:.85}
+  .modal-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .btn-modal{display:inline-flex;align-items:center;gap:5px;padding:8px 16px;border-radius:7px;font-size:12px;font-weight:600;text-decoration:none;transition:background .15s}
+  .btn-modal-primary{background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff}
+  .btn-modal-primary:hover{box-shadow:0 4px 16px rgba(168,85,247,.4)}
+  .btn-modal-secondary{background:var(--muted);color:var(--text)}
+  .btn-modal-secondary:hover{background:rgba(255,255,255,.1)}
+
+  /* Load more */
+  .load-more-wrap{display:flex;justify-content:center;margin-top:28px}
+  .btn-load-more{padding:10px 28px;background:var(--surface);border:1px solid rgba(168,85,247,.25);border-radius:8px;color:var(--accent);font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:background .15s,border-color .15s}
+  .btn-load-more:hover{background:rgba(168,85,247,.08);border-color:rgba(168,85,247,.4)}
+  .btn-load-more:disabled{opacity:.4;cursor:not-allowed}
+</style>
+</head>
+<body>
+
+<div class="bg-blobs" aria-hidden="true">
+  <div class="bg-blob b1"></div>
+  <div class="bg-blob b2"></div>
+</div>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <span class="logo-brand">DISCONTROL<span>CREATOR</span></span>
+  </div>
+  <nav class="header-nav">
+    <a class="nav-link" href="/studio">Studio</a>
+    <a class="nav-link active" href="/biblioteca">Biblioteca</a>
+    <a class="nav-link" href="/agentes">Agentes</a>
+    <a class="nav-link" href="/estadisticas">Métricas</a>
+  </nav>
+  <div class="header-right">
+    <span class="material-symbols-outlined h-icon">notifications</span>
+    <span class="material-symbols-outlined h-icon">settings</span>
+    <div class="vbadge">V.04.2</div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="aside-brand">
+      <div class="aside-brand-name">historias.en.sombra</div>
+      <div class="aside-brand-sub">V.04.2 · Control Engine</div>
+    </div>
+    <div class="aside-label">Navegación</div>
+    <a class="aside-link" href="/studio"><span class="material-symbols-outlined">movie</span>Studio</a>
+    <a class="aside-link active" href="/biblioteca"><span class="material-symbols-outlined">video_library</span>Biblioteca</a>
+    <a class="aside-link" href="/agentes"><span class="material-symbols-outlined">smart_toy</span>Agentes</a>
+    <a class="aside-link" href="/estadisticas"><span class="material-symbols-outlined">bar_chart</span>Métricas</a>
+    <div class="aside-bottom">
+      <a class="btn-pipeline" href="/studio">
+        <span class="material-symbols-outlined" style="font-size:15px!important">add</span>Nuevo Pipeline
+      </a>
+    </div>
+  </aside>
+
+  <main>
+    <div class="page-top">
+      <div>
+        <h1 class="page-h1">Biblioteca</h1>
+        <p class="page-sub">Contenido generado para @Discontrolhistorys. Todos los vídeos, imágenes y audios del pipeline.</p>
+      </div>
+      <div class="stats-pills">
+        <div class="stat-pill">
+          <span class="stat-val" id="statTotal"><span class="spinner"></span></span>
+          <span class="stat-label">Generaciones</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-val" id="statVideos" style="color:var(--green)"><span class="spinner"></span></span>
+          <span class="stat-label">Con vídeo</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="filter-btn active" data-filter="all" onclick="setFilter('all',this)">
+        <span class="material-symbols-outlined">grid_view</span>Todo
+      </button>
+      <button class="filter-btn" data-filter="video" onclick="setFilter('video',this)">
+        <span class="material-symbols-outlined">videocam</span>Vídeos
+      </button>
+      <button class="filter-btn" data-filter="images" onclick="setFilter('images',this)">
+        <span class="material-symbols-outlined">image</span>Imágenes
+      </button>
+      <div class="search-wrap">
+        <span class="material-symbols-outlined">search</span>
+        <input type="text" id="searchInput" placeholder="Buscar por tema…" oninput="filterCards()"/>
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="content-grid" id="contentGrid">
+      <div class="empty-state">
+        <span class="spinner" style="width:24px;height:24px;border-width:3px"></span>
+        <div class="empty-title">Cargando biblioteca…</div>
+      </div>
+    </div>
+
+    <div class="load-more-wrap" id="loadMoreWrap" style="display:none">
+      <button class="btn-load-more" id="btnLoadMore" onclick="loadMore()">Cargar más</button>
+    </div>
+  </main>
+</div>
+
+<!-- Modal de detalle -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <button class="modal-close" onclick="closeModalDirect()">
+      <span class="material-symbols-outlined">close</span>
+    </button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<script>
+const API = 'https://spirited-charm-production.up.railway.app';
+let allRows   = [];
+let displayed = 0;
+let activeFilter = 'all';
+const PAGE = 30;
+
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function fmtDate(iso){
+  if(!iso) return '—';
+  return new Date(iso).toLocaleDateString('es',{day:'2-digit',month:'short'});
+}
+
+async function init() {
+  try {
+    // Carga stats + vídeos en paralelo
+    const [statsR, videosR] = await Promise.all([
+      fetch(`${API}/api/content/stats`),
+      fetch(`${API}/api/content/videos?limit=100`),
+    ]);
+
+    if (statsR.ok) {
+      const s = await statsR.json();
+      document.getElementById('statTotal').textContent  = s.total  ?? '0';
+      document.getElementById('statVideos').textContent = s.withVideo ?? '0';
+    }
+
+    if (!videosR.ok) throw new Error(`HTTP ${videosR.status}`);
+    allRows = await videosR.json();
+    if (!Array.isArray(allRows)) allRows = [];
+
+    renderGrid(true);
+  } catch(e) {
+    document.getElementById('contentGrid').innerHTML = `
+      <div class="empty-state">
+        <span class="empty-icon">⚠️</span>
+        <div class="empty-title">Error al cargar</div>
+        <div class="empty-sub">${esc(e.message)}</div>
+      </div>`;
+    document.getElementById('statTotal').textContent  = '—';
+    document.getElementById('statVideos').textContent = '—';
+  }
+}
+
+function getFiltered() {
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
+  return allRows.filter(r => {
+    const matchFilter =
+      activeFilter === 'all'    ? true :
+      activeFilter === 'video'  ? !!r.video_url :
+      activeFilter === 'images' ? !!(r.image_urls?.length) : true;
+    const matchSearch = !q || (r.tema || '').toLowerCase().includes(q);
+    return matchFilter && matchSearch;
+  });
+}
+
+function renderGrid(reset) {
+  const filtered = getFiltered();
+  const grid = document.getElementById('contentGrid');
+
+  if (reset) {
+    displayed = 0;
+    grid.innerHTML = '';
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = `
+      <div class="empty-state">
+        <span class="empty-icon">🎬</span>
+        <div class="empty-title">${allRows.length === 0 ? 'Sin generaciones aún' : 'Sin resultados'}</div>
+        <div class="empty-sub">${allRows.length === 0
+          ? 'Ejecuta el Director en el Studio para crear tu primer vídeo.'
+          : 'Prueba con otro filtro o término de búsqueda.'}</div>
+      </div>`;
+    document.getElementById('loadMoreWrap').style.display = 'none';
+    return;
+  }
+
+  const slice = filtered.slice(displayed, displayed + PAGE);
+  slice.forEach((r, i) => {
+    const card = buildCard(r, displayed + i);
+    grid.insertAdjacentHTML('beforeend', card);
+  });
+  displayed += slice.length;
+
+  const loadMoreWrap = document.getElementById('loadMoreWrap');
+  loadMoreWrap.style.display = displayed < filtered.length ? 'flex' : 'none';
+}
+
+function buildCard(r, i) {
+  const hasVideo  = !!r.video_url;
+  const hasImages = !!(r.image_urls?.length);
+  const hasAudio  = !!r.audio_url;
+  const thumb     = (r.image_urls?.[0]) || '';
+  const tema      = (r.tema || 'Sin título').slice(0, 50);
+  const safeR     = esc(JSON.stringify(r).replace(/'/g, "\\'"));
+
+  let badge = '';
+  if (hasVideo)       badge = '<span class="card-type-badge badge-video">🎬 Vídeo</span>';
+  else if (hasImages) badge = '<span class="card-type-badge badge-images">🖼️ Imágenes</span>';
+  else if (hasAudio)  badge = '<span class="card-type-badge badge-audio">🎙️ Audio</span>';
+
+  const thumbHtml = thumb
+    ? `<img src="${esc(thumb)}" loading="lazy" alt="${esc(tema)}" onerror="this.parentElement.innerHTML='<div class=no-thumb><span>🎬</span><div>Sin previsualización</div></div>'">`
+    : `<div class="no-thumb"><span>🎬</span><div>Sin previsualización</div></div>`;
+
+  const actionPlay = hasVideo
+    ? `<a href="${esc(r.video_url)}" target="_blank" rel="noopener" class="btn-card btn-card-play"><span class="material-symbols-outlined">play_arrow</span>Ver</a>`
+    : hasImages
+    ? `<button class="btn-card btn-card-play" onclick="openModal(event,${i})"><span class="material-symbols-outlined">photo_library</span>Galería</button>`
+    : '';
+  const actionDl = hasVideo
+    ? `<a href="${esc(r.video_url)}" download class="btn-card btn-card-dl"><span class="material-symbols-outlined">download</span>MP4</a>`
+    : '';
+
+  return `<div class="video-card" onclick="openModal(event,${i})" data-idx="${i}" style="animation-delay:${(i%PAGE)*0.03}s">
+    <div class="card-thumb">
+      ${thumbHtml}
+      ${badge}
+      <div class="card-thumb-overlay">
+        <div class="play-btn">play_arrow</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="card-tema" title="${esc(r.tema)}">${esc(tema)}</div>
+      <div class="card-meta">
+        <span class="card-date">${fmtDate(r.created_at)}</span>
+        <span>${hasImages ? r.image_urls.length + ' imgs' : ''}</span>
+      </div>
+      <div class="card-actions" onclick="event.stopPropagation()">
+        ${actionPlay}${actionDl}
+      </div>
+    </div>
+  </div>`;
+}
+
+function openModal(event, idx) {
+  const filtered = getFiltered();
+  const r = filtered[idx] ?? allRows[idx];
+  if (!r) return;
+
+  const hasVideo  = !!r.video_url;
+  const hasImages = !!(r.image_urls?.length);
+  const hasAudio  = !!r.audio_url;
+  const tema = (r.tema || 'Sin título').slice(0, 80);
+
+  let content = `<div class="modal-title">${esc(tema)}</div>`;
+
+  if (hasVideo) {
+    content += `<div class="modal-video-wrap">
+      <video controls playsinline preload="metadata">
+        <source src="${esc(r.video_url)}" type="video/mp4">
+      </video>
+    </div>`;
+  }
+
+  if (hasImages && r.image_urls.length) {
+    content += `<div class="modal-imgs">
+      ${r.image_urls.slice(0,16).map((u,i) => `
+        <div class="modal-img">
+          <img src="${esc(u)}" loading="lazy" alt="Escena ${i+1}" onclick="window.open('${esc(u)}','_blank')" onerror="this.style.display='none'">
+        </div>`).join('')}
+    </div>`;
+  }
+
+  content += `<div class="modal-actions">`;
+  if (hasVideo) {
+    content += `<a href="${esc(r.video_url)}" target="_blank" rel="noopener" class="btn-modal btn-modal-primary">
+      <span class="material-symbols-outlined" style="font-size:14px">play_arrow</span>Ver vídeo
+    </a>
+    <a href="${esc(r.video_url)}" download class="btn-modal btn-modal-secondary">
+      <span class="material-symbols-outlined" style="font-size:14px">download</span>MP4
+    </a>`;
+  }
+  if (hasAudio) {
+    content += `<a href="${esc(r.audio_url)}" download class="btn-modal btn-modal-secondary">
+      <span class="material-symbols-outlined" style="font-size:14px">download</span>MP3
+    </a>`;
+  }
+  content += `</div>`;
+
+  document.getElementById('modalContent').innerHTML = content;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modalOverlay')) closeModalDirect();
+}
+function closeModalDirect() {
+  document.getElementById('modalOverlay').classList.remove('open');
+  // Detener vídeo si había uno reproduciendo
+  const v = document.querySelector('.modal-video-wrap video');
+  if (v) { v.pause(); v.currentTime = 0; }
+}
+
+function setFilter(f, btn) {
+  activeFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderGrid(true);
+}
+
+function filterCards() {
+  renderGrid(true);
+}
+
+function loadMore() {
+  renderGrid(false);
+}
+
+// Cerrar modal con Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModalDirect();
+});
+
+init();
+</script>
+</body>
+</html>

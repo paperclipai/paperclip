@@ -1,4 +1,18 @@
 /// <reference path="./types/express.d.ts" />
+
+// ── Global error handlers — prevent EPIPE crashes ────────────────────────────
+// EPIPE happens when a Python agent process dies and the server writes to the
+// closed pipe. Without this handler it kills the entire Node.js process.
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE" || err.code === "ECONNRESET") {
+    return; // Ignore broken pipe errors silently
+  }
+  console.error("[uncaughtException]", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -22,6 +36,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  agents,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -204,6 +219,59 @@ export async function startServer(): Promise<StartedServer> {
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
   const LOCAL_BOARD_USER_NAME = "Board";
   
+  // ── Seed: registrar agentes de proceso que no se pueden crear desde la UI ──
+  async function seedProcessAgents(db: any): Promise<void> {
+    const AGENTS_TO_SEED = [
+      {
+        envVar:  "POPCORN_AGENT_ID",
+        name:    "Popcorn Auto",
+        title:   "Higgsfield Coherent Image Generator",
+        script:  "agents/popcorn.py",
+        budget:  6000,
+      },
+    ];
+
+    const [company] = await db.select({ id: companies.id, name: companies.name }).from(companies).limit(1);
+    if (!company) return;
+
+    const existingAgents: Array<{ id: string; name: string }> = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(eq(agents.companyId, company.id));
+
+    const director = existingAgents.find((a: { id: string; name: string }) =>
+      a.name.toLowerCase().includes("director")
+    );
+
+    for (const spec of AGENTS_TO_SEED) {
+      const alreadyExists = existingAgents.find(
+        (a: { id: string; name: string }) => a.name.toLowerCase() === spec.name.toLowerCase()
+      );
+      if (alreadyExists) {
+        logger.info({ agentId: alreadyExists.id }, `[seed] "${spec.name}" ya existe — omitiendo`);
+        continue;
+      }
+      const [created] = await db
+        .insert(agents)
+        .values({
+          companyId:          company.id,
+          name:               spec.name,
+          role:               "engineer",
+          title:              spec.title,
+          status:             "idle",
+          adapterType:        "process",
+          adapterConfig:      { command: "python", args: [spec.script], cwd: "/app" },
+          budgetMonthlyCents: spec.budget,
+          reportsTo:          director?.id ?? null,
+        })
+        .returning({ id: agents.id });
+      logger.info(
+        { agentId: created?.id, envVar: spec.envVar },
+        `[seed] "${spec.name}" creado → añade ${spec.envVar}=${created?.id} en Railway`
+      );
+    }
+  }
+
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
     const now = new Date();
     const existingUser = await db
@@ -486,6 +554,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
+  await seedProcessAgents(db as any);
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,

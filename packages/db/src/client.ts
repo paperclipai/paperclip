@@ -259,6 +259,19 @@ async function applyPendingMigrationsManually(
       );
       if (existingEntry) continue;
 
+      const alreadyAppliedBySchema = await migrationContentAlreadyApplied(sql, migrationContent);
+      if (alreadyAppliedBySchema) {
+        await recordMigrationHistoryEntry(
+          sql,
+          qualifiedTable,
+          columnNames,
+          migrationFile,
+          hash,
+          folderMillisByFileName.get(migrationFile) ?? Date.now(),
+        );
+        continue;
+      }
+
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
           await sql.unsafe(statement);
@@ -412,12 +425,22 @@ async function migrationContentAlreadyApplied(
   const statements = splitMigrationStatements(migrationContent);
   if (statements.length === 0) return false;
 
+  let recognizedCount = 0;
   for (const statement of statements) {
+    const normalized = statement.replace(/\s+/g, " ").trim();
+    const isRecognized =
+      /^CREATE TABLE(?: IF NOT EXISTS)? "/i.test(normalized) ||
+      /^ALTER TABLE "[^"]+" ADD COLUMN(?: IF NOT EXISTS)? "/i.test(normalized) ||
+      /^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "/i.test(normalized) ||
+      /^ALTER TABLE "[^"]+" ADD CONSTRAINT "/i.test(normalized);
+    if (!isRecognized) continue;
+
     const applied = await migrationStatementAlreadyApplied(sql, statement);
     if (!applied) return false;
+    recognizedCount += 1;
   }
 
-  return true;
+  return recognizedCount > 0;
 }
 
 async function loadAppliedMigrations(

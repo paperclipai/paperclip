@@ -12,7 +12,7 @@ import {
 } from "../utils.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, onLog, onMeta } = ctx;
+  const { runId, agent, config, onLog, onMeta, context, authToken } = ctx;
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
@@ -20,6 +20,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+
+  // Inyectar contexto de ejecución para que los scripts Python puedan usarlo
+  env.PAPERCLIP_RUN_ID = runId;
+  const issueId = (context as Record<string, unknown>)?.["issueId"];
+  if (typeof issueId === "string" && issueId) env.PAPERCLIP_ISSUE_ID = issueId;
+  const issueTitle = (context as Record<string, unknown>)?.["issueTitle"];
+  if (typeof issueTitle === "string" && issueTitle) env.PAPERCLIP_ISSUE_TITLE = issueTitle;
+  const issueBody = (context as Record<string, unknown>)?.["issueBody"];
+  if (typeof issueBody === "string" && issueBody) env.PAPERCLIP_ISSUE_BODY = issueBody;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
   }

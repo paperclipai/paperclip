@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>DiscontrolCreator | Métricas</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{--bg:#0d0d0f;--surface:#161618;--border:#222226;--muted:#3a3a40;--text:#e8e8ec;--sub:#7a7a90;--accent:#a855f7;--accent2:#7c3aed;--green:#22c55e;--teal:#3cddc7;--red:#ef4444}
+  body{background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  .material-symbols-outlined{font-variation-settings:'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24}
+  .bg-blobs{position:fixed;inset:0;pointer-events:none;z-index:-1;overflow:hidden}
+  .bg-blob{position:absolute;border-radius:50%;filter:blur(100px)}
+  .b1{width:600px;height:600px;background:rgba(120,40,220,.07);top:-100px;left:-100px;animation:blobDrift 18s ease-in-out infinite alternate}
+  .b2{width:500px;height:500px;background:rgba(80,20,180,.05);bottom:-80px;right:-80px;animation:blobDrift 22s ease-in-out infinite alternate-reverse}
+  @keyframes blobDrift{0%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-20px) scale(1.06)}100%{transform:translate(-20px,30px) scale(.96)}}
+  @keyframes dotPulse{0%,100%{box-shadow:0 0 6px var(--accent)}50%{box-shadow:0 0 14px var(--accent),0 0 28px rgba(168,85,247,.35)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  header{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:56px;background:linear-gradient(90deg,rgba(13,13,15,.97) 0%,rgba(22,10,38,.97) 50%,rgba(13,13,15,.97) 100%);border-bottom:1px solid rgba(168,85,247,.2);backdrop-filter:blur(12px)}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:dotPulse 2.5s ease-in-out infinite}
+  .logo-brand{font-family:'Space Grotesk',sans-serif;font-weight:900;font-size:16px;letter-spacing:-.02em;color:#fff}
+  .logo-brand span{color:var(--accent)}
+  .header-nav{display:flex;gap:4px}
+  .nav-link{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub);text-decoration:none;padding:5px 12px;border-radius:6px;transition:color .15s,background .15s}
+  .nav-link:hover{color:var(--text);background:rgba(255,255,255,.05)}
+  .nav-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .header-right{display:flex;align-items:center;gap:8px}
+  .h-icon{font-size:18px!important;color:var(--sub);cursor:pointer;transition:color .15s}
+  .h-icon:hover{color:var(--text)}
+  .vbadge{font-size:11px;color:var(--sub);background:var(--surface);border:1px solid var(--border);padding:3px 10px;border-radius:20px;font-family:'DM Mono',monospace}
+
+  .layout{display:flex;min-height:100vh;padding-top:56px}
+  aside{width:220px;flex-shrink:0;background:rgba(13,13,15,.9);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto}
+  .aside-brand{margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+  .aside-brand-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;color:var(--accent)}
+  .aside-brand-sub{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-top:2px;opacity:.6}
+  .aside-label{font-family:'Barlow Condensed',sans-serif;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin:14px 4px 6px;opacity:.5}
+  .aside-link{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;text-decoration:none;color:var(--sub);font-size:12.5px;font-weight:500;transition:color .15s,background .15s;margin-bottom:2px}
+  .aside-link:hover{color:var(--text);background:rgba(255,255,255,.04)}
+  .aside-link.active{color:var(--accent);background:rgba(168,85,247,.1)}
+  .aside-link .material-symbols-outlined{font-size:16px!important}
+  .aside-bottom{margin-top:auto;padding-top:14px;border-top:1px solid var(--border)}
+  .btn-pipeline{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;border-radius:8px;background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;transition:box-shadow .2s,transform .1s;box-shadow:0 2px 16px rgba(168,85,247,.2)}
+  .btn-pipeline:hover{box-shadow:0 4px 24px rgba(168,85,247,.4);transform:translateY(-1px)}
+
+  main{flex:1;padding:32px 40px;min-width:0}
+  .page-h1{font-family:'Barlow Condensed',sans-serif;font-size:36px;font-weight:800;letter-spacing:.02em;text-transform:uppercase;color:#fff;margin-bottom:6px}
+  .page-sub{font-size:13.5px;color:var(--sub);max-width:540px;line-height:1.6;margin-bottom:28px}
+
+  /* KPI grid */
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-bottom:32px}
+  .kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;position:relative;overflow:hidden;transition:border-color .2s}
+  .kpi-card:hover{border-color:rgba(168,85,247,.25)}
+  .kpi-icon{font-size:26px!important;color:var(--accent);margin-bottom:10px;display:block}
+  .kpi-label{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-bottom:6px}
+  .kpi-val{font-family:'Barlow Condensed',sans-serif;font-size:36px;font-weight:800;color:#fff;line-height:1}
+  .kpi-sub{font-size:11.5px;color:var(--sub);margin-top:6px}
+  .kpi-accent .kpi-val{color:var(--accent)}
+  .kpi-green .kpi-val{color:var(--green)}
+  .kpi-teal .kpi-val{color:var(--teal)}
+
+  /* Loading spinner */
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(168,85,247,.3);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:4px}
+
+  /* Section title */
+  .sec-title{font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--sub);margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .sec-title::after{content:'';flex:1;height:1px;background:var(--border)}
+
+  /* History table */
+  .history-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:28px}
+  table{width:100%;border-collapse:collapse}
+  thead tr{background:rgba(255,255,255,.03);border-bottom:1px solid var(--border)}
+  th{padding:12px 16px;font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub);text-align:left}
+  tbody tr{border-bottom:1px solid rgba(255,255,255,.04);transition:background .15s}
+  tbody tr:last-child{border-bottom:none}
+  tbody tr:hover{background:rgba(255,255,255,.02)}
+  td{padding:12px 16px;font-size:12.5px;color:var(--text)}
+  .td-mono{font-family:'DM Mono',monospace;font-size:11px;color:var(--sub)}
+  .td-tema{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+  .badge-video{background:rgba(168,85,247,.12);color:var(--accent);border:1px solid rgba(168,85,247,.2)}
+  .badge-images{background:rgba(34,197,94,.1);color:var(--green);border:1px solid rgba(34,197,94,.2)}
+  .badge-audio{background:rgba(60,221,199,.1);color:var(--teal);border:1px solid rgba(60,221,199,.2)}
+  .badge-empty{background:rgba(255,255,255,.04);color:var(--sub);border:1px solid var(--border)}
+
+  /* Empty / error states */
+  .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px;text-align:center;gap:10px;color:var(--sub)}
+  .empty-icon{font-size:36px;opacity:.3}
+  .empty-title{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:rgba(255,255,255,.3);letter-spacing:.04em}
+  .empty-sub{font-size:12px;max-width:280px;line-height:1.6}
+
+  /* Cost reference */
+  .cost-ref{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .cost-item{padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
+  .cost-label{font-family:'DM Mono',monospace;font-size:9px;color:var(--sub);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+  .cost-val{font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:700;color:#fff}
+  .cost-total-item{border-color:rgba(168,85,247,.25);background:rgba(168,85,247,.05)}
+  .cost-total-item .cost-val{color:var(--accent);font-size:26px}
+
+  .error-banner{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:12px 16px;font-size:12px;color:#f87171;margin-bottom:20px;display:none}
+</style>
+</head>
+<body>
+
+<div class="bg-blobs" aria-hidden="true">
+  <div class="bg-blob b1"></div>
+  <div class="bg-blob b2"></div>
+</div>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <span class="logo-brand">DISCONTROL<span>CREATOR</span></span>
+  </div>
+  <nav class="header-nav">
+    <a class="nav-link" href="/studio">Studio</a>
+    <a class="nav-link" href="/biblioteca">Biblioteca</a>
+    <a class="nav-link" href="/agentes">Agentes</a>
+    <a class="nav-link active" href="/estadisticas">Métricas</a>
+  </nav>
+  <div class="header-right">
+    <span class="material-symbols-outlined h-icon">notifications</span>
+    <span class="material-symbols-outlined h-icon">settings</span>
+    <div class="vbadge">V.04.2</div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="aside-brand">
+      <div class="aside-brand-name">historias.en.sombra</div>
+      <div class="aside-brand-sub">V.04.2 · Control Engine</div>
+    </div>
+    <div class="aside-label">Navegación</div>
+    <a class="aside-link" href="/studio"><span class="material-symbols-outlined">movie</span>Studio</a>
+    <a class="aside-link" href="/biblioteca"><span class="material-symbols-outlined">video_library</span>Biblioteca</a>
+    <a class="aside-link" href="/agentes"><span class="material-symbols-outlined">smart_toy</span>Agentes</a>
+    <a class="aside-link active" href="/estadisticas"><span class="material-symbols-outlined">bar_chart</span>Métricas</a>
+    <div class="aside-bottom">
+      <a class="btn-pipeline" href="/studio">
+        <span class="material-symbols-outlined" style="font-size:15px!important">add</span>Nuevo Pipeline
+      </a>
+    </div>
+  </aside>
+
+  <main>
+    <h1 class="page-h1">Métricas de Producción</h1>
+    <p class="page-sub">Histórico real de contenido generado para el canal @Discontrolhistorys. Datos en directo desde la base de contenido.</p>
+
+    <div id="errorBanner" class="error-banner"></div>
+
+    <!-- KPIs -->
+    <div class="kpi-grid" id="kpiGrid">
+      <div class="kpi-card">
+        <span class="material-symbols-outlined kpi-icon">movie_filter</span>
+        <div class="kpi-label">Vídeos generados</div>
+        <div class="kpi-val kpi-accent" id="kpiTotal"><span class="spinner"></span></div>
+        <div class="kpi-sub" id="kpiTotalSub">Cargando…</div>
+      </div>
+      <div class="kpi-card">
+        <span class="material-symbols-outlined kpi-icon">video_file</span>
+        <div class="kpi-label">Con vídeo MP4 final</div>
+        <div class="kpi-val kpi-green" id="kpiWithVideo"><span class="spinner"></span></div>
+        <div class="kpi-sub" id="kpiWithVideoSub">Cargando…</div>
+      </div>
+      <div class="kpi-card">
+        <span class="material-symbols-outlined kpi-icon">image</span>
+        <div class="kpi-label">Con imágenes generadas</div>
+        <div class="kpi-val kpi-teal" id="kpiWithImages"><span class="spinner"></span></div>
+        <div class="kpi-sub">Incluye vídeos parciales</div>
+      </div>
+      <div class="kpi-card">
+        <span class="material-symbols-outlined kpi-icon">payments</span>
+        <div class="kpi-label">Coste estimado total</div>
+        <div class="kpi-val" id="kpiCost"><span class="spinner"></span></div>
+        <div class="kpi-sub">~$2.30 por vídeo completo</div>
+      </div>
+    </div>
+
+    <!-- Historial real -->
+    <div class="sec-title">Historial de generaciones</div>
+    <div class="history-wrap">
+      <div id="historyContent">
+        <div class="empty-state">
+          <span class="spinner" style="width:20px;height:20px"></span>
+          <div class="empty-title">Cargando historial…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Coste de referencia -->
+    <div class="sec-title">Referencia de costes</div>
+    <div class="cost-ref">
+      <div class="cost-item"><div class="cost-label">Popcorn 16 imgs</div><div class="cost-val">~$0.25</div></div>
+      <div class="cost-item"><div class="cost-label">DoP Lite 15 clips</div><div class="cost-val">~$1.87</div></div>
+      <div class="cost-item"><div class="cost-label">ElevenLabs TTS</div><div class="cost-val">~$0.15</div></div>
+      <div class="cost-item"><div class="cost-label">LLM (4 agentes)</div><div class="cost-val">~$0.03</div></div>
+      <div class="cost-item cost-total-item"><div class="cost-label">TOTAL / VÍDEO</div><div class="cost-val">~$2.30</div></div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = 'https://spirited-charm-production.up.railway.app';
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function relTime(iso) {
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'hace un momento';
+  if (diff < 3600) return `hace ${Math.floor(diff/60)} min`;
+  if (diff < 86400) return `hace ${Math.floor(diff/3600)} h`;
+  return d.toLocaleDateString('es', {day:'2-digit', month:'short', year:'numeric'});
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es', {day:'2-digit', month:'short', year:'numeric'});
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(`${API}/api/content/stats`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+
+    document.getElementById('kpiTotal').textContent = d.total ?? '0';
+    document.getElementById('kpiTotalSub').textContent = d.total === 1 ? '1 generación en la base' : `${d.total} generaciones en la base`;
+    document.getElementById('kpiWithVideo').textContent = d.withVideo ?? '0';
+    document.getElementById('kpiWithVideoSub').textContent = `${d.withVideo} listo${d.withVideo !== 1?'s':''} para publicar`;
+    document.getElementById('kpiWithImages').textContent = d.withImages ?? '0';
+    document.getElementById('kpiCost').textContent = `$${((d.withVideo || 0) * 2.30).toFixed(2)}`;
+
+  } catch(e) {
+    showError(`No se pudieron cargar las estadísticas: ${e.message}`);
+    ['kpiTotal','kpiWithVideo','kpiWithImages','kpiCost'].forEach(id => {
+      document.getElementById(id).textContent = '—';
+    });
+  }
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch(`${API}/api/content/videos?limit=50`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      document.getElementById('historyContent').innerHTML = `
+        <div class="empty-state">
+          <span class="empty-icon">🎬</span>
+          <div class="empty-title">Sin generaciones aún</div>
+          <div class="empty-sub">Ejecuta el Director en el Studio para crear tu primer vídeo.</div>
+        </div>`;
+      return;
+    }
+
+    const rows_html = rows.map(r => {
+      const hasVideo  = !!r.video_url;
+      const hasImages = !!(r.image_urls?.length);
+      const hasAudio  = !!r.audio_url;
+      let badge = '';
+      if (hasVideo)       badge = '<span class="badge badge-video">🎬 Vídeo</span>';
+      else if (hasImages) badge = '<span class="badge badge-images">🖼️ Imágenes</span>';
+      else if (hasAudio)  badge = '<span class="badge badge-audio">🎙️ Audio</span>';
+      else                badge = '<span class="badge badge-empty">En progreso</span>';
+
+      const tema = (r.tema || 'Sin título').slice(0, 55);
+      return `<tr>
+        <td class="td-mono">${esc(r.id?.slice(0,8))}…</td>
+        <td class="td-tema" title="${esc(r.tema)}">${esc(tema)}</td>
+        <td>${badge}</td>
+        <td class="td-mono">${fmtDate(r.created_at)}</td>
+        <td style="text-align:right">
+          ${hasVideo ? `<a href="${esc(r.video_url)}" target="_blank" rel="noopener" style="color:var(--accent);font-size:11px;text-decoration:none;font-family:'DM Mono',monospace">▶ ver</a>` :
+            hasImages ? `<span style="color:var(--sub);font-size:11px;font-family:'DM Mono',monospace">${r.image_urls.length} imgs</span>` : '—'}
+        </td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('historyContent').innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Tema</th><th>Estado</th><th>Fecha</th><th style="text-align:right">Resultado</th>
+          </tr>
+        </thead>
+        <tbody>${rows_html}</tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById('historyContent').innerHTML = `
+      <div class="empty-state">
+        <span class="empty-icon">⚠️</span>
+        <div class="empty-title">Error al cargar</div>
+        <div class="empty-sub">${esc(e.message)}</div>
+      </div>`;
+  }
+}
+
+function showError(msg) {
+  const b = document.getElementById('errorBanner');
+  b.textContent = msg;
+  b.style.display = 'block';
+}
+
+loadStats();
+loadHistory();
+</script>
+</body>
+</html>
