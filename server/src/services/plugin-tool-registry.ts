@@ -110,9 +110,17 @@ export interface PluginToolRegistry {
    * @param pluginId - The plugin's unique identifier (e.g. `"acme.linear"`)
    * @param manifest - The plugin manifest containing the `tools` array
    * @param pluginDbId - The plugin's database UUID, used for worker routing
-   *   and availability checks. If omitted, `pluginId` is used (backwards-compat).
+   *   and availability checks. REQUIRED — `workerManager` keys live workers
+   *   by the DB UUID, so omitting this guarantees that every subsequent
+   *   `workerManager.isRunning(pluginDbId)` call returns false and every tool
+   *   dispatch fails with `worker for plugin X is not running`. Callers that
+   *   genuinely cannot supply a UUID (test scenarios using stub worker
+   *   managers) should pass the `pluginId` (pluginKey) explicitly so the
+   *   substitution is local + auditable rather than silently absorbed by the
+   *   registry. See MO-071 close — full path coverage (activation +
+   *   lifecycle + re-entry) requires this argument at every call site.
    */
-  registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void;
+  registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId: string): void;
 
   /**
    * Remove all tool registrations for a plugin.
@@ -295,8 +303,20 @@ export function createPluginToolRegistry(
   // -----------------------------------------------------------------------
 
   return {
-    registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void {
-      const dbId = pluginDbId ?? pluginId;
+    registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId: string): void {
+      // pluginDbId is REQUIRED (MO-071): the silent fallback to `pluginId`
+      // pre-fix masked BUG-CORE-001 — worker lookups by UUID always failed
+      // because pluginId was the pluginKey, not the DB UUID. We still guard
+      // here so the contract violation surfaces with an explicit error at
+      // the registry boundary rather than as a downstream
+      // `worker for plugin X is not running`.
+      if (!pluginDbId) {
+        throw new Error(
+          `plugin-tool-registry.registerPlugin: pluginDbId is required (pluginId="${pluginId}"). ` +
+            `Workers are keyed by DB UUID; omitting this guarantees worker-lookup failure.`,
+        );
+      }
+      const dbId = pluginDbId;
 
       // Remove any previously registered tools for this plugin (idempotent)
       const previousCount = removePluginTools(pluginId);
