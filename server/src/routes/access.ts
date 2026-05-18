@@ -1128,6 +1128,62 @@ async function assertCanManageCompanyMember(
   if (reason) throw forbidden(reason);
 }
 
+async function assertCanAssignRole(
+  req: Request,
+  access: ReturnType<typeof accessService>,
+  companyId: string,
+  nextRole: string,
+) {
+  if (isLocalImplicit(req)) return;
+  if (req.actor.type === "board" && req.actor.isInstanceAdmin) return;
+  const actorRole = await resolveActorHumanRole(req, access, companyId);
+  if (!actorRole) throw forbidden("Only active company members can assign roles.");
+  const normalizedNext = normalizeHumanRole(nextRole, "operator");
+  if (humanRoleRank[normalizedNext] >= humanRoleRank[actorRole]) {
+    throw forbidden("You cannot assign a role equal to or higher than your own.");
+  }
+}
+
+async function assertActorOwnsAllGrantKeys(
+  req: Request,
+  access: ReturnType<typeof accessService>,
+  companyId: string,
+  grants: MemberGrantPayload[],
+) {
+  if (isLocalImplicit(req)) return;
+  if (req.actor.type === "board" && req.actor.isInstanceAdmin) return;
+  for (const grant of grants) {
+    let allowed: boolean;
+    if (req.actor.type === "agent") {
+      allowed = req.actor.agentId
+        ? await access.hasPermission(companyId, "agent", req.actor.agentId, grant.permissionKey)
+        : false;
+    } else {
+      allowed = await access.canUser(companyId, req.actor.userId, grant.permissionKey);
+    }
+    if (!allowed) {
+      throw forbidden(`You do not hold permission '${grant.permissionKey}' and cannot grant it.`);
+    }
+  }
+}
+
+async function assertCanInviteWithRole(
+  req: Request,
+  access: ReturnType<typeof accessService>,
+  companyId: string,
+  humanRole: string | null | undefined,
+) {
+  if (!humanRole) return;
+  if (isLocalImplicit(req)) return;
+  if (req.actor.type === "board" && req.actor.isInstanceAdmin) return;
+  const actorRole = await resolveActorHumanRole(req, access, companyId);
+  if (!actorRole) throw forbidden("Only active company members can send invites.");
+  const normalizedInvite = normalizeHumanRole(humanRole, "operator");
+  if (humanRoleRank[normalizedInvite] >= humanRoleRank[actorRole]) {
+    throw forbidden("You cannot invite someone to a role equal to or higher than your own.");
+  }
+}
+
 async function addCompanyMemberRemovalAccess(
   req: Request,
   db: Db,
@@ -2892,6 +2948,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+      await assertCanInviteWithRole(req, access, companyId, req.body.humanRole);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -4013,6 +4070,9 @@ export function accessRoutes(
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      if (req.body.membershipRole !== undefined) {
+        await assertCanAssignRole(req, access, companyId, req.body.membershipRole);
+      }
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`
@@ -4110,6 +4170,11 @@ export function accessRoutes(
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      if (req.body.membershipRole !== undefined) {
+        await assertCanAssignRole(req, access, companyId, req.body.membershipRole);
+      }
+      const incomingGrants = (req.body.grants ?? []) as MemberGrantPayload[];
+      await assertActorOwnsAllGrantKeys(req, access, companyId, incomingGrants);
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`
@@ -4185,7 +4250,7 @@ export function accessRoutes(
             ),
           );
 
-        const grants = (req.body.grants ?? []) as MemberGrantPayload[];
+        const grants = incomingGrants;
         if (grants.length > 0) {
           await tx.insert(principalPermissionGrants).values(
             grants.map((grant) => ({
@@ -4278,6 +4343,7 @@ export function accessRoutes(
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      await assertActorOwnsAllGrantKeys(req, access, companyId, (req.body.grants ?? []) as MemberGrantPayload[]);
       const updated = await access.setMemberPermissions(
         companyId,
         memberId,
