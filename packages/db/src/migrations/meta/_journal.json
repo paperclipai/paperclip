@@ -624,6 +624,13 @@
       "when": 1779600000000,
       "tag": "0088_capability_apply_execute_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1779700000000,
+      "tag": "0089_sandbox_billing_cap",
+      "breakpoints": true
     }
   ]
 }

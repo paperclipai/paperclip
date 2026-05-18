@@ -16,10 +16,12 @@ import {
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
+  type SandboxConfig,
   type SecretProvider,
   type StorageProvider,
   inferBindModeFromHost,
   resolveRuntimeBind,
+  sandboxConfigSchema,
   validateConfiguredBindMode,
 } from "@paperclipai/shared";
 import {
@@ -88,6 +90,7 @@ export interface Config {
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
   capabilityApplyLive: boolean;
+  sandbox: SandboxConfig;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -337,5 +340,6 @@ export function loadConfig(): Config {
     // capability.apply.live is intentionally OFF everywhere by default.
     // Flip only via CAPABILITY_APPLY_LIVE=true in a local env override; never in prod this slice.
     capabilityApplyLive: process.env.CAPABILITY_APPLY_LIVE === "true",
+    sandbox: sandboxConfigSchema.parse(fileConfig?.sandbox ?? undefined),
   };
 }

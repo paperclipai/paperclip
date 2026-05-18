@@ -9,12 +9,14 @@ import {
   listSandboxProviderDescriptors,
   listSandboxProviders,
   probeSandboxProvider,
+  registerE2BSandboxProvider,
   releaseSandboxProviderLease,
   sandboxConfigFromLeaseMetadata,
   sandboxConfigFromLeaseMetadataLoose,
   sandboxProviderStatusMap,
   validateSandboxProviderConfig,
 } from "../services/sandbox-provider-runtime.ts";
+import { E2BSandboxProvider } from "../services/sandbox/managed-provider-spikes.ts";
 
 describe("sandbox provider runtime", () => {
   it("exposes built-in providers through the provider interface", () => {
@@ -24,6 +26,8 @@ describe("sandbox provider runtime", () => {
       "null",
     ]);
     expect(getSandboxProvider(NULL_SANDBOX_PROVIDER_KEY)).toBeInstanceOf(NullSandboxProvider);
+    expect(getSandboxProvider("e2b")).toBeNull();
+    expect(getSandboxProvider("daytona")).toBeNull();
     expect(getSandboxProvider("fake-plugin")).toBeNull();
 
     const descriptors = listSandboxProviderDescriptors();
@@ -175,5 +179,35 @@ describe("sandbox provider runtime", () => {
       timeoutMs: 300000,
       reuseLease: false,
     })).rejects.toThrow('Sandbox provider "fake-plugin" is not registered as a built-in provider.');
+  });
+
+  // LET-366 Phase 4A-S4 B1: registerE2BSandboxProvider must install the live
+  // adapter into the built-in registry so the runtime can reach it via the
+  // standard getSandboxProvider("e2b") path. Without this wiring, the live
+  // transport is unreachable from production code paths even when all three
+  // gates pass.
+  it("registers a live E2BSandboxProvider in the built-in registry via registerE2BSandboxProvider", () => {
+    // The provider is not present until the wiring function is called.
+    expect(getSandboxProvider("e2b")).toBeNull();
+
+    registerE2BSandboxProvider({
+      isProviderEnabled: () => false,
+      resolveApiKey: async () => null,
+    });
+
+    const provider = getSandboxProvider("e2b");
+    expect(provider).toBeInstanceOf(E2BSandboxProvider);
+    expect(provider?.secretInjection).toMatchObject({
+      mode: "environment",
+      acceptsRawSecrets: true,
+      requiresResolvedSecrets: true,
+      redactionBoundary: "before-provider",
+    });
+    expect(listSandboxProviders().map((p) => p.provider).sort()).toEqual([
+      "docker",
+      "e2b",
+      "fake",
+      "null",
+    ]);
   });
 });

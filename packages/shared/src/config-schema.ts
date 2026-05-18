@@ -103,6 +103,33 @@ export const telemetryConfigSchema = z.object({
   enabled: z.boolean().default(true),
 }).default({});
 
+export const sandboxProviderSecretRefSchema = z
+  .object({
+    companyId: z.string().uuid(),
+    secretId: z.string().uuid(),
+    version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
+  })
+  .strict();
+
+export const sandboxE2BProviderConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    apiKeySecret: sandboxProviderSecretRefSchema.optional().nullable().default(null),
+  })
+  .default({ enabled: false, apiKeySecret: null });
+
+export const sandboxProvidersConfigSchema = z
+  .object({
+    e2b: sandboxE2BProviderConfigSchema,
+  })
+  .default({ e2b: { enabled: false, apiKeySecret: null } });
+
+export const sandboxConfigSchema = z
+  .object({
+    providers: sandboxProvidersConfigSchema,
+  })
+  .default({ providers: { e2b: { enabled: false, apiKeySecret: null } } });
+
 export const paperclipConfigSchema = z
   .object({
     $meta: configMetaSchema,
@@ -134,6 +161,7 @@ export const paperclipConfigSchema = z
         keyFilePath: "~/.paperclip/instances/default/secrets/master.key",
       },
     }),
+    sandbox: sandboxConfigSchema,
   })
   .superRefine((value, ctx) => {
     if (value.server.deploymentMode === "local_trusted" && value.server.exposure !== "private") {
@@ -197,3 +225,7 @@ export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
+export type SandboxProvidersConfig = z.infer<typeof sandboxProvidersConfigSchema>;
+export type SandboxE2BProviderConfig = z.infer<typeof sandboxE2BProviderConfigSchema>;
+export type SandboxProviderSecretRef = z.infer<typeof sandboxProviderSecretRefSchema>;

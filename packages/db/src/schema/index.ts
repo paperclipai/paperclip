@@ -76,3 +76,4 @@ export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { capabilityApplyPlans, capabilityApplySteps, capabilityApplyEvents } from "./capability_apply_plans.js";
+export { sandboxBillingCapState, sandboxBillingCapEvents } from "./sandbox_billing_cap.js";

@@ -21,6 +21,24 @@ import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { sandboxRoutes } from "./routes/sandbox.js";
+import { sandboxBillingCapRoutes } from "./routes/sandbox-billing-cap.js";
+import {
+  BillingCapMonitor,
+  CompositeCapNotifier,
+  DrizzleBillingCapStore,
+  LeaseBasedSourceB,
+  LogCapNotifier,
+  NoopCapNotifier,
+  createBillingCapScheduler,
+  createE2BUsageApiSourceA,
+  createOpenMonthlyIncidentHook,
+  createPaperclipCommentCapNotifier,
+  createTelegramCapNotifier,
+  createTelegramHttpTransport,
+  type CapNotifier,
+  type SandboxProviderDescriptor,
+} from "./services/sandbox/billing-cap/index.js";
+import { issueService } from "./services/issues.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -55,7 +73,7 @@ import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
-import { setPluginEventBus } from "./services/activity-log.js";
+import { logActivity, setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -206,6 +224,116 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(sandboxRoutes(db));
+
+  // LET-367 Phase 4A-S4 B2 / LET-392 Phase 4A-S4 wiring: billing-cap monitor
+  // + status read-model. Notifier composition:
+  //   - LogCapNotifier — always on, structured-log surface.
+  //   - PaperclipCommentCapNotifier — env-gated on SANDBOX_PILOT_INCIDENT_ISSUE_ID;
+  //     posts the AC #3 interrupt-comment to the active pilot's parent issue.
+  //   - TelegramCapNotifier — env-gated on TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID;
+  //     pages Andrii on hard caps + monthly-incident notifications. Falls back
+  //     to a NoopCapNotifier when credentials are absent so default deployments
+  //     stay unaffected.
+  // The monthly-incident hook is wired to issueService.create so a monthly
+  // hard-cap breach auto-opens an `[INCIDENT] Sandbox cost-breach …` issue
+  // tagged `sandbox/cost-breach` under the pilot parent.
+  const billingCapIssuesSvc = issueService(db);
+  const sandboxPilotIncidentIssueId =
+    process.env.SANDBOX_PILOT_INCIDENT_ISSUE_ID?.trim() || null;
+  const sandboxPilotProjectId = process.env.SANDBOX_PILOT_PROJECT_ID?.trim() || null;
+  const sandboxPilotMonitorAgentId =
+    process.env.SANDBOX_PILOT_MONITOR_AGENT_ID?.trim() || null;
+  const capNotifierList: CapNotifier[] = [new LogCapNotifier(logger)];
+  if (sandboxPilotIncidentIssueId) {
+    capNotifierList.push(
+      createPaperclipCommentCapNotifier({
+        issuesSvc: billingCapIssuesSvc,
+        pilotIncidentIssueId: sandboxPilotIncidentIssueId,
+        authorAgentId: sandboxPilotMonitorAgentId,
+        logger,
+      }),
+    );
+  }
+  const telegramTransport = createTelegramHttpTransport({
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_OPERATOR_CHAT_ID,
+    logger,
+  });
+  const telegramNotifier = createTelegramCapNotifier(telegramTransport);
+  if (telegramNotifier) {
+    capNotifierList.push(telegramNotifier);
+  } else {
+    // Preserve historical composite shape (Log + at-least-one) so log-noise
+    // diffs against pre-LET-392 are minimal when no Telegram creds are set.
+    capNotifierList.push(new NoopCapNotifier());
+  }
+  const openMonthlyIncident = createOpenMonthlyIncidentHook({
+    issuesSvc: billingCapIssuesSvc,
+    resolveProjectId: () => sandboxPilotProjectId,
+    resolveParentIssueId: () => sandboxPilotIncidentIssueId,
+    logger,
+  });
+  // LET-393 Phase 4A-S4 follow-up: optional live SourceA against the E2B
+  // usage / metering API. Gated on `SANDBOX_E2B_USAGE_API_URL` +
+  // `SANDBOX_E2B_USAGE_API_AUTH` — both unset means the factory returns null
+  // and the monitor stays on the legacy `sourceA: null` (internal-estimate
+  // only) behaviour. The adapter is read-only and falls back cleanly on 401
+  // / 403 / 404 / credential-shaped payloads.
+  const billingCapSourceA = createE2BUsageApiSourceA({
+    url: process.env.SANDBOX_E2B_USAGE_API_URL,
+    apiKey: process.env.SANDBOX_E2B_USAGE_API_AUTH,
+    logger,
+  });
+  const billingCapStore = new DrizzleBillingCapStore(db);
+  const billingCapMonitor = new BillingCapMonitor({
+    store: billingCapStore,
+    sourceA: billingCapSourceA,
+    sourceB: new LeaseBasedSourceB(db),
+    notifier: new CompositeCapNotifier(capNotifierList),
+    openMonthlyIncident,
+    // AC #5: cap events also surface on the operator activity log so
+    // dashboards filtering on `sandbox.cost_breach` see breaches without
+    // having to read the billing-cap-specific event table.
+    activitySink: async (entry) => {
+      await logActivity(db, {
+        companyId: entry.companyId,
+        actorType: "system",
+        actorId: "auto-cap-monitor",
+        action: entry.action,
+        entityType: "sandbox_billing_cap_event",
+        entityId: entry.capEventId,
+        details: { provider: entry.provider, ...entry.details },
+      });
+    },
+    logger,
+  });
+  api.use(
+    sandboxBillingCapRoutes(db, {
+      monitor: billingCapMonitor,
+      store: billingCapStore,
+      resolveProviderDescriptor: async (): Promise<SandboxProviderDescriptor> => ({
+        key: "e2b",
+        displayLabel: "E2B (Firecracker microVMs, managed)",
+        apiKeyConfigured: typeof process.env.E2B_API_KEY === "string" && process.env.E2B_API_KEY.trim().length > 0,
+        secretRefRedactedSuffix: null,
+      }),
+      isAllowLive: () => (process.env.SANDBOX_PROVIDER_ALLOW_LIVE ?? "false").trim().toLowerCase() === "true",
+    }),
+  );
+  const billingCapScheduler = createBillingCapScheduler({
+    monitor: billingCapMonitor,
+    resolveCompanyIds: async () => {
+      // Pilot-window scope: monitor only ticks when the env-gate is on. The
+      // company list is the empty set otherwise, so the scheduler is a no-op
+      // for non-pilot deployments.
+      if ((process.env.SANDBOX_PROVIDER_ALLOW_LIVE ?? "false").trim().toLowerCase() !== "true") {
+        return [];
+      }
+      const pilotCompany = process.env.SANDBOX_PILOT_COMPANY_ID?.trim();
+      return pilotCompany ? [pilotCompany] : [];
+    },
+    logger,
+  });
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
@@ -411,6 +539,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  billingCapScheduler.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -445,6 +574,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    billingCapScheduler.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

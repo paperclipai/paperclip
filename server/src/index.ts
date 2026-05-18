@@ -34,10 +34,16 @@ import {
   instanceSettingsService,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  secretService,
   createIssueFinalDeliveryDbStore,
   createIssueFinalDeliveryTransportFromEnv,
   startIssueFinalDeliveryWorker,
 } from "./services/index.js";
+import { registerE2BSandboxProvider } from "./services/sandbox-provider-runtime.js";
+import {
+  DrizzleBillingCapStore,
+  createE2BBillingCapLayerResolver,
+} from "./services/sandbox/billing-cap/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -446,7 +452,52 @@ export async function startServer(): Promise<StartedServer> {
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
-  
+
+  // LET-366 Phase 4A-S4 B1: wire the live-capable E2BSandboxProvider into the
+  // built-in runtime registry. The provider stays fail-closed unless all three
+  // gates pass at lease time (env, Layer 1 config, secret store).
+  //
+  // LET-391 Phase 4A-S4: layer the billing-cap kill switch on top. The cap
+  // monitor (LET-367) writes `providerEnableLayerEnabled=false` on a hard-cap
+  // breach and `operatorToggleEnabled=false` on a manual pause; the resolver
+  // below reads that state on every acquireLease and fails closed BEFORE any
+  // HTTP egress when either layer is disabled. Pilot scope: the cap-state row
+  // is keyed by the company that owns the E2B API key secret reference.
+  {
+    const e2bSandbox = config.sandbox.providers.e2b;
+    const e2bSecretRef = e2bSandbox.apiKeySecret;
+    const secrets = secretService(db);
+    const billingCapStore = new DrizzleBillingCapStore(db);
+    const resolveBillingCapLayers = e2bSecretRef
+      ? createE2BBillingCapLayerResolver({
+          store: billingCapStore,
+          resolveCompanyId: async () => e2bSecretRef.companyId,
+        })
+      : undefined;
+    registerE2BSandboxProvider({
+      isProviderEnabled: () => config.sandbox.providers.e2b.enabled === true,
+      resolveApiKey: async () => {
+        if (!e2bSecretRef) return null;
+        try {
+          return await secrets.resolveSecretValue(
+            e2bSecretRef.companyId,
+            e2bSecretRef.secretId,
+            e2bSecretRef.version ?? "latest",
+            {
+              consumerType: "system",
+              consumerId: "sandbox.providers.e2b",
+              configPath: "sandbox.providers.e2b.apiKeySecret",
+              actorType: "system",
+            },
+          );
+        } catch {
+          return null;
+        }
+      },
+      resolveBillingCapLayers,
+    });
+  }
+
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
