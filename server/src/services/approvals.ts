@@ -100,7 +100,7 @@ export function approvalService(db: Db) {
     const agent = await agentsSvc.getById(result.grant.agentId);
     if (agent && agent.companyId === updated.companyId && agent.adapterType === "hermes_local") {
       const rendered = await toolAccess.renderHermesAgentConfig(updated.companyId, agent);
-      await agentsSvc.update(agent.id, { adapterConfig: rendered.adapterConfig }, {
+      await agentsSvc.update(agent.id, { adapterConfig: rendered.adapterConfig, metadata: rendered.metadata }, {
         recordRevision: {
           createdByAgentId: updated.requestedByAgentId,
           createdByUserId: decidedByUserId,

@@ -183,6 +183,20 @@ describeEmbeddedPostgres("tool access governance", () => {
       }),
     ]);
 
+    const [renderedAgent] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(renderedAgent).toBeDefined();
+    expect(renderedAgent?.metadata).toMatchObject({
+      toolAccessRender: {
+        version: 1,
+        mcpServers: {
+          gbrain: {
+            include: ["query"],
+            created: true,
+          },
+        },
+      },
+    });
+
     const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
     expect(activity.some((event) => event.action === "company.tool_grant_changed")).toBe(true);
 
