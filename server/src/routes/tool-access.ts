@@ -52,11 +52,11 @@ export function toolAccessRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCanManage(req, companyId);
     const actor = getActorInfo(req);
-    const grants = await db.transaction(async (tx) => {
+    const grantResults = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const txSvc = toolAccessService(txDb);
       const txAgents = agentService(txDb);
-      const savedGrants = [];
+      const savedResults = [];
       for (const grant of req.body.grants) {
         const saved = await txSvc.setGrant(
           companyId,
@@ -65,10 +65,10 @@ export function toolAccessRoutes(db: Db) {
           grant.mode,
           actor.actorType === "user" ? actor.actorId : null,
         );
-        savedGrants.push(saved);
+        savedResults.push(saved);
       }
       const matrix = await txSvc.listMatrix(companyId);
-      const affectedAgentIds = new Set(savedGrants.map((grant) => grant.agentId));
+      const affectedAgentIds = new Set(savedResults.map((result) => result.grant.agentId));
       for (const agentId of affectedAgentIds) {
         const agent = await txAgents.getById(agentId);
         if (!agent || agent.companyId !== companyId || agent.adapterType !== "hermes_local") continue;
@@ -88,20 +88,28 @@ export function toolAccessRoutes(db: Db) {
           },
         );
       }
-      await logActivity(txDb, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "company.tool_grants_updated",
-        entityType: "company",
-        entityId: companyId,
-        details: { count: savedGrants.length },
-      });
-      return savedGrants;
+      for (const result of savedResults) {
+        await logActivity(txDb, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "company.tool_grant_changed",
+          entityType: "company_tool",
+          entityId: result.tool.id,
+          details: {
+            agentId: result.grant.agentId,
+            toolLabel: result.tool.label,
+            previousMode: result.previousMode,
+            newMode: result.grant.mode,
+            risk: result.tool.risk,
+          },
+        });
+      }
+      return savedResults;
     });
-    res.json({ grants });
+    res.json({ grants: grantResults.map((result) => result.grant) });
   });
 
   return router;

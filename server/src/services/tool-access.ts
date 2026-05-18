@@ -209,6 +209,46 @@ export function toolAccessService(db: Db) {
     return { tools, grants };
   }
 
+  async function setGrant(
+    companyId: string,
+    agentId: string,
+    toolId: string,
+    mode: ToolAccessMode,
+    grantedByUserId: string | null,
+  ) {
+    const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+    if (!agent) throw notFound("Agent not found");
+    const [tool] = await db.select().from(companyTools).where(and(eq(companyTools.id, toolId), eq(companyTools.companyId, companyId)));
+    if (!tool) throw notFound("Tool not found");
+    if (!normalizeModes(tool.supportedModes).includes(mode)) {
+      throw unprocessable(`Tool ${tool.key} does not support mode ${mode}`);
+    }
+    const existing = await db
+      .select()
+      .from(agentToolGrants)
+      .where(and(
+        eq(agentToolGrants.companyId, companyId),
+        eq(agentToolGrants.agentId, agentId),
+        eq(agentToolGrants.toolId, toolId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (existing) {
+      const [updated] = await db.update(agentToolGrants)
+        .set({ mode, grantedByUserId, updatedAt: new Date() })
+        .where(and(eq(agentToolGrants.id, existing.id), eq(agentToolGrants.companyId, companyId)))
+        .returning();
+      return { previousMode: existing.mode as ToolAccessMode, grant: updated, tool };
+    }
+    const [created] = await db.insert(agentToolGrants).values({
+      companyId,
+      agentId,
+      toolId,
+      mode,
+      grantedByUserId,
+    }).returning();
+    return { previousMode: "off" as ToolAccessMode, grant: created, tool };
+  }
+
   return {
     listMatrix,
 
@@ -269,44 +309,6 @@ export function toolAccessService(db: Db) {
       };
     },
 
-    setGrant: async (
-      companyId: string,
-      agentId: string,
-      toolId: string,
-      mode: ToolAccessMode,
-      grantedByUserId: string | null,
-    ) => {
-      const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
-      if (!agent) throw notFound("Agent not found");
-      const [tool] = await db.select().from(companyTools).where(and(eq(companyTools.id, toolId), eq(companyTools.companyId, companyId)));
-      if (!tool) throw notFound("Tool not found");
-      if (!normalizeModes(tool.supportedModes).includes(mode)) {
-        throw unprocessable(`Tool ${tool.key} does not support mode ${mode}`);
-      }
-      const existing = await db
-        .select()
-        .from(agentToolGrants)
-        .where(and(
-          eq(agentToolGrants.companyId, companyId),
-          eq(agentToolGrants.agentId, agentId),
-          eq(agentToolGrants.toolId, toolId),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        const [updated] = await db.update(agentToolGrants)
-          .set({ mode, grantedByUserId, updatedAt: new Date() })
-          .where(and(eq(agentToolGrants.id, existing.id), eq(agentToolGrants.companyId, companyId)))
-          .returning();
-        return updated;
-      }
-      const [created] = await db.insert(agentToolGrants).values({
-        companyId,
-        agentId,
-        toolId,
-        mode,
-        grantedByUserId,
-      }).returning();
-      return created;
-    },
+    setGrant,
   };
 }

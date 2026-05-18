@@ -84,9 +84,13 @@ describeEmbeddedPostgres("toolAccessService", () => {
 
     expect(created.key).toBe("mcp.gbrain.query");
 
-    const grant = await svc.setGrant(companyId, agentId, created.id, "read", null);
+    const result = await svc.setGrant(companyId, agentId, created.id, "read", null);
 
-    expect(grant.mode).toBe("read");
+    expect(result).toMatchObject({
+      previousMode: "off",
+      grant: { mode: "read" },
+      tool: { key: "mcp.gbrain.query" },
+    });
     await expect(svc.setGrant(companyId, agentId, created.id, "write", null)).rejects.toThrow(/does not support mode/);
   });
 
