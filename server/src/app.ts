@@ -29,6 +29,7 @@ import {
   LogCapNotifier,
   NoopCapNotifier,
   createBillingCapScheduler,
+  createE2BUsageApiSourceA,
   createOpenMonthlyIncidentHook,
   createPaperclipCommentCapNotifier,
   createTelegramCapNotifier,
@@ -269,10 +270,21 @@ export async function createApp(
     resolveParentIssueId: () => sandboxPilotIncidentIssueId,
     logger,
   });
+  // LET-393 Phase 4A-S4 follow-up: optional live SourceA against the E2B
+  // usage / metering API. Gated on `SANDBOX_E2B_USAGE_API_URL` +
+  // `SANDBOX_E2B_USAGE_API_AUTH` — both unset means the factory returns null
+  // and the monitor stays on the legacy `sourceA: null` (internal-estimate
+  // only) behaviour. The adapter is read-only and falls back cleanly on 401
+  // / 403 / 404 / credential-shaped payloads.
+  const billingCapSourceA = createE2BUsageApiSourceA({
+    url: process.env.SANDBOX_E2B_USAGE_API_URL,
+    apiKey: process.env.SANDBOX_E2B_USAGE_API_AUTH,
+    logger,
+  });
   const billingCapStore = new DrizzleBillingCapStore(db);
   const billingCapMonitor = new BillingCapMonitor({
     store: billingCapStore,
-    sourceA: null,
+    sourceA: billingCapSourceA,
     sourceB: new LeaseBasedSourceB(db),
     notifier: new CompositeCapNotifier(capNotifierList),
     openMonthlyIncident,

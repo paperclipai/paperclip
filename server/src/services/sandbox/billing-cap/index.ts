@@ -14,4 +14,5 @@ export * from "./monitor.js";
 export * from "./scheduler.js";
 export * from "./status-view.js";
 export * from "./telegram-transport.js";
+export * from "./e2b-usage-api-source-a.js";
 export * from "./wiring.js";
