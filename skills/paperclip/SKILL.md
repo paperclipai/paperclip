@@ -21,7 +21,9 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail (conditional):** If `$PAPERCLIP_RUN_ID` is set in your environment (verify with `printenv PAPERCLIP_RUN_ID`), you MUST include `-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+
+**If `$PAPERCLIP_RUN_ID` is NOT set** (printenv returns nothing — for example, you are in a direct chat/Telegram session or other non-Paperclip-wake context where the harness did not inject heartbeat env vars): OMIT the `X-Paperclip-Run-Id` header entirely. Do NOT invent a value, do NOT compose one from message ids, timestamps, session ids, or other strings. The server requires a real UUID for that header and will return `500 invalid input syntax for type uuid` on anything else (because `activity_log.run_id` has a foreign-key constraint to `heartbeat_runs.id`). An absent header is the correct fallback — `activity_log.run_id` will be `NULL`, the request itself will succeed, and your action will simply not be cross-linked to a heartbeat run.
 
 ## The Heartbeat Procedure
 
@@ -53,11 +55,13 @@ Overrides and special cases:
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
+**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header **only when `$PAPERCLIP_RUN_ID` is set** (see "Run audit trail" above):
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers:
+  Authorization: Bearer $PAPERCLIP_API_KEY
+  X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID   # only if $PAPERCLIP_RUN_ID is set; OMIT this line entirely when unset — do NOT invent a value
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -94,8 +98,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
-**Step 8 — Update status and communicate.** Always include the run ID header.
-If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+**Step 8 — Update status and communicate.** Include the run ID header **only when `$PAPERCLIP_RUN_ID` is set** (same conditional rule as Step 5; see "Run audit trail" above). If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
@@ -109,7 +112,9 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers:
+  Authorization: Bearer $PAPERCLIP_API_KEY
+  X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID   # only if $PAPERCLIP_RUN_ID is set; OMIT this line entirely when unset — do NOT invent a value
 { "status": "done", "comment": "What was done and why." }
 ```
 
