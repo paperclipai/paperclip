@@ -10,10 +10,8 @@ import { logger } from "../middleware/logger.js";
  * Streamable HTTP — the transport claude.ai (and other remote MCP clients)
  * uses when stdio is not available.
  *
- * Each incoming request carries its own Bearer API key. A stateless MCP
- * server instance is spun up per request, configured to call back into the
- * local Paperclip API with that key. This keeps auth consistent with the
- * rest of the API surface.
+ * Includes OAuth 2.0 client_credentials flow so claude.ai can exchange
+ * an API key (passed as client_secret) for a Bearer token.
  */
 export function mcpRoutes(opts: { serverPort: number }) {
   const router = Router();
@@ -79,6 +77,79 @@ export function mcpRoutes(opts: { serverPort: number }) {
   router.post("/", handleMcp);
   router.get("/", handleMcp);
   router.delete("/", handleMcp);
+
+  return router;
+}
+
+/**
+ * OAuth 2.0 token endpoint and discovery metadata for claude.ai MCP connectors.
+ *
+ * claude.ai authenticates MCP connectors via OAuth client_credentials flow:
+ *   1. Discovers auth server via /.well-known/oauth-authorization-server
+ *   2. POSTs to /oauth/token with client_id + client_secret
+ *   3. Gets back an access_token it uses as Bearer token on /api/mcp
+ *
+ * The client_secret IS the Paperclip board API key. The token endpoint
+ * simply passes it through as the access_token, so the existing Bearer
+ * auth middleware works unchanged.
+ */
+export function mcpOAuthRoutes(opts: { publicUrl: string }) {
+  const router = Router();
+  const issuer = opts.publicUrl.replace(/\/+$/, "");
+
+  // RFC 8414 — OAuth Authorization Server Metadata
+  router.get("/.well-known/oauth-authorization-server", (_req, res) => {
+    res.json({
+      issuer,
+      token_endpoint: `${issuer}/oauth/token`,
+      token_endpoint_auth_methods_supported: ["client_secret_post"],
+      grant_types_supported: ["client_credentials"],
+      response_types_supported: ["token"],
+      service_documentation: `${issuer}/api/health`,
+    });
+  });
+
+  // RFC 9728 — OAuth Protected Resource Metadata (points MCP clients to our auth server)
+  router.get("/.well-known/oauth-protected-resource", (_req, res) => {
+    res.json({
+      resource: `${issuer}/api/mcp`,
+      authorization_servers: [issuer],
+      bearer_methods_supported: ["header"],
+    });
+  });
+
+  // OAuth 2.0 Token Endpoint — client_credentials grant
+  router.post("/oauth/token", (req, res) => {
+    const grantType = req.body?.grant_type;
+    if (grantType !== "client_credentials") {
+      res.status(400).json({
+        error: "unsupported_grant_type",
+        error_description: "Only client_credentials grant is supported",
+      });
+      return;
+    }
+
+    // Accept credentials from body (client_secret_post)
+    const clientSecret =
+      req.body?.client_secret as string | undefined;
+
+    if (!clientSecret?.trim()) {
+      res.status(400).json({
+        error: "invalid_request",
+        error_description: "client_secret is required",
+      });
+      return;
+    }
+
+    // The API key IS the access token — pass it through so the existing
+    // Bearer auth middleware on /api/mcp can validate it as normal.
+    res.json({
+      access_token: clientSecret.trim(),
+      token_type: "Bearer",
+      // Board API keys last 30 days; report a conservative TTL
+      expires_in: 86400,
+    });
+  });
 
   return router;
 }

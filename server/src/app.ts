@@ -40,7 +40,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
-import { mcpRoutes } from "./routes/mcp.js";
+import { mcpRoutes, mcpOAuthRoutes } from "./routes/mcp.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -146,6 +146,15 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+
+  // OAuth discovery + token endpoints for MCP connectors (e.g. claude.ai).
+  // Mounted before hostname guard and auth middleware because these are
+  // unauthenticated public endpoints required by the OAuth 2.0 spec.
+  const publicUrl =
+    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    `http://${opts.bindHost === "0.0.0.0" ? "127.0.0.1" : opts.bindHost}:${opts.serverPort}`;
+  app.use(mcpOAuthRoutes({ publicUrl }));
+
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
