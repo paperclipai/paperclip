@@ -178,7 +178,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         await restoreSql.end();
       }
     },
-    60_000,
+    // 60s was too tight on slow CI runners — the test inserts 160 large rows,
+    // runs javascript-engine pg_dump-equivalent, gzips, then logical-restores
+    // into a sibling DB. Bumped to 120s with margin so a slow runner doesn't
+    // flake the verify check across unrelated PRs.
+    120_000,
   );
 
   it(
