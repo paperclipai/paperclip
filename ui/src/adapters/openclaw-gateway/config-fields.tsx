@@ -90,6 +90,13 @@ export function OpenClawGatewayConfigFields({
     mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
   };
 
+  const configuredApiKeyPath =
+    typeof config.paperclipApiKeyPath === "string"
+      ? config.paperclipApiKeyPath
+      : typeof config.claimedApiKeyPath === "string"
+        ? config.claimedApiKeyPath
+        : "";
+
   const sessionStrategy = eff(
     "adapterConfig",
     "sessionKeyStrategy",
@@ -150,10 +157,15 @@ export function OpenClawGatewayConfigFields({
             />
           </Field>
 
-          <Field label="Claimed API key path">
+          <Field label="Paperclip API key path">
             <DraftInput
-              value={eff("adapterConfig", "claimedApiKeyPath", String(config.claimedApiKeyPath ?? ""))}
-              onCommit={(v) => mark("adapterConfig", "claimedApiKeyPath", v || undefined)}
+              value={eff("adapterConfig", "paperclipApiKeyPath", configuredApiKeyPath)}
+              onCommit={(v) => {
+                mark("adapterConfig", "paperclipApiKeyPath", v || undefined);
+                if (config.claimedApiKeyPath !== undefined) {
+                  mark("adapterConfig", "claimedApiKeyPath", undefined);
+                }
+              }}
               immediate
               className={inputClass}
               placeholder="~/.openclaw/workspace/paperclip-claimed-api-key.json"

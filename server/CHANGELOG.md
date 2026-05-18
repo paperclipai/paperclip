@@ -1,5 +1,12 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Patch Changes
+
+- Preserve external adapter capabilities and schema-backed fields for non-local custom bridge adapters.
+- Keep the production Dockerfile compatible with CapRover's current Docker builder by avoiding BuildKit-only `COPY --parents` syntax.
+
 ## 0.3.1
 
 ### Patch Changes

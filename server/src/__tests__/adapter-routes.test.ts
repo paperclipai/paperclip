@@ -339,4 +339,45 @@ describe("adapter routes", () => {
 
     unregisterServerAdapter(HOT_INSTALL_TYPE);
   });
+
+  it("preserves prototype getConfigSchema when reloading an external builtin override", async () => {
+    class PrototypeSchemaAdapter implements ServerAdapterModule {
+      type = "claude_local";
+
+      async execute() {
+        return { exitCode: 0, signal: null, timedOut: false };
+      }
+
+      async testEnvironment() {
+        return {
+          adapterType: "claude_local",
+          status: "pass" as const,
+          checks: [],
+          testedAt: new Date(0).toISOString(),
+        };
+      }
+
+      getConfigSchema() {
+        return {
+          version: 1,
+          fields: [{ key: "url", type: "text" as const, label: "URL" }],
+        };
+      }
+    }
+
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      packageName: "prototype-schema-adapter",
+      type: "claude_local",
+      installedAt: new Date(0).toISOString(),
+    });
+    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(new PrototypeSchemaAdapter());
+
+    const app = createApp({ isInstanceAdmin: true });
+    const reload = await request(app).post("/api/adapters/claude_local/reload");
+    expect(reload.status, JSON.stringify(reload.body)).toBe(200);
+
+    const schema = await request(app).get("/api/adapters/claude_local/config-schema");
+    expect(schema.status, JSON.stringify(schema.body)).toBe(200);
+    expect(schema.body).toMatchObject({ fields: [{ key: "url" }] });
+  });
 });
