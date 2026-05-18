@@ -24,6 +24,9 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+elif [ -d /paperclip ] && [ "$(stat -c '%U' /paperclip)" != "node" ]; then
+    # Volume may have been created as root by Docker on first mount; ensure correct ownership
+    chown -R node:node /paperclip
 fi
 
 exec gosu node "$@"
