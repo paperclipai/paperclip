@@ -14,13 +14,13 @@ from datetime import datetime, timezone
 def test_recovery_monitor_initialization():
     """Test that monitor initializes correctly."""
     monitor = RecoveryMonitor(
-        db_url="postgres://test@localhost/test",
         api_url="http://localhost:3100",
-        api_key="test-key"
+        api_key="test-key",
+        company_id="test-company"
     )
-    assert monitor.db_url == "postgres://test@localhost/test"
     assert monitor.api_url == "http://localhost:3100"
     assert monitor.api_key == "test-key"
+    assert monitor.company_id == "test-company"
     assert monitor.stalled_matches == []
     print("✓ Monitor initialization test passed")
 
