@@ -72,6 +72,7 @@ import {
   syncGeminiSkills,
   testEnvironment as geminiTestEnvironment,
   sessionCodec as geminiSessionCodec,
+  getConfigSchema as getGeminiConfigSchema,
 } from "@paperclipai/adapter-gemini-local/server";
 import {
   agentConfigurationDoc as geminiAgentConfigurationDoc,
@@ -358,6 +359,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
   agentConfigurationDoc: geminiAgentConfigurationDoc,
+  getConfigSchema: getGeminiConfigSchema,
 };
 
 const grokLocalAdapter: ServerAdapterModule = {

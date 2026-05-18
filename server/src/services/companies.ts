@@ -125,6 +125,10 @@ export function companyService(db: Db) {
   }
 
   function isIssuePrefixConflict(error: unknown) {
+    const errStr = typeof error === "object" && error !== null && "message" in error ? String((error as Error).message) : String(error);
+    if (errStr.includes("companies_issue_prefix_idx")) {
+      return true;
+    }
     const constraint = typeof error === "object" && error !== null && "constraint" in error
       ? (error as { constraint?: string }).constraint
       : typeof error === "object" && error !== null && "constraint_name" in error
