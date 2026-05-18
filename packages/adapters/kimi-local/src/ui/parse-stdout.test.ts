@@ -10,9 +10,30 @@ describe("parseKimiStdoutLine", () => {
     ]);
   });
 
+  it("maps assistant array content into assistant and thinking entries", () => {
+    const line = JSON.stringify({
+      role: "assistant",
+      content: [{ type: "think", think: "Planning..." }, { type: "text", text: "Hello" }],
+    });
+    expect(parseKimiStdoutLine(line, ts)).toEqual([
+      { kind: "thinking", ts, text: "Planning...", delta: true },
+      { kind: "assistant", ts, text: "Hello", delta: true },
+    ]);
+  });
+
   it("maps tool results into transcript entries", () => {
     expect(parseKimiStdoutLine(JSON.stringify({ role: "tool", tool_call_id: "tc_1", content: "output" }), ts)).toEqual([
       { kind: "tool_result", ts, toolUseId: "tc_1", content: "output", isError: false },
+    ]);
+  });
+
+  it("maps tool results from array content", () => {
+    expect(parseKimiStdoutLine(JSON.stringify({
+      role: "tool",
+      tool_call_id: "tc_1",
+      content: [{ type: "text", text: "line1\n" }, { type: "text", text: "line2" }],
+    }), ts)).toEqual([
+      { kind: "tool_result", ts, toolUseId: "tc_1", content: "line1\nline2", isError: false },
     ]);
   });
 

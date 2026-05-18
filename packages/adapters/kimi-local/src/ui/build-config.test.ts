@@ -7,7 +7,7 @@ describe("buildKimiLocalConfig", () => {
       cwd: "/workspace",
       instructionsFilePath: "/workspace/AGENTS.md",
       model: "kimi-k2.5",
-    });
+    } as never);
     expect(config).toMatchObject({
       cwd: "/workspace",
       instructionsFilePath: "/workspace/AGENTS.md",
@@ -20,7 +20,7 @@ describe("buildKimiLocalConfig", () => {
   it("parses extraArgs as comma-separated list", () => {
     const config = buildKimiLocalConfig({
       extraArgs: "--flag1, --flag2",
-    });
+    } as never);
     expect(config.extraArgs).toEqual(["--flag1", "--flag2"]);
   });
 
@@ -29,7 +29,7 @@ describe("buildKimiLocalConfig", () => {
       envBindings: {
         FOO: { type: "plain", value: "bar" },
       },
-    });
+    } as never);
     expect(config.env).toEqual({
       FOO: { type: "plain", value: "bar" },
     });

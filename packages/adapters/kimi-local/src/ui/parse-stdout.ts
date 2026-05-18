@@ -26,14 +26,29 @@ function parseLineInternal(line: string, ts: string): TranscriptEntry[] {
   const role = asString(parsed.role).trim();
 
   if (role === "assistant") {
-    const content = asString(parsed.content);
-    if (!content) return [];
+    const rawContent = parsed.content;
     const toolCalls = parsed.tool_calls;
-    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-      const entries: TranscriptEntry[] = [];
-      if (content) {
-        entries.push({ kind: "assistant", ts, text: content, delta: true });
+    const entries: TranscriptEntry[] = [];
+
+    if (Array.isArray(rawContent)) {
+      for (const item of rawContent) {
+        const rec = asRecord(item);
+        if (!rec) continue;
+        const type = asString(rec.type).trim();
+        if (type === "text") {
+          const text = asString(rec.text);
+          if (text) entries.push({ kind: "assistant", ts, text, delta: true });
+        } else if (type === "think") {
+          const text = asString(rec.think);
+          if (text) entries.push({ kind: "thinking", ts, text, delta: true });
+        }
       }
+    } else {
+      const content = asString(rawContent);
+      if (content) entries.push({ kind: "assistant", ts, text: content, delta: true });
+    }
+
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
       for (const tc of toolCalls) {
         const tcRecord = asRecord(tc);
         if (!tcRecord) continue;
@@ -41,20 +56,36 @@ function parseLineInternal(line: string, ts: string): TranscriptEntry[] {
         if (type === "function") {
           const fn = asRecord(tcRecord.function);
           const name = asString(fn?.name);
-          const input = asString(fn?.arguments) || asString(fn?.arguments);
+          const input = asString(fn?.arguments);
           if (name) {
             entries.push({ kind: "tool_call", ts, name, input: input || undefined });
           }
         }
       }
-      return entries;
     }
-    return [{ kind: "assistant", ts, text: content, delta: true }];
+
+    return entries.length > 0 ? entries : [];
   }
 
   if (role === "tool") {
-    const content = asString(parsed.content);
+    const rawContent = parsed.content;
     const toolCallId = asString(parsed.tool_call_id);
+    let content = "";
+    if (Array.isArray(rawContent)) {
+      const texts: string[] = [];
+      for (const item of rawContent) {
+        const rec = asRecord(item);
+        if (!rec) continue;
+        const type = asString(rec.type).trim();
+        if (type === "text") {
+          const text = asString(rec.text);
+          if (text) texts.push(text);
+        }
+      }
+      content = texts.join("");
+    } else {
+      content = asString(rawContent);
+    }
     if (!content && !toolCallId) return [];
     return [{
       kind: "tool_result",

@@ -52,14 +52,42 @@ export function parseKimiJsonl(stdout: string): ParsedKimiJsonl {
     const role = asString(event.role, "").trim();
 
     if (role === "assistant") {
-      const content = asString(event.content, "");
-      if (content) textParts.push(content);
+      const content = event.content;
+      if (Array.isArray(content)) {
+        for (const item of content) {
+          const rec = parseObject(item);
+          if (!rec) continue;
+          const type = asString(rec.type, "").trim();
+          if (type === "text") {
+            const text = asString(rec.text, "");
+            if (text) textParts.push(text);
+          }
+        }
+      } else {
+        const text = asString(content, "");
+        if (text) textParts.push(text);
+      }
       continue;
     }
 
     if (role === "tool") {
-      const content = asString(event.content, "");
-      if (content) textParts.push(`[tool result] ${content}`);
+      const rawContent = event.content;
+      if (Array.isArray(rawContent)) {
+        const texts: string[] = [];
+        for (const item of rawContent) {
+          const rec = parseObject(item);
+          if (!rec) continue;
+          const type = asString(rec.type, "").trim();
+          if (type === "text") {
+            const text = asString(rec.text, "");
+            if (text) texts.push(text);
+          }
+        }
+        if (texts.length > 0) textParts.push(`[tool result] ${texts.join("")}`);
+      } else {
+        const content = asString(rawContent, "");
+        if (content) textParts.push(`[tool result] ${content}`);
+      }
       continue;
     }
 
