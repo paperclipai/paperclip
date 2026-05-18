@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   AdapterRuntimeIdentityContext,
@@ -10,8 +10,20 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 const MANAGED_BY = "paperclip.hermes_local.runtime_identity.v1";
 const SAFE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,95}$/;
 
+type RuntimeIdentityEnv = Record<string, string | undefined>;
+
+type HermesModelDefaults = {
+  model: string;
+  provider: string;
+  source: string;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function slugPart(value: string): string {
@@ -45,6 +57,97 @@ async function writeFileIfMissing(filePath: string, content: string): Promise<vo
   }
 }
 
+function parseHermesModelDefaultsFromConfig(content: string, source: string): HermesModelDefaults | null {
+  const lines = content.split("\n");
+  let inModelSection = false;
+  let model = "";
+  let provider = "";
+
+  for (const line of lines) {
+    const trimmedEnd = line.trimEnd();
+    const trimmed = trimmedEnd.trim();
+    const indent = line.length - line.trimStart().length;
+
+    if (/^model:\s*$/.test(trimmedEnd) && indent === 0) {
+      inModelSection = true;
+      continue;
+    }
+
+    if (inModelSection && indent === 0 && trimmed && !trimmed.startsWith("#")) {
+      inModelSection = false;
+    }
+
+    if (!inModelSection) continue;
+
+    const match = trimmedEnd.match(/^\s*(\w+)\s*:\s*(.+)$/);
+    if (!match) continue;
+
+    const key = match[1];
+    const value = match[2].trim().replace(/\s+#.*$/, "").replace(/^['"]|['"]$/g, "");
+    if (key === "default") model = value;
+    if (key === "provider") provider = value;
+  }
+
+  if (!model) return null;
+  return { model, provider, source };
+}
+
+function modelDefaultsFromEnv(env: RuntimeIdentityEnv): HermesModelDefaults | null {
+  const model = asNonEmptyString(env.HERMES_MODEL) ?? asNonEmptyString(env.HERMES_INFERENCE_MODEL);
+  if (!model) return null;
+  return {
+    model,
+    provider: asNonEmptyString(env.HERMES_PROVIDER) ?? asNonEmptyString(env.HERMES_INFERENCE_PROVIDER) ?? "",
+    source: "env",
+  };
+}
+
+async function modelDefaultsFromConfig(
+  baseHermesHome: string | null,
+  targetHermesHome?: string,
+): Promise<HermesModelDefaults | null> {
+  if (!baseHermesHome) return null;
+  const base = path.resolve(baseHermesHome);
+  if (targetHermesHome && base === path.resolve(targetHermesHome)) return null;
+
+  const configPath = path.join(base, "config.yaml");
+  try {
+    return parseHermesModelDefaultsFromConfig(await readFile(configPath, "utf8"), configPath);
+  } catch {
+    return null;
+  }
+}
+
+export async function detectHermesRuntimeModelDefaults(
+  options: {
+    baseHermesHome?: string | null;
+    env?: RuntimeIdentityEnv;
+  } = {},
+): Promise<HermesModelDefaults | null> {
+  const env = options.env ?? process.env;
+  const envDefaults = modelDefaultsFromEnv(env);
+  if (envDefaults) return envDefaults;
+  return await modelDefaultsFromConfig(
+    options.baseHermesHome ?? asNonEmptyString(env.HERMES_HOME) ?? asNonEmptyString(env.HERMES_DATA_ROOT),
+  );
+}
+
+function buildManagedHermesConfig(modelDefaults: HermesModelDefaults | null): string {
+  return [
+    ...(modelDefaults
+      ? [
+          "model:",
+          ...(modelDefaults.provider ? [`  provider: ${modelDefaults.provider}`] : []),
+          `  default: ${modelDefaults.model}`,
+          "",
+        ]
+      : []),
+    "dashboard:",
+    "  show_token_analytics: true",
+    "",
+  ].join("\n");
+}
+
 export function deriveHermesProfileSlug(input: {
   companyName: string;
   agentName: string;
@@ -62,6 +165,8 @@ export async function ensureHermesRuntimeIdentity(
   ctx: AdapterRuntimeIdentityContext & {
     instanceRoot?: string;
     now?: string;
+    baseHermesHome?: string;
+    env?: RuntimeIdentityEnv;
   },
 ): Promise<AdapterRuntimeIdentityResult> {
   const metadata = isRecord(ctx.metadata) ? { ...ctx.metadata } : {};
@@ -79,13 +184,17 @@ export async function ensureHermesRuntimeIdentity(
   await mkdir(hermesHome, { recursive: true });
 
   const configPath = path.join(hermesHome, "config.yaml");
+  const env = ctx.env ?? process.env;
+  let modelDefaults = modelDefaultsFromEnv(env);
+  if (!modelDefaults) {
+    modelDefaults = await modelDefaultsFromConfig(
+      ctx.baseHermesHome ?? asNonEmptyString(env.HERMES_HOME) ?? asNonEmptyString(env.HERMES_DATA_ROOT),
+      hermesHome,
+    );
+  }
   await writeFileIfMissing(
     configPath,
-    [
-      "dashboard:",
-      "  show_token_analytics: true",
-      "",
-    ].join("\n"),
+    buildManagedHermesConfig(modelDefaults),
   );
 
   const adapterEnv = isRecord(ctx.adapterConfig.env)

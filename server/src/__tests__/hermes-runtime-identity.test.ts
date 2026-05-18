@@ -61,6 +61,85 @@ describe("Hermes runtime identity", () => {
       .resolves.toContain("dashboard:");
   });
 
+  it("seeds a new profile from base Hermes model config without copying env secrets", async () => {
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-profile-"));
+    const baseHermesHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-base-"));
+    await writeFile(
+      path.join(baseHermesHome, "config.yaml"),
+      [
+        "model:",
+        "  provider: openrouter",
+        "  default: anthropic/claude-sonnet-4",
+        "",
+        "dashboard:",
+        "  show_token_analytics: false",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(path.join(baseHermesHome, ".env"), "ANTHROPIC_API_KEY=secret\n");
+
+    await ensureHermesRuntimeIdentity({
+      companyId: "company-1",
+      companyName: "Acme",
+      agentId: "agent-1",
+      agentName: "Reviewer",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      metadata: null,
+      instanceRoot,
+      baseHermesHome,
+      env: {},
+      now: "2026-05-18T00:00:00.000Z",
+    });
+
+    const profileHome = path.join(instanceRoot, "runtimes", "hermes", "profiles", "acme-reviewer");
+    await expect(readFile(path.join(profileHome, "config.yaml"), "utf8")).resolves.toBe([
+      "model:",
+      "  provider: openrouter",
+      "  default: anthropic/claude-sonnet-4",
+      "",
+      "dashboard:",
+      "  show_token_analytics: true",
+      "",
+    ].join("\n"));
+    await expect(stat(path.join(profileHome, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("seeds a new profile from Hermes model environment defaults", async () => {
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-profile-"));
+
+    await ensureHermesRuntimeIdentity({
+      companyId: "company-1",
+      companyName: "Acme",
+      agentId: "agent-1",
+      agentName: "Reviewer",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      metadata: null,
+      instanceRoot,
+      env: {
+        HERMES_MODEL: "openai/gpt-5.2",
+        HERMES_PROVIDER: "openai",
+      },
+      now: "2026-05-18T00:00:00.000Z",
+    });
+
+    await expect(
+      readFile(
+        path.join(instanceRoot, "runtimes", "hermes", "profiles", "acme-reviewer", "config.yaml"),
+        "utf8",
+      ),
+    ).resolves.toBe([
+      "model:",
+      "  provider: openai",
+      "  default: openai/gpt-5.2",
+      "",
+      "dashboard:",
+      "  show_token_analytics: true",
+      "",
+    ].join("\n"));
+  });
+
   it("treats malformed adapter env as empty before patching Hermes home", async () => {
     const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-profile-"));
     const result = await ensureHermesRuntimeIdentity({

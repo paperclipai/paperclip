@@ -137,7 +137,10 @@ import {
   models as hermesModels,
 } from "hermes-paperclip-adapter";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
-import { ensureHermesRuntimeIdentity } from "./hermes-runtime-identity.js";
+import {
+  detectHermesRuntimeModelDefaults,
+  ensureHermesRuntimeIdentity,
+} from "./hermes-runtime-identity.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
@@ -496,7 +499,10 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   ensureRuntimeIdentity: ensureHermesRuntimeIdentity,
-  detectModel: () => detectModelFromHermes(),
+  detectModel: async () => {
+    const runtimeDefault = await detectHermesRuntimeModelDefaults();
+    return runtimeDefault ?? await detectModelFromHermes();
+  },
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
