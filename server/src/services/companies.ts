@@ -124,17 +124,35 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
+  // Drizzle wraps driver errors in `DrizzleQueryError` whose `cause` holds the
+  // underlying `PostgresError`. The `node-postgres` and `postgres` drivers also
+  // chain through `error.original` in some versions. Walk both links so a
+  // 23505 collision is detected regardless of wrapping depth.
+  function unwrapDbError(error: unknown): unknown[] {
+    const chain: unknown[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current && typeof current === "object" && !seen.has(current)) {
+      seen.add(current);
+      chain.push(current);
+      const next = (current as { cause?: unknown; original?: unknown }).cause
+        ?? (current as { cause?: unknown; original?: unknown }).original;
+      current = next;
+    }
+    return chain;
+  }
+
   function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+    for (const layer of unwrapDbError(error)) {
+      if (typeof layer !== "object" || layer === null) continue;
+      const code = (layer as { code?: string }).code;
+      if (code !== "23505") continue;
+      const constraint =
+        (layer as { constraint?: string }).constraint
+        ?? (layer as { constraint_name?: string }).constraint_name;
+      if (constraint === "companies_issue_prefix_idx") return true;
+    }
+    return false;
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
