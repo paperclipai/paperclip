@@ -280,6 +280,54 @@ describe("SidebarProjects", () => {
     expect(browseLink?.getAttribute("href")).toBe("/projects");
   });
 
+  it("renders project status circles from issue and project state instead of project colors", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({
+        id: "project-active",
+        name: "Active",
+        urlKey: "active",
+        color: "#ef4444",
+        status: "planned",
+        issueStatusSummary: { in_progress: 1 },
+      }),
+      makeProject({
+        id: "project-waiting",
+        name: "Waiting",
+        urlKey: "waiting",
+        color: "#22c55e",
+        status: "in_progress",
+        issueStatusSummary: { blocked: 1 },
+      }),
+      makeProject({
+        id: "project-inactive",
+        name: "Inactive",
+        urlKey: "inactive",
+        color: "#3b82f6",
+        status: "completed",
+        issueStatusSummary: { done: 2 },
+      }),
+      makeProject({
+        id: "project-unset",
+        name: "Unset",
+        urlKey: "unset",
+        color: "#a855f7",
+        issueStatusSummary: undefined,
+      }),
+    ]);
+
+    await renderSidebarProjects();
+
+    expect(container.querySelector('[aria-label="Project status: active work"]')?.className)
+      .toContain("bg-emerald-500");
+    expect(container.querySelector('[aria-label="Project status: blocked or pending"]')?.className)
+      .toContain("bg-amber-400");
+    expect(container.querySelector('[aria-label="Project status: finished, empty, or inactive"]')?.className)
+      .toContain("bg-muted-foreground/45");
+    expect(container.querySelector('[aria-label="Project status: unset"]')?.className)
+      .toContain("bg-transparent");
+    expect(container.querySelector('[style*="background-color"]')).toBeNull();
+  });
+
   it("sorts alphabetically and persists the selected mode per company and user", async () => {
     await renderSidebarProjects();
     await openProjectsMenu(container);

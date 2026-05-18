@@ -329,6 +329,7 @@ export type {
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,
+  ProjectIssueStatusSummary,
   ProjectManagedByPlugin,
   ProjectWorkspace,
   CompanySearchHighlight,
