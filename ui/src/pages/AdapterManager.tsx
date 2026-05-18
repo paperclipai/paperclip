@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Cpu, Plus, Power, Trash2, FolderOpen, Package, RefreshCw, Download } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
+import { useTranslation } from "react-i18next";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { adaptersApi } from "@/api/adapters";
 import type { AdapterInfo } from "@/api/adapters";
@@ -254,6 +255,7 @@ function ReinstallDialog({
 export function AdapterManager() {
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -268,7 +270,7 @@ export function AdapterManager() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/instance/settings/general" },
-      { label: "Adapters" },
+      { label: t("settings.adapters") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -388,7 +390,7 @@ export function AdapterManager() {
       menuDisabled: !!a.disabled,
     }));
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading adapters...</div>;
+  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">{t("instanceSettings.adapters.loading")}</div>;
 
   const isMutating = installMutation.isPending || removeMutation.isPending || toggleMutation.isPending || overrideMutation.isPending || reloadMutation.isPending || reinstallMutation.isPending;
 
@@ -398,7 +400,7 @@ export function AdapterManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Adapters</h1>
+          <h1 className="text-xl font-semibold">{t("settings.adapters")}</h1>
           <Badge variant="outline" className="text-amber-600 border-amber-400">
             Alpha
           </Badge>
@@ -408,7 +410,7 @@ export function AdapterManager() {
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
               <Plus className="h-4 w-4" />
-              Install Adapter
+              {t("instanceSettings.adapters.installAdapter")}
             </Button>
           </DialogTrigger>
           <DialogContent>
@@ -503,7 +505,7 @@ export function AdapterManager() {
                 }
                 disabled={!installPackage || installMutation.isPending}
               >
-                {installMutation.isPending ? "Installing..." : "Install"}
+                {installMutation.isPending ? t("plugins.installing") : "Install"}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -515,7 +517,7 @@ export function AdapterManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">External adapters are alpha.</p>
+            <p className="font-medium text-foreground">{t("instanceSettings.adapters.alphaWarning")}</p>
             <p className="text-muted-foreground">
               The adapter plugin system is under active development. APIs and storage format may change.
               Use the power icon to hide adapters from agent menus without removing them.
@@ -528,16 +530,16 @@ export function AdapterManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">External Adapters</h2>
+          <h2 className="text-base font-semibold">{t("instanceSettings.adapters.externalAdapters")}</h2>
         </div>
 
         {externalAdapters.length === 0 ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Cpu className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No external adapters installed</p>
+              <p className="text-sm font-medium">{t("instanceSettings.adapters.noExternal")}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Install an adapter package to extend model support.
+                {t("instanceSettings.adapters.noExternalDesc")}
               </p>
             </CardContent>
           </Card>
@@ -583,7 +585,7 @@ export function AdapterManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Built-in Adapters</h2>
+          <h2 className="text-base font-semibold">{t("instanceSettings.adapters.builtinAdapters")}</h2>
         </div>
 
         {builtinAdapters.length === 0 && overriddenBuiltins.length === 0 ? (

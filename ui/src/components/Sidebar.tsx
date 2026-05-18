@@ -14,6 +14,7 @@ import {
   Settings,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -29,8 +30,10 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { LanguageSelector } from "./LanguageSelector";
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -57,13 +60,14 @@ export function Sidebar() {
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <SidebarCompanyMenu />
+        <LanguageSelector />
         <Button
           asChild
           variant="ghost"
           size="icon-sm"
           className="text-muted-foreground shrink-0"
-          aria-label="Open search"
-          title="Open search"
+          aria-label={t("sidebar.search")}
+          title={t("sidebar.search")}
         >
           <NavLink to="/search">
             <Search className="h-4 w-4" />
@@ -79,12 +83,12 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
+            <span className="truncate">{t("sidebar.newIssue")}</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label={t("sidebar.dashboard")} icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label={t("sidebar.inbox")}
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -99,18 +103,18 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+        <SidebarSection label={t("sidebar.work")}>
+          <SidebarNavItem to="/issues" label={t("sidebar.issues")} icon={CircleDot} />
+          <SidebarNavItem to="/routines" label={t("sidebar.routines")} icon={Repeat} />
           <PluginLauncherOutlet
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
             itemClassName="text-[13px] font-medium"
           />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/goals" label={t("sidebar.goals")} icon={Target} />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label={t("sidebar.workspaces")} icon={GitBranch} />
           ) : null}
         </SidebarSection>
 
@@ -118,12 +122,12 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection label={t("sidebar.company")}>
+          <SidebarNavItem to="/org" label={t("sidebar.org")} icon={Network} />
+          <SidebarNavItem to="/skills" label={t("sidebar.skills")} icon={Boxes} />
+          <SidebarNavItem to="/costs" label={t("sidebar.costs")} icon={DollarSign} />
+          <SidebarNavItem to="/activity" label={t("sidebar.activity")} icon={History} />
+          <SidebarNavItem to="/company/settings" label={t("sidebar.settings")} icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet

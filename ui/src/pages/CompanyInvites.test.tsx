@@ -134,12 +134,12 @@ describe("CompanyInvites", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company Invites");
-    expect(container.textContent).toContain("Create invite");
-    expect(container.textContent).toContain("Invite history");
+    expect(container.textContent).toContain("Create Invite");
+    expect(container.textContent).toContain("Invite History");
     expect(container.textContent).toContain("Board User 25");
     expect(container.textContent).toContain("Board User 21");
     expect(container.textContent).not.toContain("Board User 20");
-    expect(container.textContent).toContain("Review request");
+    expect(container.textContent).toContain("Review");
     expect(container.textContent).toContain("View more");
     expect(container.textContent).not.toContain("Human or agent");
     expect(container.textContent).not.toContain("Invite message");
@@ -149,8 +149,8 @@ describe("CompanyInvites", () => {
     expect(container.textContent).not.toContain("Expired invites");
     expect(container.textContent).not.toContain("OpenClaw shortcut");
 
-    expect(container.textContent).toContain("Choose a role");
-    expect(container.textContent).toContain("Each invite link is single-use.");
+    expect(container.textContent).toContain("Choose Role");
+    expect(container.textContent).toContain("Each link is one-time use.");
     expect(container.textContent).toContain("Can create agents, invite users, assign tasks, and approve join requests.");
     expect(container.textContent).toContain("Everything in Admin, plus managing members and permission grants.");
     expect(listInvitesMock).toHaveBeenCalledWith("company-1", { limit: 5, offset: 0 });
@@ -177,7 +177,7 @@ describe("CompanyInvites", () => {
     });
 
     const buttons = Array.from(container.querySelectorAll("button"));
-    const createButton = buttons.find((button) => button.textContent === "Create invite");
+    const createButton = buttons.find((button) => button.textContent === "Create Invite");
     const revokeButton = buttons.find((button) => button.textContent === "Revoke");
 
     expect(createButton).toBeTruthy();
@@ -196,12 +196,12 @@ describe("CompanyInvites", () => {
     });
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
     expect(container.textContent).toContain("Latest invite link");
-    expect(container.textContent).toContain("This URL includes the current Paperclip domain returned by the server.");
+    expect(container.textContent).toContain("This is the most recently created invite. Copy and share it before creating another.");
     expect(container.textContent).toContain("https://paperclip.local/invite/new-token");
     expect(container.textContent).toContain("Open invite");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
-      body: "Invite ready below and copied to clipboard.",
+      body: "Invite link created and copied to clipboard.",
       tone: "success",
     });
 
