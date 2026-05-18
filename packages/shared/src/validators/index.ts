@@ -83,10 +83,18 @@ export {
   companyToolUpdateSchema,
   agentToolGrantSetSchema,
   agentToolGrantBulkSetSchema,
+  toolAccessPolicyUpdateSchema,
+  toolAccessPresetGrantSchema,
+  toolAccessPresetCreateSchema,
+  applyToolAccessPresetSchema,
   type CompanyToolCreate,
   type CompanyToolUpdate,
   type AgentToolGrantSet,
   type AgentToolGrantBulkSet,
+  type ToolAccessPolicyUpdate,
+  type ToolAccessPresetGrantInput,
+  type ToolAccessPresetCreate,
+  type ApplyToolAccessPreset,
 } from "./tool-access.js";
 export {
   agentSkillStateSchema,

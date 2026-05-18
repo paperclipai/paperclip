@@ -35,3 +35,28 @@ export interface ToolAccessMatrix {
   tools: CompanyTool[];
   grants: AgentToolGrant[];
 }
+
+export interface ToolAccessPolicy {
+  id: string;
+  companyId: string;
+  approvalRequiredAtRisk: CompanyToolRisk | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ToolAccessPresetGrant {
+  toolKey: string;
+  mode: ToolAccessMode;
+}
+
+export interface ToolAccessPreset {
+  id: string;
+  companyId: string;
+  key: string;
+  label: string;
+  grants: ToolAccessPresetGrant[];
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+  updatedAt: Date;
+}

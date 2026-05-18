@@ -68,6 +68,9 @@ export type {
   CompanyTool,
   AgentToolGrant,
   ToolAccessMatrix,
+  ToolAccessPolicy,
+  ToolAccessPresetGrant,
+  ToolAccessPreset,
 } from "./tool-access.js";
 export type {
   AgentSkillSyncMode,
