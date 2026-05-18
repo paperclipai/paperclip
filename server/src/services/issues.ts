@@ -216,7 +216,7 @@ export function deriveIssueCommentRunLogAttribution(
 export interface IssueFilters {
   attention?: "blocked";
   status?: string;
-  assigneeAgentId?: string;
+  assigneeAgentId?: string | null;
   participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
@@ -3398,6 +3398,20 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId)];
+      const normalizedAssigneeAgentFilterRaw = typeof filters?.assigneeAgentId === "string"
+        ? filters.assigneeAgentId.trim()
+        : filters?.assigneeAgentId;
+      const normalizedAssigneeAgentFilter = normalizedAssigneeAgentFilterRaw === ""
+        ? undefined
+        : normalizedAssigneeAgentFilterRaw;
+      const assigneeAgentFilter = typeof normalizedAssigneeAgentFilter === "string"
+        ? normalizedAssigneeAgentFilter.toLowerCase() === "null"
+          ? null
+          : normalizedAssigneeAgentFilter
+        : normalizedAssigneeAgentFilter;
+      if (typeof assigneeAgentFilter === "string" && !isUuidLike(assigneeAgentFilter)) {
+        throw unprocessable("assigneeAgentId must be a UUID or 'null'");
+      }
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
@@ -3451,8 +3465,10 @@ export function issueService(db: Db) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
-      if (filters?.assigneeAgentId) {
-        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
+      if (assigneeAgentFilter === null) {
+        conditions.push(isNull(issues.assigneeAgentId));
+      } else if (assigneeAgentFilter) {
+        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
       }
       if (filters?.participantAgentId) {
         conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
