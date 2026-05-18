@@ -685,7 +685,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         title: `Review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
-        priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
+        priority: "low",
         parentId: evidence.sourceIssue.id,
         projectId: evidence.sourceIssue.projectId,
         goalId: evidence.sourceIssue.goalId,
