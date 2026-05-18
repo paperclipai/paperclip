@@ -3922,6 +3922,18 @@ export function issueService(db: Db) {
       // a parent with many children produces a wake on every child→done
       // edge. Mirrors the dedupe pattern used in services/issues.ts:~870
       // and services/issue-tree-control.ts.
+      //
+      // Soft TOCTOU: this is a query-only guard, not an atomic check-and-insert.
+      // Two concurrent child→done edges that both observe "no recent wake" can
+      // each enqueue a wake before either is visible to the other. That is
+      // acceptable here because (a) we tolerate up to one duplicate wake per
+      // 10-min window rather than zero — the circuit breaker still cuts the
+      // observed 273-wake storm down by ~99 % even with worst-case race
+      // doubling, and (b) the agentWakeupRequests insert path doesn't currently
+      // carry a unique constraint on (companyId, reason, payload->>'issueId',
+      // window) that would let us swap this for ON CONFLICT DO NOTHING without
+      // a migration. If the duplicate rate proves material in practice, the
+      // follow-up is a partial unique index plus an atomic upsert here.
       const recentWake = await db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
