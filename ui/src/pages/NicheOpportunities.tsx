@@ -10,6 +10,12 @@ import {
   Download,
   TrendingUp,
 } from "lucide-react";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { useSearchParams } from "@/lib/router";
 import { nicheOpportunitiesApi } from "../api/nicheOpportunities";
 import { useCompany } from "../context/CompanyContext";
@@ -26,6 +32,7 @@ type StatusFilter = "unreviewed" | "all";
 type VerdictFilter = "all" | "Publish" | "Consider" | "Avoid";
 type TierFilter = "all" | "S" | "A" | "B";
 type SortKey = "score-desc" | "score-asc" | "date-desc" | "date-asc";
+type DatePreset = "all" | "7d" | "30d" | "90d" | "custom";
 
 interface NdaMetadata {
   signals?: {
@@ -134,6 +141,17 @@ function applySortKey(items: NicheOpportunity[], sortKey: SortKey): NicheOpportu
       case "date-asc":   return new Date(a.discoveredAt).getTime() - new Date(b.discoveredAt).getTime();
     }
   });
+}
+
+function getDateFilterFrom(preset: DatePreset, customFrom?: string): Date | null {
+  const now = new Date();
+  switch (preset) {
+    case "7d":  { const d = new Date(now); d.setDate(d.getDate() - 7); return d; }
+    case "30d": { const d = new Date(now); d.setDate(d.getDate() - 30); return d; }
+    case "90d": { const d = new Date(now); d.setDate(d.getDate() - 90); return d; }
+    case "custom": return customFrom ? new Date(customFrom) : null;
+    default: return null;
+  }
 }
 
 function parseCategoryPath(raw: string): string[] {
@@ -279,15 +297,17 @@ function ScoreRow({
   score,
   max = 100,
   barClass,
+  labelWidth = "w-[72px]",
 }: {
   label: string;
   score: number;
   max?: number;
   barClass: string;
+  labelWidth?: string;
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-[72px] shrink-0 text-[10px] text-muted-foreground">{label}</span>
+      <span className={cn(labelWidth, "shrink-0 text-[10px] text-muted-foreground")}>{label}</span>
       <MiniBar score={score} max={max} colorClass={barClass} />
       <span className="w-7 shrink-0 text-right text-[10px] tabular-nums font-medium text-foreground">
         {score.toFixed(0)}
@@ -352,14 +372,157 @@ function ErrorCard({ message }: { message: string }) {
   );
 }
 
+function SignalRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-1 border-b border-border/30 last:border-0">
+      <span className="text-xs text-muted-foreground shrink-0">{label}</span>
+      <span className="text-xs font-medium text-right">{value}</span>
+    </div>
+  );
+}
+
+function NicheDetailSheet({
+  opp,
+  open,
+  onClose,
+  onReview,
+  isPending,
+}: {
+  opp: NicheOpportunity | null;
+  open: boolean;
+  onClose: () => void;
+  onReview: (id: string, action: "approve" | "defer" | "reject") => void;
+  isPending: boolean;
+}) {
+  if (!opp) return null;
+  const meta = parseMetadata(opp.metadata);
+  const criteria = meta ? computeCriteriaScores(meta) : null;
+  const verdict = criteria ? criteria.verdict : verdictFromComposite(opp.compositeScore);
+  const oppScore = criteria ? criteria.opportunityScore : opp.compositeScore * 10;
+  const sig = meta?.scoring;
+  const signals = meta?.signals;
+  const reviewGaps: string[] = meta?.reviewGaps ?? signals?.reviewGaps ?? [];
+
+  return (
+    <Sheet open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <SheetContent side="right" className="w-[420px] sm:w-[480px] overflow-y-auto p-0">
+        <div className="flex flex-col h-full">
+          {/* Header */}
+          <SheetHeader className="px-5 pt-5 pb-3 border-b border-border/50 space-y-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 min-w-0">
+                <span className={cn("mt-0.5 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wider shrink-0", TIER_COLOR[opp.tier] ?? TIER_COLOR.B)}>
+                  {opp.tier}
+                </span>
+                <SheetTitle className="text-base font-semibold leading-snug">{opp.headKeyword}</SheetTitle>
+              </div>
+              <span className={cn("mt-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0", STATUS_COLOR[opp.status])}>
+                {STATUS_LABEL[opp.status]}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">{formatCategoryPath(opp.categoryPath)}</p>
+            {/* KPI strip */}
+            <div className="flex items-center gap-4 pt-1 flex-wrap">
+              <span className="text-xs text-muted-foreground">Opp: <span className={cn("font-bold tabular-nums", VERDICT_SCORE_COLOR[verdict])}>{oppScore.toFixed(0)}</span></span>
+              {criteria && <>
+                <span className="text-xs text-muted-foreground">Demand: <span className="font-semibold text-foreground">{criteria.demandScore.toFixed(0)}</span></span>
+                <span className="text-xs text-muted-foreground">Competition: <span className="font-semibold text-foreground">{criteria.competitionScore.toFixed(0)}</span></span>
+                <span className="text-xs text-muted-foreground">Revenue: <span className="font-semibold text-foreground">{criteria.revenueScore.toFixed(0)}</span></span>
+              </>}
+            </div>
+          </SheetHeader>
+
+          <div className="flex-1 px-5 py-4 space-y-5 overflow-y-auto">
+            {/* Scoring Criteria */}
+            {criteria && (
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Scoring Criteria</h3>
+                <div className="space-y-2">
+                  <ScoreRow label="Demand Score" score={criteria.demandScore} barClass="bg-yellow-500" labelWidth="w-[90px]" />
+                  <ScoreRow label="Competition" score={criteria.competitionScore} barClass="bg-blue-500" labelWidth="w-[90px]" />
+                  <ScoreRow label="Rev Potential" score={criteria.revenueScore} barClass="bg-green-500" labelWidth="w-[90px]" />
+                  <ScoreRow label="Opp Score" score={criteria.opportunityScore} max={criteria.opportunityScore > 100 ? criteria.opportunityScore : 100} barClass="bg-green-400" labelWidth="w-[90px]" />
+                  <ScoreRow label="Ad Efficiency" score={criteria.adEfficiencyScore} barClass="bg-purple-500" labelWidth="w-[90px]" />
+                </div>
+                <div className="mt-3">
+                  <span className={cn("inline-flex items-center rounded border px-2.5 py-0.5 text-xs font-bold", VERDICT_STYLE[verdict])}>
+                    {verdict} ({oppScore.toFixed(0)})
+                  </span>
+                </div>
+              </section>
+            )}
+
+            {/* Signals */}
+            {signals && (
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Signals</h3>
+                <div className="rounded-md border border-border/50 px-3 py-1">
+                  {signals.bsrMedianTop30 != null && <SignalRow label="BSR Median (Top 30)" value={signals.bsrMedianTop30.toLocaleString()} />}
+                  {signals.estimatedMonthlySales != null && <SignalRow label="Est. Monthly Sales" value={`${signals.estimatedMonthlySales.toLocaleString()} units`} />}
+                  {signals.keywordSearchVolume != null && <SignalRow label="Search Volume" value={`${signals.keywordSearchVolume.toLocaleString()}/mo`} />}
+                  {signals.medianPrice != null && <SignalRow label="Median Price" value={`$${signals.medianPrice.toFixed(2)}`} />}
+                  {sig?.royaltyPerUnit != null && <SignalRow label="Royalty / Unit" value={`$${sig.royaltyPerUnit.toFixed(2)}`} />}
+                  {signals.qualifiedTitlesInTop30 != null && <SignalRow label="Qualified Titles (Top 30)" value={signals.qualifiedTitlesInTop30} />}
+                  {signals.longTailVariants != null && <SignalRow label="Long-tail Variants" value={signals.longTailVariants} />}
+                  {signals.demandShape && <SignalRow label="Demand Shape" value={signals.demandShape} />}
+                  {signals.kdpPolicyProximity && <SignalRow label="KDP Policy" value={signals.kdpPolicyProximity} />}
+                  {signals.seasonalityCliffRisk != null && <SignalRow label="Seasonality Cliff" value={signals.seasonalityCliffRisk ? "Yes" : "No"} />}
+                </div>
+              </section>
+            )}
+
+            {/* Review Gaps */}
+            {reviewGaps.length > 0 && (
+              <section>
+                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Review Gaps (Unmet Needs)</h3>
+                <div className="space-y-1.5">
+                  {reviewGaps.map((gap, i) => (
+                    <p key={i} className="text-xs text-muted-foreground italic border-l-2 border-border/50 pl-2">{gap}</p>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Discovered */}
+            <div className="flex items-center justify-between text-xs text-muted-foreground pt-1 border-t border-border/30">
+              <span>Discovered</span>
+              <span>{new Date(opp.discoveredAt).toLocaleDateString()}</span>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          {opp.status === "unreviewed" && (
+            <div className="px-5 pb-5 pt-3 border-t border-border/50 flex items-center gap-2">
+              <Button size="sm" variant="default" className="flex-1 gap-1.5 text-xs" disabled={isPending} onClick={() => { onReview(opp.id, "approve"); onClose(); }}>
+                <CheckCircle className="h-3.5 w-3.5" />
+                Approve for Analysis
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5 text-xs px-3" disabled={isPending} onClick={() => { onReview(opp.id, "defer"); onClose(); }}>
+                <Clock className="h-3.5 w-3.5" />
+                Defer
+              </Button>
+              <Button size="sm" variant="ghost" className="gap-1.5 text-xs px-3 text-destructive hover:text-destructive" disabled={isPending} onClick={() => { onReview(opp.id, "reject"); onClose(); }}>
+                <XCircle className="h-3.5 w-3.5" />
+                Reject
+              </Button>
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function NicheCard({
   opp,
   onReview,
   isPending,
+  onSelect,
 }: {
   opp: NicheOpportunity;
   onReview: (id: string, action: "approve" | "defer" | "reject") => void;
   isPending: boolean;
+  onSelect: (opp: NicheOpportunity) => void;
 }) {
   const meta = parseMetadata(opp.metadata);
   const criteria = meta ? computeCriteriaScores(meta) : null;
@@ -377,10 +540,11 @@ function NicheCard({
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card flex flex-col",
+        "rounded-lg border bg-card flex flex-col cursor-pointer hover:ring-1 hover:ring-ring/40 transition-shadow",
         VERDICT_BORDER[verdict],
         VERDICT_BG[verdict],
       )}
+      onClick={() => onSelect(opp)}
     >
       {/* Header */}
       <div className="px-4 pt-4 pb-3 flex-1 space-y-3">
@@ -483,7 +647,7 @@ function NicheCard({
 
       {/* Action buttons — always visible for unreviewed */}
       {opp.status === "unreviewed" && (
-        <div className="px-4 pb-3 pt-2 border-t border-border/50 flex items-center gap-1.5">
+        <div className="px-4 pb-3 pt-2 border-t border-border/50 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
           <Button
             size="sm"
             variant="default"
@@ -526,12 +690,16 @@ export function NicheOpportunities() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedOpp, setSelectedOpp] = useState<NicheOpportunity | null>(null);
 
   const statusFilter = (searchParams.get("tab") ?? "unreviewed") as StatusFilter;
   const verdictFilter = (searchParams.get("verdict") ?? "all") as VerdictFilter;
   const tierFilter = (searchParams.get("tier") ?? "all") as TierFilter;
   const categoryFilter = searchParams.get("cat") ?? "all";
   const sortKey = (searchParams.get("sort") ?? "score-desc") as SortKey;
+  const datePreset = (searchParams.get("datePreset") ?? "all") as DatePreset;
+  const dateFrom = searchParams.get("dateFrom") ?? "";
+  const dateTo = searchParams.get("dateTo") ?? "";
 
   function setStatusFilter(v: StatusFilter) {
     setSearchParams((prev) => { const p = new URLSearchParams(prev); p.set("tab", v); return p; }, { replace: true });
@@ -548,12 +716,24 @@ export function NicheOpportunities() {
   function setSortKey(v: SortKey) {
     setSearchParams((prev) => { const p = new URLSearchParams(prev); p.set("sort", v); return p; }, { replace: true });
   }
+  function setDatePreset(v: DatePreset) {
+    setSearchParams((prev) => { const p = new URLSearchParams(prev); p.set("datePreset", v); return p; }, { replace: true });
+  }
+  function setDateFrom(v: string) {
+    setSearchParams((prev) => { const p = new URLSearchParams(prev); p.set("dateFrom", v); return p; }, { replace: true });
+  }
+  function setDateTo(v: string) {
+    setSearchParams((prev) => { const p = new URLSearchParams(prev); p.set("dateTo", v); return p; }, { replace: true });
+  }
   function clearFilters() {
     setSearchParams((prev) => {
       const p = new URLSearchParams(prev);
       p.set("verdict", "all");
       p.set("tier", "all");
       p.set("cat", "all");
+      p.delete("datePreset");
+      p.delete("dateFrom");
+      p.delete("dateTo");
       return p;
     }, { replace: true });
   }
@@ -604,14 +784,21 @@ export function NicheOpportunities() {
 
   const sortedAll = useMemo(() => applySortKey(allItems, sortKey), [allItems, sortKey]);
   const items = useMemo(() => {
+    const fromDate = getDateFilterFrom(datePreset, dateFrom || undefined);
+    const toDate = datePreset === "custom" && dateTo ? new Date(dateTo + "T23:59:59") : null;
     return sortedAll.filter((opp) => {
       if (tierFilter !== "all" && opp.tier !== tierFilter) return false;
       if (verdictFilter !== "all" && getVerdict(opp) !== verdictFilter) return false;
       if (categoryFilter !== "all" && extractTopCategory(opp.categoryPath) !== categoryFilter)
         return false;
+      if (fromDate) {
+        const discovered = new Date(opp.discoveredAt);
+        if (discovered < fromDate) return false;
+        if (toDate && discovered > toDate) return false;
+      }
       return true;
     });
-  }, [sortedAll, tierFilter, verdictFilter, categoryFilter]);
+  }, [sortedAll, tierFilter, verdictFilter, categoryFilter, datePreset, dateFrom, dateTo]);
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select a company first.</p>;
@@ -749,6 +936,44 @@ export function NicheOpportunities() {
               )}
             </div>
           )}
+
+          {/* Discovered (date) filter */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              Discovered
+              {datePreset !== "all" && (
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+              )}
+            </span>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <FilterPill active={datePreset === "all"} onClick={() => setDatePreset("all")}>All time</FilterPill>
+              <FilterPill active={datePreset === "7d"} onClick={() => setDatePreset("7d")}>Last 7d</FilterPill>
+              <FilterPill active={datePreset === "30d"} onClick={() => setDatePreset("30d")}>Last 30d</FilterPill>
+              <FilterPill active={datePreset === "90d"} onClick={() => setDatePreset("90d")}>Last 90d</FilterPill>
+              <FilterPill active={datePreset === "custom"} onClick={() => setDatePreset("custom")}>Custom</FilterPill>
+            </div>
+            {datePreset === "custom" && (
+              <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                <label className="sr-only" htmlFor="niche-date-from">From date</label>
+                <input
+                  id="niche-date-from"
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-7 rounded-md border border-border bg-background px-2 text-xs"
+                />
+                <span className="text-[10px] text-muted-foreground">–</span>
+                <label className="sr-only" htmlFor="niche-date-to">To date</label>
+                <input
+                  id="niche-date-to"
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-7 rounded-md border border-border bg-background px-2 text-xs"
+                />
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -802,10 +1027,20 @@ export function NicheOpportunities() {
               opp={opp}
               onReview={(id, action) => reviewMutation.mutate({ id, action })}
               isPending={reviewMutation.isPending}
+              onSelect={setSelectedOpp}
             />
           ))}
         </div>
       )}
+
+      {/* Detail side panel */}
+      <NicheDetailSheet
+        opp={selectedOpp}
+        open={selectedOpp !== null}
+        onClose={() => setSelectedOpp(null)}
+        onReview={(id, action) => reviewMutation.mutate({ id, action })}
+        isPending={reviewMutation.isPending}
+      />
     </div>
   );
 }
