@@ -1,0 +1,7 @@
+{
+  "title": "Paperclip Hermes demo issue",
+  "description": "这是一个本地演示任务。请完成以下动作：\n1. 在此 issue 下发表评论，正文里必须包含 `DEMO_DONE`\n2. 然后把这个 issue 标记为 done\n3. 评论里用中文简要说明你完成了什么\n",
+  "status": "todo",
+  "priority": "medium",
+  "assigneeAgentId": "REPLACE_AGENT_ID"
+}
