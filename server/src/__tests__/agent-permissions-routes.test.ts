@@ -1,6 +1,14 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+
+vi.mock("acpx/runtime", () => ({
+  createAcpRuntime: vi.fn(),
+  createAgentRegistry: vi.fn(),
+  createRuntimeStore: vi.fn(),
+  isAcpRuntimeError: vi.fn(() => false),
+}));
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -904,6 +912,78 @@ describe.sequential("agent permission routes", () => {
             maxConcurrentRuns: 20,
           },
         },
+      }),
+    );
+  });
+
+  it("seeds opencode agent creation with the static default model without live discovery", async () => {
+    mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
+      new Error("`opencode models` should not be called during creation"),
+    );
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "OpenCode Builder",
+        role: "engineer",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        adapterType: "opencode_local",
+        adapterConfig: expect.objectContaining({
+          model: DEFAULT_OPENCODE_LOCAL_MODEL,
+        }),
+      }),
+    );
+  });
+
+  it("accepts manual opencode provider/model values without host-side discovery", async () => {
+    mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
+      new Error("`opencode models` should not be called during creation"),
+    );
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "OpenCode Builder",
+        role: "engineer",
+        adapterType: "opencode_local",
+        adapterConfig: {
+          model: "anthropic/claude-sonnet-4-5",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockEnsureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        adapterType: "opencode_local",
+        adapterConfig: expect.objectContaining({
+          model: "anthropic/claude-sonnet-4-5",
+        }),
       }),
     );
   });

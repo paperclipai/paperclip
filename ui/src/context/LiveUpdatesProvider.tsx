@@ -279,25 +279,29 @@ function invalidateVisibleIssueRunQueries(
 
   const status = readString(payload.status);
   if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
-    queryClient.setQueryData(
-      queryKeys.issues.liveRuns(context.routeIssueRef),
-      (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
-    );
-    queryClient.setQueryData(
-      queryKeys.issues.activeRun(context.routeIssueRef),
-      (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
-    );
-    queryClient.setQueryData(
-      queryKeys.issues.detail(context.routeIssueRef),
-      (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
-    );
+    for (const issueRef of context.issueRefs) {
+      queryClient.setQueryData(
+        queryKeys.issues.liveRuns(issueRef),
+        (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.activeRun(issueRef),
+        (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+      );
+      queryClient.setQueryData(
+        queryKeys.issues.detail(issueRef),
+        (current: Issue | undefined) => clearIssueExecutionRun(current, runId),
+      );
+    }
   }
 
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(context.routeIssueRef) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(context.routeIssueRef) });
+  for (const issueRef of context.issueRefs) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueRef) });
+  }
   return true;
 }
 
@@ -404,6 +408,12 @@ async function hydrateVisibleIssueComment(
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
+  "issue.document_created",
+  "issue.document_updated",
+  "issue.document_restored",
+  "issue.document_deleted",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -680,6 +690,17 @@ function invalidateActivityQueries(
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
         if (action === "issue.comment_added") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          const documentKey = readString(details?.key);
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          if (documentKey) {
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+          } else {
+            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
+            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
+          }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });

@@ -17,6 +17,16 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockCompanyState = vi.hoisted(() => ({
+  companies: [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }],
+  selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
+  selectedCompanyId: "company-1",
+}));
+const mockPluginSlots = vi.hoisted(() => ({
+  slots: [] as Array<Record<string, unknown>>,
+}));
+const mockUsePluginSlots = vi.hoisted(() => vi.fn());
+const mockPluginSlotContexts = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
@@ -24,11 +34,10 @@ vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: currentPathname, search: "", hash: "", state: null }),
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
-  useParams: () => ({ companyPrefix: "PAP" }),
-}));
-
-vi.mock("./CompanyRail", () => ({
-  CompanyRail: () => <div>Company rail</div>,
+  useParams: () => {
+    const firstSegment = currentPathname.split("/").filter(Boolean)[0];
+    return { companyPrefix: firstSegment === "instance" ? undefined : firstSegment ?? "PAP" };
+  },
 }));
 
 vi.mock("./Sidebar", () => ({
@@ -95,6 +104,33 @@ vi.mock("./SidebarAccountMenu", () => ({
   SidebarAccountMenu: () => <div>Account menu</div>,
 }));
 
+vi.mock("../plugins/slots", async () => {
+  const actual = await vi.importActual<typeof import("../plugins/slots")>("../plugins/slots");
+  return {
+    resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
+    usePluginSlots: (params: Record<string, unknown>) => {
+      mockUsePluginSlots(params);
+      return {
+        slots: mockPluginSlots.slots,
+        isLoading: false,
+        errorMessage: null,
+      };
+    },
+    PluginSlotMount: ({
+      slot,
+      context,
+      className,
+    }: {
+      slot: { displayName: string };
+      context: Record<string, unknown>;
+      className?: string;
+    }) => {
+      mockPluginSlotContexts.push(context);
+      return <div data-plugin-slot-class={className}>Plugin route sidebar: {slot.displayName}</div>;
+    },
+  };
+});
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     openNewIssue: vi.fn(),
@@ -114,10 +150,10 @@ vi.mock("../context/PanelContext", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }],
+    companies: mockCompanyState.companies,
     loading: false,
-    selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
-    selectedCompanyId: "company-1",
+    selectedCompany: mockCompanyState.selectedCompany,
+    selectedCompanyId: mockCompanyState.selectedCompanyId,
     selectionSource: "manual",
     setSelectedCompanyId: mockSetSelectedCompanyId,
   }),
@@ -179,6 +215,9 @@ describe("Layout", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     currentPathname = "/PAP/dashboard";
+    mockCompanyState.companies = [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }];
+    mockCompanyState.selectedCompany = { id: "company-1", issuePrefix: "PAP", name: "Paperclip" };
+    mockCompanyState.selectedCompanyId = "company-1";
     mockHealthApi.get.mockResolvedValue({
       status: "ok",
       deploymentMode: "authenticated",
@@ -188,6 +227,8 @@ describe("Layout", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
     });
+    mockPluginSlots.slots = [];
+    mockPluginSlotContexts.length = 0;
   });
 
   afterEach(() => {
@@ -215,6 +256,7 @@ describe("Layout", () => {
     expect(mockHealthApi.get).toHaveBeenCalled();
     expect(container.textContent).toContain("Breadcrumbs");
     expect(container.textContent).toContain("Outlet content");
+    expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Authenticated private");
     expect(container.textContent).not.toContain(
       "Sign-in is required and this instance is intended for private-network access.",
@@ -227,6 +269,30 @@ describe("Layout", () => {
 
   it("renders the company settings sidebar on company settings routes", async () => {
     currentPathname = "/PAP/company/settings/access";
+    mockPluginSlots.slots = [
+      {
+        type: "page",
+        id: "company-page",
+        displayName: "Company Page",
+        exportName: "CompanyPage",
+        routePath: "company",
+        pluginId: "plugin-1",
+        pluginKey: "fake-plugin",
+        pluginDisplayName: "Fake Plugin",
+        pluginVersion: "1.0.0",
+      },
+      {
+        type: "routeSidebar",
+        id: "company-sidebar",
+        displayName: "Company Route Sidebar",
+        exportName: "CompanySidebar",
+        routePath: "company",
+        pluginId: "plugin-1",
+        pluginKey: "fake-plugin",
+        pluginDisplayName: "Fake Plugin",
+        pluginVersion: "1.0.0",
+      },
+    ];
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -243,8 +309,217 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company settings sidebar");
+    expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Instance sidebar");
     expect(container.textContent).not.toContain("Main company nav");
+    expect(container.textContent).not.toContain("Plugin route sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders the instance settings sidebar on instance settings routes", async () => {
+    currentPathname = "/instance/settings/general";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Instance sidebar");
+    expect(container.textContent).not.toContain("Company rail");
+    expect(container.textContent).not.toContain("Company settings sidebar");
+    expect(container.textContent).not.toContain("Main company nav");
+    expect(container.textContent).not.toContain("Plugin route sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders a route-scoped plugin sidebar for a matching plugin page route", async () => {
+    currentPathname = "/PAP/wiki";
+    mockPluginSlots.slots = [
+      {
+        type: "page",
+        id: "wiki-page",
+        displayName: "Wiki Page",
+        exportName: "WikiPage",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin",
+        pluginDisplayName: "Wiki Plugin",
+        pluginVersion: "1.0.0",
+      },
+      {
+        type: "routeSidebar",
+        id: "wiki-route-sidebar",
+        displayName: "Wiki Sidebar",
+        exportName: "WikiSidebar",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin",
+        pluginDisplayName: "Wiki Plugin",
+        pluginVersion: "1.0.0",
+      },
+    ];
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Plugin route sidebar: Wiki Sidebar");
+    expect(container.querySelector("[data-plugin-slot-class='h-full w-full']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Main company nav");
+    expect(container.textContent).not.toContain("Company settings sidebar");
+    expect(container.textContent).not.toContain("Instance sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the route company context for plugin route sidebars on the first render", async () => {
+    currentPathname = "/ALT/wiki";
+    mockCompanyState.companies = [
+      { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
+      { id: "company-2", issuePrefix: "ALT", name: "Alternate" },
+    ];
+    mockCompanyState.selectedCompany = { id: "company-1", issuePrefix: "PAP", name: "Paperclip" };
+    mockCompanyState.selectedCompanyId = "company-1";
+    mockPluginSlots.slots = [
+      {
+        type: "page",
+        id: "wiki-page",
+        displayName: "Wiki Page",
+        exportName: "WikiPage",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin",
+        pluginDisplayName: "Wiki Plugin",
+        pluginVersion: "1.0.0",
+      },
+      {
+        type: "routeSidebar",
+        id: "wiki-route-sidebar",
+        displayName: "Wiki Sidebar",
+        exportName: "WikiSidebar",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin",
+        pluginDisplayName: "Wiki Plugin",
+        pluginVersion: "1.0.0",
+      },
+    ];
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockUsePluginSlots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-2",
+        enabled: true,
+      }),
+    );
+    expect(mockPluginSlotContexts).toContainEqual({
+      companyId: "company-2",
+      companyPrefix: "ALT",
+    });
+    expect(mockPluginSlotContexts).not.toContainEqual({
+      companyId: "company-1",
+      companyPrefix: "PAP",
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the normal company sidebar when a plugin page route is ambiguous", async () => {
+    currentPathname = "/PAP/wiki";
+    mockPluginSlots.slots = [
+      {
+        type: "page",
+        id: "wiki-page-a",
+        displayName: "Wiki Page A",
+        exportName: "WikiPageA",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin-a",
+        pluginDisplayName: "Wiki Plugin A",
+        pluginVersion: "1.0.0",
+      },
+      {
+        type: "page",
+        id: "wiki-page-b",
+        displayName: "Wiki Page B",
+        exportName: "WikiPageB",
+        routePath: "wiki",
+        pluginId: "plugin-2",
+        pluginKey: "wiki-plugin-b",
+        pluginDisplayName: "Wiki Plugin B",
+        pluginVersion: "1.0.0",
+      },
+      {
+        type: "routeSidebar",
+        id: "wiki-route-sidebar",
+        displayName: "Wiki Sidebar",
+        exportName: "WikiSidebar",
+        routePath: "wiki",
+        pluginId: "plugin-1",
+        pluginKey: "wiki-plugin-a",
+        pluginDisplayName: "Wiki Plugin A",
+        pluginVersion: "1.0.0",
+      },
+    ];
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Plugin route sidebar");
 
     await act(async () => {
       root.unmount();

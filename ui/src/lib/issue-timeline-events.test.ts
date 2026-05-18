@@ -66,6 +66,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        runId: null,
         statusChange: {
           from: "todo",
           to: "in_progress",
@@ -76,6 +77,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:02:00.000Z"),
         actorType: "user",
         actorId: "local-board",
+        runId: null,
         assigneeChange: {
           from: {
             agentId: "agent-1",
@@ -118,6 +120,7 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         statusChange: {
           from: "done",
           to: "todo",
@@ -157,11 +160,73 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         commentId: "comment-1",
         followUpRequested: true,
         statusChange: {
           from: "done",
           to: "todo",
+        },
+      },
+    ]);
+  });
+
+  it("extracts workspace changes from issue update activity", () => {
+    const events = extractIssueTimelineEvents([
+      {
+        id: "evt-workspace",
+        companyId: "company-1",
+        actorType: "user",
+        actorId: "local-board",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: "issue-1",
+        agentId: null,
+        runId: null,
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        details: {
+          projectWorkspaceId: "workspace-2",
+          workspaceChange: {
+            from: {
+              label: "Main workspace",
+              projectWorkspaceId: "workspace-1",
+              executionWorkspaceId: null,
+              mode: "shared_workspace",
+            },
+            to: {
+              label: "Feature branch",
+              projectWorkspaceId: "workspace-2",
+              executionWorkspaceId: null,
+              mode: "shared_workspace",
+            },
+          },
+          _previous: {
+            projectWorkspaceId: "workspace-1",
+          },
+        },
+      },
+    ] satisfies ActivityEvent[]);
+
+    expect(events).toEqual([
+      {
+        id: "evt-workspace",
+        createdAt: new Date("2026-03-31T12:01:00.000Z"),
+        actorType: "user",
+        actorId: "local-board",
+        runId: null,
+        workspaceChange: {
+          from: {
+            label: "Main workspace",
+            projectWorkspaceId: "workspace-1",
+            executionWorkspaceId: null,
+            mode: "shared_workspace",
+          },
+          to: {
+            label: "Feature branch",
+            projectWorkspaceId: "workspace-2",
+            executionWorkspaceId: null,
+            mode: "shared_workspace",
+          },
         },
       },
     ]);
@@ -194,13 +259,14 @@ describe("extractIssueTimelineEvents", () => {
         createdAt: new Date("2026-03-31T12:01:00.000Z"),
         actorType: "agent",
         actorId: "agent-1",
+        runId: "run-1",
         commentId: "comment-1",
         followUpRequested: true,
       },
     ]);
   });
 
-  it("ignores issue updates without visible status or assignee transitions", () => {
+  it("ignores issue updates without visible status, assignee, or workspace transitions", () => {
     const events = extractIssueTimelineEvents([
       {
         id: "evt-title",

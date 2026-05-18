@@ -14,6 +14,10 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
+import {
+  recoveryAssigneeAdapterOverrides,
+  withRecoveryModelProfileHint,
+} from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
@@ -687,6 +691,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
@@ -732,21 +737,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
-        payload: {
+        payload: withRecoveryModelProfileHint({
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
-        },
+        }),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
-        contextSnapshot: {
+        contextSnapshot: withRecoveryModelProfileHint({
           issueId: review.id,
           taskId: review.id,
           wakeReason: "issue_assigned",
           source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
           sourceIssueId: evidence.sourceIssue.id,
           productivityReviewTrigger: evidence.trigger,
-        },
+        }),
       });
     }
 

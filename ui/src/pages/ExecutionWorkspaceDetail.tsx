@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem } from "@paperclipai/shared";
-import { ArrowLeft, Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
+import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
 } from "../components/RoutineRunVariablesDialog";
 import {
   buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
@@ -53,13 +54,14 @@ type WorkspaceFormState = {
   workspaceRuntime: string;
 };
 
-type ExecutionWorkspaceTab = "configuration" | "runtime_logs" | "issues" | "routines";
+type ExecutionWorkspaceTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
 
 function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceTab | null {
   const segments = pathname.split("/").filter(Boolean);
   const executionWorkspacesIndex = segments.indexOf("execution-workspaces");
   if (executionWorkspacesIndex === -1 || segments[executionWorkspacesIndex + 1] !== workspaceId) return null;
   const tab = segments[executionWorkspacesIndex + 2];
+  if (tab === "services") return "services";
   if (tab === "issues") return "issues";
   if (tab === "routines") return "routines";
   if (tab === "runtime-logs") return "runtime_logs";
@@ -70,6 +72,16 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
 function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceTab) {
   const segment = tab === "runtime_logs" ? "runtime-logs" : tab;
   return `/execution-workspaces/${workspaceId}/${segment}`;
+}
+
+function LegacyWorkspaceTabRedirect({ workspaceId }: { workspaceId: string }) {
+  useEffect(() => {
+    try {
+      localStorage.removeItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+    } catch {}
+  }, [workspaceId]);
+
+  return <Navigate to={executionWorkspaceTabPath(workspaceId, "issues")} replace />;
 }
 
 function isSafeExternalUrl(value: string | null | undefined) {
@@ -259,14 +271,14 @@ function WorkspaceLink({
 
 function ExecutionWorkspaceIssuesList({
   companyId,
-  workspaceId,
+  workspace,
   issues,
   isLoading,
   error,
   project,
 }: {
   companyId: string;
-  workspaceId: string;
+  workspace: ExecutionWorkspace;
   issues: Issue[];
   isLoading: boolean;
   error: Error | null;
@@ -292,7 +304,7 @@ function ExecutionWorkspaceIssuesList({
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspaceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       if (project?.id) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
@@ -303,6 +315,15 @@ function ExecutionWorkspaceIssuesList({
   const projectOptions = useMemo(
     () => (project ? [{ id: project.id, name: project.name, workspaces: project.workspaces ?? [] }] : undefined),
     [project],
+  );
+  const createIssueDefaults = useMemo(
+    () => ({
+      projectId: workspace.projectId,
+      ...(workspace.projectWorkspaceId ? { projectWorkspaceId: workspace.projectWorkspaceId } : {}),
+      executionWorkspaceId: workspace.id,
+      executionWorkspaceMode: "reuse_existing",
+    }),
+    [workspace.id, workspace.projectId, workspace.projectWorkspaceId],
   );
 
   return (
@@ -315,6 +336,7 @@ function ExecutionWorkspaceIssuesList({
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
       viewStateKey="paperclip:execution-workspace-issues-view"
+      baseCreateIssueDefaults={createIssueDefaults}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -663,25 +685,10 @@ export function ExecutionWorkspaceDetail() {
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
 
   if (workspaceId && activeTab === null) {
-    let cachedTab: ExecutionWorkspaceTab = "configuration";
-    try {
-      const storedTab = localStorage.getItem(`paperclip:execution-workspace-tab:${workspaceId}`);
-      if (
-        storedTab === "issues" ||
-        storedTab === "routines" ||
-        storedTab === "configuration" ||
-        storedTab === "runtime_logs"
-      ) {
-        cachedTab = storedTab;
-      }
-    } catch {}
-    return <Navigate to={executionWorkspaceTabPath(workspaceId, cachedTab)} replace />;
+    return <LegacyWorkspaceTabRedirect workspaceId={workspaceId} />;
   }
 
   const handleTabChange = (tab: ExecutionWorkspaceTab) => {
-    try {
-      localStorage.setItem(`paperclip:execution-workspace-tab:${workspace.id}`, tab);
-    } catch {}
     navigate(executionWorkspaceTabPath(workspace.id, tab));
   };
 
@@ -707,43 +714,39 @@ export function ExecutionWorkspaceDetail() {
   return (
     <>
       <div className="space-y-4 overflow-hidden sm:space-y-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <Button variant="ghost" size="sm" asChild>
-            <Link to={project ? `/projects/${projectRef}/workspaces` : "/projects"}>
-              <ArrowLeft className="mr-1 h-4 w-4" />
-              Back to all workspaces
-            </Link>
-          </Button>
-          <StatusPill>{workspace.mode}</StatusPill>
-          <StatusPill>{workspace.providerType}</StatusPill>
-          <StatusPill className={workspace.status === "active" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : undefined}>
-            {workspace.status}
-          </StatusPill>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            Execution workspace
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-2">
+            <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              Execution workspace
+            </div>
+            <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
           </div>
-          <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
-            <span className="hidden sm:inline"> These settings stay attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown, and runtime-service behavior in sync with the actual workspace being reused.</span>
-          </p>
+          <WorkspaceRuntimeQuickControls
+            sections={runtimeControlSections}
+            isPending={controlRuntimeServices.isPending}
+            pendingRequest={pendingRuntimeAction}
+            onAction={(request) => controlRuntimeServices.mutate(request)}
+          />
         </div>
+        {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
+        {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
 
-        <Card className="rounded-none">
-          <CardHeader>
-            <CardTitle>Services and jobs</CardTitle>
-            <CardDescription>
-              Source: {runtimeConfigSource === "execution_workspace"
-                ? "execution workspace override"
-                : runtimeConfigSource === "project_workspace"
-                  ? "project workspace default"
-                  : "none"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        <Tabs value={activeTab ?? "issues"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
+          <PageTabBar
+            items={[
+              { value: "issues", label: "Issues" },
+              { value: "services", label: "Services" },
+              { value: "configuration", label: "Configuration" },
+              { value: "runtime_logs", label: "Runtime logs" },
+              { value: "routines", label: "Routines" },
+            ]}
+            align="start"
+            value={activeTab ?? "issues"}
+            onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}
+          />
+        </Tabs>
+
+        {activeTab === "services" ? (
           <WorkspaceRuntimeControls
             sections={runtimeControlSections}
             isPending={controlRuntimeServices.isPending}
@@ -761,26 +764,7 @@ export function ExecutionWorkspaceDetail() {
             }
             onAction={(request) => controlRuntimeServices.mutate(request)}
           />
-          {runtimeActionErrorMessage ? <p className="mt-4 text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
-          {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="mt-4 text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
-          </CardContent>
-        </Card>
-
-        <Tabs value={activeTab ?? "configuration"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
-          <PageTabBar
-            items={[
-              { value: "configuration", label: "Configuration" },
-              { value: "runtime_logs", label: "Runtime logs" },
-              { value: "issues", label: "Issues" },
-              { value: "routines", label: "Routines" },
-            ]}
-            align="start"
-            value={activeTab ?? "configuration"}
-            onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}
-          />
-        </Tabs>
-
-        {activeTab === "configuration" ? (
+        ) : activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
             <Card className="rounded-none">
               <CardHeader>
@@ -792,7 +776,7 @@ export function ExecutionWorkspaceDetail() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="w-full rounded-none sm:w-auto"
+                    className="w-full sm:w-auto"
                     onClick={() => setCloseDialogOpen(true)}
                     disabled={workspace.status === "archived"}
                   >
@@ -1138,7 +1122,7 @@ export function ExecutionWorkspaceDetail() {
         ) : activeTab === "issues" ? (
           <ExecutionWorkspaceIssuesList
             companyId={workspace.companyId}
-            workspaceId={workspace.id}
+            workspace={workspace}
             issues={linkedIssues}
             isLoading={linkedIssuesQuery.isLoading}
             error={linkedIssuesQuery.error as Error | null}

@@ -11,6 +11,7 @@ export const API = {
   goals: `${API_PREFIX}/goals`,
   approvals: `${API_PREFIX}/approvals`,
   secrets: `${API_PREFIX}/secrets`,
+  secretProviderConfigs: `${API_PREFIX}/secret-provider-configs`,
   costs: `${API_PREFIX}/costs`,
   activity: `${API_PREFIX}/activity`,
   dashboard: `${API_PREFIX}/dashboard`,

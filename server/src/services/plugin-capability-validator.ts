@@ -47,6 +47,12 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.managed.get": ["projects.managed"],
+  "projects.managed.reconcile": ["projects.managed"],
+  "projects.managed.reset": ["projects.managed"],
+  "routines.managed.get": ["routines.managed"],
+  "routines.managed.reconcile": ["routines.managed"],
+  "routines.managed.reset": ["routines.managed"],
   "project.workspaces.list": ["project.workspaces.read"],
   "project.workspaces.get": ["project.workspaces.read"],
   "issues.list": ["issues.read"],
@@ -56,6 +62,9 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issue.comments.get": ["issue.comments.read"],
   "agents.list": ["agents.read"],
   "agents.get": ["agents.read"],
+  "agents.managed.get": ["agents.managed"],
+  "agents.managed.reconcile": ["agents.managed"],
+  "agents.managed.reset": ["agents.managed"],
   "goals.list": ["goals.read"],
   "goals.get": ["goals.read"],
   "activity.list": ["activity.read"],
@@ -65,6 +74,12 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issues.summaries.getOrchestration": ["issues.orchestration.read"],
   "db.namespace": ["database.namespace.read"],
   "db.query": ["database.namespace.read"],
+  "localFolders.declarations": [],
+  "localFolders.configure": ["local.folders"],
+  "localFolders.status": ["local.folders"],
+  "localFolders.list": ["local.folders"],
+  "localFolders.readText": ["local.folders"],
+  "localFolders.writeTextAtomic": ["local.folders"],
 
   // Data write operations
   "issues.create": ["issues.create"],
@@ -133,6 +148,7 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   commentAnnotation: "ui.commentAnnotation.register",
   commentContextMenuItem: "ui.action.register",
   settingsPage: "instance.settings.register",
+  routeSidebar: "ui.sidebar.register",
 };
 
 /**
@@ -167,6 +183,9 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
   environmentDrivers: "environment.drivers.register",
+  agents: "agents.managed",
+  projects: "projects.managed",
+  routines: "routines.managed",
 };
 
 // ---------------------------------------------------------------------------

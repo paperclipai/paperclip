@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  normalizeIssueIdentifier,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -67,8 +68,9 @@ export function costRoutes(
   const issues = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      return issues.getByIdentifier(rawId);
+    const identifier = normalizeIssueIdentifier(rawId);
+    if (identifier) {
+      return issues.getByIdentifier(identifier);
     }
     return issues.getById(rawId);
   }
@@ -148,7 +150,8 @@ export function costRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const summary = await costs.issueTreeSummary(issue.companyId, issue.id);
+    const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
+    const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
     res.json(summary);
   });
 

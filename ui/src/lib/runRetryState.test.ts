@@ -5,6 +5,7 @@ describe("runRetryState", () => {
   it("formats internal retry reasons for operators", () => {
     expect(formatRetryReason("transient_failure")).toBe("Transient failure");
     expect(formatRetryReason("issue_continuation_needed")).toBe("Continuation needed");
+    expect(formatRetryReason("max_turns_continuation")).toBe("Max-turn continuation");
     expect(formatRetryReason("custom_reason")).toBe("custom reason");
   });
 
@@ -21,6 +22,22 @@ describe("runRetryState", () => {
       kind: "scheduled",
       badgeLabel: "Retry scheduled",
       detail: "Attempt 2 · Transient failure",
+    });
+  });
+
+  it("describes max-turn continuation retries distinctly", () => {
+    expect(
+      describeRunRetryState({
+        status: "scheduled_retry",
+        retryOfRunId: "run-max-turns",
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "max_turns_continuation",
+        scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+      }),
+    ).toMatchObject({
+      kind: "scheduled",
+      badgeLabel: "Continuation scheduled",
+      detail: "Attempt 1 · Max-turn continuation",
     });
   });
 
