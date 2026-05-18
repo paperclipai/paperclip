@@ -10,6 +10,9 @@ const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -61,6 +64,10 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -82,6 +89,14 @@ describe("CompanySettingsSidebar", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 2,
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: null,
+      userId: "local-board",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      keyId: null,
     });
   });
 
@@ -113,6 +128,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Access");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).toContain("Data Recovery");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -147,6 +163,49 @@ describe("CompanySettingsSidebar", () => {
         to: "/company/settings/secrets",
         label: "Secrets",
         end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/instance/settings/data-recovery?companyId=company-1",
+        label: "Data Recovery",
+        end: true,
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides data recovery for non-instance-admin users", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: "user@example.com", name: "User", image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Secrets");
+    expect(container.textContent).not.toContain("Data Recovery");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Data Recovery",
       }),
     );
 

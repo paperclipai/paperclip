@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ArchiveRestore, ChevronLeft, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { accessApi } from "@/api/access";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
@@ -11,6 +12,11 @@ import { SidebarNavItem } from "./SidebarNavItem";
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.sidebarBadges(selectedCompanyId)
@@ -29,6 +35,7 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
+  const canManageDataRecovery = boardAccess?.source === "local_implicit" || boardAccess?.isInstanceAdmin;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -69,6 +76,14 @@ export function CompanySettingsSidebar() {
           />
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          {canManageDataRecovery ? (
+            <SidebarNavItem
+              to={`/instance/settings/data-recovery?companyId=${encodeURIComponent(selectedCompanyId ?? "")}`}
+              label="Data Recovery"
+              icon={ArchiveRestore}
+              end
+            />
+          ) : null}
         </div>
       </nav>
     </aside>
