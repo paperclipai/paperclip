@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { approvalsApi } from "../api/approvals";
+import { heartbeatsApi } from "../api/heartbeats";
+import { routinesApi } from "../api/routines";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -20,18 +24,377 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  Bot,
+  BriefcaseBusiness,
+  CheckCircle2,
+  CircleDot,
+  Clock3,
+  DollarSign,
+  FileStack,
+  LayoutDashboard,
+  PauseCircle,
+  PlayCircle,
+  ShieldCheck,
+} from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type {
+  Agent,
+  Approval,
+  HeartbeatRun,
+  Issue,
+  IssueWorkProduct,
+  Project,
+  RoutineListItem,
+} from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const WORK_SURFACE_ITEM_LIMIT = 4;
+const WORK_SURFACE_ARTIFACT_ISSUE_LIMIT = 6;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+function getItemTime(value: string | Date | null | undefined) {
+  return value ? timeAgo(value) : "No activity";
+}
+
+function getIssueHref(issue: Pick<Issue, "id" | "identifier">) {
+  return `/issues/${issue.identifier ?? issue.id}`;
+}
+
+function isIssueOpen(issue: Issue) {
+  return !["done", "cancelled"].includes(issue.status);
+}
+
+function isBlockerIssue(issue: Issue) {
+  return issue.status === "blocked" ||
+    Boolean(issue.blockerAttention?.state && issue.blockerAttention.state !== "none");
+}
+
+function issueStatusLabel(status: string) {
+  return status.replaceAll("_", " ");
+}
+
+function WorkSurfaceSection({
+  projects,
+  issues,
+  routines,
+  approvals,
+  runs,
+  artifacts,
+  loading,
+  errorMessage,
+}: {
+  projects?: Project[];
+  issues?: Issue[];
+  routines?: RoutineListItem[];
+  approvals?: Approval[];
+  runs?: HeartbeatRun[];
+  artifacts: IssueWorkProduct[];
+  loading: boolean;
+  errorMessage: string | null;
+}) {
+  const activeProjects = (projects ?? []).filter((project) => !project.archivedAt).slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const openIssues = (issues ?? []).filter(isIssueOpen).slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const blockerIssues = (issues ?? []).filter(isBlockerIssue).slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const activeRoutines = (routines ?? [])
+    .filter((routine) => routine.status !== "archived")
+    .slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const pendingApprovals = (approvals ?? [])
+    .filter((approval) => ["pending", "pending_approval"].includes(approval.status))
+    .slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const recentRuns = (runs ?? []).slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const recentArtifacts = artifacts.slice(0, WORK_SURFACE_ITEM_LIMIT);
+  const reviewArtifacts = artifacts.filter((artifact) => artifact.reviewState !== "none" || artifact.isPrimary);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Work Surface</h2>
+          <p className="text-sm text-muted-foreground">
+            One scan for active work, blockers, approvals, execution, and evidence.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <Link to="/projects" className="underline underline-offset-2">Projects</Link>
+          <Link to="/issues" className="underline underline-offset-2">Issues</Link>
+          <Link to="/routines" className="underline underline-offset-2">Routines</Link>
+          <Link to="/approvals" className="underline underline-offset-2">Approvals</Link>
+        </div>
+      </div>
+
+      {errorMessage && (
+        <div className="rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {errorMessage}
+        </div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        <WorkSurfacePanel
+          icon={BriefcaseBusiness}
+          title="Projects"
+          count={projects?.filter((project) => !project.archivedAt).length ?? 0}
+          href="/projects"
+          loading={loading && !projects}
+          empty="No active projects."
+        >
+          {activeProjects.map((project) => (
+            <WorkSurfaceRow
+              key={project.id}
+              href={`/projects/${project.id}`}
+              title={project.name}
+              meta={project.status}
+              time={getItemTime(project.updatedAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={CircleDot}
+          title="Issues"
+          count={(issues ?? []).filter(isIssueOpen).length}
+          href="/issues"
+          loading={loading && !issues}
+          empty="No open issues."
+        >
+          {openIssues.map((issue) => (
+            <WorkSurfaceRow
+              key={issue.id}
+              href={getIssueHref(issue)}
+              title={issue.title}
+              meta={`${issue.identifier ?? issue.id.slice(0, 8)} · ${issueStatusLabel(issue.status)}`}
+              time={getItemTime(issue.updatedAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={AlertTriangle}
+          title="Blockers"
+          count={(issues ?? []).filter(isBlockerIssue).length}
+          href="/issues?status=blocked"
+          loading={loading && !issues}
+          empty="No blockers surfaced."
+          tone={blockerIssues.length > 0 ? "warning" : "default"}
+        >
+          {blockerIssues.map((issue) => (
+            <WorkSurfaceRow
+              key={issue.id}
+              href={getIssueHref(issue)}
+              title={issue.title}
+              meta={issue.identifier ?? issue.id.slice(0, 8)}
+              time={getItemTime(issue.updatedAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={Clock3}
+          title="Routines"
+          count={(routines ?? []).length}
+          href="/routines"
+          loading={loading && !routines}
+          empty="No routines configured."
+        >
+          {activeRoutines.map((routine) => (
+            <WorkSurfaceRow
+              key={routine.id}
+              href={`/routines/${routine.id}`}
+              title={routine.title}
+              meta={routine.lastRun ? `Last ${routine.lastRun.status}` : `${routine.triggers.length} triggers`}
+              time={getItemTime(routine.lastRun?.createdAt ?? routine.updatedAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={ShieldCheck}
+          title="Approvals"
+          count={pendingApprovals.length}
+          href="/approvals"
+          loading={loading && !approvals}
+          empty="No pending approvals."
+          tone={pendingApprovals.length > 0 ? "warning" : "default"}
+        >
+          {pendingApprovals.map((approval) => (
+            <WorkSurfaceRow
+              key={approval.id}
+              href={`/approvals/${approval.id}`}
+              title={approval.type.replaceAll("_", " ")}
+              meta={approval.status.replaceAll("_", " ")}
+              time={getItemTime(approval.createdAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={PlayCircle}
+          title="Runs"
+          count={(runs ?? []).length}
+          href="/inbox"
+          loading={loading && !runs}
+          empty="No recent runs."
+        >
+          {recentRuns.map((run) => (
+            <WorkSurfaceRow
+              key={run.id}
+              href={`/agents/${run.agentId}/runs/${run.id}`}
+              title={run.status.replaceAll("_", " ")}
+              meta={run.invocationSource.replaceAll("_", " ")}
+              time={getItemTime(run.startedAt ?? run.createdAt)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={FileStack}
+          title="Artifacts"
+          count={artifacts.length}
+          href="/issues"
+          loading={loading}
+          empty="No recent artifacts."
+        >
+          {recentArtifacts.map((artifact) => (
+            <WorkSurfaceRow
+              key={artifact.id}
+              href={artifact.url ?? getIssueHref({ id: artifact.issueId, identifier: null })}
+              title={artifact.title}
+              meta={`${artifact.type.replaceAll("_", " ")} · ${artifact.status.replaceAll("_", " ")}`}
+              time={getItemTime(artifact.updatedAt)}
+              external={Boolean(artifact.url)}
+            />
+          ))}
+        </WorkSurfacePanel>
+
+        <WorkSurfacePanel
+          icon={Archive}
+          title="Evidence"
+          count={reviewArtifacts.length}
+          href="/issues"
+          loading={loading}
+          empty="No review evidence."
+        >
+          {reviewArtifacts
+            .slice(0, WORK_SURFACE_ITEM_LIMIT)
+            .map((artifact) => (
+              <WorkSurfaceRow
+                key={artifact.id}
+                href={artifact.url ?? getIssueHref({ id: artifact.issueId, identifier: null })}
+                title={artifact.title}
+                meta={artifact.reviewState.replaceAll("_", " ")}
+                time={getItemTime(artifact.updatedAt)}
+                external={Boolean(artifact.url)}
+              />
+            ))}
+        </WorkSurfacePanel>
+      </div>
+    </section>
+  );
+}
+
+function WorkSurfacePanel({
+  icon: Icon,
+  title,
+  count,
+  href,
+  loading,
+  empty,
+  tone = "default",
+  children,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  count: number;
+  href: string;
+  loading: boolean;
+  empty: string;
+  tone?: "default" | "warning";
+  children: ReactNode;
+}) {
+  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
+
+  return (
+    <div className={cn(
+      "min-w-0 rounded-lg border bg-card",
+      tone === "warning" ? "border-amber-400/35" : "border-border",
+    )}>
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className={cn("h-4 w-4 shrink-0", tone === "warning" ? "text-amber-500" : "text-muted-foreground")} />
+          <h3 className="truncate text-sm font-semibold">{title}</h3>
+        </div>
+        <Link
+          to={href}
+          className="rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground no-underline"
+        >
+          {count}
+        </Link>
+      </div>
+      <div className="divide-y divide-border">
+        {loading ? (
+          <div className="space-y-2 p-3">
+            <div className="h-3 w-3/4 rounded bg-muted" />
+            <div className="h-3 w-1/2 rounded bg-muted" />
+          </div>
+        ) : hasChildren ? (
+          children
+        ) : (
+          <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            <span>{empty}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkSurfaceRow({
+  href,
+  title,
+  meta,
+  time,
+  external = false,
+}: {
+  href: string;
+  title: string;
+  meta: string;
+  time: string;
+  external?: boolean;
+}) {
+  const className = "block min-w-0 px-3 py-2.5 text-sm no-underline text-inherit hover:bg-accent/50";
+  const content = (
+    <>
+      <div className="truncate font-medium">{title}</div>
+      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span className="min-w-0 truncate capitalize">{meta}</span>
+        <span className="shrink-0">{time}</span>
+      </div>
+    </>
+  );
+
+  if (external) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer" className={className}>
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <Link to={href} className={className}>
+      {content}
+    </Link>
+  );
 }
 
 export function Dashboard() {
@@ -77,6 +440,36 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
+  const {
+    data: routines,
+    isLoading: areRoutinesLoading,
+    error: routinesError,
+  } = useQuery({
+    queryKey: queryKeys.routines.list(selectedCompanyId!),
+    queryFn: () => routinesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const {
+    data: approvals,
+    isLoading: areApprovalsLoading,
+    error: approvalsError,
+  } = useQuery({
+    queryKey: queryKeys.approvals.list(selectedCompanyId!),
+    queryFn: () => approvalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const {
+    data: runs,
+    isLoading: areRunsLoading,
+    error: runsError,
+  } = useQuery({
+    queryKey: ["dashboard", selectedCompanyId, "recent-runs", WORK_SURFACE_ITEM_LIMIT * 2],
+    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, WORK_SURFACE_ITEM_LIMIT * 2),
+    enabled: !!selectedCompanyId,
+  });
+
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -90,6 +483,41 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const artifactIssueIds = useMemo(
+    () => recentIssues.slice(0, WORK_SURFACE_ARTIFACT_ISSUE_LIMIT).map((issue) => issue.id),
+    [recentIssues],
+  );
+  const issueDetailQueries = useQueries({
+    queries: artifactIssueIds.map((issueId) => ({
+      queryKey: queryKeys.issues.detail(issueId),
+      queryFn: () => issuesApi.get(issueId),
+      enabled: !!selectedCompanyId,
+    })),
+  });
+  const workSurfaceArtifacts = useMemo(
+    () => issueDetailQueries
+      .flatMap((query) => query.data?.workProducts ?? [])
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [issueDetailQueries],
+  );
+  const workSurfaceError = [
+    routinesError,
+    approvalsError,
+    runsError,
+    ...issueDetailQueries.map((query) => query.error),
+  ].find(Boolean);
+  const workSurfaceErrorMessage = workSurfaceError instanceof Error
+    ? workSurfaceError.message
+    : workSurfaceError
+      ? "Some Work Surface data could not be loaded."
+      : null;
+  const isWorkSurfaceLoading =
+    !issues ||
+    !projects ||
+    areRoutinesLoading ||
+    areApprovalsLoading ||
+    areRunsLoading ||
+    issueDetailQueries.some((query) => query.isLoading);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -305,6 +733,17 @@ export function Dashboard() {
               <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
+
+          <WorkSurfaceSection
+            projects={projects}
+            issues={issues}
+            routines={routines}
+            approvals={approvals}
+            runs={runs}
+            artifacts={workSurfaceArtifacts}
+            loading={isWorkSurfaceLoading}
+            errorMessage={workSurfaceErrorMessage}
+          />
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
