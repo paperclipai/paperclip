@@ -23,6 +23,7 @@ import {
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import { getRunLogStore } from "../services/run-log-store.ts";
+import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -60,17 +61,6 @@ vi.mock("../adapters/index.ts", async () => {
     })),
   };
 });
-
-async function waitForHeartbeatIdle(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const runs = await db
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
 
 async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
@@ -129,15 +119,43 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   // scanSilentActiveRuns -> enqueueWakeup -> startNextQueuedRunForAgent
   // fires `void executeRun(...)` background work that the test never awaits
-  // (heartbeat.ts ~line 7304). The old naive 2.5s poll + bare TRUNCATE
-  // raced with the in-flight executeRun's open transactions, deadlocking
-  // `TRUNCATE companies CASCADE` until the 10s hook timeout. Mirrors the
-  // working drain pattern in heartbeat-process-recovery.test.ts — cancel
-  // active runs first so executeRun observes the cancellation and exits,
-  // then poll until idle before truncating.
+  // (heartbeat.ts ~line 7304). PR #55 added cancelActiveRunsForCleanup +
+  // single-confirm waitForHeartbeatIdle, but verify_canary run 26014448824
+  // still deadlocked on TRUNCATE for 3 tests — the postRun lifecycle hook
+  // (heartbeat.ts:6568) continues writes after status update because it
+  // doesn't observe the cancellation flag. Mirrors the proven pattern in
+  // heartbeat-stale-queue-invalidation.test.ts: reset the mock so any
+  // in-flight resolution returns the inert default, clear runningProcesses
+  // defensively, cancel active runs, then triple-confirm idle (3×50ms
+  // consecutive idle reads) + 50ms settle before TRUNCATE.
   afterEach(async () => {
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Acknowledged stale-run evaluation.",
+      provider: "test",
+      model: "test-model",
+    }));
+    runningProcesses.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
-    await waitForHeartbeatIdle(db, 5_000);
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      if (!hasActiveRun) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
   }, 30_000);
 
