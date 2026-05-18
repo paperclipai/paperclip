@@ -323,6 +323,8 @@ If `plan` already exists, fetch the current document first and send its latest `
 
 ## Key Endpoints (Hot Routes)
 
+Rows tagged `(≥ vYYYY.MMDD.0)` ship in that server release and 404 on older deployments. To check the deployed version: `GET /api/health` returns `{ "status": "ok", "version": "<server-version>", ... }`. If a 404 surprises you on a documented route, compare `version` against the minimum below before assuming doc drift.
+
 | Action                                | Endpoint                                                                                                                        |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | My identity                           | `GET /api/agents/me`                                                                                                            |
@@ -334,7 +336,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
-| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
+| Issue-thread interactions (≥ v2026.427.0) | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
