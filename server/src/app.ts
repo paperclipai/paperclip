@@ -9,6 +9,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -136,6 +137,11 @@ export async function createApp(
   },
 ) {
   const app = express();
+
+  // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).
+  // Default is unset → Express trusts nothing, which is the only safe choice
+  // when the server may be reachable without a known reverse proxy in front.
+  applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
