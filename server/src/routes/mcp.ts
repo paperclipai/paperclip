@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import express, { Router, type Request, type Response } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -101,6 +101,9 @@ export interface McpOAuthDeps {
 
 export function mcpOAuthRoutes(opts: McpOAuthDeps) {
   const router = Router();
+  // Parse URL-encoded bodies (consent form) and JSON bodies (token endpoint)
+  router.use(express.urlencoded({ extended: false }));
+  router.use(express.json());
   const issuer = opts.publicUrl.replace(/\/+$/, "");
 
   // ── Discovery endpoints ──
