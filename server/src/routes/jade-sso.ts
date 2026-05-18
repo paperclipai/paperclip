@@ -32,6 +32,19 @@ export function jadeSsoRoutes(
   const router = Router();
 
   router.get("/sso/jade", async (req, res) => {
+    // Post-sign-in destination. Default "/" (dashboard). A caller (e.g.
+    // jade's embedded terminal iframe) can pass ?next=/terminal so the
+    // auto-SSO lands them where they actually want. Open-redirect-safe:
+    // must be a single-slash-rooted local path, no scheme/host.
+    const rawNext = Array.isArray(req.query.next)
+      ? req.query.next[0]
+      : req.query.next;
+    const nextPath =
+      typeof rawNext === "string" &&
+      /^\/(?![/\\])[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(rawNext)
+        ? rawNext
+        : "/";
+
     const grant = parseJadeGrant();
     if (!grant) {
       res.redirect(302, "/auth");
@@ -42,7 +55,7 @@ export function jadeSsoRoutes(
     try {
       const existing = await opts.resolveSession?.(req);
       if (existing?.user) {
-        res.redirect(302, "/");
+        res.redirect(302, nextPath);
         return;
       }
     } catch {
@@ -106,7 +119,7 @@ export function jadeSsoRoutes(
     for (const cookie of authResponse.headers.getSetCookie()) {
       res.append("set-cookie", cookie);
     }
-    res.redirect(302, "/");
+    res.redirect(302, nextPath);
   });
 
   return router;
