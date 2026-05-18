@@ -1,55 +1,36 @@
----
-title: Deployment Overview
-summary: Deployment modes at a glance
----
+# Deployment Overview
 
-Paperclip supports three deployment configurations, from zero-friction local to internet-facing production.
+Paperclip runs on a single Hetzner VM (`paperclip-01`, Ubuntu arm64).
 
-## Deployment Modes
+## Services (systemd)
 
-| Mode | Auth | Best For |
-|------|------|----------|
-| `local_trusted` | No login required | Single-operator local machine |
-| `authenticated` + `private` | Login required | Private network (Tailscale, VPN, LAN) |
-| `authenticated` + `public` | Login required | Internet-facing cloud deployment |
+| Service | Description |
+|---------|-------------|
+| `paperclip.service` | Paperclip control plane (Express/Node on 127.0.0.1:3101) |
+| `cloudflared-paperclip.service` | Cloudflare Tunnel for public ingress |
+| `paperclip-watchdog.timer` | Health monitoring and auto-remediation (60s interval) |
 
-## Quick Comparison
+## Infrastructure
 
-### Local Trusted (Default)
+- **Compute**: Hetzner Cloud VM, arm64, Ubuntu
+- **Database**: Embedded PostgreSQL on :54330
+- **Ingress**: Cloudflare Tunnel → `paperclip.thegoodguys.la`
+- **IaC**: Cloudflare settings managed via Terraform in `ops/terraform/cloudflare/`
 
-- Loopback-only host binding (localhost)
-- No human login flow
-- Fastest local startup
-- Best for: solo development and experimentation
+## Logs
 
-### Authenticated + Private
+- Server: `~/.paperclip/instances/default/logs/server.log`
+- Watchdog: `/var/log/paperclip-watchdog.log`
+- Systemd: `journalctl -u paperclip.service`, `journalctl -u cloudflared-paperclip.service`
 
-- Login required via Better Auth
-- Binds to all interfaces for network access
-- Auto base URL mode (lower friction)
-- Best for: team access over Tailscale or local network
+## Monitoring
 
-### Authenticated + Public
+- Health: `http://127.0.0.1:3101/healthz`
+- Metrics: `http://127.0.0.1:3101/metrics` (Prometheus format)
 
-- Login required
-- Explicit public URL required
-- Stricter security checks
-- Best for: cloud hosting, internet-facing deployment
+## Quick Recovery
 
-## Choosing a Mode
-
-- **Just trying Paperclip?** Use `local_trusted` (the default)
-- **Sharing with a team on private network?** Use `authenticated` + `private`
-- **Deploying to the cloud?** Use `authenticated` + `public` — see [AWS ECS Fargate guide](aws-ecs.md)
-
-Set the mode during onboarding:
-
-```sh
-pnpm paperclipai onboard
-```
-
-Or update it later:
-
-```sh
-pnpm paperclipai configure --section server
+```bash
+sudo systemctl restart cloudflared-paperclip.service
+sudo systemctl restart paperclip.service
 ```

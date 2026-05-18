@@ -1,0 +1,11 @@
+[Unit]
+Description=Paperclip Watchdog - health monitoring and auto-remediation
+After=network-online.target paperclip.service
+Wants=network-online.target paperclip.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/paperclip-watchdog
+User=root
+StandardOutput=journal
+StandardError=journal
