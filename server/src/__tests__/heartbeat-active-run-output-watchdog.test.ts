@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -111,24 +111,23 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
-  const seededCompanyIds: string[] = [];
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
 
-  // Each test seeds its own company with a random UUID via seedRunningRun.
-  // afterEach deletes ONLY those rows. The previous TRUNCATE companies CASCADE
-  // approach was nuclear (wiped the whole table) and pointless (test data is
-  // scoped to per-test UUIDs anyway). It also required AccessExclusiveLock,
-  // which raced with background executeRun transactions causing the
-  // verify_canary deadlock saga (PRs #55/#62 etc).
-  //
-  // Row-level DELETE takes per-row locks, FK CASCADE only fires for the
-  // matching rows, and there is no table-level lock contention with
-  // concurrent UPDATEs from in-flight executeRun work. cancelActiveRunsForCleanup
-  // is kept to short-circuit the dispatcher from spawning MORE work mid-cleanup.
+  // scanSilentActiveRuns -> enqueueWakeup -> startNextQueuedRunForAgent
+  // fires `void executeRun(...)` background work that the test never awaits
+  // (heartbeat.ts ~line 7304). PR #55 added cancelActiveRunsForCleanup +
+  // single-confirm waitForHeartbeatIdle, but verify_canary run 26014448824
+  // still deadlocked on TRUNCATE for 3 tests — the postRun lifecycle hook
+  // (heartbeat.ts:6568) continues writes after status update because it
+  // doesn't observe the cancellation flag. Mirrors the proven pattern in
+  // heartbeat-stale-queue-invalidation.test.ts: reset the mock so any
+  // in-flight resolution returns the inert default, clear runningProcesses
+  // defensively, cancel active runs, then triple-confirm idle (3×50ms
+  // consecutive idle reads) + 50ms settle before TRUNCATE.
   afterEach(async () => {
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
@@ -142,10 +141,22 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     }));
     runningProcesses.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
-    if (seededCompanyIds.length > 0) {
-      await db.delete(companies).where(inArray(companies.id, seededCompanyIds));
-      seededCompanyIds.length = 0;
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      if (!hasActiveRun) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
   }, 30_000);
 
   afterAll(async () => {
@@ -168,7 +179,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
-    seededCompanyIds.push(companyId);
     await db.insert(agents).values([
       {
         id: managerId,
