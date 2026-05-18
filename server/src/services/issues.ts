@@ -4969,7 +4969,8 @@ export function issueService(db: Db) {
       },
     ) => {
       const order = opts?.order === "asc" ? "asc" : "desc";
-      const afterCommentId = opts?.afterCommentId?.trim() || null;
+      const afterCommentId =
+        opts?.afterCommentId != null ? String(opts.afterCommentId).trim() || null : null;
       const limit =
         opts?.limit && opts.limit > 0
           ? Math.min(Math.floor(opts.limit), MAX_ISSUE_COMMENT_PAGE_LIMIT)
@@ -4987,15 +4988,16 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
+        const anchorId = String(anchor.id);
         conditions.push(
           order === "asc"
             ? or(
                 gt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchor.id)),
+                and(eq(issueComments.createdAt, anchor.createdAt), gt(issueComments.id, anchorId)),
               )!
             : or(
                 lt(issueComments.createdAt, anchor.createdAt),
-                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchor.id)),
+                and(eq(issueComments.createdAt, anchor.createdAt), lt(issueComments.id, anchorId)),
               )!,
         );
       }
