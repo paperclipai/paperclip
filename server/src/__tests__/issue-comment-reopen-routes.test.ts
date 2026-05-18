@@ -679,6 +679,20 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("does not wake the assignee on a comment that leaves the issue parked in_review (MAT-623)", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue("blocked"), status: "in_review" });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "parking note while review is pending" });
+
+    expect(res.status).toBe(201);
+    // The issue is held in_review — no implicit reopen, no spawned run.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("does not implicitly reopen closed issues via POST comments when no agent is assigned", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
