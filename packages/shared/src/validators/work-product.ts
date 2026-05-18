@@ -43,7 +43,7 @@ export const createIssueWorkProductSchema = z.object({
   isPrimary: z.boolean().optional().default(false),
   healthStatus: z.enum(["unknown", "healthy", "unhealthy"]).optional().default("unknown"),
   summary: z.string().optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
   createdByRunId: z.string().uuid().optional().nullable(),
 });
 

@@ -1224,7 +1224,7 @@ export function Secrets() {
                       setCreateForm((current) => ({ ...current, value: event.target.value }))
                     }
                     rows={3}
-                    className="font-mono text-xs"
+                    className="min-w-0 overflow-x-hidden break-all font-mono text-xs"
                     placeholder="Stored once, never re-displayed"
                   />
                 </div>

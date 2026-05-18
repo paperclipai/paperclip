@@ -62,7 +62,8 @@ jobs:
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
           fi
 
-  verify:
+  typecheck_release_registry:
+    name: Typecheck + Release Registry
     needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -88,11 +89,88 @@ jobs:
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
 
-      - name: Run general test suites
-        run: pnpm test:run:general
-
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
+
+  general_tests:
+    name: General tests (${{ matrix.group_label }})
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: general-server
+            group_label: server
+          - group: general-workspaces-a
+            group_label: workspaces-a
+          - group: general-workspaces-b
+            group_label: workspaces-b
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run grouped general test suites
+        run: pnpm test:run:general -- --group '${{ matrix.group }}'
+
+  verify:
+    # Preserve the legacy required-check name while the underlying work runs in parallel.
+    name: verify
+    if: ${{ always() }}
+    needs: [typecheck_release_registry, general_tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any split verify lane failed
+        env:
+          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+          test "$GENERAL_TESTS_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
+
+  build:
+    name: Build
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build

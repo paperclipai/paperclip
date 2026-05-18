@@ -131,7 +131,7 @@ export const issuesApi = {
     data: {
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
-      sourceIssueStatus: "done" | "in_review" | "blocked";
+      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
@@ -259,6 +259,10 @@ export const issuesApi = {
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
+  lockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/lock`, {}),
+  unlockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/unlock`, {}),
   listDocumentRevisions: (id: string, key: string) =>
     api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>

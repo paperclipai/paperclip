@@ -305,4 +305,43 @@ describe("Secrets page layout", () => {
       root.unmount();
     });
   });
+
+  it("keeps the new secret value textarea width-constrained for long tokens", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    expect(newSecretButton).toBeDefined();
+
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    const secretValueTextarea = document.body.querySelector("#new-secret-value") as HTMLTextAreaElement | null;
+    expect(secretValueTextarea).not.toBeNull();
+    expect(secretValueTextarea?.className).toContain("min-w-0");
+    expect(secretValueTextarea?.className).toContain("overflow-x-hidden");
+    expect(secretValueTextarea?.className).toContain("break-all");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

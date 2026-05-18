@@ -2408,6 +2408,52 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Liveness escalation issue",
+        status: "in_progress",
+        priority: "high",
+        originKind: "harness_liveness_escalation",
+        originId: `harness_liveness:${companyId}:${sourceIssueId}:invalid_review_participant:none`,
+      },
+    ]);
+
+    await svc.update(sourceIssueId, {
+      blockedByIssueIds: [recoveryIssueId],
+    });
+    await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: recoveryIssueId })],
+    });
+
+    await svc.update(recoveryIssueId, {
+      status: "done",
+    });
+
+    await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
+      blockedBy: [],
+    });
+  });
+
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
