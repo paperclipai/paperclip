@@ -17,6 +17,11 @@ const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/done-gate.js", () => ({
+    validateDoneGate: vi.fn(async () => null),
+    DONE_GATE_SHADOW_MODE: false,
+  }));
+
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
     trackErrorHandlerCrash: vi.fn(),
