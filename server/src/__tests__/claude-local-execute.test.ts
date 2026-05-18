@@ -90,6 +90,72 @@ type CapturePayload = {
   appendedSystemPromptFileContents?: string | null;
 };
 
+async function writePoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+const resumed = process.argv.includes("--resume");
+const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
+if (shouldFailResume) {
+  fs.writeFileSync(statePath, "retried", "utf8");
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    session_id: "claude-session-poisoned",
+    is_error: true,
+    result: "API Error: 400 diagnostics.previous_message_id: must be the \`id\` from a prior /v1/messages response (starts with \`msg_\`)",
+  }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-new", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-new", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "claude-session-new", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeAlwaysPoisonedMessageIdClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+// Both --resume and fresh attempts emit the poisoned previous_message_id result.
+// The fresh attempt still carries a session_id in the result; the adapter must
+// NOT persist it, otherwise the next continuation re-resumes a known-bad transcript.
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "claude-session-poisoned-fresh",
+  is_error: true,
+  result: "API Error: 400 diagnostics.previous_message_id: must be the \`id\` from a prior /v1/messages response (starts with \`msg_\`)",
+}));
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -1113,6 +1179,138 @@ describe("claude execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-rotates session on previous_message_id 400 (synthetic-msg poisoning) and succeeds on retry", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-msgid-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writePoisonedMessageIdClaudeCommand,
+    });
+    const logs: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-poisoned-msgid",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-poisoned", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (_stream, chunk) => { logs.push(chunk); },
+      });
+
+      const captured: Array<{ argv: string[] }> = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      // First attempt resumes, second attempt starts fresh
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      // Result comes from the fresh retry
+      expect(result.sessionId).toBe("claude-session-new");
+      expect(result.errorCode).toBeNull();
+      // Adapter logged the fallback reason
+      expect(logs.some((l) => l.includes("poisoned message-id"))).toBe(true);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression for RED-978: the adapter must not persist a sessionId from a
+   * run that ended with a poisoned previous_message_id error. Otherwise the
+   * next continuation auto-resumes a known-bad transcript and Anthropic
+   * /v1/messages returns 400 again, permanently stranding the issue.
+   */
+  it("drops sessionId and forces clearSession when a fresh run reports a poisoned previous_message_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-fresh-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-poisoned-fresh",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      // The fake CLI emits a session_id in its poisoned result; the adapter
+      // must not propagate it. The server uses clearSession=true to wipe
+      // any previously-persisted session state for this issue/task.
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.sessionDisplayId).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.errorCode).toBe("claude_poisoned_previous_message_id");
+      expect(result.errorMessage ?? "").toContain("previous_message_id");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Regression for RED-978: if the auto-retry after a poisoned resume *also*
+   * fails with a poisoned previous_message_id, the adapter must still emit
+   * clearSession=true so the next heartbeat starts from a clean transcript.
+   * Before this fix, the retry result's session_id ("claude-session-poisoned-fresh")
+   * was persisted and every subsequent continuation hit the same 400 again.
+   */
+  it("forces clearSession when the recovery retry also reports a poisoned previous_message_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-poisoned-retry-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeAlwaysPoisonedMessageIdClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-poisoned-retry",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: {
+          sessionId: "claude-session-already-poisoned",
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+
+      const captured: Array<{ argv: string[] }> = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      // Resume attempt + fresh recovery attempt, both poisoned.
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      // Crucially: do NOT persist the retry's reported sessionId.
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.errorCode).toBe("claude_poisoned_previous_message_id");
+    } finally {
+      restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

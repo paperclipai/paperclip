@@ -54,8 +54,9 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudePoisonedPreviousMessageIdError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -860,9 +861,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       })();
 
-    const resolvedSessionId =
+    const rawResolvedSessionId =
       parsedStream.sessionId ??
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
+    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
+    const parsedIsError = asBoolean(parsed.is_error, false);
+    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // Validate-before-persist guard: never persist a sessionId whose transcript
+    // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
+    // session id; if the last entry contains a non-`msg_`-prefixed
+    // `previous_message_id`, every subsequent `--resume` hits a 400 from
+    // /v1/messages and the issue is permanently unrecoverable until the
+    // sessionId is dropped server-side. Drop here so resolveNextSessionState
+    // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
+    const shouldDropSessionForPoison = poisonedPreviousMessageId;
+    const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -878,9 +892,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
-    const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
@@ -888,6 +899,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !poisonedPreviousMessageId &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -906,12 +918,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : failed && poisonedPreviousMessageId
+      ? "claude_poisoned_previous_message_id"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -937,23 +952,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        // Clear-on-error: a poisoned previous_message_id is a deterministic
+        // state error. Force the server to drop persisted session state for
+        // this issue so the next continuation starts from a clean slate.
+        poisonedPreviousMessageId ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
   try {
     const initial = await runAttempt(sessionId ?? null);
-    if (
+    const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
+      initial.parsed
+        ? isClaudeUnknownSessionError(initial.parsed)
+          ? "unknown"
+          : isClaudePoisonedPreviousMessageIdError(initial.parsed)
+          ? "poisoned"
+          : null
+        : null;
+
+    if (sessionErrorKind !== null) {
+      const reason =
+        sessionErrorKind === "poisoned"
+          ? "returned a poisoned message-id"
+          : "is unavailable";
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
+      if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
+        try {
+          const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
+          const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");
+          const poisonedJsonlPath = path.join(claudeConfigDir, "projects", encodedCwd, `${sessionId}.jsonl`);
+          await fs.unlink(poisonedJsonlPath);
+          await onLog("stdout", `[paperclip] Removed poisoned session file: ${poisonedJsonlPath}\n`);
+        } catch {
+          // best-effort; session is cleared server-side regardless
+        }
+      }
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
