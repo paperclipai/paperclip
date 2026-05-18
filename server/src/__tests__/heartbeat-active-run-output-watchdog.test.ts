@@ -259,7 +259,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
     const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -297,7 +297,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         `GITHUB_TOKEN=${leakedGithubToken}`,
       ].join("\n"),
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -318,7 +318,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -346,7 +346,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
     });
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -377,7 +377,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       snoozedUntil: new Date(now.getTime() + 60 * 60 * 1000),
       reason: "Intentional quiet run",
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const staleResult = await heartbeat.scanSilentActiveRuns({ now, companyId: stale.companyId });
     const noisyResult = await heartbeat.scanSilentActiveRuns({ now, companyId: noisy.companyId });
@@ -392,7 +392,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -448,7 +448,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -500,7 +500,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -590,7 +590,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });

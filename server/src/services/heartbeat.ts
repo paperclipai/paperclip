@@ -2614,6 +2614,15 @@ export interface HeartbeatServiceOptions {
    * deterministic gate.
    */
   ccrotateGate?: CcrotateTierGate;
+  /**
+   * When true, `startNextQueuedRunForAgent` is a no-op — no queued runs are
+   * claimed and no fire-and-forget `void executeRun(...)` background work is
+   * spawned. Tests that exercise heartbeat methods which transitively trigger
+   * the dispatcher (`scanSilentActiveRuns`, `enqueueWakeup`, etc.) set this so
+   * their afterEach cleanup (`TRUNCATE companies CASCADE`) doesn't race the
+   * background executeRun's finally-block transactions. Production unaffected.
+   */
+  skipQueuedRunDispatch?: boolean;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -7365,6 +7374,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    if (options.skipQueuedRunDispatch) return [];
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
