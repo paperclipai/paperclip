@@ -81,12 +81,20 @@ function resolveAgentJwtSecretStatus(
   }
 
   if (existsSync(envFilePath)) {
-    const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
-    if (fileValue) {
+    try {
+      const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
+      const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
+      if (fileValue) {
+        return {
+          status: "warn",
+          message: `found in ${envFilePath} but not loaded`,
+        };
+      }
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "UNKNOWN";
       return {
         status: "warn",
-        message: `found in ${envFilePath} but not loaded`,
+        message: `cannot read ${envFilePath} (${code}); set PAPERCLIP_AGENT_JWT_SECRET in container env`,
       };
     }
   }

@@ -873,7 +873,7 @@ export function agentRoutes(
         )
       limit 1
     `);
-    if (duplicateRows.rows.length > 0) {
+    if (duplicateRows.length > 0) {
       throw conflict(
         "Hermes identity mapping must be unique per company for paperclip_agent_id and hermes_agent_id",
       );
