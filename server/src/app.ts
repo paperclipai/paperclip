@@ -29,8 +29,14 @@ import {
   LogCapNotifier,
   NoopCapNotifier,
   createBillingCapScheduler,
+  createOpenMonthlyIncidentHook,
+  createPaperclipCommentCapNotifier,
+  createTelegramCapNotifier,
+  createTelegramHttpTransport,
+  type CapNotifier,
   type SandboxProviderDescriptor,
 } from "./services/sandbox/billing-cap/index.js";
+import { issueService } from "./services/issues.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -215,19 +221,61 @@ export async function createApp(
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(sandboxRoutes(db));
 
-  // LET-367 Phase 4A-S4 B2: billing-cap monitor + status read-model.
-  // Notifier composition: structured-log notifier is always on. Telegram and
-  // Paperclip comments stay opt-in (env-gated) so default deployments incur
-  // no external side effects.
+  // LET-367 Phase 4A-S4 B2 / LET-392 Phase 4A-S4 wiring: billing-cap monitor
+  // + status read-model. Notifier composition:
+  //   - LogCapNotifier — always on, structured-log surface.
+  //   - PaperclipCommentCapNotifier — env-gated on SANDBOX_PILOT_INCIDENT_ISSUE_ID;
+  //     posts the AC #3 interrupt-comment to the active pilot's parent issue.
+  //   - TelegramCapNotifier — env-gated on TELEGRAM_BOT_TOKEN + TELEGRAM_OPERATOR_CHAT_ID;
+  //     pages Andrii on hard caps + monthly-incident notifications. Falls back
+  //     to a NoopCapNotifier when credentials are absent so default deployments
+  //     stay unaffected.
+  // The monthly-incident hook is wired to issueService.create so a monthly
+  // hard-cap breach auto-opens an `[INCIDENT] Sandbox cost-breach …` issue
+  // tagged `sandbox/cost-breach` under the pilot parent.
+  const billingCapIssuesSvc = issueService(db);
+  const sandboxPilotIncidentIssueId =
+    process.env.SANDBOX_PILOT_INCIDENT_ISSUE_ID?.trim() || null;
+  const sandboxPilotProjectId = process.env.SANDBOX_PILOT_PROJECT_ID?.trim() || null;
+  const sandboxPilotMonitorAgentId =
+    process.env.SANDBOX_PILOT_MONITOR_AGENT_ID?.trim() || null;
+  const capNotifierList: CapNotifier[] = [new LogCapNotifier(logger)];
+  if (sandboxPilotIncidentIssueId) {
+    capNotifierList.push(
+      createPaperclipCommentCapNotifier({
+        issuesSvc: billingCapIssuesSvc,
+        pilotIncidentIssueId: sandboxPilotIncidentIssueId,
+        authorAgentId: sandboxPilotMonitorAgentId,
+        logger,
+      }),
+    );
+  }
+  const telegramTransport = createTelegramHttpTransport({
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_OPERATOR_CHAT_ID,
+    logger,
+  });
+  const telegramNotifier = createTelegramCapNotifier(telegramTransport);
+  if (telegramNotifier) {
+    capNotifierList.push(telegramNotifier);
+  } else {
+    // Preserve historical composite shape (Log + at-least-one) so log-noise
+    // diffs against pre-LET-392 are minimal when no Telegram creds are set.
+    capNotifierList.push(new NoopCapNotifier());
+  }
+  const openMonthlyIncident = createOpenMonthlyIncidentHook({
+    issuesSvc: billingCapIssuesSvc,
+    resolveProjectId: () => sandboxPilotProjectId,
+    resolveParentIssueId: () => sandboxPilotIncidentIssueId,
+    logger,
+  });
   const billingCapStore = new DrizzleBillingCapStore(db);
   const billingCapMonitor = new BillingCapMonitor({
     store: billingCapStore,
     sourceA: null,
     sourceB: new LeaseBasedSourceB(db),
-    notifier: new CompositeCapNotifier([
-      new LogCapNotifier(logger),
-      new NoopCapNotifier(),
-    ]),
+    notifier: new CompositeCapNotifier(capNotifierList),
+    openMonthlyIncident,
     // AC #5: cap events also surface on the operator activity log so
     // dashboards filtering on `sandbox.cost_breach` see breaches without
     // having to read the billing-cap-specific event table.
