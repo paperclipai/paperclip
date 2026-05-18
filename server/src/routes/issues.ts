@@ -1331,6 +1331,47 @@ export function issueRoutes(
     return true;
   }
 
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options: { requiresMutationOwnership: boolean },
+  ) {
+    if (options.requiresMutationOwnership || req.actor.type !== "agent") {
+      return assertAgentIssueMutationAllowed(req, res, issue);
+    }
+
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+
+    if (issue.assigneeAgentId === null || issue.assigneeAgentId === actorAgentId) {
+      return assertAgentIssueMutationAllowed(req, res, issue);
+    }
+
+    if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+      return true;
+    }
+
+    if (isClosedIssueStatus(issue.status)) {
+      res.status(403).json({
+        error: "Agent cannot mutate another agent's issue",
+        details: {
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorAgentId,
+          status: issue.status,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+
+    return true;
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -4864,7 +4905,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueCommentAllowed(req, res, issue, {
+      requiresMutationOwnership: req.body.reopen === true || req.body.resume === true,
+    }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
