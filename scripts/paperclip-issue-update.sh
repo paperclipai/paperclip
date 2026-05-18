@@ -5,13 +5,17 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
+  paperclip-issue-update [--issue-id ID] [--status STATUS] [--comment TEXT] [--dry-run]
   scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--comment TEXT] [--dry-run]
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
 
+The helper intentionally uses Node for JSON encoding instead of jq because jq is
+not installed in every agent runtime.
+
 Examples:
-  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
+  paperclip-issue-update --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
   Investigating formatting
 
   - Pulled the raw comment body
@@ -36,7 +40,16 @@ require_command() {
 issue_id="${PAPERCLIP_TASK_ID:-}"
 status=""
 comment_arg=""
+comment_arg_set=0
 dry_run=0
+comment_file=""
+
+cleanup() {
+  if [[ -n "$comment_file" && -f "$comment_file" ]]; then
+    rm -f "$comment_file"
+  fi
+}
+trap cleanup EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -50,6 +63,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --comment)
       comment_arg="${2:-}"
+      comment_arg_set=1
       shift 2
       ;;
     --dry-run)
@@ -73,23 +87,42 @@ if [[ -z "$issue_id" ]]; then
   exit 1
 fi
 
-comment=""
-if [[ -n "$comment_arg" ]]; then
-  comment="$comment_arg"
+has_comment=0
+if [[ "$comment_arg_set" == "1" ]]; then
+  comment_file="$(mktemp)"
+  printf '%s' "$comment_arg" >"$comment_file"
+  has_comment=1
 elif [[ ! -t 0 ]]; then
-  comment="$(cat)"
+  comment_file="$(mktemp)"
+  cat >"$comment_file"
+  if [[ -s "$comment_file" ]]; then
+    has_comment=1
+  fi
 fi
 
-require_command jq
+require_command node
 
 payload="$(
-  jq -nc \
-    --arg status "$status" \
-    --arg comment "$comment" \
-    '
-      (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
-    '
+  PAPERCLIP_ISSUE_UPDATE_STATUS="$status" \
+  PAPERCLIP_ISSUE_UPDATE_HAS_COMMENT="$has_comment" \
+  PAPERCLIP_ISSUE_UPDATE_COMMENT_FILE="$comment_file" \
+  node <<'NODE'
+const fs = require("fs");
+
+const payload = {};
+const status = process.env.PAPERCLIP_ISSUE_UPDATE_STATUS || "";
+
+if (status) {
+  payload.status = status;
+}
+
+if (process.env.PAPERCLIP_ISSUE_UPDATE_HAS_COMMENT === "1") {
+  const commentFile = process.env.PAPERCLIP_ISSUE_UPDATE_COMMENT_FILE;
+  payload.comment = fs.readFileSync(commentFile, "utf8");
+}
+
+process.stdout.write(JSON.stringify(payload));
+NODE
 )"
 
 if [[ "$dry_run" == "1" ]]; then
@@ -101,6 +134,8 @@ if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERC
   printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
   exit 1
 fi
+
+require_command curl
 
 curl -sS -X PATCH \
   "$PAPERCLIP_API_URL/api/issues/$issue_id" \
