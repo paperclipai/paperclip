@@ -8377,6 +8377,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
         if (
           issue.status === "blocked" &&
+          allowsIssueInteractionWake(deferredContextSeed) &&
           deferredContextSeed.resumeIntent !== true &&
           deferredContextSeed.followUpRequested !== true
         ) {
