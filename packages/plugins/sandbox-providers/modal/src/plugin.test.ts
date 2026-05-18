@@ -304,6 +304,28 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.terminate).toHaveBeenCalled();
   });
 
+  it("closes the Modal client when probe fails before sandbox creation", async () => {
+    process.env.MODAL_TOKEN_ID = "host-id";
+    process.env.MODAL_TOKEN_SECRET = "host-secret";
+    mockAppFromName.mockRejectedValue(new Error("app lookup failed"));
+
+    const result = await plugin.definition.onEnvironmentProbe?.({
+      driverKey: "modal",
+      companyId: "c-1",
+      environmentId: "e-1",
+      config: baseConfig,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      summary: "Modal sandbox probe failed.",
+      metadata: expect.objectContaining({
+        error: "app lookup failed",
+      }),
+    });
+    expect(mockClientClose).toHaveBeenCalledTimes(1);
+  });
+
   it("acquires a lease, applies tags, and ensures the workspace directory", async () => {
     process.env.MODAL_TOKEN_ID = "host-id";
     process.env.MODAL_TOKEN_SECRET = "host-secret";

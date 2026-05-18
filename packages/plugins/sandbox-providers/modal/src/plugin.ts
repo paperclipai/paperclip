@@ -397,8 +397,8 @@ const plugin = definePlugin({
       environmentId: params.environmentId,
       reuseLease: false,
     });
+    const client = createModalClient(config);
     try {
-      const client = createModalClient(config);
       const app = await resolveApp(client, config);
       const sandbox = await createSandboxFor(client, app, config, tags);
       try {
@@ -434,7 +434,6 @@ const plugin = definePlugin({
         };
       } finally {
         await sandbox.terminate().catch(() => undefined);
-        client.close();
       }
     } catch (error) {
       return {
@@ -448,6 +447,8 @@ const plugin = definePlugin({
           error: formatErrorMessage(error),
         },
       };
+    } finally {
+      client.close();
     }
   },
 
