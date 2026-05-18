@@ -1,104 +1,86 @@
 ---
 name: para-memory-files
 description: >
-  File-based memory system using Tiago Forte's PARA method. Use this skill whenever
-  you need to store, retrieve, update, or organize knowledge across sessions. Covers
-  three memory layers: (1) Knowledge graph in PARA folders with atomic YAML facts,
-  (2) Daily notes as raw timeline, (3) Tacit knowledge about user patterns. Also
-  handles planning files, memory decay, weekly synthesis, and recall via qmd.
-  Trigger on any memory operation: saving facts, writing daily notes, creating
-  entities, running weekly synthesis, recalling past context, or managing plans.
+  Tiny file-based memory for turn-0 rules that must apply before any tool call.
+  Use this skill ONLY for the small set of rules an agent must obey from the
+  first turn of a conversation (e.g. "never commit secrets", "always check X
+  before doing Y"). Everything else — durable facts, decisions, history,
+  cross-cutting context, code excerpts — belongs in the MemPalace and is
+  retrieved via `mempalace_search` / `mempalace_kg_query`. The PARA
+  knowledge-graph layer and daily-notes layer have been retired; only the
+  short `MEMORY.md` index remains, capped at ~150 lines.
 ---
 
-# PARA Memory Files
+# Agent Turn-0 Memory (formerly PARA Memory Files)
 
-Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
+**Scope:** this skill now covers ONE thing: a tiny, always-loaded `MEMORY.md`
+file of turn-0 rules. The previous PARA knowledge-graph (`life/`) and daily-notes
+(`memory/YYYY-MM-DD.md`) layers have been retired in favour of the MemPalace.
 
-## Three Memory Layers
+## What goes where
 
-### Layer 1: Knowledge Graph (`$AGENT_HOME/life/` -- PARA)
+| Need                                                        | Use                              |
+| ----------------------------------------------------------- | -------------------------------- |
+| Rules that must apply on turn 0 (every turn, every session) | `$AGENT_HOME/MEMORY.md` (this skill) |
+| Durable facts, decisions, history, code excerpts            | MemPalace drawers (`mempalace_add_drawer`) |
+| Recall a past decision, error, or design choice             | `mempalace_search`               |
+| Entity relationships (who owns what, dependencies, timing)  | `mempalace_kg_query`             |
+| Raw timeline of events                                      | MemPalace `mempalace_diary_write` (AAAK) |
 
-Entity-based storage. Each entity gets a folder with two tiers:
+If a piece of information does not need to be in context **every** turn, it
+does NOT belong in `MEMORY.md`. File it in the palace instead.
 
-1. `summary.md` -- quick context, load first.
-2. `items.yaml` -- atomic facts, load on demand.
+## The one remaining layer — `MEMORY.md`
+
+Path: `$AGENT_HOME/MEMORY.md`
+
+- **Cap: ~150 lines.** Every line costs tokens on every turn. Treat this as a
+  budget, not an aspiration.
+- **Turn-0 rules only.** Operating constraints, hard "always/never" rules, and
+  pointers the agent needs before it can act. Not facts, not history, not logs.
+- **No daily notes.** If you catch yourself writing a dated event, stop — that
+  is a MemPalace drawer, not a `MEMORY.md` entry.
+- **No entity knowledge graph.** Atomic facts about people, projects, or
+  companies go in the palace as drawers with verbatim content.
+
+Rule of thumb: if removing a line from `MEMORY.md` would not cause the agent to
+make a wrong call on its very first action, the line should not be there.
+
+## Memory Recall — search MemPalace first
+
+`qmd` is no longer required. For any cross-cutting recall question — "how does
+X work", "why did we choose Y", "did we hit this error before", "who owns Z" —
+use MemPalace as the first layer:
 
 ```text
-$AGENT_HOME/life/
-  projects/          # Active work with clear goals/deadlines
-    <name>/
-      summary.md
-      items.yaml
-  areas/             # Ongoing responsibilities, no end date
-    people/<name>/
-    companies/<name>/
-  resources/         # Reference material, topics of interest
-    <topic>/
-  archives/          # Inactive items from the other three
-  index.md
+mempalace_search        # semantic search across drawers, returns the WHY + WHERE
+mempalace_kg_query      # entity relationships, ownership, dependencies, timelines
+mempalace_kg_timeline   # when did this happen / what changed in this entity
+mempalace_get_drawer    # full content of a known drawer
 ```
 
-**PARA rules:**
-
-- **Projects** -- active work with a goal or deadline. Move to archives when complete.
-- **Areas** -- ongoing (people, companies, responsibilities). No end date.
-- **Resources** -- reference material, topics of interest.
-- **Archives** -- inactive items from any category.
-
-**Fact rules:**
-
-- Save durable facts immediately to `items.yaml`.
-- Weekly: rewrite `summary.md` from active facts.
-- Never delete facts. Supersede instead (`status: superseded`, add `superseded_by`).
-- When an entity goes inactive, move its folder to `$AGENT_HOME/life/archives/`.
-
-**When to create an entity:**
-
-- Mentioned 3+ times, OR
-- Direct relationship to the user (family, coworker, partner, client), OR
-- Significant project or company in the user's life.
-- Otherwise, note it in daily notes.
-
-For the atomic fact YAML schema and memory decay rules, see [references/schemas.md](references/schemas.md).
-
-### Layer 2: Daily Notes (`$AGENT_HOME/memory/YYYY-MM-DD.md`)
-
-Raw timeline of events -- the "when" layer.
-
-- Write continuously during conversations.
-- Extract durable facts to Layer 1 during heartbeats.
-
-### Layer 3: Tacit Knowledge (`$AGENT_HOME/MEMORY.md`)
-
-How the user operates -- patterns, preferences, lessons learned.
-
-- Not facts about the world; facts about the user.
-- Update whenever you learn new operating patterns.
-
-## Write It Down -- No Mental Notes
-
-Memory does not survive session restarts. Files do.
-
-- Want to remember something -> WRITE IT TO A FILE.
-- "Remember this" -> update `$AGENT_HOME/memory/YYYY-MM-DD.md` or the relevant entity file.
-- Learn a lesson -> update AGENTS.md, TOOLS.md, or the relevant skill file.
-- Make a mistake -> document it so future-you does not repeat it.
-- On-disk text files are always better than holding it in temporary context.
-
-## Memory Recall -- Use qmd
-
-Use `qmd` rather than grepping files:
-
-```bash
-qmd query "what happened at Christmas"   # Semantic search with reranking
-qmd search "specific phrase"              # BM25 keyword search
-qmd vsearch "conceptual question"         # Pure vector similarity
-```
-
-Index your personal folder: `qmd index $AGENT_HOME`
-
-Vectors + BM25 + reranking finds things even when the wording differs.
+Filing is just as important as searching. When you solve a non-obvious bug,
+make an architecture trade-off, or learn a hidden constraint, call
+`mempalace_add_drawer` with VERBATIM content (error messages, decisions,
+quotes) — do not summarise. The palace's WHY is what makes future recall useful.
 
 ## Planning
 
-Keep plans in timestamped files in `plans/` at the project root (outside personal memory so other agents can access them). Use `qmd` to search plans. Plans go stale -- if a newer plan exists, do not confuse yourself with an older version. If you notice staleness, update the file to note what it is supersededBy.
+Keep plans where the user / board / other agents can see them — issue
+documents on the relevant Paperclip issue (key `plan`), not in personal memory.
+The `paperclip` skill covers the plan-document workflow.
+
+## What was retired and why
+
+- **Layer 1 (`life/` PARA tree with `summary.md` + `items.yaml`)** — superseded
+  by MemPalace drawers and the knowledge graph. Atomic facts now live in
+  drawers with semantic search instead of folder-scoped YAML.
+- **Layer 2 (`memory/YYYY-MM-DD.md` daily notes)** — superseded by
+  `mempalace_diary_write` (AAAK dialect) at session end, which is searchable
+  and timeline-queryable.
+- **`qmd` recall** — superseded by `mempalace_search` /
+  `mempalace_kg_query`, which return the WHY alongside the WHERE.
+
+Existing `life/` and `memory/` trees from older agents are read-only history.
+Do not write new content into them; migrate anything still useful into the
+palace and leave the old files as-is.
