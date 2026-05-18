@@ -13,6 +13,23 @@ Before making changes, read in this order:
 
 1. `doc/GOAL.md`
 2. `doc/PRODUCT.md`
+
+## Output-Konventionen (Marco-Workspace)
+
+> **Source of Truth = Workspace.** `~/Desktop/Jarvis/` = jederzeit löschbare Kopie.
+> Spec: `~/.openclaw/workspace/CLAUDE.md` § Desktop-Output-Regel.
+
+Pflicht für alle Paperclip-Agents die Files für Marco erzeugen:
+
+1. **Schreibe immer zuerst** nach `~/.openclaw/workspace/projects/{slug}/{task-id}/output/`
+2. **Niemals direkt** nach `~/Desktop/` schreiben
+3. Bei `output_class=public-deliverable` ODER Slug in Allowlist (`~/.openclaw/config/publish-allowlist.json`): zusätzlich `~/.openclaw/bin/jarvis-publish --task=ID --slug=SLUG --class=public-deliverable` aufrufen
+4. Tagge Output explizit: `internal` (workspace-only) | `draft` (✏️ Drafts/) | `public-deliverable` (📤 Exports/) | `screenshot` (📸 Screenshots/)
+5. Marco's Inbox (`📥 Inbox/`) ist **read-only** für Agents — nie reinschreiben
+
+Allowlist Auto-Publish: `medperion`, `ad-creator`, `aestuver`, `frendly`, `erdbaer`.
+Andere Slugs: nur manuell oder bei expliziter Marco-Freigabe (siehe `feedback_external_comms_approval`).
+
 3. `doc/SPEC-implementation.md`
 4. `doc/DEVELOPING.md`
 5. `doc/DATABASE.md`
