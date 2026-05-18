@@ -3238,13 +3238,13 @@ export function accessRoutes(
         }
         if (
           req.actor.type !== "board" ||
-          (!req.actor.userId && !isLocalImplicit(req))
+          !req.actor.userId
         ) {
           throw unauthorized(
             "Authenticated user required for bootstrap acceptance"
           );
         }
-        const userId = req.actor.userId ?? "local-board";
+        const userId = req.actor.userId;
         const existingAdmin = await access.isInstanceAdmin(userId);
         if (!existingAdmin) {
           await access.promoteInstanceAdmin(userId);
