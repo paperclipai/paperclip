@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "redaction": {
+    "sanitized": true,
+    "source": "hand-authored review-stage hang fixture with synthetic ids only"
+  },
+  "issue": {
+    "id": "issue-eval-review-hang",
+    "identifier": "EVAL-005",
+    "title": "Issue waiting in review after reviewer process was lost",
+    "status": "in_review",
+    "claimsCompletion": true,
+    "validationEvidence": [
+      {
+        "command": "node --test scripts/workflow-eval-replay.test.mjs",
+        "result": "PASS"
+      }
+    ]
+  },
+  "reviewStage": {
+    "id": "review-stage-eval-005",
+    "status": "waiting",
+    "currentParticipant": {
+      "type": "agent",
+      "id": "agent-eval-reviewer"
+    },
+    "lastReviewerActivityMinutesAgo": 180
+  },
+  "reviewerRun": {
+    "id": "run-eval-reviewer-lost",
+    "status": "failed",
+    "errorCode": "process_lost",
+    "lastActivityMinutesAgo": 180
+  },
+  "actions": [
+    {
+      "type": "issue_comment",
+      "localOnly": true,
+      "body": "Expected route is to wake the current reviewer or return to owner with exact blocker; do not leave in silent in_review hang."
+    }
+  ],
+  "expectedOutcome": {
+    "route": "wake_reviewer_or_return_to_owner_with_request_changes",
+    "noSilentInReviewHang": true
+  }
+}

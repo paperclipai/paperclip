@@ -1,0 +1,54 @@
+{
+  "id": "paperclip.workflow-regression.v0",
+  "version": "0.1.0",
+  "description": "Offline, sanitized workflow regression cases for Paperclip agent orchestration dogfood failures.",
+  "offlineOnly": true,
+  "sanitized": true,
+  "cases": [
+    {
+      "id": "useful-output-but-failed-adapter",
+      "title": "Useful implementation output survived an adapter/process failure",
+      "fixture": "fixtures/useful-output-but-failed-adapter.json",
+      "expected": {
+        "classification": "useful_output_adapter_failed",
+        "checks": ["redacted", "offline-only", "classification", "useful-output-preserved"]
+      }
+    },
+    {
+      "id": "duplicate-recovery-child",
+      "title": "Duplicate recovery child is superseded while one canonical recovery remains active",
+      "fixture": "fixtures/duplicate-recovery-child.json",
+      "expected": {
+        "classification": "duplicate_recovery_child",
+        "checks": ["redacted", "offline-only", "classification", "duplicate-recovery-detected", "single-active-recovery"]
+      }
+    },
+    {
+      "id": "stale-blocker-graph",
+      "title": "Parent blocker graph still references a final child while a canonical active child exists",
+      "fixture": "fixtures/stale-blocker-graph.json",
+      "expected": {
+        "classification": "stale_blocker_graph",
+        "checks": ["redacted", "offline-only", "classification", "stale-blocker-detected"]
+      }
+    },
+    {
+      "id": "missing-validation-evidence",
+      "title": "Implementation claims completion without local validation evidence",
+      "fixture": "fixtures/missing-validation-evidence.json",
+      "expected": {
+        "classification": "missing_validation_evidence",
+        "checks": ["redacted", "offline-only", "classification", "missing-validation-evidence-detected"]
+      }
+    },
+    {
+      "id": "review-stage-hang",
+      "title": "Review stage is waiting after reviewer process loss and needs a deterministic wake/return route",
+      "fixture": "fixtures/review-stage-hang.json",
+      "expected": {
+        "classification": "review_stage_hang",
+        "checks": ["redacted", "offline-only", "classification", "review-stage-hang-detected"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "redaction": {
+    "sanitized": true,
+    "source": "hand-authored missing validation evidence fixture with synthetic ids only"
+  },
+  "issue": {
+    "id": "issue-eval-missing-validation",
+    "identifier": "EVAL-004",
+    "title": "Implementation handoff claims completion without tests or dry-run evidence",
+    "status": "in_review",
+    "claimsCompletion": true,
+    "completionSummary": "Implementation complete; ready for QA.",
+    "validationEvidence": []
+  },
+  "actions": [
+    {
+      "type": "issue_comment",
+      "localOnly": true,
+      "body": "Completion was claimed, but no focused test, typecheck, build, or explicit blocker is present."
+    }
+  ],
+  "expectedOutcome": {
+    "route": "return_to_implementation_for_validation_evidence",
+    "requiredEvidenceExamples": [
+      "focused test command with PASS/FAIL",
+      "typecheck command where relevant",
+      "documented dry-run command if code execution is not applicable"
+    ]
+  }
+}

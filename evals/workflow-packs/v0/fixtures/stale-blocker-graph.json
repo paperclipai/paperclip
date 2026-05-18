@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "redaction": {
+    "sanitized": true,
+    "source": "hand-authored stale blocker graph fixture with synthetic ids only"
+  },
+  "issue": {
+    "id": "issue-eval-stale-blocker",
+    "identifier": "EVAL-003",
+    "title": "Parent issue with stale final blocker plus active canonical blocker",
+    "status": "blocked",
+    "claimsCompletion": false,
+    "validationEvidence": []
+  },
+  "blockers": [
+    {
+      "id": "issue-eval-stale-blocker-old",
+      "identifier": "EVAL-003A",
+      "status": "cancelled",
+      "stale": true,
+      "reason": "old duplicate child still sampled by blocker graph"
+    },
+    {
+      "id": "issue-eval-stale-blocker-active",
+      "identifier": "EVAL-003B",
+      "status": "in_progress",
+      "canonical": true,
+      "reason": "active implementation fix child"
+    }
+  ],
+  "blockerAttention": {
+    "state": "needs_attention",
+    "reason": "final_child_still_in_blocked_by"
+  },
+  "actions": [
+    {
+      "type": "issue_comment",
+      "localOnly": true,
+      "body": "Expected route is to clear final stale blocker and keep the active canonical blocker."
+    }
+  ],
+  "expectedOutcome": {
+    "route": "clear_stale_blocker_keep_canonical_active_child",
+    "removeBlockedBy": ["issue-eval-stale-blocker-old"],
+    "keepBlockedBy": ["issue-eval-stale-blocker-active"]
+  }
+}

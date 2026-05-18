@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "redaction": {
+    "sanitized": true,
+    "source": "hand-authored eval fixture derived from Paperclip dogfood failure shape; contains no production ids, tokens, URLs, or raw logs"
+  },
+  "issue": {
+    "id": "issue-eval-useful-output",
+    "identifier": "EVAL-001",
+    "title": "Sanitized implementation task with adapter failure after useful output",
+    "status": "blocked",
+    "claimsCompletion": false,
+    "validationEvidence": [
+      {
+        "command": "node --test scripts/workflow-eval-replay.test.mjs",
+        "result": "PASS",
+        "scope": "focused local replay harness test"
+      }
+    ]
+  },
+  "adapterRun": {
+    "id": "run-eval-useful-output",
+    "status": "failed",
+    "exitCode": 1,
+    "errorCode": "process_lost_after_output",
+    "usefulOutput": {
+      "comments": [
+        "Implemented deterministic local replay harness and left branch/validation notes before the adapter exited."
+      ],
+      "artifacts": [
+        {
+          "kind": "commit",
+          "ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "kind": "local_file",
+          "path": "scripts/workflow-eval-replay.mjs"
+        }
+      ],
+      "validationEvidence": [
+        {
+          "command": "node --test scripts/workflow-eval-replay.test.mjs",
+          "result": "PASS"
+        }
+      ]
+    }
+  },
+  "actions": [
+    {
+      "type": "issue_comment",
+      "localOnly": true,
+      "body": "Sanitized useful-output marker retained for replay."
+    }
+  ],
+  "expectedOutcome": {
+    "route": "preserve_useful_output_then_recover_or_review",
+    "notes": [
+      "Do not discard durable evidence just because adapter status is failed.",
+      "Do not spawn duplicate recovery when the useful output already identifies the next owner/action."
+    ]
+  }
+}

@@ -20,7 +20,7 @@ export ANTHROPIC_API_KEY=sk-ant-...     # Anthropic direct
 export OPENAI_API_KEY=sk-...            # OpenAI direct
 ```
 
-### Run evals
+### Run prompt/model evals
 
 ```bash
 # Smoke test (default models)
@@ -33,6 +33,18 @@ promptfoo eval
 # View results in browser
 promptfoo view
 ```
+
+### Run deterministic workflow eval packs
+
+Workflow eval packs are first-party, offline replay fixtures. They do not call model providers, vendors, or the live Paperclip API.
+
+```bash
+pnpm workflow-evals:replay
+pnpm workflow-evals:replay -- --case stale-blocker-graph
+pnpm test:workflow-evals
+```
+
+The initial pack lives at `evals/workflow-packs/v0/` and covers adapter useful-output failures, duplicate recovery children, stale blocker graphs, missing validation evidence, and review-stage hangs.
 
 ### What's tested
 

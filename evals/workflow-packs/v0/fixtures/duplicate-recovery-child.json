@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "redaction": {
+    "sanitized": true,
+    "source": "hand-authored duplicate recovery fixture with synthetic ids only"
+  },
+  "issue": {
+    "id": "issue-eval-duplicate-recovery",
+    "identifier": "EVAL-002",
+    "title": "Parent issue with one canonical recovery and one duplicate",
+    "status": "blocked",
+    "claimsCompletion": false,
+    "validationEvidence": []
+  },
+  "recoveryChildren": [
+    {
+      "id": "issue-eval-duplicate-recovery-canonical",
+      "identifier": "EVAL-002A",
+      "sourceIssueId": "issue-eval-duplicate-recovery",
+      "kind": "recovery",
+      "status": "in_progress",
+      "canonical": true,
+      "reason": "successful_run_missing_state",
+      "owner": "executor"
+    },
+    {
+      "id": "issue-eval-duplicate-recovery-superseded",
+      "identifier": "EVAL-002B",
+      "sourceIssueId": "issue-eval-duplicate-recovery",
+      "kind": "recovery",
+      "status": "done",
+      "duplicate": true,
+      "supersededBy": "issue-eval-duplicate-recovery-canonical",
+      "reason": "overlapping_retry_created_duplicate"
+    }
+  ],
+  "actions": [
+    {
+      "type": "issue_comment",
+      "localOnly": true,
+      "body": "Duplicate recovery child is closed as superseded; parent remains blocked on canonical active child only."
+    }
+  ],
+  "expectedOutcome": {
+    "route": "canonicalize_recovery_child",
+    "canonicalChildId": "issue-eval-duplicate-recovery-canonical",
+    "duplicateDisposition": "done_superseded"
+  }
+}
