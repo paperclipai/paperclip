@@ -1,0 +1,40 @@
+name: Set HubSpot Env Vars in Railway
+
+on:
+  workflow_dispatch:
+    inputs:
+      hubspot_access_token:
+        description: "CREWBRIEF_HUBSPOT_ACCESS_TOKEN"
+        required: false
+        type: string
+      hubspot_email_sending:
+        description: "CREWBRIEF_HUBSPOT_EMAIL_SENDING"
+        required: false
+        default: "true"
+        type: string
+
+jobs:
+  set-env-vars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Set Railway env vars
+        run: |
+          TOKEN="${{ inputs.hubspot_access_token || secrets.CREWBRIEF_HUBSPOT_ACCESS_TOKEN }}"
+          if [ -z "$TOKEN" ]; then
+            echo "Error: No CREWBRIEF_HUBSPOT_ACCESS_TOKEN provided. Pass as input or set as GitHub secret."
+            exit 1
+          fi
+          railway variables set CREWBRIEF_HUBSPOT_ACCESS_TOKEN="$TOKEN" --service crewbrief-api
+          railway variables set CREWBRIEF_HUBSPOT_EMAIL_SENDING="${{ inputs.hubspot_email_sending }}" --service crewbrief-api
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Redeploy CrewBrief API
+        run: railway up --service crewbrief-api --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
