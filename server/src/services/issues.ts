@@ -52,6 +52,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -3342,6 +3343,46 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function logStaleExecutionRunIfAny(issueId: string): Promise<void> {
+    try {
+      const issue = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue?.executionRunId) return;
+
+      const run = await db
+        .select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issue.executionRunId))
+        .then((rows) => rows[0] ?? null);
+
+      // Missing run or a finished/terminal run means the lock is stale.
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) && !run.finishedAt) {
+        return;
+      }
+
+      const staleRunId = issue.executionRunId;
+      const ageMinutes = run?.finishedAt
+        ? Math.floor((Date.now() - run.finishedAt.getTime()) / 60_000)
+        : 0;
+
+      logger.warn(`[stale_lock] issue=${issueId} stale_run=${staleRunId} age=${ageMinutes}m`);
+
+      const tc = getTelemetryClient();
+      if (tc) {
+        tc.track("stale_execution_run_id_detected", {
+          issue_id: issueId,
+          stale_run_id: staleRunId,
+          age_minutes: ageMinutes,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, issueId }, "failed to detect stale executionRunId");
+    }
+  }
+
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
       await tx.execute(
@@ -4631,6 +4672,7 @@ export function issueService(db: Db) {
         });
       }
 
+      await logStaleExecutionRunIfAny(id);
       await clearExecutionRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);

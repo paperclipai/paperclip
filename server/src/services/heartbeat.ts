@@ -3835,12 +3835,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const now = new Date();
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({ status, ...patch, updatedAt: now })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (row && patch?.finishedAt) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.executionRunId, runId));
+      }
+
+      return row;
+    });
 
     if (updated) {
       publishLiveEvent({
