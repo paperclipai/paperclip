@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  issues,
   projects,
   projectGoals,
   goals,
@@ -10,6 +11,7 @@ import {
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
+  ISSUE_STATUSES,
   PROJECT_COLORS,
   deriveProjectUrlKey,
   hasNonAsciiContent,
@@ -18,6 +20,7 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type ProjectIssueStatusSummary,
   type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
@@ -62,6 +65,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   managedByPlugin: ProjectManagedByPlugin | null;
+  issueStatusSummary: ProjectIssueStatusSummary;
 }
 
 interface ProjectShortnameRow {
@@ -315,6 +319,45 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
   });
 }
 
+function emptyProjectIssueStatusSummary(): ProjectIssueStatusSummary {
+  return Object.fromEntries(ISSUE_STATUSES.map((status) => [status, 0])) as ProjectIssueStatusSummary;
+}
+
+async function attachIssueStatusSummaries(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+  if (rows.length === 0) return [];
+
+  const projectIds = rows.map((row) => row.id);
+  const summaries = new Map<string, ProjectIssueStatusSummary>(
+    projectIds.map((projectId) => [projectId, emptyProjectIssueStatusSummary()]),
+  );
+  const validStatuses = new Set<string>(ISSUE_STATUSES);
+
+  const counts = await db
+    .select({
+      projectId: issues.projectId,
+      status: issues.status,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, rows[0]!.companyId),
+      inArray(issues.projectId, projectIds),
+    ))
+    .groupBy(issues.projectId, issues.status);
+
+  for (const row of counts) {
+    if (!row.projectId || !validStatuses.has(row.status)) continue;
+    const summary = summaries.get(row.projectId);
+    if (!summary) continue;
+    summary[row.status as keyof ProjectIssueStatusSummary] = Number(row.count) || 0;
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    issueStatusSummary: summaries.get(row.id) ?? emptyProjectIssueStatusSummary(),
+  }));
+}
+
 /** Sync the project_goals join table for a single project. */
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
@@ -505,14 +548,17 @@ export function projectService(db: Db) {
     const [withGoals] = await attachGoals(db, [row]);
     if (!withGoals) return null;
     const [enriched] = await attachWorkspaces(db, [withGoals]);
-    return enriched ?? null;
+    if (!enriched) return null;
+    const [withIssueStatusSummary] = await attachIssueStatusSummaries(db, [enriched]);
+    return withIssueStatusSummary ?? null;
   };
 
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
       const withGoals = await attachGoals(db, rows);
-      return attachWorkspaces(db, withGoals);
+      const withWorkspaces = await attachWorkspaces(db, withGoals);
+      return attachIssueStatusSummaries(db, withWorkspaces);
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
@@ -524,7 +570,8 @@ export function projectService(db: Db) {
         .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
-      const byId = new Map(withWorkspaces.map((project) => [project.id, project]));
+      const withIssueStatusSummaries = await attachIssueStatusSummaries(db, withWorkspaces);
+      const byId = new Map(withIssueStatusSummaries.map((project) => [project.id, project]));
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
