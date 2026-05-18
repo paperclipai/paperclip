@@ -194,6 +194,15 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("built-in openclaw_gateway adapter opts into supportsLocalAgentJwt (PR #6121)", () => {
+    // Regression guard for the per-run JWT auth fix: every other local adapter
+    // already opts into the server-issued JWT; openclaw_gateway was the lone
+    // holdout, which routed all wakes through one globally-shared claimed key.
+    const adapter = findActiveServerAdapter("openclaw_gateway");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.supportsLocalAgentJwt).toBe(true);
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({

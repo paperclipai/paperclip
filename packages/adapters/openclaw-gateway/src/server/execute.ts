@@ -263,7 +263,7 @@ function truncateForLog(value: string, maxChars = 320): string {
   return `${value.slice(0, maxChars)}... [truncated ${value.length - maxChars} chars]`;
 }
 
-function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknown {
+export function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknown {
   const currentKey = keyPath[keyPath.length - 1] ?? "";
   if (typeof value === "string") {
     if (isSensitiveLogKey(currentKey)) return redactSecretForLog(value);
@@ -364,7 +364,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(
+export function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
@@ -1123,7 +1123,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake);
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);
-  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath);
   const paperclipApiKey = nonEmpty(ctx.authToken);
   const wakeText = buildWakeText(
     wakePayload,
@@ -1131,7 +1130,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
-    { claimedApiKeyPath, paperclipApiKey },
+    { claimedApiKeyPath: ctx.config.claimedApiKeyPath, paperclipApiKey },
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
