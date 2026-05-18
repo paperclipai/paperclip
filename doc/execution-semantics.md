@@ -256,6 +256,8 @@ Agent-assigned `in_review` with no typed participant is only healthy when one of
 
 An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
 
+Queue-hygiene routing for `in_review` is intentionally limited. A task-assignment-capable agent may move a non-board-owned review item to the named reviewer only by submitting a routing patch with the assignee change and a comment. Items already assigned to `local-board` are board-owned and remain protected from agent routing.
+
 ### Issue monitors
 
 An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.

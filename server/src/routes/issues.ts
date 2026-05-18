@@ -626,6 +626,67 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+const REVIEW_QUEUE_ROUTING_PATCH_KEYS = new Set(["assigneeAgentId", "assigneeUserId", "comment", "status"]);
+
+function hasOwnPatchKey(body: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(body, key);
+}
+
+function isReviewQueueRoutingPatch(
+  body: unknown,
+  issue: {
+    status: string;
+    assigneeAgentId: string | null;
+    assigneeUserId?: string | null;
+  },
+) {
+  if (issue.status !== "in_review") return false;
+  if (issue.assigneeUserId === "local-board") return false;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+
+  const patch = body as Record<string, unknown>;
+  const keys = Object.keys(patch).filter((key) => patch[key] !== undefined);
+  if (keys.length === 0 || keys.some((key) => !REVIEW_QUEUE_ROUTING_PATCH_KEYS.has(key))) return false;
+  if (patch.status !== undefined && patch.status !== "in_review") return false;
+  if (typeof patch.comment !== "string" || patch.comment.trim().length === 0) return false;
+
+  const assigneeAgentPatched = hasOwnPatchKey(patch, "assigneeAgentId");
+  const assigneeUserPatched = hasOwnPatchKey(patch, "assigneeUserId");
+  if (!assigneeAgentPatched && !assigneeUserPatched) return false;
+
+  if (assigneeAgentPatched) {
+    const nextAgentId = patch.assigneeAgentId;
+    if (nextAgentId === null && issue.assigneeAgentId !== null) return true;
+    if (typeof nextAgentId === "string" && nextAgentId.trim().length > 0 && nextAgentId !== issue.assigneeAgentId) {
+      return true;
+    }
+  }
+
+  if (assigneeUserPatched) {
+    const nextUserId = patch.assigneeUserId;
+    if (nextUserId === null && issue.assigneeUserId !== null) return true;
+    if (typeof nextUserId === "string" && nextUserId.trim().length > 0 && nextUserId !== issue.assigneeUserId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isRecoveryRelevantSourcePatch(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const patch = body as Record<string, unknown>;
+  return (
+    patch.status !== undefined ||
+    patch.assigneeAgentId !== undefined ||
+    patch.assigneeUserId !== undefined ||
+    Array.isArray(patch.blockedByIssueIds) ||
+    patch.executionPolicy !== undefined ||
+    patch.reopen === true ||
+    patch.resume === true
+  );
+}
+
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
 }
@@ -1263,10 +1324,25 @@ export function issueRoutes(
     return false;
   }
 
+  async function hasTaskAssignmentPrivilege(actorAgentId: string, companyId: string) {
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgentId, "tasks:assign");
+    if (allowedByGrant) return true;
+
+    const actorAgent = await agentsSvc.getById(actorAgentId);
+    return Boolean(actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent));
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+    },
+    options: { allowRecoveryActionAuthority?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1274,7 +1350,37 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (isReviewQueueRoutingPatch(req.body, issue)) {
+      if (await hasTaskAssignmentPrivilege(actorAgentId, issue.companyId)) return true;
+      res.status(403).json({
+        error: "Missing permission: tasks:assign",
+        details: {
+          issueId: issue.id,
+          actorAgentId,
+          status: issue.status,
+          requiredPermission: "tasks:assign",
+        },
+      });
+      return false;
+    }
     if (issue.assigneeAgentId === null) {
+      if (issue.assigneeUserId) {
+        if (options.allowRecoveryActionAuthority) {
+          const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+          if (activeRecoveryAction) return true;
+        }
+        res.status(403).json({
+          error: "Agent cannot mutate a user-assigned issue",
+          details: {
+            issueId: issue.id,
+            assigneeUserId: issue.assigneeUserId,
+            actorAgentId,
+            status: issue.status,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return false;
+      }
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
@@ -2102,7 +2208,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowRecoveryActionAuthority: true }))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
     if (
       !(await assertRecoveryActionAuthority(
@@ -3238,7 +3344,9 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, {
+      allowRecoveryActionAuthority: isRecoveryRelevantSourcePatch(req.body),
+    }))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -3275,13 +3383,7 @@ export function issueRoutes(
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
-    const recoveryRelevantSourceMutationRequested =
-      req.body.status !== undefined ||
-      normalizedAssigneeAgentId !== undefined ||
-      req.body.assigneeUserId !== undefined ||
-      Array.isArray(req.body.blockedByIssueIds) ||
-      req.body.executionPolicy !== undefined ||
-      explicitMoveToTodoRequested;
+    const recoveryRelevantSourceMutationRequested = isRecoveryRelevantSourcePatch(req.body);
     const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
       ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
       : null;

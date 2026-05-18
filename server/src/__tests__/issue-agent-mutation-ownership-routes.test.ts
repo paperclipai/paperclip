@@ -530,6 +530,72 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows task-assignment agents to route non-board in_review issues with a comment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:assign");
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: null,
+        assigneeUserId: "local-board",
+        comment: "Routing this review to the named reviewer.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        assigneeAgentId: null,
+        assigneeUserId: "local-board",
+        actorAgentId: peerAgentId,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Routing this review to the named reviewer.",
+      expect.objectContaining({
+        agentId: peerAgentId,
+      }),
+    );
+  });
+
+  it("rejects task-assignment agents routing board-owned in_review issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalId === peerAgentId && permissionKey === "tasks:assign");
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: peerAgentId,
+        comment: "Routing this review to the named reviewer.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate a user-assigned issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
