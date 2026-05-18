@@ -205,6 +205,42 @@ describe("BillingCapMonitor — tick orchestration", () => {
     const state = await store.load(COMPANY, E2B_PROVIDER_KEY);
     expect(state?.operatorToggleEnabled).toBe(false);
   });
+
+  it("AC #5 / QA LET-386 supplemental: every cap event also fires the activity_log sink", async () => {
+    const activityCalls: Array<{ action: string; capEventId: string; details: Record<string, unknown> }> = [];
+    const log = silentLogger();
+    const monitor = new BillingCapMonitor({
+      store: new InMemoryBillingCapStore(),
+      sourceA: null,
+      sourceB: new StaticSourceB({ dayCents: 20_00, monthCents: 20_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      notifier: { async notify() {} },
+      logger: log,
+      activitySink: async (entry) => {
+        activityCalls.push({ action: entry.action, capEventId: entry.capEventId, details: entry.details });
+      },
+    });
+    await monitor.tick({ companyId: COMPANY, now: NOW });
+    // hard_cap_breached + auto_disable_engaged both map to sandbox.cost_breach.
+    expect(activityCalls.filter((c) => c.action === "sandbox.cost_breach").length).toBeGreaterThanOrEqual(2);
+    expect(activityCalls.every((c) => typeof c.capEventId === "string" && c.capEventId.length > 0)).toBe(true);
+    expect(activityCalls.some((c) => c.details.kind === "hard_cap_breached")).toBe(true);
+  });
+
+  it("AC #5 / QA LET-386 supplemental: activity sink failures are logged and do not abort the tick", async () => {
+    const log = silentLogger();
+    const monitor = new BillingCapMonitor({
+      store: new InMemoryBillingCapStore(),
+      sourceA: null,
+      sourceB: new StaticSourceB({ dayCents: 16_00, monthCents: 16_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      notifier: { async notify() {} },
+      logger: log,
+      activitySink: async () => {
+        throw new Error("activity log unreachable");
+      },
+    });
+    await expect(monitor.tick({ companyId: COMPANY, now: NOW })).resolves.toBeDefined();
+    expect(log.error).toHaveBeenCalledWith(expect.anything(), "sandbox billing-cap activity-log sink failed");
+  });
 });
 
 describe("Cap notifier composition", () => {

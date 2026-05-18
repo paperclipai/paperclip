@@ -65,7 +65,7 @@ import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
-import { setPluginEventBus } from "./services/activity-log.js";
+import { logActivity, setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -228,6 +228,20 @@ export async function createApp(
       new LogCapNotifier(logger),
       new NoopCapNotifier(),
     ]),
+    // AC #5: cap events also surface on the operator activity log so
+    // dashboards filtering on `sandbox.cost_breach` see breaches without
+    // having to read the billing-cap-specific event table.
+    activitySink: async (entry) => {
+      await logActivity(db, {
+        companyId: entry.companyId,
+        actorType: "system",
+        actorId: "auto-cap-monitor",
+        action: entry.action,
+        entityType: "sandbox_billing_cap_event",
+        entityId: entry.capEventId,
+        details: { provider: entry.provider, ...entry.details },
+      });
+    },
     logger,
   });
   api.use(

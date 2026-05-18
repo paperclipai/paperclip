@@ -63,6 +63,31 @@ export interface BillingCapMonitorTickResult {
   state: BillingCapStateRow;
 }
 
+export interface CapActivityLogEntry {
+  /**
+   * Canonical `activity_log.action` label. Soft/hard breaches and auto-disable
+   * all surface as `sandbox.cost_breach` so a single activity filter catches
+   * every breach; operator toggle + re-enable refusals stay distinct.
+   */
+  action: string;
+  companyId: string;
+  provider: string;
+  /** Persisted `sandbox_billing_cap_events.id`; serves as `activity_log.entity_id`. */
+  capEventId: string;
+  /** Pre-redacted detail payload safe for `activity_log.details`. */
+  details: Record<string, unknown>;
+}
+
+export function actionForCapEventKind(kind: string): string {
+  if (kind === "hard_cap_breached" || kind === "soft_cap_breached" || kind === "auto_disable_engaged") {
+    return "sandbox.cost_breach";
+  }
+  if (kind === "monthly_incident_opened") return "sandbox.cost_breach.incident_opened";
+  if (kind === "operator_toggle_flipped") return "sandbox.kill_switch.flipped";
+  if (kind === "reenable_refused") return "sandbox.kill_switch.reenable_refused";
+  return `sandbox.${kind}`;
+}
+
 export interface BillingCapMonitorDeps {
   store: BillingCapStore;
   sourceA: SourceA | null;
@@ -75,6 +100,13 @@ export interface BillingCapMonitorDeps {
   provider?: string;
   /** Called when a monthly hard cap breaches and an incident needs creating. */
   openMonthlyIncident?: (notification: CapNotification) => Promise<string | null>;
+  /**
+   * Optional sink for the `activity_log` row required by LET-367 AC #5. The
+   * monitor calls this after every cap event so operator-visible activity
+   * dashboards reflect the breach in the same surface they use for other
+   * platform activity. Failure is logged and does not abort the tick.
+   */
+  activitySink?: (entry: CapActivityLogEntry) => Promise<void>;
 }
 
 export class BillingCapMonitor {
@@ -434,7 +466,36 @@ export class BillingCapMonitor {
   }
 
   private async recordEvent(event: BillingCapInsertEvent): Promise<BillingCapEventRow> {
-    return this.deps.store.appendEvent(event);
+    const row = await this.deps.store.appendEvent(event);
+    if (this.deps.activitySink) {
+      try {
+        await this.deps.activitySink({
+          action: actionForCapEventKind(row.kind),
+          companyId: row.companyId,
+          provider: row.provider,
+          capEventId: row.id,
+          // Pre-redacted (event.metadata was already sanitised upstream);
+          // we still scope to a flat schema so dashboards have stable keys.
+          details: {
+            kind: row.kind,
+            windowKind: row.windowKind,
+            spentCents: row.spentCents,
+            thresholdCents: row.thresholdCents,
+            projectionCents: row.projectionCents,
+            actorLabel: row.actorLabel,
+            reason: row.reason,
+            incidentIssueId: row.incidentIssueId,
+            source: typeof row.metadata?.source === "string" ? row.metadata.source : null,
+          },
+        });
+      } catch (err) {
+        this.deps.logger.error(
+          { err, companyId: row.companyId, capEventId: row.id, kind: row.kind },
+          "sandbox billing-cap activity-log sink failed",
+        );
+      }
+    }
+    return row;
   }
 
   private async notify(notification: CapNotification): Promise<CapNotification> {
