@@ -494,6 +494,10 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
       expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(payload?.message ?? "")).toContain("Paperclip context JSON:");
+      expect(String(payload?.message ?? "")).toContain('"agentName": "OpenClaw Gateway Agent"');
+      expect(String(payload?.message ?? "")).toContain('"cwd": "/tmp/worktrees/pap-123"');
+      expect(String(payload?.message ?? "")).toContain('"name": "preview"');
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
       );
@@ -502,14 +506,81 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+      expect(String(payload?.message ?? "")).toContain("\"latestCommentId\":\"comment-2\"");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("strips a persisted legacy payloadTemplate.paperclip fixture before sending agent params", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+              paperclip: {
+                runId: "persisted-run-id",
+                companyId: "persisted-company-id",
+                agentId: "persisted-agent-id",
+                agentName: "Persisted OpenClaw Agent",
+                taskId: "persisted-task-id",
+                issueId: "persisted-issue-id",
+                issueIds: ["persisted-issue-id"],
+                wakeReason: "missing_issue_comment",
+                wakeCommentId: "persisted-comment-id",
+                approvalId: null,
+                approvalStatus: null,
+                apiUrl: "https://paperclip.example",
+                wake: {
+                  reason: "issue_commented",
+                  latestCommentId: "persisted-comment-id",
+                  commentIds: ["persisted-comment-id"],
+                },
+                workspace: {
+                  cwd: "/tmp/persisted-workspace",
+                  strategy: "git_worktree",
+                },
+              },
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: "task-123",
+              issueId: "issue-123",
+              wakeReason: "issue_commented",
+              wakeCommentId: "comment-123",
+              issueIds: ["issue-123"],
+              paperclipWake: {
+                reason: "issue_commented",
+                latestCommentId: "comment-123",
+                commentIds: ["comment-123"],
+              },
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+
+      const payload = gateway.getAgentPayload();
+      expect(payload).toBeTruthy();
+      expect(payload).not.toHaveProperty("paperclip");
+      expect(String(payload?.message ?? "")).toContain("Paperclip context JSON:");
+      expect(String(payload?.message ?? "")).toContain('"agentName": "OpenClaw Gateway Agent"');
+      expect(String(payload?.message ?? "")).toContain('"apiUrl": "http://localhost:3100"');
+      expect(String(payload?.message ?? "")).toContain('"workspace": {');
+      expect(String(payload?.message ?? "")).toContain('"/tmp/persisted-workspace"');
+      expect(String(payload?.message ?? "")).toContain('"latestCommentId":"comment-123"');
     } finally {
       await gateway.close();
     }
