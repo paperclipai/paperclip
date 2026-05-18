@@ -574,6 +574,17 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * host to access platform services (state, entities, config, etc.).
  */
 export interface WorkerToHostMethods {
+  "agent.tools.register": [
+    params: {
+      name: string;
+      declaration: Pick<
+        import("@paperclipai/shared").PluginToolDeclaration,
+        "displayName" | "description" | "parametersSchema"
+      >;
+    },
+    result: void,
+  ];
+
   // Config
   "config.get": [params: Record<string, never>, result: Record<string, unknown>];
 

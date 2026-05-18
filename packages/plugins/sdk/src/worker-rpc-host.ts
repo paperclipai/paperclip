@@ -1119,6 +1119,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
         ): void {
           toolHandlers.set(name, { declaration, fn });
+          // Notify the host about the dynamic tool registration
+          void callHost("agent.tools.register", { name, declaration }).catch((err) => {
+            notifyHost("log", {
+              level: "warn",
+              message: `Failed to register dynamic tool "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
         },
       },
 

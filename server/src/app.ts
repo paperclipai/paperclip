@@ -263,6 +263,7 @@ export async function createApp(
         };
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
+          toolDispatcher,
           manifest,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());

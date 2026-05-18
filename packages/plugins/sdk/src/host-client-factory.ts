@@ -252,6 +252,11 @@ export interface HostServices {
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
   };
+
+  /** Provides `agent.tools.register`. */
+  tools: {
+    register(params: WorkerToHostMethods["agent.tools.register"][0]): Promise<void>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +316,7 @@ export type HostClientHandlers = {
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | null> = {
+  "agent.tools.register": "agent.tools.register",
   // Config — always allowed
   "config.get": null,
 
@@ -762,6 +768,11 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // Tools
+    "agent.tools.register": gated("agent.tools.register", async (params) => {
+      return services.tools.register(params);
     }),
   };
 }

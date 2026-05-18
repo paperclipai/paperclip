@@ -115,6 +115,22 @@ export interface PluginToolRegistry {
   registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void;
 
   /**
+   * Register a single tool for a plugin.
+   *
+   * Does not clear other tools for the plugin. Used for dynamic tool discovery
+   * (e.g. from MCP servers) after the initial manifest registration.
+   *
+   * @param pluginId - The plugin's unique identifier (e.g. `"acme.linear"`)
+   * @param declaration - The tool metadata to register
+   * @param pluginDbId - The plugin's database UUID for routing.
+   */
+  registerTool(
+    pluginId: string,
+    declaration: Pick<PluginToolDeclaration, "name" | "displayName" | "description" | "parametersSchema">,
+    pluginDbId?: string,
+  ): void;
+
+  /**
    * Remove all tool registrations for a plugin.
    *
    * Called when a plugin worker stops, crashes, or is uninstalled.
@@ -324,6 +340,15 @@ export function createPluginToolRegistry(
           tools: tools.map((t) => buildName(pluginId, t.name)),
         },
         `registered ${tools.length} tool(s) for plugin`,
+      );
+    },
+
+    registerTool(pluginId: string, declaration: Pick<PluginToolDeclaration, "name" | "displayName" | "description" | "parametersSchema">, pluginDbId?: string): void {
+      const dbId = pluginDbId ?? pluginId;
+      addTool(pluginId, declaration as PluginToolDeclaration, dbId);
+      log.info(
+        { pluginId, toolName: declaration.name, namespacedName: buildName(pluginId, declaration.name) },
+        "registered dynamic tool for plugin",
       );
     },
 
