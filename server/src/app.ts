@@ -40,7 +40,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
-import { mcpRoutes, mcpOAuthRoutes } from "./routes/mcp.js";
+import { mcpRoutes, mcpOAuthRoutes, type McpOAuthDeps } from "./routes/mcp.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -147,13 +147,24 @@ export async function createApp(
   }));
   app.use(httpLogger);
 
-  // OAuth discovery + token endpoints for MCP connectors (e.g. claude.ai).
-  // Mounted before hostname guard and auth middleware because these are
-  // unauthenticated public endpoints required by the OAuth 2.0 spec.
+  // OAuth discovery, authorization, and token endpoints for MCP connectors
+  // (e.g. claude.ai). Mounted before hostname guard and auth middleware
+  // because discovery endpoints are unauthenticated, and /authorize needs
+  // direct access to the session cookie (not the actor middleware).
   const publicUrl =
     process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
     `http://${opts.bindHost === "0.0.0.0" ? "127.0.0.1" : opts.bindHost}:${opts.serverPort}`;
-  app.use(mcpOAuthRoutes({ publicUrl }));
+  const mcpOAuthDeps: McpOAuthDeps = {
+    publicUrl,
+    db,
+    resolveSession: async (req) => {
+      if (!opts.resolveSession) return null;
+      const result = await opts.resolveSession(req);
+      if (!result?.session?.userId) return null;
+      return { userId: result.session.userId, userName: result.user?.name ?? undefined };
+    },
+  };
+  app.use(mcpOAuthRoutes(mcpOAuthDeps));
 
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
