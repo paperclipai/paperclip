@@ -3,6 +3,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildLocalSkillMarkdown,
   discoverProjectWorkspaceSkillDirectories,
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
@@ -87,6 +88,29 @@ describe("company skill import source parsing", () => {
 });
 
 describe("project workspace skill discovery", () => {
+  it("YAML-quotes generated local skill descriptions", async () => {
+    const workspace = await makeTempDir("paperclip-generated-skill-yaml-");
+    const skillDir = path.join(workspace, "skills", "design-consultation");
+    const description = "Design consultation: client's \"editor\" workflow";
+    const markdown = buildLocalSkillMarkdown({
+      name: "Design Consultation",
+      description,
+    });
+
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
+
+    expect(markdown).toContain(`description: ${JSON.stringify(description)}`);
+
+    const imported = await readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      skillDir,
+      { inventoryMode: "full" },
+    );
+
+    expect(imported.description).toBe(description);
+  });
+
   it("normalizes GitHub skill directories for blob imports and legacy metadata", () => {
     expect(normalizeGitHubSkillDirectory("retro/.", "retro")).toBe("retro");
     expect(normalizeGitHubSkillDirectory("retro/SKILL.md", "retro")).toBe("retro");
