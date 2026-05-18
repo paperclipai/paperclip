@@ -139,7 +139,10 @@ const CONTENT_TYPE_HEADER = "Content-Type" as const;
 const ACCEPT_HEADER = "Accept" as const;
 const ACCESS_TOKEN_HEADER = "X-Access-Token" as const;
 const AUTHORIZATION_HEADER = "Authorization" as const;
+const CONNECT_PROTOCOL_VERSION_HEADER = "Connect-Protocol-Version" as const;
+const CONNECT_TIMEOUT_HEADER = "Connect-Timeout-Ms" as const;
 const CONNECT_CONTENT_TYPE = "application/connect+json" as const;
+const CONNECT_PROTOCOL_VERSION = "1" as const;
 const PROCESS_START_PATH = "/process.Process/Start" as const;
 const DEFAULT_BASH_COMMAND = "/bin/bash" as const;
 const DEFAULT_BASH_ARGS = Object.freeze(["-l", "-c"]) as readonly string[];
@@ -195,6 +198,32 @@ const EMPTY_SESSION: E2BSandboxSession = Object.freeze({
   domain: null,
   trafficAccessToken: null,
 });
+
+/**
+ * Encode a single Connect protocol envelope. Both directions of a Connect
+ * streaming RPC wrap each message in this 5-byte envelope:
+ *   byte 0      : flag byte (bit 1 / 0x02 = end-of-stream)
+ *   bytes 1..4  : uint32 big-endian message length
+ *   bytes 5..N  : payload bytes (here: JSON-encoded message)
+ *
+ * The official E2B JS SDK uses `createConnectTransport({ useBinaryFormat: false })`
+ * which sends Start as one enveloped JSON request message; a real envd server
+ * reads the flag + length prefix before parsing the payload. Sending raw
+ * JSON without the envelope causes envd to interpret `{` as flag/length and
+ * fail to parse. We therefore frame every envd request message via this
+ * helper before handing the bytes to fetch.
+ */
+function encodeConnectFrame(payload: Uint8Array, endOfStream = false): Uint8Array {
+  const out = new Uint8Array(5 + payload.length);
+  out[0] = endOfStream ? 0x02 : 0x00;
+  const len = payload.length;
+  out[1] = (len >>> 24) & 0xff;
+  out[2] = (len >>> 16) & 0xff;
+  out[3] = (len >>> 8) & 0xff;
+  out[4] = len & 0xff;
+  out.set(payload, 5);
+  return out;
+}
 
 /**
  * Decode a Connect server-streaming response body. Each frame is a 5-byte
@@ -452,6 +481,28 @@ export class E2BLiveHttpTransport {
     signal?: AbortSignal;
   }): Promise<SandboxExecuteResult> {
     throwIfAborted(input.signal);
+    // E2B `StartRequest.stdin` is a boolean (whether the caller will write to
+    // stdin), not stdin bytes. Real stdin data flows over the separate
+    // `process.Process/SendInput` + `CloseStdin` RPCs after the start stream
+    // returns a pid. Wiring that two-RPC flow is out of scope for the first
+    // live slice (LET-366 pilot), so we fail closed when a caller hands us
+    // stdin bytes rather than silently dropping the input. Follow-up tracked
+    // separately in the Phase 4A-S4 plan; default-off CI never exercises this.
+    if (typeof input.stdin === "string" && input.stdin.length > 0) {
+      throw new SandboxProviderError(
+        "CONFIG_INVALID",
+        "E2B live transport does not yet support stdin input. " +
+          "stdin data requires the separate process.Process/SendInput + CloseStdin RPC chain " +
+          "which is not wired in the LET-366 pilot slice.",
+        {
+          details: {
+            provider: "e2b",
+            reason: "stdin_not_supported_in_live_pilot",
+            followUp: "LET-365 plan B-series: wire SendInput/CloseStdin after pilot baseline.",
+          },
+        },
+      );
+    }
     // Lazy session refresh: a fresh provider instance recovering a persisted
     // lease may not yet have envdAccessToken/domain cached. Connect first to
     // populate them, then dispatch the Connect process.Process/Start request.
@@ -470,10 +521,10 @@ export class E2BLiveHttpTransport {
         cwd: this.redact(input.cwd),
         envs: redactRecordBeforeProvider(input.env, this.redactor),
       },
+      // Matches `StartRequest.stdin?: boolean` in the SDK. Pilot slice never
+      // streams stdin (rejected above), so this is always `false` here.
+      stdin: false,
     };
-    if (typeof input.stdin === "string") {
-      body.stdin = this.redact(input.stdin);
-    }
     const url = this.envdHostFor(input.sandboxId, session);
     const buffer = await this.envdRequest({
       method: "POST",
@@ -481,6 +532,7 @@ export class E2BLiveHttpTransport {
       body,
       session,
       user: input.user,
+      timeoutMs: input.timeoutMs,
       signal: input.signal,
     });
     const { messages, trailers } = decodeConnectStreamingBody(buffer);
@@ -655,20 +707,27 @@ export class E2BLiveHttpTransport {
 
   /** Sandbox-side envd Connect endpoint. Uses Connect protocol headers per
    *  the official E2B JS SDK: Content-Type/Accept application/connect+json,
-   *  X-Access-Token from connect response. Basic auth is omitted unless an
-   *  explicit `user` is requested (mirrors `authenticationHeader(version, user)`
-   *  in the SDK, which only sets Basic for the supplied user, never the API key). */
+   *  Connect-Protocol-Version: 1, X-Access-Token from connect response, and
+   *  optional Connect-Timeout-Ms when the caller supplied `timeoutMs`. The
+   *  request body is wrapped in one Connect envelope (5-byte header + JSON
+   *  payload) — a real envd server reads the flag/length prefix before
+   *  parsing the payload, so a bare JSON body is rejected as a protocol
+   *  error. Basic auth is omitted unless an explicit `user` is requested
+   *  (mirrors `authenticationHeader(version, user)` in the SDK, which only
+   *  sets Basic for the supplied user, never the API key). */
   private async envdRequest(input: {
     method: string;
     url: string;
     body: unknown;
     session: E2BSandboxSession;
     user?: string;
+    timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<Uint8Array> {
     const headers: Record<string, string> = {
       [CONTENT_TYPE_HEADER]: CONNECT_CONTENT_TYPE,
       [ACCEPT_HEADER]: CONNECT_CONTENT_TYPE,
+      [CONNECT_PROTOCOL_VERSION_HEADER]: CONNECT_PROTOCOL_VERSION,
     };
     if (input.session.envdAccessToken && input.session.envdAccessToken.length > 0) {
       headers[ACCESS_TOKEN_HEADER] = input.session.envdAccessToken;
@@ -677,12 +736,30 @@ export class E2BLiveHttpTransport {
       // SDK semantics: `Basic base64("<user>:")` — the API key is never used as Basic auth.
       headers[AUTHORIZATION_HEADER] = `Basic ${toBase64(`${input.user}:`)}`;
     }
-    const serializedBody = JSON.stringify(input.body ?? null);
-    return this.dispatchBinary({
+    if (
+      typeof input.timeoutMs === "number" &&
+      Number.isFinite(input.timeoutMs) &&
+      input.timeoutMs > 0
+    ) {
+      // Connect protocol propagates per-request deadlines via this header.
+      // The official SDK passes `timeoutMs` as an RPC option which the
+      // generated transport translates into the same header. We do the
+      // mapping ourselves so envd honours the caller's timeout contract
+      // even before the AbortSignal fires.
+    headers[CONNECT_TIMEOUT_HEADER] = String(Math.ceil(input.timeoutMs));
+    }
+    // Frame the request body as one Connect envelope (flag=0, end-of-stream=false).
+    // The captured-hook projection still shows the JSON payload as a string so
+    // observability stays human-readable; only the bytes handed to fetch are
+    // the binary envelope.
+    const payloadJson = JSON.stringify(input.body ?? {});
+    const framedBody = encodeConnectFrame(new TextEncoder().encode(payloadJson), false);
+    return this.dispatchEnvelopeStream({
       method: input.method,
       url: input.url,
       headers,
-      serializedBody,
+      framedBody,
+      capturedPayloadJson: payloadJson,
       signal: input.signal,
     });
   }
@@ -691,14 +768,17 @@ export class E2BLiveHttpTransport {
     method: string;
     url: string;
     headers: Record<string, string>;
-    serializedBody: string | null;
+    capturedBodyString: string | null;
   }): void {
     if (!this.onRequest) return;
     this.onRequest({
       method: input.method,
       url: redactBeforeProvider(input.url, this.redactor),
       headers: redactCapturedHeaders(input.headers, this.apiKey, this.redactor),
-      body: input.serializedBody === null ? null : redactBeforeProvider(input.serializedBody, this.redactor),
+      body:
+        input.capturedBodyString === null
+          ? null
+          : redactBeforeProvider(input.capturedBodyString, this.redactor),
     });
   }
 
@@ -706,14 +786,13 @@ export class E2BLiveHttpTransport {
     method: string;
     url: string;
     headers: Record<string, string>;
-    serializedBody: string | null;
+    body: BodyInit | undefined;
     signal?: AbortSignal;
   }): Promise<Response> {
-    this.capture(input);
     const response = await this.fetchImpl(input.url, {
       method: input.method,
       headers: input.headers,
-      body: input.serializedBody ?? undefined,
+      body: input.body,
       signal: input.signal,
     });
     if (response.status === 401 || response.status === 403) {
@@ -761,7 +840,19 @@ export class E2BLiveHttpTransport {
     serializedBody: string | null;
     signal?: AbortSignal;
   }): Promise<T> {
-    const response = await this.fetchWithStatusGuard(input);
+    this.capture({
+      method: input.method,
+      url: input.url,
+      headers: input.headers,
+      capturedBodyString: input.serializedBody,
+    });
+    const response = await this.fetchWithStatusGuard({
+      method: input.method,
+      url: input.url,
+      headers: input.headers,
+      body: input.serializedBody ?? undefined,
+      signal: input.signal,
+    });
     if (response.status === 204) return undefined as T;
     const text = await response.text();
     if (text.length === 0) return undefined as T;
@@ -776,14 +867,27 @@ export class E2BLiveHttpTransport {
     }
   }
 
-  private async dispatchBinary(input: {
+  private async dispatchEnvelopeStream(input: {
     method: string;
     url: string;
     headers: Record<string, string>;
-    serializedBody: string | null;
+    framedBody: Uint8Array;
+    capturedPayloadJson: string;
     signal?: AbortSignal;
   }): Promise<Uint8Array> {
-    const response = await this.fetchWithStatusGuard(input);
+    this.capture({
+      method: input.method,
+      url: input.url,
+      headers: input.headers,
+      capturedBodyString: input.capturedPayloadJson,
+    });
+    const response = await this.fetchWithStatusGuard({
+      method: input.method,
+      url: input.url,
+      headers: input.headers,
+      body: input.framedBody as BodyInit,
+      signal: input.signal,
+    });
     if (response.status === 204) return new Uint8Array(0);
     const arrayBuffer = await response.arrayBuffer();
     return new Uint8Array(arrayBuffer);
@@ -819,6 +923,7 @@ function redactCapturedHeaders(
 
 export const __testing = {
   decodeConnectStreamingBody,
+  encodeConnectFrame,
   aggregateProcessEvents,
   buildBashCommand,
   shellQuoteArg,

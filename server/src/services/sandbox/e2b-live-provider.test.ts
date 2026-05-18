@@ -100,6 +100,44 @@ function emptyResponse(status = 204): OkResponse {
   };
 }
 
+/** Decode the Connect envelope wrapping an outbound request body. The fetch
+ *  mock receives `init.body` as a Uint8Array (the framed bytes), not a JSON
+ *  string. Tests use this helper to assert both the framing bytes and the
+ *  decoded JSON payload, so a regression to a bare-JSON request body is
+ *  caught (it would fail on the `expect(body).toBeInstanceOf(Uint8Array)`
+ *  check or on a mis-shaped flag/length prefix). */
+function decodeConnectRequestEnvelope(body: BodyInit | null | undefined): {
+  flags: number;
+  length: number;
+  payloadJson: unknown;
+  raw: Uint8Array;
+} {
+  if (!body || !(body instanceof Uint8Array)) {
+    throw new Error(`expected Uint8Array request body, got ${typeof body}`);
+  }
+  if (body.length < 5) {
+    throw new Error(`expected at least 5 envelope bytes, got ${body.length}`);
+  }
+  const flags = body[0]!;
+  const length =
+    ((body[1]! << 24) >>> 0) |
+    (body[2]! << 16) |
+    (body[3]! << 8) |
+    body[4]!;
+  if (body.length !== 5 + length) {
+    throw new Error(
+      `Connect envelope length mismatch: header says ${length}, total bytes ${body.length}`,
+    );
+  }
+  const payloadText = new TextDecoder().decode(body.subarray(5, 5 + length));
+  return {
+    flags,
+    length,
+    payloadJson: payloadText.length === 0 ? null : JSON.parse(payloadText),
+    raw: body,
+  };
+}
+
 /** Encode a single Connect protocol frame: 5-byte envelope
  *  (1 flag byte + 4-byte uint32 BE length) followed by `length` payload bytes. */
 function encodeConnectFrame(payload: Uint8Array, endOfStream = false): Uint8Array {
@@ -340,6 +378,9 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
     process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
     const sharedRegistry = new PreProviderRedactionRegistry();
     sharedRegistry.register(ENV_SECRET_CANARY);
+    // STDIN_CANARY is still planted so we can assert it never appears in any
+    // captured outbound payload even though stdin is rejected for this pilot
+    // slice (see the dedicated stdin-rejection test in the SDK-aligned suite).
     sharedRegistry.register(STDIN_CANARY);
 
     const captured: E2BCapturedRequest[] = [];
@@ -391,7 +432,9 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       command: `echo ${ENV_SECRET_CANARY}`,
       args: ["--token", RESOLVED_API_KEY_CANARY, "--passthrough", "public-arg"],
       env: { LEAKY_ENV: ENV_SECRET_CANARY, SAFE_ENV: "safe-value" },
-      stdin: `prefix ${STDIN_CANARY} suffix`,
+      // stdin is rejected for this pilot slice — see the dedicated rejection
+      // test below. The redaction registry still contains STDIN_CANARY and
+      // we assert it doesn't appear anywhere in the captured payload regardless.
     });
 
     expect(sharedRegistry.size()).toBeGreaterThanOrEqual(3);
@@ -706,18 +749,208 @@ describe("LET-366 E2B SDK-aligned HTTP contract", () => {
     const headers = (execCall.init?.headers ?? {}) as Record<string, string>;
     expect(headers["Content-Type"]).toBe("application/connect+json");
     expect(headers["Accept"]).toBe("application/connect+json");
+    expect(headers["Connect-Protocol-Version"]).toBe("1");
     expect(headers["X-Access-Token"]).toBe("envd-token-connect");
     // The API key is NEVER sent as Basic auth on envd — the access token
     // authorises the envd channel. The SDK only sets Basic when a sudo `user`
     // is supplied, which this call does not request.
     expect(headers["Authorization"]).toBeUndefined();
-    // Body wraps the user command as `cmd: '/bin/bash', args: ['-l', '-c', '<combined>']`.
-    const body = JSON.parse(execCall.init?.body as string);
+    // Connect server-streaming requests MUST wrap the request message in a
+    // 5-byte envelope (1 flag byte + 4-byte BE length). A bare-JSON body
+    // here would regress to a wire format envd rejects.
+    const envelope = decodeConnectRequestEnvelope(execCall.init?.body);
+    expect(envelope.flags).toBe(0);
+    expect(envelope.length).toBeGreaterThan(0);
+    expect(envelope.raw).toBeInstanceOf(Uint8Array);
+    const body = envelope.payloadJson as {
+      process: { cmd: string; args: string[]; envs?: Record<string, string>; cwd?: string };
+      stdin?: boolean;
+    };
     expect(body.process.cmd).toBe("/bin/bash");
     expect(body.process.args).toEqual(["-l", "-c", "echo hello"]);
+    // StartRequest.stdin is a boolean in the SDK (whether the caller will
+    // send stdin via SendInput later), NOT stdin bytes.
+    expect(body.stdin).toBe(false);
     // Legacy / pre-remediation shape must NOT be present.
     expect(body.process.args).not.toEqual(["hello"]);
     expect(body.process.cmd).not.toBe("echo");
+  });
+
+  it("frames the exec request body as one Connect enveloped message with bit-1 end-of-stream cleared", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, init });
+      const parsed = new URL(url);
+      if (parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "sb-envelope-1",
+          envdAccessToken: "envd-tok",
+          envdVersion: "v0.1.99",
+          domain: "e2b.app",
+          state: "created",
+        }) as unknown as Response;
+      }
+      if (parsed.pathname === "/process.Process/Start") {
+        return connectStreamResponse([{ type: "end", exitCode: 0 }]) as unknown as Response;
+      }
+      return jsonResponse({}) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const lease = await provider.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-env",
+      heartbeatRunId: "run-env",
+      issueId: "issue-env",
+    });
+    await provider.exec({
+      config: e2bLiveConfig,
+      providerLeaseId: lease.providerLeaseId,
+      command: "pwd",
+    });
+    // Control-plane create is still a plain JSON body (string); the envd
+    // exec call MUST be a Uint8Array carrying the framed envelope.
+    expect(captured[0]!.init?.body).toBe(JSON.stringify(JSON.parse(captured[0]!.init?.body as string)));
+    const execBody = captured[1]!.init?.body;
+    expect(execBody).toBeInstanceOf(Uint8Array);
+    const envelope = decodeConnectRequestEnvelope(execBody);
+    expect(envelope.flags).toBe(0); // end-of-stream bit (0x02) MUST be clear on requests
+    expect(envelope.length).toBe(envelope.raw.length - 5);
+    expect(envelope.payloadJson).toMatchObject({
+      process: { cmd: "/bin/bash", args: ["-l", "-c", "pwd"] },
+      stdin: false,
+    });
+  });
+
+  it("propagates timeoutMs as the Connect-Timeout-Ms header on the envd exec request", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const captured: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      captured.push({ url, init });
+      const parsed = new URL(url);
+      if (parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "sb-timeout-1",
+          envdAccessToken: "envd-tok",
+          envdVersion: "v0.1.99",
+          domain: "e2b.app",
+          state: "created",
+        }) as unknown as Response;
+      }
+      if (parsed.pathname === "/process.Process/Start") {
+        return connectStreamResponse([{ type: "end", exitCode: 0 }]) as unknown as Response;
+      }
+      return jsonResponse({}) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const lease = await provider.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-to",
+      heartbeatRunId: "run-to",
+      issueId: "issue-to",
+    });
+    await provider.exec({
+      config: e2bLiveConfig,
+      providerLeaseId: lease.providerLeaseId,
+      command: "sleep",
+      args: ["0.5"],
+      timeoutMs: 30_000,
+    });
+    const execHeaders = (captured[1]!.init?.headers ?? {}) as Record<string, string>;
+    expect(execHeaders["Connect-Timeout-Ms"]).toBe("30000");
+
+    // And: when timeoutMs is omitted, the header must also be omitted.
+    const captured2: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl2 = vi.fn(async (url: string, init?: RequestInit) => {
+      captured2.push({ url, init });
+      const parsed = new URL(url);
+      if (parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "sb-timeout-2",
+          envdAccessToken: "envd-tok",
+          envdVersion: "v0.1.99",
+          domain: "e2b.app",
+          state: "created",
+        }) as unknown as Response;
+      }
+      if (parsed.pathname === "/process.Process/Start") {
+        return connectStreamResponse([{ type: "end", exitCode: 0 }]) as unknown as Response;
+      }
+      return jsonResponse({}) as unknown as Response;
+    });
+    const provider2 = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl2 as unknown as typeof fetch,
+    });
+    const lease2 = await provider2.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-to-2",
+      heartbeatRunId: "run-to-2",
+      issueId: "issue-to-2",
+    });
+    await provider2.exec({
+      config: e2bLiveConfig,
+      providerLeaseId: lease2.providerLeaseId,
+      command: "true",
+    });
+    const exec2Headers = (captured2[1]!.init?.headers ?? {}) as Record<string, string>;
+    expect(exec2Headers["Connect-Timeout-Ms"]).toBeUndefined();
+  });
+
+  it("rejects stdin input with CONFIG_INVALID (LET-366 pilot does not yet wire SendInput/CloseStdin)", async () => {
+    process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const parsed = new URL(url);
+      if (method === "POST" && parsed.pathname === "/sandboxes") {
+        return jsonResponse({
+          sandboxID: "sb-stdin-1",
+          envdAccessToken: "envd-tok",
+          envdVersion: "v0.1.99",
+          domain: "e2b.app",
+          state: "created",
+        }) as unknown as Response;
+      }
+      return jsonResponse({}) as unknown as Response;
+    });
+    const provider = new E2BSandboxProvider({
+      isProviderEnabled: () => true,
+      resolveApiKey: async () => RESOLVED_API_KEY_CANARY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const lease = await provider.acquireLease({
+      config: e2bLiveConfig,
+      environmentId: "env-stdin",
+      heartbeatRunId: "run-stdin",
+      issueId: "issue-stdin",
+    });
+    await expect(
+      provider.exec({
+        config: e2bLiveConfig,
+        providerLeaseId: lease.providerLeaseId,
+        command: "cat",
+        stdin: "hello from caller",
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+      details: expect.objectContaining({
+        provider: "e2b",
+        reason: "stdin_not_supported_in_live_pilot",
+      }),
+    });
+    // No envd request must have been issued — only the original /sandboxes
+    // create call appears, no /process.Process/Start.
+    const dispatchedPaths = fetchImpl.mock.calls.map(([url]) => new URL(url as string).pathname);
+    expect(dispatchedPaths).toEqual(["/sandboxes"]);
   });
 
   it("aggregates a Connect server-streaming response into { exitCode, stdout, stderr }", async () => {
@@ -902,12 +1135,16 @@ describe("LET-366 persisted-lease cleanup without prior acquireLease", () => {
 
   it("resumeLease then exec on a fresh provider instance refreshes the envd session and sends X-Access-Token", async () => {
     process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
-    const captured: Array<{ url: string; method: string; headers: Record<string, string>; body: string | null }> = [];
+    const captured: Array<{
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body: BodyInit | null | undefined;
+    }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const headers = (init?.headers ?? {}) as Record<string, string>;
-      const body = typeof init?.body === "string" ? init.body : null;
-      captured.push({ url, method, headers, body });
+      captured.push({ url, method, headers, body: init?.body });
       const parsed = new URL(url);
       if (method === "POST" && parsed.pathname.endsWith("/connect")) {
         return jsonResponse({
@@ -958,10 +1195,20 @@ describe("LET-366 persisted-lease cleanup without prior acquireLease", () => {
     const parsedExecUrl = new URL(execCall.url);
     expect(parsedExecUrl.host).toBe("49983-persisted-sandbox-abc.e2b.app");
     expect(execCall.headers["X-Access-Token"]).toBe("envd-refreshed-token");
+    expect(execCall.headers["Connect-Protocol-Version"]).toBe("1");
     expect(execCall.headers["Authorization"]).toBeUndefined();
-    // The API key must NOT appear anywhere in the exec request URL/body/headers.
-    const execBlob = JSON.stringify({ url: execCall.url, headers: execCall.headers, body: execCall.body });
-    expect(execBlob).not.toContain(RESOLVED_API_KEY_CANARY);
+    // The exec body must be a framed Connect envelope, NOT a bare JSON string.
+    const execEnvelope = decodeConnectRequestEnvelope(execCall.body);
+    expect(execEnvelope.flags).toBe(0);
+    expect(execEnvelope.payloadJson).toMatchObject({
+      process: { cmd: "/bin/bash", args: ["-l", "-c", "echo post-resume"] },
+      stdin: false,
+    });
+    // The API key must NOT appear anywhere in the exec request URL/headers/body.
+    const decodedPayload = JSON.stringify(execEnvelope.payloadJson);
+    const headerBlob = JSON.stringify({ url: execCall.url, headers: execCall.headers });
+    expect(headerBlob).not.toContain(RESOLVED_API_KEY_CANARY);
+    expect(decodedPayload).not.toContain(RESOLVED_API_KEY_CANARY);
   });
 
   it("persisted-lease cleanup still fails closed when the three-gate check fails", async () => {
