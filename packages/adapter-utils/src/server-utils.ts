@@ -1850,8 +1850,9 @@ const MINIMAL_ADAPTER_RUNTIME_SKILL_NOTE_TIERS = new Set([
 ]);
 
 /**
- * When true, adapters should emit a **short** Paperclip runtime skill note (root path + keys only).
+ * When true, adapters should emit a **short** Paperclip runtime skill note (045).
  * - Resumed session: minimize redundant boilerplate.
+ * - `issue_commented` + inline wake complete (`fallbackFetchNeeded === false`): minimize (B2).
  * - Comment wake at low tiers (`receipt_only`, `read_thread`, `allow_api_context`): minimize.
  */
 export function shouldMinimizeAdapterRuntimeSkillNotes(
@@ -1859,9 +1860,119 @@ export function shouldMinimizeAdapterRuntimeSkillNotes(
   resumedSession: boolean,
 ): boolean {
   if (resumedSession) return true;
+  const wakeNormalized = normalizePaperclipWakePayload(context.paperclipWake);
+  const wakeReason = asString(context.wakeReason, "").trim();
+  if (wakeReason === "issue_commented" && wakeNormalized && wakeNormalized.fallbackFetchNeeded === false) {
+    return true;
+  }
   const tier = asString(context.commentWakeTier, "").trim();
   if (!tier) return false;
   return MINIMAL_ADAPTER_RUNTIME_SKILL_NOTE_TIERS.has(tier);
+}
+
+/** 045 B3：评论唤起降载路径上封顶 Paperclip 注入的智能体说明书（非 resume 会话）。 */
+export function shouldCapPaperclipInjectedAgentInstructions(
+  context: Record<string, unknown>,
+  resumedSession: boolean,
+): boolean {
+  if (resumedSession) return false;
+  return shouldMinimizeAdapterRuntimeSkillNotes(context, false);
+}
+
+export const MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE = 14_000;
+
+export function capPaperclipInjectedAgentInstructions(
+  text: string,
+  context: Record<string, unknown>,
+  resumedSession: boolean,
+): string {
+  if (!text || !shouldCapPaperclipInjectedAgentInstructions(context, resumedSession)) return text;
+  const footer = `\n\n[Paperclip] 以上智能体说明书已按评论唤起路径封顶截断（${MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE} 字符）；完整原文见工作区配置文件。`;
+  const maxHead = MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE - footer.length;
+  if (maxHead < 64) return text;
+  if (text.length <= maxHead) return text;
+  return `${text.slice(0, maxHead)}${footer}`;
+}
+
+const MAX_SKILL_TOC_HEADINGS = 14;
+const MAX_SKILL_SUMMARY_EXCERPT_CHARS = 720;
+const MAX_MINIMIZED_SKILL_NOTE_TOTAL_CHARS = 5_500;
+
+/** 抽取 `##` 标题（不含 `###`）。 */
+export function extractMarkdownH2Headings(markdown: string): string[] {
+  const out: string[] = [];
+  for (const line of markdown.split(/\r?\n/)) {
+    const t = line.trim();
+    const m = /^##\s+(.+)$/.exec(t);
+    if (m) out.push(m[1]!.trim());
+  }
+  return out;
+}
+
+/** 去掉 frontmatter 与一级标题后，将正文压成一行摘要。 */
+export function excerptPaperclipSkillMarkdownBody(markdown: string, maxChars: number): string {
+  let body = markdown.replace(/^---[\s\S]*?^---\s*/m, "").trim();
+  body = body.replace(/^#\s+[^\n]*\n+/, "").trim();
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxChars) return flat;
+  return `${flat.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+/**
+ * 045 B1：minimize 路径下用「二级标题 + 短摘要 + 路径指针」替代口令式长说明（磁盘 symlink 仍可全量读）。
+ */
+export async function renderMinimizedPaperclipSkillNoteMarkdown(
+  config: Record<string, unknown>,
+  moduleDir: string,
+  skillsHomeDisplayPath: string,
+): Promise<string> {
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, moduleDir);
+  const keys = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  if (keys.length === 0) return "";
+
+  const sortedKeys = [...keys].sort();
+
+  const lines: string[] = [
+    "Paperclip 运行时技能（首帧摘要 · 按需再读磁盘 `SKILL.md` 全文）：",
+    `- 技能根目录：${skillsHomeDisplayPath}`,
+    `- 已选技能 key：${sortedKeys.join(", ")}`,
+  ];
+
+  for (const key of sortedKeys) {
+    const entry = availableEntries.find((e) => e.key === key);
+    if (!entry) continue;
+    const skillMdPath = path.join(entry.source, "SKILL.md");
+    let raw = "";
+    try {
+      raw = await fs.readFile(skillMdPath, "utf8");
+    } catch {
+      lines.push(
+        `- **${key}**：未读取 \`SKILL.md\`（${skillMdPath}）。可从 symlink 目录检查：${path.join(skillsHomeDisplayPath, entry.runtimeName ?? key)}`,
+      );
+      continue;
+    }
+    const headings = extractMarkdownH2Headings(raw);
+    const excerpt = excerptPaperclipSkillMarkdownBody(raw, MAX_SKILL_SUMMARY_EXCERPT_CHARS);
+    const displaySkillMd = path.join(skillsHomeDisplayPath, entry.runtimeName ?? key, "SKILL.md");
+    lines.push(`- **${key}** → \`${displaySkillMd}\``);
+    if (headings.length > 0) {
+      const slice = headings.slice(0, MAX_SKILL_TOC_HEADINGS);
+      lines.push(
+        `  - 二级标题：${slice.join("；")}${headings.length > MAX_SKILL_TOC_HEADINGS ? " …" : ""}`,
+      );
+    }
+    if (excerpt.length > 0) {
+      lines.push(`  - 摘要：${excerpt}`);
+    }
+  }
+
+  lines.push("需要细节时再读取对应 `SKILL.md` 全文；不要默认一次性通读所有技能。");
+
+  let result = lines.join("\n");
+  if (result.length > MAX_MINIMIZED_SKILL_NOTE_TOTAL_CHARS) {
+    result = `${result.slice(0, MAX_MINIMIZED_SKILL_NOTE_TOTAL_CHARS - 24)}…\n[Paperclip] 技能摘要过长已截断。`;
+  }
+  return result;
 }
 
 export function writePaperclipSkillSyncPreference(

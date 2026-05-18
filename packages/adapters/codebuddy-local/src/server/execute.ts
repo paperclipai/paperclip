@@ -1,3 +1,4 @@
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +22,8 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   shouldMinimizeAdapterRuntimeSkillNotes,
+  capPaperclipInjectedAgentInstructions,
+  renderMinimizedPaperclipSkillNoteMarkdown,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
@@ -205,10 +208,7 @@ async function renderCodebuddyRuntimeSkillNote(
 
   const skillsHome = resolveCodebuddySkillsHomeForPrompt(config);
   if (minimize) {
-    const line = `Paperclip 运行时技能（精简）：根 ${skillsHome}；已选 ${selectedSkills.join(", ")}`;
-    return selectedSkills.includes("paperclip")
-      ? `${line}；paperclip 协议文件 ${path.join(skillsHome, "paperclip", "SKILL.md")}`
-      : line;
+    return renderMinimizedPaperclipSkillNoteMarkdown(config, __moduleDir, skillsHome);
   }
   const lines = [
     "Paperclip 运行时技能说明：",
@@ -383,6 +383,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     { id: "heartbeat_template", body: renderedPrompt },
   ]);
 
+  let effectiveInstructionsPath = instructionsFilePath;
+  if (instructionsFilePath && !sessionId) {
+    try {
+      const rawInstr = await fsp.readFile(instructionsFilePath, "utf8");
+      const capped = capPaperclipInjectedAgentInstructions(rawInstr, context, Boolean(sessionId));
+      if (capped !== rawInstr) {
+        const tmp = path.join(os.tmpdir(), `paperclip-codebuddy-capped-instructions-${runId}.md`);
+        await fsp.writeFile(tmp, capped, "utf8");
+        effectiveInstructionsPath = tmp;
+      }
+    } catch {
+      effectiveInstructionsPath = instructionsFilePath;
+    }
+  }
+
   // ---- Build CLI args ----
   const args: string[] = ["--print", "--output-format", outputFormat, "--model", model];
 
@@ -402,8 +417,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push("--max-turns", String(maxTurns));
   }
 
-  if (instructionsFilePath && !sessionId) {
-    args.push("--system-prompt-file", instructionsFilePath);
+  if (effectiveInstructionsPath && !sessionId) {
+    args.push("--system-prompt-file", effectiveInstructionsPath);
   }
 
   if (extraArgs.length > 0) {

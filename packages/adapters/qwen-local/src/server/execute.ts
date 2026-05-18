@@ -21,6 +21,8 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   shouldMinimizeAdapterRuntimeSkillNotes,
+  capPaperclipInjectedAgentInstructions,
+  renderMinimizedPaperclipSkillNoteMarkdown,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
@@ -213,10 +215,7 @@ async function renderQwenSkillNote(config: Record<string, unknown>, minimize: bo
 
   const skillsHome = path.join(os.homedir(), ".qwen", "skills");
   if (minimize) {
-    const line = `Paperclip 运行时技能（精简）：根 ${skillsHome}；已选 ${selectedSkills.join(", ")}`;
-    return selectedSkills.includes("paperclip")
-      ? `${line}；paperclip 协议文件 ${path.join(skillsHome, "paperclip", "SKILL.md")}`
-      : line;
+    return renderMinimizedPaperclipSkillNoteMarkdown(config, __moduleDir, skillsHome);
   }
   const lines = [
     "Paperclip 运行时技能说明：",
@@ -368,7 +367,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (instructionsFilePath && !sessionId) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      let instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      instructionsContents = capPaperclipInjectedAgentInstructions(
+        instructionsContents,
+        context,
+        Boolean(sessionId),
+      );
       instructionsPrefix = [
         instructionsContents.trim(),
         `The above agent instructions were loaded from ${instructionsFilePath}. Follow them for this Qwen run.`,

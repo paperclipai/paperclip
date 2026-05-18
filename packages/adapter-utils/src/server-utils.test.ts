@@ -18,6 +18,10 @@ import {
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
   shouldMinimizeAdapterRuntimeSkillNotes,
+  capPaperclipInjectedAgentInstructions,
+  MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE,
+  extractMarkdownH2Headings,
+  excerptPaperclipSkillMarkdownBody,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
@@ -1002,6 +1006,46 @@ describe("shouldMinimizeAdapterRuntimeSkillNotes", () => {
 
   it("does not minimize when tier is absent", () => {
     expect(shouldMinimizeAdapterRuntimeSkillNotes({}, false)).toBe(false);
+  });
+
+  it("minimizes for issue_commented when inline wake is complete (fallbackFetchNeeded false)", () => {
+    expect(
+      shouldMinimizeAdapterRuntimeSkillNotes(
+        {
+          wakeReason: "issue_commented",
+          paperclipWake: {
+            issue: { id: "issue-1", identifier: "PC-1" },
+            fallbackFetchNeeded: false,
+            comments: [{ id: "c1", body: "hi" }],
+          },
+        },
+        false,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("045 helpers: headings, excerpt, instructions cap", () => {
+  it("extractMarkdownH2Headings collects ## lines only", () => {
+    expect(extractMarkdownH2Headings("# T\n## A\n### B\n## C ")).toEqual(["A", "C"]);
+  });
+
+  it("excerptPaperclipSkillMarkdownBody strips frontmatter and flattens", () => {
+    const md = "---\nx: 1\n---\n\n# Title\n\nPara one.\n\n## H\n\nMore.";
+    const ex = excerptPaperclipSkillMarkdownBody(md, 200);
+    expect(ex).toContain("Para one");
+    expect(ex).not.toContain("---");
+  });
+
+  it("capPaperclipInjectedAgentInstructions truncates on minimize path", () => {
+    const long = "x".repeat(MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE + 500);
+    const capped = capPaperclipInjectedAgentInstructions(
+      long,
+      { commentWakeTier: "receipt_only" },
+      false,
+    );
+    expect(capped.length).toBe(MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE);
+    expect(capped).toContain("[Paperclip]");
   });
 });
 

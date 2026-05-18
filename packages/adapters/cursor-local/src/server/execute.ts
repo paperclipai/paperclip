@@ -45,6 +45,9 @@ import {
   joinPromptSectionsLabeled,
   buildStdinPromptCacheCorrelation,
   mergeAllowlistedHostEnvWith,
+  shouldMinimizeAdapterRuntimeSkillNotes,
+  capPaperclipInjectedAgentInstructions,
+  renderMinimizedPaperclipSkillNoteMarkdown,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -509,7 +512,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let instructionsChars = 0;
   if (instructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      let instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      instructionsContents = capPaperclipInjectedAgentInstructions(
+        instructionsContents,
+        context,
+        Boolean(sessionId),
+      );
       instructionsPrefix =
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
@@ -571,10 +579,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
+  const minimizeRuntimeSkillNotes = shouldMinimizeAdapterRuntimeSkillNotes(context, Boolean(sessionId));
+  const cursorSkillNote = minimizeRuntimeSkillNotes
+    ? await renderMinimizedPaperclipSkillNoteMarkdown(config, __moduleDir, cursorSkillsHome())
+    : "";
   const { prompt, promptSections } = joinPromptSectionsLabeled([
     { id: "agent_instructions", body: instructionsPrefix },
     { id: "bootstrap", body: renderedBootstrapPrompt },
     { id: "wake", body: wakePrompt },
+    { id: "skill_note", body: cursorSkillNote },
     { id: "session_handoff", body: sessionHandoffNote },
     { id: "runtime_env_note", body: paperclipEnvNote },
     { id: "heartbeat_template", body: renderedPrompt },
@@ -584,6 +597,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    skillNoteChars: cursorSkillNote.length,
     sessionHandoffChars: sessionHandoffNote.length,
     runtimeNoteChars: paperclipEnvNote.length,
     heartbeatPromptChars: renderedPrompt.length,

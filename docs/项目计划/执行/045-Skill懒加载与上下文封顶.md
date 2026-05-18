@@ -59,3 +59,16 @@ status: 进行中
 - **CodeBuddy：** `packages/adapters/codebuddy-local/src/server/execute.ts` — 新增与同口径的 `skill_note` 段；磁盘同步路径不变。
 - **Cursor：** 本轮 **未改** stdin（技能仍以磁盘 symlink 注入为主，与 Qwen 的「显式 skill 段」不同层）；后续若需与低档对齐，可单列极小 `onLog` 或一行指针。
 - **测试：** `packages/adapter-utils/src/server-utils.test.ts` — `shouldMinimizeAdapterRuntimeSkillNotes` 单测；`pnpm exec vitest run packages/adapter-utils/src/server-utils.test.ts -t shouldMinimizeAdapterRuntimeSkillNotes`。
+
+### 2026-05-18（第二轮 · B1 首帧摘要 + B2 评论内联 wake + B3 说明书封顶 · 三适配器）
+
+- **共享（adapter-utils）：**  
+  - `shouldMinimizeAdapterRuntimeSkillNotes`：**`issue_commented` 且 wake `fallbackFetchNeeded === false`** 时亦 minimize（B2）。  
+  - **`renderMinimizedPaperclipSkillNoteMarkdown`**：从各技能源目录读 `SKILL.md`，输出 **二级标题 + 短摘要 + 路径指针**（B1 思路 A）。辅助：`extractMarkdownH2Headings`、`excerptPaperclipSkillMarkdownBody`。  
+  - **`capPaperclipInjectedAgentInstructions`** / `MAX_ADAPTER_AGENT_INSTRUCTIONS_CHARS_COMMENT_WAKE`（14000）：在 **`shouldCapPaperclipInjectedAgentInstructions`** 为真且非续跑时，将 Paperclip 注入的说明书**总产出**封顶（含脚注说明）（B3，仅控制面注入段）。  
+- **Qwen：** minimize 时 `skill_note` 改为上述摘要 Markdown；读入 `instructionsFilePath` 后走封顶。  
+- **CodeBuddy：** 同左；若封顶则写入临时 `--system-prompt-file`。  
+- **Cursor：** stdin 增加 **`skill_note`** 段（minimize 时摘要）；`agent_instructions` 读入后封顶。  
+- **测试：** `pnpm exec vitest run packages/adapter-utils/src/server-utils.test.ts -t "045 helpers|shouldMinimizeAdapter"`；`pnpm exec vitest run packages/adapters/codebuddy-local/src/server/execute.test.ts`；`pnpm exec vitest run packages/adapters/cursor-local/src/server/remote-command.test.ts`。
+
+> **仍未当结案：** 与 wake 块「执行契约」字级 **去重**、**非 `issue_commented`** 链路的 B2 扩面、以及 **015 口径 input_tokens 前后对照**，需后续取证或再迭代。
