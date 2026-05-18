@@ -316,7 +316,9 @@ export function credentialRoutes(db: Db) {
     await requireCredentialManage(req, companyId);
 
     const sessionId = randomUUID();
-    const codexHome = path.join(os.tmpdir(), `codex-oauth-${sessionId}`);
+    // Codex 0.130+ refuses CODEX_HOME under /tmp (it won't write helper binaries or
+    // auth.json there), so the session dir must live under $HOME instead.
+    const codexHome = path.join(os.homedir(), ".paperclip-codex-oauth", sessionId);
     await fs.mkdir(codexHome, { recursive: true });
 
     const session: CodexCredLoginSession = {

@@ -3182,9 +3182,11 @@ export function agentRoutes(
 
     const sessionId = randomUUID();
     const credential = agent.credentialId ? await credentialsSvc.getById(agent.credentialId) : null;
+    // Codex 0.130+ refuses CODEX_HOME under /tmp, so the agent-login isolated home
+    // must live under $HOME instead. The dir is wiped after the flow completes.
     const codexCredentialLoginHome =
       credential?.type === "codex_oauth"
-        ? path.join(os.tmpdir(), `paperclip-codex-agent-login-${sessionId}`)
+        ? path.join(os.homedir(), ".paperclip-codex-oauth", `agent-${sessionId}`)
         : null;
     const session: CodexLoginSession = {
       agentId: agent.id,

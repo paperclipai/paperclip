@@ -28,6 +28,11 @@ function createClaudeQuotaEnv(): Record<string, string> {
     if (key.startsWith("ANTHROPIC_")) continue;
     env[key] = value;
   }
+  // Suppress the auto-updater + telemetry chatter so the TUI reaches its prompt faster
+  // and stdout isn't polluted with update/feedback noise that confuses panel detection.
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  env.DISABLE_AUTOUPDATER = "1";
+  env.DISABLE_TELEMETRY = "1";
   return env;
 }
 
@@ -424,53 +429,19 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
   return windows;
 }
 
-function quoteForShell(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function buildClaudeCliShellProbeCommand(): string {
-  const feed = "(sleep 2; printf '/usage\\r'; sleep 6; printf '\\033'; sleep 1; printf '\\003')";
-  const claudeCommand = "claude --tools \"\"";
-  if (process.platform === "darwin") {
-    return `${feed} | script -q /dev/null ${claudeCommand}`;
-  }
-  return `${feed} | script -q -e -f -c ${quoteForShell(claudeCommand)} /dev/null`;
-}
-
-export async function captureClaudeCliUsageText(timeoutMs = 12_000): Promise<string> {
-  const command = buildClaudeCliShellProbeCommand();
-  try {
-    const { stdout, stderr } = await execFileAsync("sh", ["-c", command], {
-      env: createClaudeQuotaEnv(),
-      timeout: timeoutMs,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const output = `${stdout}${stderr}`;
-    const cleaned = cleanTerminalText(output);
-    if (usageOutputLooksComplete(cleaned)) return output;
-    throw new Error("Claude CLI usage probe ended before rendering usage.");
-  } catch (error) {
-    const stdout =
-      typeof error === "object" && error !== null && "stdout" in error && typeof error.stdout === "string"
-        ? error.stdout
-        : "";
-    const stderr =
-      typeof error === "object" && error !== null && "stderr" in error && typeof error.stderr === "string"
-        ? error.stderr
-        : "";
-    const output = `${stdout}${stderr}`;
-    const cleaned = cleanTerminalText(output);
-    if (usageOutputLooksComplete(cleaned)) return output;
-    if (usageOutputLooksRelevant(cleaned)) {
-      throw new Error("Claude CLI usage probe ended before rendering usage.");
-    }
-    throw error instanceof Error ? error : new Error(String(error));
-  }
+// The Claude CLI `/usage` probe spawned an interactive TUI through `script(1)` to scrape
+// the rendered usage panel. The PTY-driven approach was inherently fragile (CLI dialog
+// changes, auto-updater chatter, trust prompts, ESC/Ctrl-C ordering) and held a shell
+// pipeline open for ~25s per call, which had no place inside a production HTTP handler.
+// It is disabled by design — `getQuotaWindows` falls through to OAuth API polling, which
+// is the only supported source for subscription quota now. The exports are kept so
+// stale imports continue to compile.
+export async function captureClaudeCliUsageText(): Promise<string> {
+  throw new Error("Claude CLI /usage probe is disabled");
 }
 
 export async function fetchClaudeCliQuota(): Promise<QuotaWindow[]> {
-  const rawText = await captureClaudeCliUsageText();
-  return parseClaudeCliUsageText(rawText);
+  throw new Error("Claude CLI /usage probe is disabled");
 }
 
 function formatProviderError(source: string, error: unknown): string {
@@ -500,13 +471,6 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     } catch (error) {
       errors.push(formatProviderError("Anthropic OAuth usage", error));
     }
-  }
-
-  try {
-    const windows = await fetchClaudeCliQuota();
-    return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
-  } catch (error) {
-    errors.push(formatProviderError("Claude CLI /usage", error));
   }
 
   if (hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") && !authDescription) {

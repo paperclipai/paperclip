@@ -46,7 +46,20 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  // Pool safety: a wedged statement or transaction must not pin a connection forever.
+  // Without these knobs, ten parallel `select … for update` claims stuck behind a slow
+  // operation will exhaust the default 10-slot pool and `/api/health` (and every other
+  // route) hangs until the underlying op finishes. The pg server kills the offender
+  // after the configured timeouts and the pool drains within ~30s instead of hours.
+  const sql = postgres(url, {
+    max: 20,
+    idle_timeout: 60,
+    max_lifetime: 60 * 30,
+    connection: {
+      statement_timeout: 30_000,
+      idle_in_transaction_session_timeout: 30_000,
+    },
+  });
   return drizzlePg(sql, { schema });
 }
 
