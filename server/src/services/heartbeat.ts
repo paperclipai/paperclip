@@ -139,6 +139,7 @@ import {
   findExistingRunLivenessContinuationWake,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
+  commentHasRoutineSilentSentinel,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
@@ -4163,6 +4164,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      hasRoutineSilentComment,
     ] = await Promise.all([
       issue
         ? db
@@ -4288,6 +4290,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ body: issueComments.body })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, run.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.createdByRunId, run.id),
+            ),
+          )
+          .then((rows) => rows.some((r) => commentHasRoutineSilentSentinel(r.body)))
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -4305,6 +4320,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPauseHold: Boolean(pauseHold),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      hasRoutineSilentComment: Boolean(hasRoutineSilentComment),
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
