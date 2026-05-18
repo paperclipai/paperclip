@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -91,6 +91,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_COMMENT_RUN_LOG_DERIVATION_RUN_SCAN_LIMIT = 500;
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -2885,12 +2886,32 @@ export function issueService(db: Db) {
     }, null);
     if (minCommentCreatedAtMs === null || maxCommentCreatedAtMs === null) return comments;
 
-    const minCommentCreatedAt = new Date(minCommentCreatedAtMs).toISOString();
-    const maxCommentCreatedAt = new Date(
-      maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS,
-    ).toISOString();
+    const maxRunCreatedAtMs = maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS;
 
-    const runs = await db
+    const activityRunIds = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          isNotNull(activityLog.runId),
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(ISSUE_COMMENT_RUN_LOG_DERIVATION_RUN_SCAN_LIMIT)
+      .then((rows) => Array.from(new Set(rows.map((row) => row.runId).filter((value): value is string => !!value))));
+
+    const runLinkPredicate =
+      activityRunIds.length > 0
+        ? or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            inArray(heartbeatRuns.id, activityRunIds),
+          )
+        : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`;
+
+    const candidateRuns = await db
       .select({
         runId: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
@@ -2905,22 +2926,25 @@ export function issueService(db: Db) {
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
-          ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${minCommentCreatedAt}::timestamptz`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${maxCommentCreatedAt}::timestamptz`,
+          runLinkPredicate,
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(ISSUE_COMMENT_RUN_LOG_DERIVATION_RUN_SCAN_LIMIT);
+
+    const runs = candidateRuns.filter((run) => {
+      const finishedAtMs = toTimestampMs(run.finishedAt);
+      const startedAtMs = toTimestampMs(run.startedAt);
+      const createdAtMs = toTimestampMs(run.createdAt);
+      const lowerBoundMs = finishedAtMs ?? createdAtMs;
+      const upperBoundMs = startedAtMs ?? createdAtMs;
+      return (
+        lowerBoundMs !== null
+        && upperBoundMs !== null
+        && lowerBoundMs >= minCommentCreatedAtMs
+        && upperBoundMs <= maxRunCreatedAtMs
+      );
+    });
 
     if (runs.length === 0) return comments;
 
