@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { LIVENESS_ESCALATION_CLOSED_COOLDOWN_MS } from "../services/recovery/service.js";
 import {
   activityLog,
   agents,
@@ -667,7 +668,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+  it("creates a fresh escalation when the previous matching escalation is terminal and outside cooldown", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
@@ -679,6 +680,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       blockerIssueId,
     ].join(":");
     const closedEscalationId = randomUUID();
+    const expiredAt = new Date(Date.now() - LIVENESS_ESCALATION_CLOSED_COOLDOWN_MS - 60_000);
 
     await db.insert(issues).values({
       id: closedEscalationId,
@@ -692,6 +694,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
       originId: incidentKey,
+      updatedAt: expiredAt,
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
@@ -723,5 +726,49 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+  });
+
+  it("suppresses new escalation creation when a matching done escalation is within the 24h cooldown window", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const recentlyClosedId = randomUUID();
+    const recentlyClosedAt = new Date(Date.now() - 30 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: recentlyClosedId,
+      companyId,
+      title: "Recently closed escalation",
+      status: "done",
+      priority: "high",
+      parentId: blockedIssueId,
+      issueNumber: 3,
+      identifier: "CLOSED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      updatedAt: recentlyClosedAt,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(0);
+    const openEscalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+          eq(issues.originId, incidentKey),
+        ),
+      );
+    expect(openEscalations.filter((e) => e.status !== "done")).toHaveLength(0);
   });
 });
