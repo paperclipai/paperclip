@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -16,9 +17,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
@@ -562,5 +565,197 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  async function insertWakeAssigneeConfirmation(input: {
+    companyId: string;
+    issueId: string;
+    createdAt: Date;
+    status?: "pending" | "accepted" | "rejected" | "expired";
+    continuationPolicy?: "wake_assignee" | "none";
+    kind?: "request_confirmation" | "ask_user_questions" | "suggest_tasks";
+  }) {
+    const id = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: input.kind ?? "request_confirmation",
+      status: input.status ?? "pending",
+      continuationPolicy: input.continuationPolicy ?? "wake_assignee",
+      payload: { kind: "request_confirmation", body: "Confirm before continuing." } as never,
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
+    });
+    return id;
+  }
+
+  it("suppresses long_active_duration when a fresh pending wake_assignee request_confirmation exists", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still fires long_active_duration when the only pending wake_assignee request_confirmation is older than the freshness bound", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const longActiveMs = DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000;
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(
+        now.getTime() - longActiveMs * PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER - 60 * 60 * 1000,
+      ),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("does not suppress long_active_duration for non-pending or non-wake_assignee request_confirmation interactions", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      status: "accepted",
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      status: "pending",
+      continuationPolicy: "none",
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      kind: "ask_user_questions",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("still fires no_comment_streak when a fresh pending wake_assignee request_confirmation exists", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
+  it("still fires high_churn when a fresh pending wake_assignee request_confirmation exists", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
+  });
+
+  it("still applies the resolved-review snooze when a fresh pending wake_assignee request_confirmation exists", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: now })
+      .where(eq(issues.id, review!.id));
+    await insertWakeAssigneeConfirmation({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 30 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+
+    expect(result.snoozed).toBe(1);
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
   });
 });
