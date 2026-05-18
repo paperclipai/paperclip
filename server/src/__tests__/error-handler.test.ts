@@ -32,7 +32,7 @@ describe("errorHandler", () => {
     errorHandler(err, req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+    expect(res.json).toHaveBeenCalledWith({ error: "An unexpected error occurred", requestId: expect.any(String) });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("boom");
   });
@@ -46,7 +46,7 @@ describe("errorHandler", () => {
     errorHandler(err, req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
+    expect(res.json).toHaveBeenCalledWith({ error: "An unexpected error occurred", requestId: expect.any(String) });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
   });

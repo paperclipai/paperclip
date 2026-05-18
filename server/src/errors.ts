@@ -9,6 +9,19 @@ export class HttpError extends Error {
   }
 }
 
+export class AppError extends Error {
+  statusCode: number;
+  userMessage: string;
+  internalMessage: string;
+
+  constructor(opts: { userMessage: string; internalMessage: string; statusCode?: number }) {
+    super(opts.internalMessage);
+    this.userMessage = opts.userMessage;
+    this.internalMessage = opts.internalMessage;
+    this.statusCode = opts.statusCode ?? 500;
+  }
+}
+
 export function badRequest(message: string, details?: unknown) {
   return new HttpError(400, message, details);
 }
