@@ -8,6 +8,7 @@ import {
   appendWithByteCap,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  buildSystemdRunScopeCommand,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -206,6 +207,32 @@ describe("materializePaperclipSkillCopy", () => {
 });
 
 describe("runChildProcess", () => {
+  it("builds Linux systemd scope launch commands with control-group stop policy", () => {
+    expect(buildSystemdRunScopeCommand({
+      unitName: "codex-run-1",
+      command: "codex",
+      args: ["exec", "--json", "-"],
+    })).toEqual({
+      command: "systemd-run",
+      args: [
+        "--user",
+        "--scope",
+        "--unit=codex-run-1",
+        "-p",
+        "KillMode=control-group",
+        "-p",
+        "KillSignal=SIGTERM",
+        "-p",
+        "TimeoutStopSec=5s",
+        "--",
+        "codex",
+        "exec",
+        "--json",
+        "-",
+      ],
+    });
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
