@@ -68,6 +68,11 @@ function createTempConfig(): string {
         keyFilePath: path.join(runtimeRoot, "secrets", "master.key"),
       },
     },
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 
   writeConfig(config, configPath);

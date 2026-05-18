@@ -616,6 +616,11 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     },
     storage,
     secrets,
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 
   const keyResult = ensureLocalSecretsKeyFile(config, configPath);

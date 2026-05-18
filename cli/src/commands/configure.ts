@@ -69,6 +69,11 @@ function defaultConfig(): PaperclipConfig {
     },
     storage: defaultStorageConfig(),
     secrets: defaultSecretsConfig(),
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildCapabilityApplyPlan, CAPABILITY_APPLY_ERROR_CODES } from "./capability-apply.js";
+import { CAPABILITY_APPLY_ERROR_CODES } from "./capability-apply.js";
+import { buildCapabilityApplyPlan } from "./capability-apply-plan.js";
 
 const baseInput = {
   companyId: "company-1",

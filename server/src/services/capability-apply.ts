@@ -10,7 +10,6 @@ import {
 import {
   CAPABILITY_APPLY_ERROR_CODES,
   CAPABILITY_APPLY_RISK_CLASSES,
-  buildCapabilityApplyPlan,
   type CapabilityApplyApprovalPayload,
   type CapabilityApplyPlanBuilderResult,
   type CapabilityApplyPlanInput,
@@ -21,6 +20,9 @@ import {
   type CapabilityApplySecretSummary,
   type CapabilityApplyStep,
 } from "@paperclipai/shared";
+// LET-412: imported from the dedicated module because the shared barrel can't
+// re-export it without breaking the UI's Vite/Rollup bundle (node:crypto).
+import { buildCapabilityApplyPlan } from "@paperclipai/shared/capability-apply-plan";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 import { logger } from "../middleware/logger.js";

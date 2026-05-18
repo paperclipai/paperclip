@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -97,6 +98,9 @@ describeEmbeddedPostgres("issue disposition writer (integration)", () => {
     await db.delete(issueRelations);
     await db.delete(issueComments);
     await db.delete(issues);
+    // activity_log.run_id -> heartbeat_runs.id; clear before deleting runs to
+    // avoid FK violations when the service under test wrote evidence rows.
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);

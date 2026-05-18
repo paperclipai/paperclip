@@ -430,7 +430,6 @@ export {
   CAPABILITY_APPLY_ERROR_CODES,
   capabilityApplyRiskClassSchema,
   capabilityApplyStepTargetRefSchema,
-  buildCapabilityApplyPlan,
   type CapabilityApplyRiskClass,
   type CapabilityApplyPlanState,
   type CapabilityApplyStepState,
@@ -446,6 +445,11 @@ export {
   type CapabilityApplyPlanInput,
   type CapabilityApplyPlanBuilderResult,
 } from "./capability-apply.js";
+
+// LET-412: `buildCapabilityApplyPlan` is intentionally NOT re-exported from
+// this barrel because it imports `node:crypto`, which breaks the Vite/Rollup
+// UI bundle. Server code should import it directly from
+// `@paperclipai/shared/capability-apply-plan`.
 
 export {
   buildOrgPackageInstallPreview,

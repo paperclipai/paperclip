@@ -67,6 +67,11 @@ function createExistingConfigFixture() {
         keyFilePath: path.join(runtimeRoot, "secrets", "master.key"),
       },
     },
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 
   fs.mkdirSync(path.dirname(configPath), { recursive: true });

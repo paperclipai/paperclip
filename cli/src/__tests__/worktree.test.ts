@@ -129,6 +129,11 @@ function buildSourceConfig(): PaperclipConfig {
         keyFilePath: "/tmp/main/secrets/master.key",
       },
     },
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 }
 

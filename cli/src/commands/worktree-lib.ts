@@ -245,6 +245,11 @@ export function buildWorktreeConfig(input: {
         keyFilePath: paths.secretsKeyFilePath,
       },
     },
+    sandbox: source?.sandbox ?? {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 }
 

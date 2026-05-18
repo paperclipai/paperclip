@@ -87,6 +87,14 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
+    sandbox: {
+      providers: {
+        e2b: {
+          enabled: false,
+          apiKeySecret: null,
+        },
+      },
+    },
     ...overrides,
   };
 }
@@ -165,6 +173,24 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+  })),
+  secretService: vi.fn(() => ({
+    resolveSecretValue: vi.fn(async () => null),
+  })),
+  createIssueFinalDeliveryDbStore: vi.fn(() => ({})),
+  createIssueFinalDeliveryTransportFromEnv: vi.fn(() => null),
+  startIssueFinalDeliveryWorker: vi.fn(() => ({ stop: vi.fn() })),
+}));
+
+vi.mock("../services/sandbox-provider-runtime.js", () => ({
+  registerE2BSandboxProvider: vi.fn(),
+}));
+
+vi.mock("../services/sandbox/billing-cap/index.js", () => ({
+  DrizzleBillingCapStore: vi.fn(() => ({})),
+  createE2BBillingCapLayerResolver: vi.fn(() => async () => ({
+    providerEnableLayerEnabled: true,
+    operatorToggleEnabled: true,
   })),
 }));
 

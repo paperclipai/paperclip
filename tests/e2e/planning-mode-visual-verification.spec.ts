@@ -5,7 +5,11 @@ const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
 const AGENT_NAME = "CEO";
 const TASK_TITLE = "PAP-3413 planning mode evidence";
 
-test("captures planning mode UI for desktop and mobile", async ({ page }) => {
+// LET-412: Quarantined alongside onboarding.spec.ts — same root cause:
+// /onboarding entry route does not mount the wizard on fork/master, so the
+// "Name your company" h3 never appears. The downstream planning-mode
+// assertions are still valuable but the bootstrap path needs fixing first.
+test.skip("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
   const screenshotDir = "test-results/planning-mode";

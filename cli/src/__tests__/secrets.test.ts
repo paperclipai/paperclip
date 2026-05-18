@@ -121,6 +121,11 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
         keyFilePath: "/tmp/paperclip/secrets/master.key",
       },
     },
+    sandbox: {
+      providers: {
+        e2b: { enabled: false, apiKeySecret: null },
+      },
+    },
   };
 }
 
