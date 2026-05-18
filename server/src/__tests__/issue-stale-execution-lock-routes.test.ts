@@ -12,6 +12,7 @@ import {
   issueComments,
   issueRelations,
   issues,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -280,6 +282,107 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         prevCheckoutRunId: currentRunId,
         prevExecutionRunId: failedRunId,
         clearAssignee: true,
+      },
+    });
+  });
+
+  it("allows an agent with tasks:assign to force-release a stale run via ?force=true", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    // Daemon agent (not the assignee) with tasks:assign permission
+    const daemonAgentId = randomUUID();
+    const daemonRunId = randomUUID();
+    await db.insert(agents).values({
+      id: daemonAgentId,
+      companyId,
+      name: "ExpireDaemon",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: daemonRunId,
+      companyId,
+      agentId: daemonAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "agent",
+      principalId: daemonAgentId,
+      permissionKey: "tasks:assign",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale force release",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    // Non-assignee agent without tasks:assign is rejected
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .post(`/api/issues/${issueId}/release?force=true`)
+      .expect(403);
+
+    // Daemon agent with tasks:assign succeeds and does a full release
+    const res = await request(createApp(agentActor(companyId, daemonAgentId, daemonRunId)))
+      .post(`/api/issues/${issueId}/release?force=true`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const audit = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.force_released"))
+      .then((rows) => rows[0]);
+    expect(audit).toMatchObject({
+      action: "issue.force_released",
+      details: {
+        issueId,
+        prevCheckoutRunId: currentRunId,
+        prevExecutionRunId: failedRunId,
       },
     });
   });
