@@ -134,7 +134,24 @@ function packageRootDir(): string {
   return path.resolve(__moduleDir, "../..");
 }
 
-function resolveBuiltInAgentCommand(agent: string): string | null {
+// Walk up from startDir looking for `node_modules/.bin/<binName>`. Matches how
+// npm/pnpm hoist binaries: in monorepo dev the binary lives in the adapter's
+// own `node_modules/.bin`, while in npm-installed consumers it's hoisted up to
+// the consumer's `node_modules/.bin`.
+export async function findAncestorBin(startDir: string, binName: string): Promise<string | null> {
+  let current = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(current, "node_modules", ".bin", binName);
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function resolveBuiltInAgentCommand(agent: string): Promise<string | null> {
   const binName =
     agent === "claude"
       ? "claude-agent-acp"
@@ -142,7 +159,10 @@ function resolveBuiltInAgentCommand(agent: string): string | null {
         ? "codex-acp"
         : null;
   if (!binName) return null;
-  return path.join(packageRootDir(), "node_modules", ".bin", binName);
+  // Prefer a resolved absolute path so the wrapper's `exec` line points at a
+  // known location. Falls back to the bare name so operators who install the
+  // runtime globally (or via a custom PATH) still get a working command.
+  return (await findAncestorBin(packageRootDir(), binName)) ?? binName;
 }
 
 function normalizeAgent(config: Record<string, unknown>): string {
@@ -754,7 +774,7 @@ async function buildRuntime(input: {
   }
 
   const configuredCommand = asString(config.agentCommand, "").trim();
-  const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
+  const builtInCommand = await resolveBuiltInAgentCommand(acpxAgent);
   const agentCommand = configuredCommand || builtInCommand || null;
   const agentCommandShell = configuredCommand || (builtInCommand ? shellQuote(builtInCommand) : "");
   const wrapper = agentCommand
