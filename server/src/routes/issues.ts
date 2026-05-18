@@ -41,6 +41,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -1709,13 +1710,35 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
+    const assigneeAgentFilterRaw =
+      typeof req.query.assigneeAgentId === "string" ? req.query.assigneeAgentId.trim() : undefined;
+    const participantAgentFilterRaw =
+      typeof req.query.participantAgentId === "string" ? req.query.participantAgentId.trim() : undefined;
+    const assigneeAgentIdFilter =
+      assigneeAgentFilterRaw === undefined
+        ? undefined
+        : assigneeAgentFilterRaw === "null"
+          ? null
+          : assigneeAgentFilterRaw;
+    if (
+      assigneeAgentIdFilter !== undefined
+      && assigneeAgentIdFilter !== null
+      && !isUuidLike(assigneeAgentIdFilter)
+    ) {
+      res.status(400).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+      return;
+    }
+    if (participantAgentFilterRaw !== undefined && !isUuidLike(participantAgentFilterRaw)) {
+      res.status(400).json({ error: "participantAgentId must be a UUID" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId: assigneeAgentIdFilter,
+      participantAgentId: participantAgentFilterRaw,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
