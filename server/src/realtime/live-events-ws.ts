@@ -181,6 +181,17 @@ export function setupLiveEventsWebSocketServer(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Optional extra WS route checked BEFORE the live-events path. The
+     * `upgrade` event fans out to every listener and this handler
+     * `socket.destroy()`s any path it doesn't own, so a second
+     * independent listener would race it. Routing other WS paths through
+     * this single dispatcher is the only safe way to add them.
+     */
+    extraUpgrade?: {
+      matches(pathname: string): boolean;
+      handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+    };
   },
 ) {
   const wss = new WebSocketServer({ noServer: true });
@@ -240,6 +251,14 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const url = new URL(req.url, "http://localhost");
+
+    // Dispatch non-live-events WS paths first (single upgrade listener —
+    // see the `extraUpgrade` doc above). This owns the socket fully.
+    if (opts.extraUpgrade && opts.extraUpgrade.matches(url.pathname)) {
+      opts.extraUpgrade.handleUpgrade(req, socket, head);
+      return;
+    }
+
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {
       socket.destroy();

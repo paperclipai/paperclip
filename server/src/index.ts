@@ -28,6 +28,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createTerminalUpgradeHandler } from "./realtime/terminal-ws.js";
 import {
   feedbackService,
   heartbeatService,
@@ -657,6 +658,10 @@ export async function startServer(): Promise<StartedServer> {
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    extraUpgrade: createTerminalUpgradeHandler(db as any, {
+      deploymentMode: config.deploymentMode,
+      resolveSessionFromHeaders,
+    }),
   });
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)

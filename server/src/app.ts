@@ -106,6 +106,42 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+/**
+ * Self-contained xterm terminal page (CDN-loaded, no UI-bundle rebuild).
+ * Streams a real PTY over the same-origin /api/terminal/ws. jade iframes
+ * this from the workspace screen so the owner can run `claude login`
+ * etc. without SSH. Inner script avoids backticks/${} on purpose — it
+ * lives inside this TS template literal.
+ */
+const TERMINAL_HTML = [
+  "<!doctype html><html><head><meta charset=utf-8>",
+  "<meta name=viewport content='width=device-width,initial-scale=1'>",
+  "<title>Terminal</title>",
+  "<link rel=stylesheet href='https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css'>",
+  "<style>html,body{margin:0;height:100%;background:#0b0b0d}",
+  "#s{font:12px ui-monospace,Menlo,monospace;color:#8a8f98;padding:6px 10px}",
+  "#t{position:absolute;top:28px;left:0;right:0;bottom:0;padding:6px 10px}</style>",
+  "</head><body>",
+  "<div id=s>connecting…</div><div id=t></div>",
+  "<script src='https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js'></script>",
+  "<script src='https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js'></script>",
+  "<script>",
+  "var st=document.getElementById('s');",
+  "var term=new window.Terminal({cursorBlink:true,fontFamily:'ui-monospace,Menlo,monospace',fontSize:13,theme:{background:'#0b0b0d'}});",
+  "var fit=new window.FitAddon.FitAddon();term.loadAddon(fit);",
+  "term.open(document.getElementById('t'));try{fit.fit()}catch(e){}",
+  "var proto=location.protocol==='https:'?'wss://':'ws://';",
+  "var ws=new WebSocket(proto+location.host+'/api/terminal/ws');",
+  "ws.binaryType='arraybuffer';",
+  "ws.onopen=function(){st.textContent='connected — run: claude login   (or codex login)';term.focus()};",
+  "ws.onclose=function(){st.textContent='session ended — reload to reconnect'};",
+  "ws.onerror=function(){st.textContent='connection error (are you signed in to this workspace?)'};",
+  "ws.onmessage=function(ev){if(typeof ev.data==='string'){term.write(ev.data)}else{term.write(new Uint8Array(ev.data))}};",
+  "term.onData(function(d){if(ws.readyState===1)ws.send(d)});",
+  "window.addEventListener('resize',function(){try{fit.fit()}catch(e){}});",
+  "</script></body></html>",
+].join("");
+
 export async function createApp(
   db: Db,
   opts: {
@@ -308,6 +344,19 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+
+  // Embedded terminal: jade.computer iframes this from the workspace
+  // screen. The page is harmless static HTML — the security boundary is
+  // the WS at /api/terminal/ws, which is gated to the workspace's
+  // instance admin (the auto-SSO'd owner). Self-contained (xterm via
+  // CDN) so it needs no UI-bundle rebuild.
+  app.get("/terminal", (_req, res) => {
+    res
+      .status(200)
+      .set("Content-Type", "text/html")
+      .set("Cache-Control", "no-cache")
+      .end(TERMINAL_HTML);
+  });
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
