@@ -47,6 +47,24 @@ Every PR must include a **Model Used** section specifying which AI model produce
 
 All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
 
+For the local PR baseline, run:
+
+```sh
+pnpm verify
+```
+
+This runs lint, typecheck, and the default Vitest test suite.
+
+### Branch Protection Baseline
+
+Repository maintainers should protect `master` with:
+
+- pull requests required before merge
+- required status checks for the PR lint/typecheck/test baseline
+- required CODEOWNERS review for paths covered by [`.github/CODEOWNERS`](.github/CODEOWNERS)
+- stale approval dismissal when new commits are pushed
+- administrator enforcement unless a temporary release exception is explicitly approved
+
 ### Greptile Review
 
 We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
