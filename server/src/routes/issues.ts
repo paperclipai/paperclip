@@ -616,12 +616,11 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
-  actorId: string;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Only human comments can implicitly move an assigned blocked issue to todo.
+  // Terminal issues require explicit resume/reopen intent.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -3304,7 +3303,6 @@ export function issueRoutes(
           issueStatus: existing.status,
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
-          actorId: actor.actorId,
         }));
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
@@ -4892,7 +4890,6 @@ export function issueRoutes(
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
-        actorId: actor.actorId,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
