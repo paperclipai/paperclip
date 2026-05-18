@@ -3920,6 +3920,19 @@ export function issueRoutes(
 
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    // MAT-623: a mutation that leaves the issue parked must not enqueue an
+    // assignee wakeup that spawns a heartbeat run and re-checks-out the issue
+    // back into in_progress (the MAT-614 revert + 409 chain). This applies to
+    // in_review and to *bare* blocked (no unresolved first-class blockers) —
+    // svc.checkout() will flip both to in_progress. Dependency-blocked issues
+    // are already protected (checkout bounces on unresolved blockers), so they
+    // keep their normal triage wake. Explicit resume/reopen is exempt (it lands
+    // the issue in todo). Structured execution-stage review handoffs are
+    // unaffected — they wake via executionStageWakeup before this guard applies.
+    // suppressParkedRunSpawn is resolved inside the wakeup IIFE below so the
+    // readiness lookup never delays the response.
+    const parkedAfterUpdate = issue.status === "blocked" || issue.status === "in_review";
+    const isExplicitResume = resumeRequested === true || reopenRequested === true;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
@@ -3951,9 +3964,24 @@ export function issueRoutes(
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
       };
 
+      // MAT-623 parked-hold guard (see the parkedAfterUpdate comment above).
+      // in_review and bare blocked are suppressed; dependency-blocked issues
+      // keep their triage wake because svc.checkout() bounces them anyway.
+      let suppressParkedRunSpawn = false;
+      if (parkedAfterUpdate && !isExplicitResume) {
+        suppressParkedRunSpawn =
+          issue.status === "in_review" ||
+          (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount === 0;
+      }
+
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (
+        assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        !suppressParkedRunSpawn
+      ) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -3986,7 +4014,8 @@ export function issueRoutes(
       if (
         !assigneeChanged &&
         (statusChangedFromBacklog || statusChangedFromBlockedToTodo || statusChangedFromClosedToTodo) &&
-        issue.assigneeAgentId
+        issue.assigneeAgentId &&
+        !suppressParkedRunSpawn
       ) {
         addWakeup(issue.assigneeAgentId, {
           source: "automation",
@@ -4015,7 +4044,12 @@ export function issueRoutes(
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        if (
+          assigneeId &&
+          !assigneeChanged &&
+          (reopened || !skipAssigneeCommentWake) &&
+          !suppressParkedRunSpawn
+        ) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -5042,7 +5076,24 @@ export function issueRoutes(
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (assigneeId && (reopened || !skipWake)) {
+      // MAT-623: a comment that leaves the issue parked must not wake the
+      // assignee into a heartbeat run that re-checks-out and reverts the issue
+      // to in_progress. This applies to in_review and to *bare* blocked (no
+      // unresolved first-class blockers) — svc.checkout() flips both to
+      // in_progress. Dependency-blocked issues are checkout-protected, so they
+      // keep their normal triage wake. reopen/resume already moved the issue to
+      // todo above. @-mentions below remain the explicit escape hatch for
+      // pulling someone into a parked issue.
+      let suppressParkedRunSpawn = false;
+      if (!reopened && resumeRequested !== true) {
+        if (currentIssue.status === "in_review") {
+          suppressParkedRunSpawn = true;
+        } else if (currentIssue.status === "blocked") {
+          suppressParkedRunSpawn =
+            (await svc.getDependencyReadiness(currentIssue.id)).unresolvedBlockerCount === 0;
+        }
+      }
+      if (assigneeId && (reopened || !skipWake) && !suppressParkedRunSpawn) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",

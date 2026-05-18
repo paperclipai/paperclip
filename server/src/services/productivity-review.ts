@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -471,12 +472,39 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
     const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
+    // Active episode also runs for `blocked` issues so a bare `blocked` status
+    // (no first-class blocker, no pending request_confirmation) cannot escape the
+    // long_active_duration detector entirely.
+    const elapsedMs = (sourceIssue.status === "in_progress" || sourceIssue.status === "blocked") && activeStartedAt
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
+    // long_active_duration is exempt while the issue has a legitimate reason to
+    // wait: one or more unresolved first-class blockers, or a pending
+    // request_confirmation interaction on the thread. Scoped to
+    // long_active_duration ONLY — noComment and highChurn still evaluate
+    // (CEO guardrail). It is NOT keyed on status === 'blocked'.
+    const [dependencyReadiness, hasPendingConfirmation] = await Promise.all([
+      issuesSvc.getDependencyReadiness(sourceIssue.id),
+      db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, sourceIssue.companyId),
+            eq(issueThreadInteractions.issueId, sourceIssue.id),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0),
+    ]);
+    const longActiveExempt = dependencyReadiness.unresolvedBlockerCount > 0 || hasPendingConfirmation;
+
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive =
+      !longActiveExempt && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
@@ -773,7 +801,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           isNull(issues.hiddenAt),
           isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress"]),
+          // `blocked` included so a `blocked` issue still runs through the
+          // detector — exemption is decided per-issue in collectEvidence, not by
+          // status. A bare `blocked` with no blocker/interaction is not exempt.
+          inArray(issues.status, ["todo", "in_progress", "blocked"]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
         ),

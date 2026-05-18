@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
@@ -296,6 +297,149 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+});
+
+describe("parked-status hold (MAT-623)", () => {
+  const PRIOR_AGENT_ID = "22222222-2222-4222-8222-222222222222";
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      unresolvedBlockerCount: 0,
+      unresolvedBlockerIssueIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+  });
+
+  it("does not spawn an assignee run when a mutation parks the issue as blocked", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: PRIOR_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "blocked", assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn an assignee run when a mutation parks the issue as in_review", async () => {
+    const existing = makeIssue({
+      status: "in_progress",
+      assigneeAgentId: PRIOR_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = makeIssue({
+      status: "in_review",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_review", assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn a run when an assigned issue moves backlog -> blocked", async () => {
+    const existing = makeIssue({
+      status: "backlog",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "blocked" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("posts the comment but spawns no assignee run when status=blocked is set with a comment", async () => {
+    const existing = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-park",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "parking this pending Mattia",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "blocked", comment: "parking this pending Mattia" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(res.body.comment).toEqual(expect.objectContaining({ id: "comment-park" }));
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("still wakes the assignee when a reassignment lands the issue in a non-parked status", async () => {
+    const existing = makeIssue({
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    const updated = makeIssue({
+      status: "todo",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ reason: "issue_assigned" }),
     );
   });
 });

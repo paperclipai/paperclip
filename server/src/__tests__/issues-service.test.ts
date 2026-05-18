@@ -3159,3 +3159,176 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.update status side effects (MAT-623)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-status-side-effects-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  async function seedIssue(
+    overrides: Partial<typeof issues.$inferInsert> & { withRun?: boolean } = {},
+  ) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const { withRun, ...issueOverrides } = overrides;
+    const runId = withRun ? randomUUID() : null;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    if (runId) {
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+      });
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Status side effects",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      ...issueOverrides,
+    });
+
+    return { companyId, agentId, issueId, runId };
+  }
+
+  function readIssue(issueId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+  }
+
+  it("resets startedAt when a blocked issue resumes into in_progress", async () => {
+    const stale = new Date(Date.now() - 18 * ONE_HOUR_MS);
+    const { issueId } = await seedIssue({ status: "blocked", startedAt: stale });
+
+    await svc.update(issueId, { status: "in_progress" });
+
+    const row = await readIssue(issueId);
+    expect(row?.status).toBe("in_progress");
+    expect(row?.startedAt).toBeInstanceOf(Date);
+    // startedAt was reset to ~now, not left at the stale pre-park value.
+    expect(row!.startedAt!.getTime()).toBeGreaterThan(stale.getTime());
+    expect(Date.now() - row!.startedAt!.getTime()).toBeLessThan(ONE_HOUR_MS);
+  });
+
+  it("resets startedAt when an in_review issue resumes into in_progress", async () => {
+    const stale = new Date(Date.now() - 18 * ONE_HOUR_MS);
+    const { issueId } = await seedIssue({ status: "in_review", startedAt: stale });
+
+    await svc.update(issueId, { status: "in_progress" });
+
+    const row = await readIssue(issueId);
+    expect(row?.status).toBe("in_progress");
+    expect(row!.startedAt!.getTime()).toBeGreaterThan(stale.getTime());
+    expect(Date.now() - row!.startedAt!.getTime()).toBeLessThan(ONE_HOUR_MS);
+  });
+
+  it("does not reset startedAt on a no-op in_progress -> in_progress patch", async () => {
+    const stable = new Date(Date.now() - 18 * ONE_HOUR_MS);
+    const { issueId } = await seedIssue({ status: "in_progress", startedAt: stable });
+
+    await svc.update(issueId, { status: "in_progress", priority: "high" });
+
+    const row = await readIssue(issueId);
+    expect(row?.status).toBe("in_progress");
+    expect(row?.priority).toBe("high");
+    // No new active episode — the clock must keep running, not restart.
+    expect(Date.now() - row!.startedAt!.getTime()).toBeGreaterThan(ONE_HOUR_MS);
+  });
+
+  it("holds blocked status and clears checkout/execution locks when an issue is parked", async () => {
+    const { issueId, runId } = await seedIssue({ status: "in_progress", withRun: true });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: runId,
+        executionRunId: runId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    await svc.update(issueId, { status: "blocked" });
+
+    const row = await readIssue(issueId);
+    expect(row?.status).toBe("blocked");
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+    expect(row?.executionAgentNameKey).toBeNull();
+    expect(row?.executionLockedAt).toBeNull();
+  });
+
+  it("holds in_review status and clears the execution lock the same way", async () => {
+    const { issueId, runId } = await seedIssue({ status: "in_progress", withRun: true });
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: runId,
+        executionRunId: runId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    await svc.update(issueId, { status: "in_review" });
+
+    const row = await readIssue(issueId);
+    expect(row?.status).toBe("in_review");
+    expect(row?.checkoutRunId).toBeNull();
+    expect(row?.executionRunId).toBeNull();
+    expect(row?.executionLockedAt).toBeNull();
+  });
+});
