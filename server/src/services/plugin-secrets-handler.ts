@@ -211,21 +211,12 @@ export function createPluginSecretsHandler(
   const registry = pluginRegistryService(options.db);
   const secrets = secretService(options.db);
 
-  // Rate limit: max 30 resolution attempts per plugin per minute
+  // Rate limit: max 30 resolution attempts per plugin+company per minute.
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
       const { secretRef } = params;
-
-      // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
-      // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
-        const err = new Error("Rate limit exceeded for secret resolution");
-        err.name = "RateLimitExceededError";
-        throw err;
-      }
 
       // ---------------------------------------------------------------
       // 1. Validate the ref format
@@ -241,6 +232,13 @@ export function createPluginSecretsHandler(
       }
 
       const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
+      const rateLimitKey = `${pluginId}:${companyId || "__no_company__"}`;
+      if (!rateLimiter.check(rateLimitKey)) {
+        const err = new Error("Rate limit exceeded for secret resolution");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
       if (!companyId) {
         throw new Error(PLUGIN_SECRET_REFS_REQUIRE_COMPANY_MESSAGE);
       }
@@ -255,7 +253,9 @@ export function createPluginSecretsHandler(
         throw new Error("Secret is not referenced by this company's plugin config");
       }
       if (paths.length > 1) {
-        throw new Error("Secret reference is ambiguous in this company's plugin config");
+        throw new Error(
+          `Secret reference is ambiguous in this company's plugin config at: ${paths.join(", ")}`,
+        );
       }
 
       return secrets.resolveSecretValue(companyId, trimmedRef, "latest", {
