@@ -8,9 +8,10 @@ These templates are deliberately separate from the main Paperclip heartbeat skil
 
 ```
 role match?
-├── exact template exists       → copy it, replace placeholders, submit
+├── exact template exists       → copy it, adapt company/role placeholders, submit
 ├── adjacent template is close  → copy closest, adapt deliberately (charter, lenses, sections)
-└── no template is close        → use references/baseline-role-guide.md to build from scratch
+└── no template is close        → start from agents/template-base.md (unified ten-section skeleton)
+                                  or use references/baseline-role-guide.md for narrow-scope roles
 ```
 
 In the hire comment, state which path you took so the board can audit the reasoning.
@@ -23,8 +24,27 @@ In the hire comment, state which path you took so the board can audit the reason
 | [`QA`](agents/qa.md) | QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings | `claude_local` or another browser-capable adapter | Low (operational) |
 | [`UX Designer`](agents/uxdesigner.md) | Product designers who produce UX specs, review interface quality, and evolve the design system | `codex_local`, `claude_local`, or another adapter with repo/design context | High (lens-heavy) |
 | [`SecurityEngineer`](agents/securityengineer.md) | Security engineers who threat-model, review auth/crypto/input handling, triage supply-chain and LLM-agent risk, and drive remediations | `claude_local`, `codex_local`, or another adapter with repo context | High (lens-heavy) |
+| [`Template base`](agents/template-base.md) | New role types not yet named (ReleaseEngineer, DataEngineer, SecurityEngineer variants, anything else). Unified ten-section skeleton with three conditional sections that are earned, not stamped | any | Earned per role |
 
-If you are hiring a role that is not in this index, do not force a fit. Use the adjacent-template path when one is genuinely close, or the generic fallback when none is.
+If you are hiring a role that is not in this index, do not force a fit. Use the adjacent-template path when one is genuinely close, or start from `agents/template-base.md` when no existing template fits and the role needs the unified structure.
+
+## Unified template — the canonical structure
+
+All hardened agent templates (`coder.md`, `qa.md`, and future role types) share a single ten-section structure documented in [`agents/template-base.md`](agents/template-base.md):
+
+1. `STOP — load the matching skill BEFORE you act on these moments` **[CONDITIONAL]**
+2. `Role` **[REQUIRED]**
+3. `Done means …` **[CONDITIONAL]**
+4. `Trigger and lifecycle` **[REQUIRED]**
+5. `Scope — you may / you may not` **[REQUIRED]**
+6. `Trigger map — which skill owns which activity` **[CONDITIONAL]**
+7. `Always-on minimums` **[REQUIRED]**
+8. `Collaboration and hand-offs` **[REQUIRED]**
+9. `References` **[REQUIRED]**
+
+(`STOP`, `Done means …`, and `Trigger map` are conditional — present only when the role has earned them via incident-driven need. `coder.md` and `qa.md` are the canonical filled-stamp references with all three earned through documented incidents.)
+
+**For new hires:** if the role matches Coder or QA, copy the matching file verbatim and adapt company-specific values (agent name, company name, manager title, skill paths). If the role is a new type, copy `template-base.md` and fill in the seven required sections; add the three conditionals only when the role earns them.
 
 ### When to use each template
 

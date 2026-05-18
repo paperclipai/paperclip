@@ -50,16 +50,22 @@ Note naming, icon, reporting-line, and adapter conventions the company already f
 
 ### 4. Choose the instruction source (required)
 
-This is the single most important decision for hire quality. Pick exactly one path:
+This is the single most important decision for hire quality. All hardened templates share the **unified ten-section structure** documented in `references/agents/template-base.md` — `STOP` / `Role` / `Done means …` / `Trigger and lifecycle` / `Scope — you may / you may not` / `Trigger map` / `Always-on minimums` / `Collaboration and hand-offs` / `References`, with three sections (`STOP`, `Done means …`, `Trigger map`) marked `[CONDITIONAL]` — present only when the role has earned them through incident-driven need.
 
-- **Exact template** — the role matches an entry in the template index. Use the matching file under `references/agents/` as the starting point.
-- **Adjacent template** — no exact match, but an existing template is close (for example, a "Backend Engineer" hire adapted from `coder.md`, or a "Content Designer" adapted from `uxdesigner.md`). Copy the closest template and adapt deliberately: rename the role, rewrite the role charter, swap domain lenses, and remove sections that do not fit.
-- **Generic fallback** — no template is close. Use the baseline role guide to construct a new `AGENTS.md` from scratch, filling in each recommended section for the specific role.
+Pick exactly one path:
 
-Template index and when-to-use guidance:
+- **Exact template** — the role matches Coder or QA. Use the matching file under `references/agents/` (`coder.md` or `qa.md`) verbatim and adapt company-specific values (agent name, company name, manager title, skill paths). These two files are the canonical filled-stamps with all ten sections rendered.
+- **Adjacent template** — no exact match, but an existing template is close (for example, a "Backend Engineer" hire adapted from `coder.md`, or a "Content Designer" adapted from `uxdesigner.md`). Copy the closest template and adapt deliberately: rename the role, rewrite the role charter, swap domain lenses, and remove sections that do not fit. Preserve the ten-section structure where it applies.
+- **Unified base** — no template is close, but the role is trigger-heavy and needs the full ten-section structure (e.g. ReleaseEngineer, DataEngineer, a new SecurityEngineer variant). Start from `references/agents/template-base.md`, fill in the seven `[REQUIRED]` sections, and add the three `[CONDITIONAL]` sections only when the role has earned them.
+- **Generic fallback** — narrow-scope role with no trigger-driven workflow. Use the baseline role guide to construct a short `AGENTS.md` from the seven required sections, omitting all three conditionals.
+
+Template index, decision tree, and when-to-use guidance:
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 
-Generic fallback for no-template hires:
+Unified ten-section skeleton (canonical starting point for new role types):
+`skills/paperclip-create-agent/references/agents/template-base.md`
+
+Generic fallback for narrow-scope no-template hires:
 `skills/paperclip-create-agent/references/baseline-role-guide.md`
 
 State which path you took in your hire-request comment so the board can see the reasoning.
@@ -156,8 +162,9 @@ For each linked issue, either:
 
 ## References
 
-- Template index and how to apply a template: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
-- Individual role templates: `skills/paperclip-create-agent/references/agents/`
-- Generic baseline role guide (no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`
+- Template index, decision tree, and how to apply a template: `skills/paperclip-create-agent/references/agent-instruction-templates.md`
+- Unified ten-section skeleton (canonical starting point for new role types): `skills/paperclip-create-agent/references/agents/template-base.md`
+- Individual role templates (Coder, QA, UX Designer, SecurityEngineer): `skills/paperclip-create-agent/references/agents/`
+- Generic baseline role guide (narrow-scope no-template fallback): `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
