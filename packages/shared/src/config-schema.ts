@@ -45,6 +45,47 @@ export const loggingConfigSchema = z.object({
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
 });
 
+// LET-436: detect `logDir` paths that point at a vitest scratch dir
+// (`/tmp/paperclip-vitest-*`). When this leaks into a production
+// deployment, logs disappear between runs and the heartbeat reaper
+// surfaces confusing "process_lost -- server may have restarted"
+// terminals because the underlying log/state lives in a tempdir that
+// vitest already cleaned up. Refuse the config in production mode so
+// the misconfiguration is visible at startup.
+const VITEST_TEMPDIR_LOGDIR_PATTERN = /(^|\/)tmp\/paperclip-vitest-[^/]+/;
+
+export interface InsecureLogDirOptions {
+  mode?: "production" | "test";
+}
+
+export interface InsecureLogDirResult {
+  ok: boolean;
+  reason?: string;
+  severity?: "error" | "warn";
+}
+
+export function detectInsecureLogDir(
+  logDir: string,
+  options?: InsecureLogDirOptions,
+): InsecureLogDirResult {
+  const mode = options?.mode ?? "production";
+  if (typeof logDir !== "string" || logDir.length === 0) {
+    return { ok: true };
+  }
+  const matchesVitestTempdir = VITEST_TEMPDIR_LOGDIR_PATTERN.test(logDir);
+  if (matchesVitestTempdir && mode === "production") {
+    return {
+      ok: false,
+      severity: "error",
+      reason:
+        "Refusing to use a vitest scratch directory as a production log dir: `" +
+        logDir +
+        "`. Set logging.logDir to a stable path (e.g. ~/.paperclip/instances/<name>/logs).",
+    };
+  }
+  return { ok: true };
+}
+
 export const serverConfigSchema = z.object({
   deploymentMode: z.enum(DEPLOYMENT_MODES).default("local_trusted"),
   exposure: z.enum(DEPLOYMENT_EXPOSURES).default("private"),

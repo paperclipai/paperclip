@@ -72,7 +72,11 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import {
+  PROCESS_LOST_ERROR_CODE,
   buildHeartbeatRunStopMetadata,
+  buildProcessLossMessage as buildProcessLossMessageImpl,
+  classifyProcessLossErrorCode,
+  isProcessLostFamilyErrorCode,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
@@ -2260,21 +2264,11 @@ async function terminateHeartbeatRunProcess(input: {
   );
 }
 
-function buildProcessLossMessage(run: {
-  processPid: number | null;
-  processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
-  if (options?.descendantOnly && run.processGroupId) {
-    return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
-  }
-  if (run.processPid) {
-    return `Process lost -- child pid ${run.processPid} is no longer running`;
-  }
-  if (run.processGroupId) {
-    return `Process lost -- process group ${run.processGroupId} is no longer running`;
-  }
-  return "Process lost -- server may have restarted";
-}
+// LET-436: keep the in-file name as a thin wrapper so call sites stay
+// short. The actual classifier lives in heartbeat-stop-metadata.ts so
+// pure helpers can be unit-tested without spinning up the heartbeat
+// service.
+const buildProcessLossMessage = buildProcessLossMessageImpl;
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
@@ -6571,17 +6565,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      // LET-436: tracked-local adapters that bypass the server-utils
+      // `onSpawn` callback (e.g. hermes-paperclip-adapter@0.2.0) leave us
+      // with no pid/group. Mark those terminally as
+      // `adapter_process_lost_no_pid` so the failure mode is visibly
+      // distinct from a real process death and from a server restart.
+      const processLossErrorCode = tracksLocalChild
+        ? classifyProcessLossErrorCode(run)
+        : PROCESS_LOST_ERROR_CODE;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
+        errorCode: processLossErrorCode,
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
           { adapterType, adapterConfig },
           "failed",
           {
             resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
+            errorCode: processLossErrorCode,
             errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
           },
         ),
@@ -8100,20 +8102,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
-      const failedRun = await setRunStatus(run.id, "failed", {
-        error: message,
-        errorCode: "adapter_failed",
-        finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
-          errorMessage: message,
-        }),
-        stdoutExcerpt,
-        stderrExcerpt,
-        logBytes: logSummary?.bytes,
-        logSha256: logSummary?.sha256,
-        logCompressed: logSummary?.compressed ?? false,
-      });
+      // LET-436: if the reaper (or a prior path) already finalized this
+      // run as a process-loss family failure, preserve that more specific
+      // classification instead of overwriting it with a generic
+      // `adapter_failed`. The race fires when an adapter promise rejects
+      // after the reaper has already marked the run failed.
+      const existingRun = await getRun(run.id).catch(() => null);
+      const preserveProcessLossClassification =
+        existingRun != null &&
+        existingRun.status === "failed" &&
+        isProcessLostFamilyErrorCode(existingRun.errorCode);
+      const failedRun = preserveProcessLossClassification
+        ? existingRun
+        : await setRunStatus(run.id, "failed", {
+            error: message,
+            errorCode: "adapter_failed",
+            finishedAt: new Date(),
+            resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+              errorCode: "adapter_failed",
+              errorMessage: message,
+            }),
+            stdoutExcerpt,
+            stderrExcerpt,
+            logBytes: logSummary?.bytes,
+            logSha256: logSummary?.sha256,
+            logCompressed: logSummary?.compressed ?? false,
+          });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
@@ -8162,17 +8176,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
-          await setRunStatus(runId, "failed", {
-            error: message,
-            errorCode: "adapter_failed",
-            finishedAt: new Date(),
-            ...(setupFailureAgent ? {
-              resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "adapter_failed",
-                errorMessage: message,
-              }),
-            } : {}),
-          }).catch(() => undefined);
+          // LET-436: do not clobber a process-loss family terminal
+          // classification (reaper-finalized runs) with a generic
+          // `adapter_failed` from the outer catch path.
+          const setupExistingRun = await getRun(runId).catch(() => null);
+          const setupPreserveProcessLoss =
+            setupExistingRun != null &&
+            setupExistingRun.status === "failed" &&
+            isProcessLostFamilyErrorCode(setupExistingRun.errorCode);
+          if (!setupPreserveProcessLoss) {
+            await setRunStatus(runId, "failed", {
+              error: message,
+              errorCode: "adapter_failed",
+              finishedAt: new Date(),
+              ...(setupFailureAgent ? {
+                resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
+                  errorCode: "adapter_failed",
+                  errorMessage: message,
+                }),
+              } : {}),
+            }).catch(() => undefined);
+          }
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
             error: message,
