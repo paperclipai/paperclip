@@ -426,7 +426,7 @@ export function IssueRunLedger({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     enabled: hasLiveRuns,
-    refetchInterval: 3000,
+    refetchInterval: 5000,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const { data: activeRun = null } = useQuery({

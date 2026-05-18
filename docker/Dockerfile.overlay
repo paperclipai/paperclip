@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.20
+# Oxford overlay: adds Playwright/Chromium to the upstream paperclip prod image.
+# Bump UPSTREAM_IMAGE and PLAYWRIGHT_VERSION in lockstep with upstream releases.
+ARG UPSTREAM_IMAGE=ghcr.io/misterbusiness1/paperclip:latest
+FROM ${UPSTREAM_IMAGE}
+
+ARG PLAYWRIGHT_VERSION=1.58.2
+
+USER root
+ENV PLAYWRIGHT_BROWSERS_PATH=/paperclip/.cache/ms-playwright
+
+# Install Playwright Chromium system dependencies (libglib-2.0, libnss3, etc.)
+# Required because upstream base image does not yet bundle these (pending upstream PR #5797).
+RUN apt-get update \
+    && npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+    && chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"
+
+USER node
+WORKDIR /app
+
+RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install chromium
+
+# Build-time sanity check — fails the build if chrome-headless-shell is absent
+RUN test -x "$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -type f | head -n1)" \
+    || (echo "ERROR: chromium headless shell not provisioned" && exit 1)
