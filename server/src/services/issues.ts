@@ -3765,6 +3765,24 @@ export function issueService(db: Db) {
       return getIssueByIdentifier(identifier);
     },
 
+    findByOriginFingerprint: async (companyId: string, parentId: string, originFingerprint: string) => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.parentId, parentId),
+            eq(issues.originFingerprint, originFingerprint),
+            ne(issues.status, "cancelled"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [enriched] = await withIssueLabels(db, [row]);
+      return enriched;
+    },
+
     getCurrentScheduledRetry: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })

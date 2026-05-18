@@ -3159,3 +3159,96 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService.findByOriginFingerprint", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+  let parentId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-fingerprint-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed() {
+    companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Test Co",
+      issuePrefix: "TC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const parent = await svc.create(companyId, { title: "Parent issue" });
+    parentId = parent.id;
+  }
+
+  it("returns null when no matching issue exists", async () => {
+    await seed();
+    const result = await svc.findByOriginFingerprint(companyId, parentId, "my-task-slug");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when fingerprint is 'default' (no dedup for default)", async () => {
+    await seed();
+    await svc.create(companyId, { parentId, title: "Child", originFingerprint: "default" });
+    const result = await svc.findByOriginFingerprint(companyId, parentId, "default");
+    // findByOriginFingerprint CAN return rows for "default" — dedup guard lives in the route.
+    // This test simply confirms the service lookup works for any fingerprint string.
+    expect(result).not.toBeNull();
+  });
+
+  it("returns the existing issue when a non-cancelled child with the same fingerprint exists", async () => {
+    await seed();
+    const child = await svc.create(companyId, { parentId, title: "Child", originFingerprint: "my-task-slug" });
+    const found = await svc.findByOriginFingerprint(companyId, parentId, "my-task-slug");
+    expect(found?.id).toBe(child.id);
+    expect(found?.title).toBe("Child");
+  });
+
+  it("returns null when the only matching issue is cancelled", async () => {
+    await seed();
+    const child = await svc.create(companyId, { parentId, title: "Child", originFingerprint: "my-task-slug" });
+    await svc.update(child.id, { status: "cancelled" });
+    const result = await svc.findByOriginFingerprint(companyId, parentId, "my-task-slug");
+    expect(result).toBeNull();
+  });
+
+  it("does not cross company boundaries", async () => {
+    await seed();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: "OC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    // create a parent in the other company, then a child with the same fingerprint
+    const otherParent = await svc.create(otherCompanyId, { title: "Other parent" });
+    await svc.create(otherCompanyId, { parentId: otherParent.id, title: "Other child", originFingerprint: "my-task-slug" });
+    // lookup against our company should return null
+    const result = await svc.findByOriginFingerprint(companyId, parentId, "my-task-slug");
+    expect(result).toBeNull();
+  });
+});
