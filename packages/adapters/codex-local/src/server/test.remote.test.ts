@@ -107,7 +107,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
-        command: "codex",
+        command: process.execPath,
       },
       executionTarget: remoteTarget,
       environmentName: "QA SSH",
@@ -174,7 +174,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
-        command: "codex",
+        command: process.execPath,
         env: {
           OPENAI_API_KEY: "sk-test",
         },
