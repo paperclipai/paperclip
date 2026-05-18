@@ -4393,6 +4393,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      let descendantOnlyCleanup = false;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -4420,10 +4421,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: run.processPid,
           processGroupId: run.processGroupId,
         });
-      }
-
-      let descendantOnlyCleanup = false;
-      else if (processGroupAlive) {
+      } else if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
