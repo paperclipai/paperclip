@@ -617,6 +617,13 @@
       "when": 1779064937995,
       "tag": "0087_red_human_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779070407463,
+      "tag": "0088_fearless_ser_duncan",
+      "breakpoints": true
     }
   ]
 }
