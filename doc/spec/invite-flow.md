@@ -6,7 +6,7 @@ Date: 2026-04-13
 This document maps the current invite creation and acceptance states implemented in:
 
 - `ui/src/pages/CompanyInvites.tsx`
-- `ui/src/pages/CompanySettings.tsx`
+- `ui/src/components/NewAgentDialog.tsx`
 - `ui/src/pages/InviteLanding.tsx`
 - `server/src/routes/access.ts`
 - `server/src/lib/join-request-dedupe.ts`
@@ -23,9 +23,9 @@ This document maps the current invite creation and acceptance states implemented
 
 ```mermaid
 flowchart TD
-  Board[Board user on invite screen]
+  Board[Board user on invite or add-agent screen]
   HumanInvite[Create human company invite]
-  OpenClawInvite[Generate OpenClaw invite prompt]
+  AgentInvite[Generate agent onboarding prompt]
   Active[Invite state: active]
   Revoked[Invite state: revoked]
   Expired[Invite state: expired]
@@ -44,7 +44,7 @@ flowchart TD
   OpenClawReplay[Special replay path:<br/>accepted invite can be POSTed again<br/>for openclaw_gateway only]
 
   Board --> HumanInvite --> Active
-  Board --> OpenClawInvite --> Active
+  Board --> AgentInvite --> Active
   Active --> Revoked: revoke
   Active --> Expired: expiresAt passes
 
@@ -102,10 +102,10 @@ stateDiagram-v2
     LatestInviteVisible --> Ready: navigate away or refresh
   }
 
-  CompanySelection --> OpenClawPromptReady: Company settings prompt generator
-  OpenClawPromptReady --> OpenClawPromptPending: Generate OpenClaw Invite Prompt
-  OpenClawPromptPending --> OpenClawSnippetVisible: prompt generated
-  OpenClawPromptPending --> OpenClawPromptReady: generation failed
+  CompanySelection --> AgentPromptReady: Add-agent modal prompt generator
+  AgentPromptReady --> AgentPromptPending: Generate agent onboarding prompt
+  AgentPromptPending --> AgentSnippetVisible: prompt generated
+  AgentPromptPending --> AgentPromptReady: generation failed
 ```
 
 ## Invite Landing Screen States
@@ -247,21 +247,21 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   actor Board as Board user
-  participant Settings as Company Settings UI
+  participant AddAgent as Add agent modal
   participant API as Access routes
   participant Invites as invites table
-  actor Gateway as OpenClaw gateway agent
+  actor Gateway as External agent
   participant Join as join_requests table
   actor Approver as Company admin
   participant Agents as agents table
   participant Keys as agent_api_keys table
 
-  Board->>Settings: Generate OpenClaw invite prompt
-  Settings->>API: POST /api/companies/:companyId/openclaw-invite-prompt
+  Board->>AddAgent: Generate agent onboarding prompt
+  AddAgent->>API: POST /api/companies/:companyId/invites (allowedJoinTypes=agent)
   API->>Invites: Insert active agent invite
-  API-->>Settings: Prompt text + invite token
+  API-->>AddAgent: Prompt text + invite token
 
-  Gateway->>API: POST /api/invites/:token/accept (agent, openclaw_gateway)
+  Gateway->>API: POST /api/invites/:token/accept (agent, adapter-specific payload)
   API->>Invites: Mark invite accepted
   API->>Join: Insert pending_approval join request + claimSecretHash
   API-->>Gateway: requestId + claimSecret + claimApiKeyPath
