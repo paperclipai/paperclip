@@ -259,7 +259,12 @@ async function ensureRemoteWorkspace(sandbox: Sandbox, remoteCwd: string): Promi
   // filesystem mkdir helper and creating a file via `open()` does not create
   // intermediate directories.
   const proc = await sandbox.exec(["sh", "-lc", `mkdir -p ${shellQuote(remoteCwd)}`]);
-  await proc.wait();
+  const exitCode = await proc.wait();
+  if (exitCode !== 0) {
+    throw new Error(
+      `Failed to create remote workspace directory '${remoteCwd}': mkdir exited with code ${exitCode}`,
+    );
+  }
 }
 
 async function stageStdin(sandbox: Sandbox, stdin: string, remotePath: string): Promise<void> {
@@ -451,23 +456,30 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
     const client = createModalClient(config);
-    const app = await resolveApp(client, config);
-    const tags = buildSandboxTags({
-      companyId: params.companyId,
-      environmentId: params.environmentId,
-      runId: params.runId,
-      reuseLease: config.reuseLease,
-    });
-    const sandbox = await createSandboxFor(client, app, config, tags);
     try {
-      await ensureRemoteWorkspace(sandbox, config.workdir);
-      return {
-        providerLeaseId: sandbox.sandboxId,
-        metadata: leaseMetadata({ config, sandbox, remoteCwd: config.workdir, resumedLease: false }),
-      };
-    } catch (error) {
-      await sandbox.terminate().catch(() => undefined);
-      throw error;
+      const app = await resolveApp(client, config);
+      const tags = buildSandboxTags({
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        runId: params.runId,
+        reuseLease: config.reuseLease,
+      });
+      const sandbox = await createSandboxFor(client, app, config, tags);
+      try {
+        await ensureRemoteWorkspace(sandbox, config.workdir);
+        return {
+          providerLeaseId: sandbox.sandboxId,
+          metadata: leaseMetadata({
+            config,
+            sandbox,
+            remoteCwd: config.workdir,
+            resumedLease: false,
+          }),
+        };
+      } catch (error) {
+        await sandbox.terminate().catch(() => undefined);
+        throw error;
+      }
     } finally {
       // Keep the client open for the lease lifetime is unnecessary; subsequent
       // calls construct their own client. Close the local handle to free
@@ -497,7 +509,7 @@ const plugin = definePlugin({
         // failure rather than silently terminating the user's reusable
         // sandbox. Detach so the sandbox is not killed for a transient setup
         // error.
-        sandbox.detach();
+        void sandbox.detach();
         throw error;
       }
     } finally {
@@ -519,7 +531,7 @@ const plugin = definePlugin({
         // grpc connection but leaves the sandbox running on Modal until its
         // configured sandboxTimeoutMs or idleTimeoutMs expires. The next
         // acquire/resume reconnects via sandboxes.fromId(providerLeaseId).
-        sandbox.detach();
+        void sandbox.detach();
         return;
       }
       await sandbox.terminate();

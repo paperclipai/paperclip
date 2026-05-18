@@ -356,6 +356,45 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.terminate).toHaveBeenCalledTimes(1);
   });
 
+  it("fails acquire when workspace creation exits non-zero", async () => {
+    process.env.MODAL_TOKEN_ID = "host-id";
+    process.env.MODAL_TOKEN_SECRET = "host-secret";
+    const sandbox = createFakeSandbox({
+      execImpl: async (argv: string[]) => {
+        if (argv[2]?.startsWith("mkdir -p")) {
+          return makeFakeProcess({ exitCode: 17 });
+        }
+        return makeFakeProcess({ exitCode: 0 });
+      },
+    });
+    mockAppFromName.mockResolvedValue({ appId: "ap-1" });
+    mockSandboxesCreate.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease?.({
+        ...baseAcquireParams,
+        config: baseConfig,
+      }),
+    ).rejects.toThrow(
+      "Failed to create remote workspace directory '/workspace/paperclip': mkdir exited with code 17",
+    );
+    expect(sandbox.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the Modal client when acquire fails before sandbox creation", async () => {
+    process.env.MODAL_TOKEN_ID = "host-id";
+    process.env.MODAL_TOKEN_SECRET = "host-secret";
+    mockAppFromName.mockRejectedValue(new Error("app lookup failed"));
+
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease?.({
+        ...baseAcquireParams,
+        config: baseConfig,
+      }),
+    ).rejects.toThrow("app lookup failed");
+    expect(mockClientClose).toHaveBeenCalledTimes(1);
+  });
+
   it("treats missing leases as expired on resume", async () => {
     process.env.MODAL_TOKEN_ID = "host-id";
     process.env.MODAL_TOKEN_SECRET = "host-secret";
@@ -394,6 +433,32 @@ describe("Modal sandbox provider plugin", () => {
         reuseLease: true,
       }),
     });
+  });
+
+  it("detaches the sandbox if resumed workspace setup fails", async () => {
+    process.env.MODAL_TOKEN_ID = "host-id";
+    process.env.MODAL_TOKEN_SECRET = "host-secret";
+    const sandbox = createFakeSandbox({
+      id: "sb-resume",
+      execImpl: async (argv: string[]) => {
+        if (argv[2]?.startsWith("mkdir -p")) {
+          return makeFakeProcess({ throwOnWait: new Error("mkdir failed") });
+        }
+        return makeFakeProcess({ exitCode: 0 });
+      },
+    });
+    mockSandboxesFromId.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "modal",
+        companyId: "c-1",
+        environmentId: "e-1",
+        providerLeaseId: "sb-resume",
+        config: { ...baseConfig, reuseLease: true },
+      }),
+    ).rejects.toThrow("mkdir failed");
+    expect(sandbox.detach).toHaveBeenCalledTimes(1);
   });
 
   it("detaches reusable leases and terminates ephemeral leases on release", async () => {
