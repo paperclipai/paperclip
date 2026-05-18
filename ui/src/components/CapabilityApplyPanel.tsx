@@ -142,6 +142,28 @@ function errorCopy(code: string | null, fallback: string): { title: string; deta
         detail:
           "A field looks like a raw secret value rather than a named reference. Replace it with a named secret reference. No live action occurred.",
       };
+    // LET-402 G.4 — real adapter guards. Copy stays deliberately neutral:
+    // a partial_applied plan never implies that production live action
+    // succeeded; it only means the apply ledger recorded intent for some
+    // steps and a guard refused others.
+    case CAPABILITY_APPLY_ERROR_CODES.CATALOG_NOT_ALLOWLISTED:
+      return {
+        title: "MCP catalog entry not verified",
+        detail:
+          "This step references an MCP catalog id that is not on the verified allowlist. Use a verified catalog entry or take it through a separate governance workflow. No live action occurred.",
+      };
+    case CAPABILITY_APPLY_ERROR_CODES.EGRESS_BLOCKED:
+      return {
+        title: "Outbound endpoint blocked",
+        detail:
+          "The step's remote endpoint points at a host-local, private, or reserved network range. The apply was refused before any connection was attempted. No live action occurred.",
+      };
+    case CAPABILITY_APPLY_ERROR_CODES.NAMED_SECRET_NOT_FOUND:
+      return {
+        title: "Required named secret is missing",
+        detail:
+          "A named secret the step needs is not present in this company's vault. Add or rebind the secret by name before re-running. No live action occurred.",
+      };
     default:
       return { title: "Request failed", detail: `${fallback} No live action occurred.` };
   }

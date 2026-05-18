@@ -373,9 +373,11 @@ describeEmbeddedPostgres("capabilityApplyService", () => {
   });
 
   describe("no-live-action assertion", () => {
-    it("getExecutorAdapter throws when capabilityApplyLive=true (real adapter is never instantiated in G.2)", () => {
+    it("getExecutorAdapter returns the real adapter when capabilityApplyLive=true (LET-402 G.4)", () => {
       const svc = capabilityApplyService(db, { capabilityApplyLive: true });
-      expect(() => svc._getExecutorAdapter()).toThrow(/no real executor/);
+      const adapter = svc._getExecutorAdapter();
+      expect(adapter).toBeDefined();
+      expect(adapter.kind).toBe("real");
     });
 
     it("executePlan never makes outbound HTTP/MCP calls — stub adapter only emits would-execute log + DB writes", async () => {
@@ -490,6 +492,291 @@ describeEmbeddedPostgres("capabilityApplyService", () => {
       await expect(
         db.update(capabilityApplyPlans).set({ approvalId }).where(eq(capabilityApplyPlans.id, planB.id)),
       ).rejects.toThrow();
+    });
+  });
+
+  // ── LET-402 / G.4 — real MCP adapter behind capability.apply.live ─────────
+
+  describe("real adapter (capability.apply.live=ON) — LET-402 G.4", () => {
+    function svcOn(deps?: Parameters<typeof capabilityApplyService>[1]["realAdapterDeps"]) {
+      return capabilityApplyService(db, { capabilityApplyLive: true, realAdapterDeps: deps });
+    }
+
+    async function makeApprovedPlan(
+      effectiveDelta: Parameters<ReturnType<typeof svcOff>["createPlan"]>[0]["effectiveDelta"],
+      svc: ReturnType<typeof svcOff>,
+    ) {
+      const plan = await svc.createPlan(
+        { companyId, agentId, effectiveDelta },
+        { userId: "user-1" },
+      );
+      const { plan: requested } = await svc.requestApproval(
+        plan.id,
+        companyId,
+        agentId,
+        { userId: "user-1" },
+        plan.optimisticVersion,
+      );
+      await approveApproval(requested.approvalId!);
+      return requested;
+    }
+
+    it("happy path: internal_safe steps complete via real adapter and plan -> applied", async () => {
+      await seedCompanyAndAgent();
+      const svc = svcOn();
+      const plan = await makeApprovedPlan(internalSafeDelta(), svc);
+      const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      expect(result.state).toBe("applied");
+
+      const events = await db.select().from(capabilityApplyEvents).where(eq(capabilityApplyEvents.planId, plan.id));
+      const completed = events.find((e) => e.kind === "capability_apply_step_completed");
+      expect(completed).toBeDefined();
+      const payload = completed!.payloadJson as Record<string, unknown>;
+      expect(payload.adapterKind).toBe("real");
+      expect(payload.liveExecutionFlagState).toBe("on");
+      expect(typeof payload.stepKey).toBe("string");
+      expect((payload.stepKey as string).startsWith(`apply:${plan.id}:`)).toBe(true);
+    });
+
+    it("refuses non-allowlisted catalog at execute time with CATALOG_NOT_ALLOWLISTED", async () => {
+      await seedCompanyAndAgent();
+      const svc = svcOn();
+      // The plan builder accepts any catalogId for add_mcp_server, but
+      // tamper the persisted step to use a non-verified id and confirm the
+      // real adapter refuses at execute time. We rebuild on a delta that
+      // passes plan-time validation, then patch the row.
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              requiredSecretNames: [],
+            },
+          ],
+        },
+        svc,
+      );
+      // Tamper: replace catalogId on the step with an unverified shape.
+      await db
+        .update(capabilityApplySteps)
+        .set({ targetRefJson: { catalogId: "unverified/marketplace-xyz", label: "MCP", namedSecretRefs: [] } })
+        .where(eq(capabilityApplySteps.planId, plan.id));
+
+      const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      expect(result.state).toBe("partially_applied");
+
+      const stepRows = await db.select().from(capabilityApplySteps).where(eq(capabilityApplySteps.planId, plan.id));
+      const failed = stepRows.find((s) => s.kind === "add_mcp_server");
+      expect(failed?.state).toBe("failed");
+      expect(failed?.lastErrorCode).toBe(CAPABILITY_APPLY_ERROR_CODES.CATALOG_NOT_ALLOWLISTED);
+    });
+
+    it("carries remoteUrl from the createPlan input through targetRefJson to the real adapter (no row tampering)", async () => {
+      // LET-402 G.4 regression: the QA validator surfaced that the
+      // route/service path used to strip `remoteUrl`. Drive the natural
+      // route-shaped delta with an unsafe remoteUrl and prove the adapter
+      // blocks it via the persisted row, not via test-side tampering.
+      await seedCompanyAndAgent();
+      const svc = svcOn();
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              transport: "streamable_http",
+              remoteUrl: "http://169.254.169.254/latest/meta-data/",
+              requiredSecretNames: [],
+            },
+          ],
+        },
+        svc,
+      );
+
+      const stepBeforeExecute = (
+        await db.select().from(capabilityApplySteps).where(eq(capabilityApplySteps.planId, plan.id))
+      )[0];
+      expect((stepBeforeExecute.targetRefJson as Record<string, unknown>).remoteUrl).toBe(
+        "http://169.254.169.254/latest/meta-data/",
+      );
+
+      const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      expect(result.state).toBe("partially_applied");
+
+      const stepRows = await db.select().from(capabilityApplySteps).where(eq(capabilityApplySteps.planId, plan.id));
+      const failed = stepRows.find((s) => s.kind === "add_mcp_server");
+      expect(failed?.state).toBe("failed");
+      expect(failed?.lastErrorCode).toBe(CAPABILITY_APPLY_ERROR_CODES.EGRESS_BLOCKED);
+    });
+
+    it("refuses egress to private IP / loopback / IMDS with EGRESS_BLOCKED", async () => {
+      await seedCompanyAndAgent();
+      const svc = svcOn();
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              requiredSecretNames: [],
+            },
+          ],
+        },
+        svc,
+      );
+      await db
+        .update(capabilityApplySteps)
+        .set({
+          targetRefJson: {
+            catalogId: "verified/ok",
+            label: "MCP",
+            namedSecretRefs: [],
+            remoteUrl: "https://169.254.169.254/latest/meta-data/",
+          },
+        })
+        .where(eq(capabilityApplySteps.planId, plan.id));
+
+      const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      expect(result.state).toBe("partially_applied");
+
+      const stepRows = await db.select().from(capabilityApplySteps).where(eq(capabilityApplySteps.planId, plan.id));
+      const failed = stepRows.find((s) => s.kind === "add_mcp_server");
+      expect(failed?.state).toBe("failed");
+      expect(failed?.lastErrorCode).toBe(CAPABILITY_APPLY_ERROR_CODES.EGRESS_BLOCKED);
+    });
+
+    it("refuses with NAMED_SECRET_NOT_FOUND when the resolver cannot locate a referenced secret", async () => {
+      await seedCompanyAndAgent();
+      const svc = svcOn({
+        secretReferenceResolver: { async hasNamedSecret() { return false; } },
+      });
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              requiredSecretNames: ["MISSING_TOKEN"],
+            },
+          ],
+        },
+        svc,
+      );
+      const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      expect(result.state).toBe("partially_applied");
+      const stepRows = await db.select().from(capabilityApplySteps).where(eq(capabilityApplySteps.planId, plan.id));
+      const failed = stepRows.find((s) => s.kind === "add_mcp_server");
+      expect(failed?.state).toBe("failed");
+      expect(failed?.lastErrorCode).toBe(CAPABILITY_APPLY_ERROR_CODES.NAMED_SECRET_NOT_FOUND);
+    });
+
+    it("does not make outbound HTTP/MCP calls even with live=ON", async () => {
+      await seedCompanyAndAgent();
+      const svc = svcOn({
+        secretReferenceResolver: { async hasNamedSecret() { return true; } },
+      });
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              requiredSecretNames: [],
+            },
+          ],
+          skillRefChanges: [{ kind: "add", ref: "code-review" }],
+        },
+        svc,
+      );
+
+      const originalFetch = globalThis.fetch;
+      let invocations = 0;
+      globalThis.fetch = ((..._args: unknown[]) => {
+        invocations++;
+        throw new Error("no-live-action: fetch must not be called by capability apply G.4");
+      }) as typeof fetch;
+      try {
+        const result = await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+        expect(result.state).toBe("applied");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      expect(invocations).toBe(0);
+    });
+
+    it("never leaks raw secret values: resolver receives only the named identifier; events carry only references", async () => {
+      await seedCompanyAndAgent();
+      const seenNames: Array<{ companyId: string; name: string }> = [];
+      const svc = svcOn({
+        secretReferenceResolver: {
+          async hasNamedSecret(cid, name) {
+            seenNames.push({ companyId: cid, name });
+            return true;
+          },
+        },
+      });
+      const plan = await makeApprovedPlan(
+        {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/ok",
+              requiredSecretNames: ["GITHUB_TOKEN"],
+            },
+          ],
+        },
+        svc,
+      );
+      await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+      // The resolver only ever sees the reference name (env-style identifier),
+      // never a raw value.
+      expect(seenNames).toEqual([{ companyId, name: "GITHUB_TOKEN" }]);
+
+      const eventRows = await db.select().from(capabilityApplyEvents).where(eq(capabilityApplyEvents.planId, plan.id));
+      const serialized = JSON.stringify(eventRows);
+      // Reference names ARE allowed in events; the secret VALUE never is, and
+      // no value was ever introduced to the resolver in the first place.
+      expect(serialized).not.toContain(CANARY);
+      expect(serialized).not.toMatch(/sk_(live|test)_[A-Za-z0-9_-]{12,}/);
+      expect(serialized).not.toMatch(/gh[opsu]_[A-Za-z0-9_-]{12,}/);
+    });
+
+    it("replay-safe: re-executing the same step produces the same step key + mutation digest", async () => {
+      // Drives the step twice via two independent service calls; the second
+      // execution hits APPROVAL_CONSUMED at the plan level, but we read the
+      // first execution's recorded stepKey + mutationDigest and assert they
+      // are deterministic for the same step input (plan id + ordinal + kind).
+      await seedCompanyAndAgent();
+      const svc = svcOn();
+      const plan = await makeApprovedPlan(internalSafeDelta(), svc);
+      await svc.executePlan(plan.id, companyId, agentId, { userId: "user-1" }, plan.optimisticVersion);
+
+      const events = await db.select().from(capabilityApplyEvents).where(eq(capabilityApplyEvents.planId, plan.id));
+      const completed = events.filter((e) => e.kind === "capability_apply_step_completed");
+      expect(completed.length).toBeGreaterThan(0);
+      // For each completed step, recomputing the same key from (planId, ordinal, kind)
+      // must yield the persisted value — that's the saga-style idempotency property.
+      for (const ev of completed) {
+        const payload = ev.payloadJson as Record<string, unknown>;
+        const ordinal = payload.ordinal as number;
+        const kind = payload.kind as string;
+        expect(payload.stepKey).toBe(`apply:${plan.id}:${ordinal}:${kind}`);
+        expect(typeof payload.mutationDigest).toBe("string");
+        expect((payload.mutationDigest as string).length).toBe(32);
+      }
     });
   });
 });

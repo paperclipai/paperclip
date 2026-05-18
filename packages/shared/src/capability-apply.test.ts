@@ -184,6 +184,45 @@ describe("buildCapabilityApplyPlan", () => {
     });
   });
 
+  describe("remoteUrl plumbing (LET-402 G.4)", () => {
+    it("carries remoteUrl from effectiveDelta into step.target", () => {
+      const r = buildCapabilityApplyPlan({
+        ...baseInput,
+        effectiveDelta: {
+          mcpServerChanges: [
+            {
+              ...baseInput.effectiveDelta.mcpServerChanges[0],
+              transport: "streamable_http" as const,
+              remoteUrl: "https://api.example.com/mcp",
+            },
+          ],
+        },
+      });
+      expect(r.steps[0].target.remoteUrl).toBe("https://api.example.com/mcp");
+      expect(r.steps[0].target.transport).toBe("streamable_http");
+    });
+
+    it("includes remoteUrl in dryRunHash so changing it changes the hash", () => {
+      const r1 = buildCapabilityApplyPlan({
+        ...baseInput,
+        effectiveDelta: {
+          mcpServerChanges: [
+            { ...baseInput.effectiveDelta.mcpServerChanges[0], remoteUrl: "https://a.example.com/mcp" },
+          ],
+        },
+      });
+      const r2 = buildCapabilityApplyPlan({
+        ...baseInput,
+        effectiveDelta: {
+          mcpServerChanges: [
+            { ...baseInput.effectiveDelta.mcpServerChanges[0], remoteUrl: "https://b.example.com/mcp" },
+          ],
+        },
+      });
+      expect(r1.dryRunHash).not.toBe(r2.dryRunHash);
+    });
+  });
+
   describe("idempotent hash", () => {
     it("calling twice with same input gives same hash (deterministic)", () => {
       const r1 = buildCapabilityApplyPlan(baseInput);

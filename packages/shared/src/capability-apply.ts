@@ -67,6 +67,9 @@ export const CAPABILITY_APPLY_ERROR_CODES = {
   LIVE_EXECUTION_DISABLED: "capability_apply_live_execution_disabled",
   OPTIMISTIC_CONFLICT: "capability_apply_optimistic_conflict",
   SECRET_SHAPED_IDENTIFIER: "capability_apply_secret_shaped_identifier_rejected",
+  CATALOG_NOT_ALLOWLISTED: "capability_apply_catalog_not_allowlisted",
+  EGRESS_BLOCKED: "capability_apply_egress_blocked",
+  NAMED_SECRET_NOT_FOUND: "capability_apply_named_secret_not_found",
 } as const;
 
 export type CapabilityApplyErrorCode = (typeof CAPABILITY_APPLY_ERROR_CODES)[keyof typeof CAPABILITY_APPLY_ERROR_CODES];
@@ -77,6 +80,15 @@ export const capabilityApplyStepTargetRefSchema = z.object({
   catalogId: z.string().optional(),
   label: z.string().min(1).max(240),
   transport: z.enum(["stdio", "sse", "streamable_http"]).optional(),
+  /**
+   * Optional remote endpoint reference for MCP servers that use a remote
+   * transport (sse / streamable_http). Carried end-to-end so the LET-402
+   * SSRF/egress guard can reject loopback/private/IMDS targets at execute
+   * time. Never holds a secret value — only a public-shaped URL the catalog
+   * resolver returned; secret material is referenced separately via
+   * `namedSecretRefs`.
+   */
+  remoteUrl: z.string().max(2048).optional(),
   namedSecretRefs: z.array(z.string()).default([]),
 });
 
@@ -179,6 +191,7 @@ export interface CapabilityApplyPlanInput {
       displayName: string;
       catalogId?: string;
       transport?: string;
+      remoteUrl?: string;
       riskClass?: string;
       changedFields?: string[];
       requiredSecretNames?: string[];
@@ -210,6 +223,7 @@ function canonicalizeEffectiveDelta(delta: CapabilityApplyPlanInput["effectiveDe
         kind: c.kind,
         openWorldHint: c.openWorldHint ?? false,
         readOnlyHint: c.readOnlyHint ?? false,
+        remoteUrl: c.remoteUrl ?? null,
         requiredSecretNames: (c.requiredSecretNames ?? []).slice().sort(),
         riskClass: c.riskClass ?? "external_write",
         serverId: c.serverId,
@@ -270,6 +284,7 @@ export function buildCapabilityApplyPlan(input: CapabilityApplyPlanInput): Capab
         catalogId: change.catalogId,
         label: change.displayName,
         transport: change.transport as "stdio" | "sse" | "streamable_http" | undefined,
+        remoteUrl: change.remoteUrl,
         namedSecretRefs: change.requiredSecretNames ?? [],
       },
       riskClass,

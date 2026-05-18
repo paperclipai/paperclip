@@ -18,6 +18,7 @@ const createPlanSchema = z.object({
           displayName: z.string().min(1).max(240),
           catalogId: z.string().max(240).optional(),
           transport: z.string().optional(),
+          remoteUrl: z.string().max(2048).optional(),
           riskClass: z.string().optional(),
           changedFields: z.array(z.string()).optional(),
           requiredSecretNames: z.array(z.string()).optional(),

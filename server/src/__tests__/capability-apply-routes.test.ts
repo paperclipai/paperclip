@@ -156,6 +156,38 @@ describe("POST /plans", () => {
     expect([409, 500]).toContain(res.status); // service raises HttpError 409
   });
 
+  it("accepts remoteUrl on mcpServerChanges and forwards it to createPlan (LET-402 G.4)", async () => {
+    const app = await createTestApp();
+    const res = await request(app)
+      .post(`${BASE_URL}/plans`)
+      .send({
+        effectiveDelta: {
+          mcpServerChanges: [
+            {
+              kind: "add",
+              serverId: "srv-1",
+              displayName: "MCP",
+              catalogId: "verified/x",
+              transport: "streamable_http",
+              remoteUrl: "https://api.example.com/mcp",
+              requiredSecretNames: [],
+            },
+          ],
+        },
+      });
+    expect(res.status).toBe(201);
+    expect(mockSvc.createPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        effectiveDelta: expect.objectContaining({
+          mcpServerChanges: [
+            expect.objectContaining({ remoteUrl: "https://api.example.com/mcp" }),
+          ],
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("400 for missing effectiveDelta", async () => {
     const app = await createTestApp();
     const res = await request(app).post(`${BASE_URL}/plans`).send({});
@@ -444,12 +476,16 @@ describe("no-live-action assertions", () => {
     // Real adapter is NOT a stub only when live=true, and G.1 throws for live=true
   });
 
-  it("throws when capabilityApplyLive is ON (no real executor in G.1)", async () => {
+  it("returns the real adapter when capabilityApplyLive is ON (LET-402 G.4)", async () => {
     const { capabilityApplyService } = await vi.importActual<typeof import("../services/capability-apply.js")>(
       "../services/capability-apply.js",
     );
     const svc = capabilityApplyService({} as any, { capabilityApplyLive: true });
-    expect(() => svc._getExecutorAdapter()).toThrow(/no real executor/);
+    const adapter = svc._getExecutorAdapter();
+    expect(adapter).toBeDefined();
+    // Tag exposed so route-layer telemetry can distinguish stub vs real
+    // without leaking the adapter implementation surface.
+    expect(adapter.kind).toBe("real");
   });
 });
 

@@ -24,6 +24,12 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
+import {
+  CapabilityApplyAdapterError,
+  getExecutorAdapter as buildExecutorAdapter,
+  type McpApplyAdapter,
+  type RealMcpApplyAdapterDeps,
+} from "./capability-apply-mcp-adapter.js";
 
 // A handle that may be either the root Db or an in-flight transaction. Drizzle's
 // tx object is structurally compatible at the query-method surface; we type the
@@ -31,35 +37,16 @@ import { logger } from "../middleware/logger.js";
 // share a single transaction.
 type DbHandle = Pick<Db, "select" | "insert" | "update">;
 
-// ── Stub executor ─────────────────────────────────────────────────────────────
-// When capability.apply.live is OFF (always in this slice), the stub adapter
-// records "would-execute" events without performing any real external action.
-// The real executor adapter is never instantiated when the flag is OFF —
-// enforced here and asserted in tests.
-
-interface ExecutorAdapter {
-  executeStep(step: CapabilityApplyStep, planId: string): Promise<{ wouldExecute: boolean }>;
-}
-
-class StubExecutorAdapter implements ExecutorAdapter {
-  async executeStep(step: CapabilityApplyStep, planId: string): Promise<{ wouldExecute: boolean }> {
-    logger.info(
-      { planId, stepId: step.stepId, kind: step.kind, riskClass: step.riskClass },
-      "[stub-executor] would-execute event recorded (live flag OFF)",
-    );
-    return { wouldExecute: true };
-  }
-}
-
-function getExecutorAdapter(capabilityApplyLive: boolean): ExecutorAdapter {
-  if (capabilityApplyLive) {
-    // The real executor is not implemented in this slice (G.2 keeps the live
-    // flag OFF and only ships the internal_safe state machine).
-    // Throw to prevent accidental live execution if the flag is flipped before
-    // a future slice (G.3+) wires real adapters in.
-    throw new Error("capability.apply.live is ON but no real executor exists in G.2; upgrade to G.3 first");
-  }
-  return new StubExecutorAdapter();
+// LET-402 G.4: adapter selection moved to `capability-apply-mcp-adapter.ts`.
+// `capability.apply.live=OFF` returns the stub (no outbound, fail-closed on
+// non-internal_safe steps inside this service). `capability.apply.live=ON`
+// returns the real adapter, which enforces catalog allowlist + SSRF/egress
+// guards + named-secret existence checks before recording the apply intent.
+function getExecutorAdapter(
+  capabilityApplyLive: boolean,
+  realAdapterDeps?: RealMcpApplyAdapterDeps,
+): McpApplyAdapter {
+  return buildExecutorAdapter({ capabilityApplyLive, realAdapterDeps });
 }
 
 // ── Secret-shape rejection ─────────────────────────────────────────────────────
@@ -80,10 +67,44 @@ function validateStepTargetRefs(steps: CapabilityApplyStep[]): void {
   for (const step of steps) {
     if (step.target.catalogId) assertNoSecretShape(step.target.catalogId, `steps[${step.ordinal}].target.catalogId`);
     assertNoSecretShape(step.target.label, `steps[${step.ordinal}].target.label`);
+    if (step.target.remoteUrl) {
+      assertNoSecretShape(step.target.remoteUrl, `steps[${step.ordinal}].target.remoteUrl`);
+    }
     for (const ref of step.target.namedSecretRefs) {
       assertNoSecretShape(ref, `steps[${step.ordinal}].target.namedSecretRefs[]`);
     }
   }
+}
+
+// LET-402 G.4: rebuild the in-memory step view from a persisted row. Exported
+// so unit tests can prove the route → DB → adapter reconstruction carries
+// `remoteUrl` end-to-end without needing an embedded Postgres harness.
+export function rebuildStepViewFromRow(row: {
+  ordinal: number;
+  kind: string;
+  riskClass: string;
+  targetRefJson: unknown;
+  annotationsJson: unknown;
+  expectedNamedSecretsJson: unknown;
+}): CapabilityApplyStep {
+  const target = (row.targetRefJson ?? {}) as Record<string, unknown>;
+  return {
+    stepId: `step-${row.ordinal}`,
+    ordinal: row.ordinal,
+    kind: row.kind as CapabilityApplyStep["kind"],
+    target: {
+      catalogId: target.catalogId as string | undefined,
+      label: (target.label as string) ?? "",
+      transport: target.transport as "stdio" | "sse" | "streamable_http" | undefined,
+      remoteUrl: typeof target.remoteUrl === "string" ? target.remoteUrl : undefined,
+      namedSecretRefs: (row.expectedNamedSecretsJson as string[]) ?? [],
+    },
+    riskClass: row.riskClass as CapabilityApplyStep["riskClass"],
+    annotations: (row.annotationsJson as Record<string, boolean>) ?? {},
+    sideEffects: [],
+    secretSummary: [],
+    state: "executing",
+  };
 }
 
 // ── Event recording ──────────────────────────────────────────────────────────
@@ -169,10 +190,20 @@ const TERMINAL_OR_POST_EXECUTE_STATES: ReadonlyArray<CapabilityApplyPlanState> =
 
 // ── Service factory ──────────────────────────────────────────────────────────
 
-export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: boolean }) {
+export interface CapabilityApplyServiceOpts {
+  capabilityApplyLive: boolean;
+  /**
+   * LET-402 G.4: optional real-adapter dependencies. Tests inject these to
+   * exercise the deterministic mock path; production always defaults to
+   * `capability.apply.live=OFF` so these are unused at runtime.
+   */
+  realAdapterDeps?: RealMcpApplyAdapterDeps;
+}
+
+export function capabilityApplyService(db: Db, opts: CapabilityApplyServiceOpts) {
   return {
-    /** Expose stub getter so tests can spy on adapter construction. */
-    _getExecutorAdapter: () => getExecutorAdapter(opts.capabilityApplyLive),
+    /** Expose adapter getter so tests can spy on adapter construction. */
+    _getExecutorAdapter: () => getExecutorAdapter(opts.capabilityApplyLive, opts.realAdapterDeps),
 
     /**
      * POST /plans — build a plan from the effective delta. Idempotent on
@@ -684,11 +715,12 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
           .where(eq(capabilityApplySteps.planId, planId))
           .orderBy(capabilityApplySteps.ordinal);
 
-        // Construct the executor adapter. While live OFF this is the stub —
-        // a real executor adapter is intentionally NOT wired in this slice
-        // and getExecutorAdapter throws if the flag is flipped, so this
-        // service is the no-live-action enforcement point.
-        const executor = getExecutorAdapter(opts.capabilityApplyLive);
+        // LET-402 G.4: live=OFF returns the stub (no outbound, fail-closed
+        // on non-internal_safe steps below); live=ON returns the real adapter
+        // which enforces catalog allowlist + SSRF/egress + named-secret
+        // existence at execute time, but still does not mutate
+        // agents.capability_config or perform outbound MCP RPC this slice.
+        const executor = getExecutorAdapter(opts.capabilityApplyLive, opts.realAdapterDeps);
 
         let completedCount = 0;
         let skippedCount = 0;
@@ -703,7 +735,13 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
           }
 
           // Non-internal_safe risk classes never execute while live OFF.
-          if (step.riskClass !== "internal_safe") {
+          // LET-402 G.4: when live=ON, the real adapter is permitted to run
+          // these steps too — but only if its catalog allowlist + egress +
+          // named-secret guards accept the step. Guard failures surface as
+          // adapter errors that are caught below and recorded with stable
+          // codes (CATALOG_NOT_ALLOWLISTED / EGRESS_BLOCKED /
+          // NAMED_SECRET_NOT_FOUND).
+          if (step.riskClass !== "internal_safe" && !opts.capabilityApplyLive) {
             await tx
               .update(capabilityApplySteps)
               .set({
@@ -748,27 +786,14 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
           );
 
           try {
-            const stepView: CapabilityApplyStep = {
-              stepId: `step-${step.ordinal}`,
-              ordinal: step.ordinal,
-              kind: step.kind as CapabilityApplyStep["kind"],
-              target: {
-                catalogId: (step.targetRefJson as Record<string, unknown>).catalogId as string | undefined,
-                label: ((step.targetRefJson as Record<string, unknown>).label as string) ?? "",
-                transport: (step.targetRefJson as Record<string, unknown>).transport as
-                  | "stdio"
-                  | "sse"
-                  | "streamable_http"
-                  | undefined,
-                namedSecretRefs: (step.expectedNamedSecretsJson as string[]) ?? [],
-              },
-              riskClass: step.riskClass as CapabilityApplyStep["riskClass"],
-              annotations: (step.annotationsJson as Record<string, boolean>) ?? {},
-              sideEffects: [],
-              secretSummary: [],
-              state: "executing",
-            };
-            const result = await executor.executeStep(stepView, row.id);
+            // LET-402 G.4: reconstruct full step view (including remoteUrl)
+            // from the persisted row so the real adapter's egress guard sees
+            // the same target the plan was approved with.
+            const stepView: CapabilityApplyStep = rebuildStepViewFromRow(step);
+            const result = await executor.executeStep(stepView, {
+              companyId,
+              planId: row.id,
+            });
 
             await tx
               .update(capabilityApplySteps)
@@ -784,16 +809,26 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
                 kind: step.kind,
                 wouldExecute: result.wouldExecute,
                 liveExecutionFlagState: opts.capabilityApplyLive ? "on" : "off",
+                adapterKind: executor.kind,
+                stepKey: result.stepKey,
+                mutationDigest: result.mutationDigest,
               },
             );
             completedCount++;
           } catch (err) {
+            // LET-402 G.4: adapter-level guard failures (catalog allowlist,
+            // egress, missing named secret) carry stable error codes from
+            // CAPABILITY_APPLY_ERROR_CODES. Preserve them in the step row so
+            // the UI can render specific copy ("blocked: catalog not
+            // verified", "blocked: secret missing") without leaking detail.
+            const adapterErr = err instanceof CapabilityApplyAdapterError ? err : null;
+            const errorCode = adapterErr?.code ?? "step_execution_failed";
             const message = err instanceof Error ? err.message : String(err);
             await tx
               .update(capabilityApplySteps)
               .set({
                 state: "failed",
-                lastErrorCode: "step_execution_failed",
+                lastErrorCode: errorCode,
                 lastErrorMessage: message.slice(0, 1024),
                 updatedAt: new Date(),
               })
@@ -806,7 +841,9 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
               {
                 ordinal: step.ordinal,
                 kind: step.kind,
-                errorCode: "step_execution_failed",
+                errorCode,
+                adapterKind: executor.kind,
+                ...(adapterErr ? { adapterDetails: adapterErr.details } : {}),
               },
             );
             failedCount++;
@@ -887,6 +924,6 @@ export function capabilityApplyService(db: Db, opts: { capabilityApplyLive: bool
       }));
     },
 
-    stubExecutor: () => getExecutorAdapter(opts.capabilityApplyLive),
+    stubExecutor: () => getExecutorAdapter(opts.capabilityApplyLive, opts.realAdapterDeps),
   };
 }
