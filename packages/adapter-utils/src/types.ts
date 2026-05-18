@@ -502,4 +502,11 @@ export interface CreateConfigValues {
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
+  /** OpenClaw Gateway create-mode fields */
+  openClawToken?: string;
+  openClawPaperclipApiUrl?: string;
+  openClawSessionKeyStrategy?: string;
+  openClawWaitTimeoutMs?: string;
+  openClawRole?: string;
+  openClawScopes?: string;
 }
