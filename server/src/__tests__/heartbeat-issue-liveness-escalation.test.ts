@@ -728,6 +728,43 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
   });
 
+  it("suppresses new escalation when a done escalation for the same source issue (different incidentKey state) is within the 24h cooldown window", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    // Simulate a previously-closed escalation with a DIFFERENT liveness state in the key —
+    // this is the regression scenario where the issue's classification changes (e.g. blocker
+    // changes from unassigned to backlog) producing a new incidentKey that bypasses the cooldown.
+    const previousIncidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_uninvokable_assignee", // different state than the current finding
+      blockerIssueId,
+    ].join(":");
+    const recentlyClosedId = randomUUID();
+    const recentlyClosedAt = new Date(Date.now() - 30 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: recentlyClosedId,
+      companyId,
+      title: "Recently closed escalation (different state key)",
+      status: "done",
+      priority: "high",
+      parentId: blockedIssueId,
+      issueNumber: 3,
+      identifier: "CLOSED-3",
+      originKind: "harness_liveness_escalation",
+      originId: previousIncidentKey,
+      updatedAt: recentlyClosedAt,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    // Should be suppressed even though the incidentKey state segment differs
+    expect(result.escalationsCreated).toBe(0);
+  });
+
   it("suppresses new escalation creation when a matching done escalation is within the 24h cooldown window", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
