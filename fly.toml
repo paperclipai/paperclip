@@ -1,5 +1,7 @@
 app = "paperclip-staging"
 primary_region = "lax"
+[build]
+  dockerfile = "Dockerfile"
 
 [http_service]
   internal_port = 8080
