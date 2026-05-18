@@ -872,6 +872,23 @@ export function agentRoutes(
     };
   }
 
+  function mergeRuntimeConfigs(
+    existing: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const merged: Record<string, unknown> = { ...existing };
+    for (const [key, value] of Object.entries(patch)) {
+      const existingRecord = asRecord(existing[key]);
+      const patchRecord = asRecord(value);
+      if (existingRecord && patchRecord) {
+        merged[key] = { ...existingRecord, ...patchRecord };
+      } else {
+        merged[key] = value;
+      }
+    }
+    return merged;
+  }
+
   function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
@@ -2564,6 +2581,8 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    const replaceRuntimeConfig = patchData.replaceRuntimeConfig === true;
+    delete patchData.replaceRuntimeConfig;
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -2645,10 +2664,13 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      const effectiveRuntimeConfig = replaceRuntimeConfig
+        ? requestedRuntimeConfig
+        : mergeRuntimeConfigs(asRecord(existing.runtimeConfig) ?? {}, requestedRuntimeConfig);
       patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
-        requestedRuntimeConfig,
+        effectiveRuntimeConfig,
         baseAdapterConfig,
       );
     }
