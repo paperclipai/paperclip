@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, or, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -75,6 +75,54 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
+async function waitForHeartbeatIdle(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns);
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const activeRuns = await db
+      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
+    if (activeRuns.length === 0) return;
+    const now = new Date();
+    const runIds = activeRuns.map((run) => run.id);
+    const wakeupRequestIds = activeRuns
+      .map((run) => run.wakeupRequestId)
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        updatedAt: now,
+        errorCode: "test_cleanup",
+        error: "Cancelled by stale-queue invalidation test cleanup",
+      })
+      .where(inArray(heartbeatRuns.id, runIds));
+    if (wakeupRequestIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled by stale-queue invalidation test cleanup",
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 type SeedOptions = {
   agentName?: string;
   agentRole?: string;
@@ -96,8 +144,13 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
+  // Mirrors heartbeat-active-run-output-watchdog.test.ts (PR #55). The naive
+  // idle-poll variant still races fire-and-forget executeRun work scheduled by
+  // postRun lifecycle hooks (heartbeat.ts:6568); cancelling active runs first
+  // forces those callbacks to observe the terminal state and exit before
+  // TRUNCATE takes its AccessExclusiveLock on "companies".
   afterEach(async () => {
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
@@ -111,27 +164,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       resultJson: { summary: "Stale-queue invalidation test run." },
     }));
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    // ACCESS EXCLUSIVE on companies + CASCADE clears the whole dependency tree
-    // atomically, blocking concurrent inserts from the fire-and-forget postRun
-    // lifecycle hook (heartbeat.ts:6568) so it can't race a heartbeat_run_events
-    // insert between us deleting events and deleting runs.
+    await cancelActiveRunsForCleanup(db, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();

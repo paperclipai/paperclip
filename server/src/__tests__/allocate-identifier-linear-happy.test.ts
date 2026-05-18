@@ -55,7 +55,7 @@ describeEmbeddedPostgres("allocateFromLinear (happy path, mocked fetch + secrets
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-allocate-linear-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();
