@@ -7,7 +7,9 @@ import {
   findMissingLocalSkillIds,
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
+  readInlineSkillImports,
   readLocalSkillImportFromDirectory,
+  readLocalSkillImports,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -184,6 +186,137 @@ describe("project workspace skill discovery", () => {
         },
       ],
     });
+  });
+});
+
+describe("local directory skill imports", () => {
+  it("includes scripts and references in inventory for root-level SKILL.md", async () => {
+    const skillDir = await makeTempDir("paperclip-local-import-root-");
+    await writeSkillDir(skillDir, "My Local Skill");
+    await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "scripts", "setup.sh"), "#!/bin/sh\necho ok\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# Guide\n", "utf8");
+
+    const imported = await readLocalSkillImports(
+      "44444444-4444-4444-4444-444444444444",
+      skillDir,
+    );
+
+    expect(imported).toHaveLength(1);
+    const paths = new Set(imported[0]!.fileInventory.map((entry) => entry.path));
+    expect(paths).toContain("SKILL.md");
+    expect(paths).toContain("scripts/setup.sh");
+    expect(paths).toContain("references/guide.md");
+  });
+
+  it("classifies inventory kinds correctly for root-level imports", async () => {
+    const skillDir = await makeTempDir("paperclip-local-import-kinds-");
+    await writeSkillDir(skillDir, "Typed Skill");
+    await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "assets"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "scripts", "run.sh"), "echo hi\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "notes.md"), "# Notes\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "assets", "icon.png"), "fake-png", "utf8");
+
+    const imported = await readLocalSkillImports(
+      "44444444-4444-4444-4444-444444444444",
+      skillDir,
+    );
+
+    const byPath = new Map(imported[0]!.fileInventory.map((e) => [e.path, e.kind]));
+    expect(byPath.get("SKILL.md")).toBe("skill");
+    expect(byPath.get("scripts/run.sh")).toBe("script");
+    expect(byPath.get("references/notes.md")).toBe("reference");
+    expect(byPath.get("assets/icon.png")).toBe("asset");
+  });
+
+  it("handles nested skills alongside a root SKILL.md", async () => {
+    const root = await makeTempDir("paperclip-local-import-nested-");
+    await writeSkillDir(root, "Root Skill");
+    await fs.mkdir(path.join(root, "references"), { recursive: true });
+    await fs.writeFile(path.join(root, "references", "root-ref.md"), "# Root Ref\n", "utf8");
+    await writeSkillDir(path.join(root, "sub-skill"), "Sub Skill");
+    await fs.mkdir(path.join(root, "sub-skill", "scripts"), { recursive: true });
+    await fs.writeFile(path.join(root, "sub-skill", "scripts", "sub.sh"), "echo sub\n", "utf8");
+
+    const imported = await readLocalSkillImports(
+      "44444444-4444-4444-4444-444444444444",
+      root,
+    );
+
+    expect(imported.length).toBeGreaterThanOrEqual(2);
+    const rootSkill = imported.find((s) => s.name === "Root Skill")!;
+    const subSkill = imported.find((s) => s.name === "Sub Skill")!;
+    expect(rootSkill).toBeDefined();
+    expect(subSkill).toBeDefined();
+
+    const rootPaths = new Set(rootSkill.fileInventory.map((e) => e.path));
+    expect(rootPaths).toContain("SKILL.md");
+    expect(rootPaths).toContain("references/root-ref.md");
+    expect(rootPaths).not.toContain("sub-skill/SKILL.md");
+    expect(rootPaths).not.toContain("sub-skill/scripts/sub.sh");
+
+    const subPaths = new Set(subSkill.fileInventory.map((e) => e.path));
+    expect(subPaths).toContain("SKILL.md");
+    expect(subPaths).toContain("scripts/sub.sh");
+    expect(subPaths).not.toContain("references/root-ref.md");
+  });
+});
+
+describe("inline skill imports (covers GitHub/skills.sh inventory pattern)", () => {
+  const COMPANY_ID = "55555555-5555-5555-5555-555555555555";
+
+  it("includes all files for root-level SKILL.md in inline imports", () => {
+    const files: Record<string, string> = {
+      "SKILL.md": "---\nname: inline-skill\n---\n\n# Inline Skill\n",
+      "scripts/deploy.sh": "echo deploy\n",
+      "references/checklist.md": "# Checklist\n",
+      "assets/logo.png": "fake-png",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    expect(imported).toHaveLength(1);
+    const paths = new Set(imported[0]!.fileInventory.map((e) => e.path));
+    expect(paths).toContain("SKILL.md");
+    expect(paths).toContain("scripts/deploy.sh");
+    expect(paths).toContain("references/checklist.md");
+    expect(paths).toContain("assets/logo.png");
+  });
+
+  it("classifies kinds correctly for root-level inline imports", () => {
+    const files: Record<string, string> = {
+      "SKILL.md": "---\nname: typed-inline\n---\n\n# Typed\n",
+      "scripts/run.sh": "echo ok\n",
+      "references/notes.md": "# Notes\n",
+      "assets/icon.svg": "<svg/>",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    const byPath = new Map(imported[0]!.fileInventory.map((e) => [e.path, e.kind]));
+    expect(byPath.get("SKILL.md")).toBe("skill");
+    expect(byPath.get("scripts/run.sh")).toBe("script");
+    expect(byPath.get("references/notes.md")).toBe("reference");
+    expect(byPath.get("assets/icon.svg")).toBe("asset");
+  });
+
+  it("scopes files correctly for nested SKILL.md in inline imports", () => {
+    const files: Record<string, string> = {
+      "my-skill/SKILL.md": "---\nname: nested-skill\n---\n\n# Nested\n",
+      "my-skill/references/guide.md": "# Guide\n",
+      "other-file.txt": "unrelated\n",
+    };
+
+    const imported = readInlineSkillImports(COMPANY_ID, files);
+
+    expect(imported).toHaveLength(1);
+    const paths = new Set(imported[0]!.fileInventory.map((e) => e.path));
+    expect(paths).toContain("SKILL.md");
+    expect(paths).toContain("references/guide.md");
+    expect(paths).not.toContain("other-file.txt");
   });
 });
 
