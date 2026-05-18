@@ -64,8 +64,22 @@ const DEFAULT_RPC_TIMEOUT_MS = 120_000;
 /** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
 const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
 
-/** Timeout for the initialize RPC call. */
-const INITIALIZE_TIMEOUT_MS = 15_000;
+/**
+ * Timeout for the initialize RPC call.
+ *
+ * Bumped from 15s → 60s to absorb the boot-time SDK install race: when the
+ * paperclip pod first comes up after a deploy, the entrypoint runs
+ * `npm install` to materialize @paperclipai/plugin-sdk/dist while the plugin
+ * host begins spawning workers. Workers that race the SDK install see a
+ * partial or absent SDK and hang on the import, then the 15s timeout fires
+ * and the catch block (around line ~860) threw back to the plugin manager,
+ * which marked plugin status='error' permanently — every plugin had to be
+ * manually re-enabled after every deploy.
+ *
+ * 60s comfortably covers the SDK install on a loaded boot. Tracked as a
+ * recurring deploy regression in memory entry paperclip_plugin_sdk_install_race.
+ */
+const INITIALIZE_TIMEOUT_MS = 60_000;
 
 /** Timeout for the shutdown RPC call before escalating to SIGTERM. */
 const SHUTDOWN_DRAIN_MS = 10_000;
