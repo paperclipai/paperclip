@@ -26,7 +26,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe
 - promptTemplate (string, optional): run prompt template
-- model (string, optional): Kimi model id. Defaults to kimi-k2.5.
+- model (string, optional): Kimi model id. Defaults to kimi-k2.6.
 - command (string, optional): defaults to "kimi"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

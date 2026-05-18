@@ -95,6 +95,13 @@ export function parseKimiJsonl(stdout: string): ParsedKimiJsonl {
       const text = errorText(event.error ?? event.message ?? event.detail ?? event.content).trim();
       if (text) errorMessage = text;
     }
+
+    // Capture stop reason from result/done/finish events when present
+    const maybeStop =
+      asString(event.stop_reason, "").trim() ||
+      asString(event.finish_reason, "").trim() ||
+      asString(event.stopReason, "").trim();
+    if (maybeStop) stopReason = maybeStop;
   }
 
   return {
