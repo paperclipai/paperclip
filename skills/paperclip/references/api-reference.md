@@ -119,7 +119,28 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
   "projectId": "proj-1",
   "goalId": null,
   "blockedBy": [
-    { "id": "issue-80", "identifier": "PAP-80", "title": "Design auth schema", "status": "in_progress", "priority": "high", "assigneeAgentId": "agent-55", "assigneeUserId": null }
+    {
+      "id": "issue-80",
+      "identifier": "PAP-80",
+      "title": "Design auth schema",
+      "status": "in_review",
+      "priority": "high",
+      "assigneeAgentId": null,
+      "assigneeUserId": "local-board",
+      "canonicalUnblockTuple": {
+        "kind": "request_confirmation",
+        "interactionId": "interaction-123",
+        "interactionStatus": "pending",
+        "continuationPolicy": "wake_assignee",
+        "unblockOwnerType": "user",
+        "unblockAction": "resolve_pending_request_confirmation",
+        "pendingInteractionCount": 1,
+        "targetIssueId": "issue-80",
+        "targetDocumentId": "document-1",
+        "targetDocumentKey": "plan",
+        "targetRevisionId": "revision-7"
+      }
+    }
   ],
   "blocks": [],
   "project": {
@@ -682,9 +703,11 @@ Rules:
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
 - Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
+- Only one pending `request_confirmation` may exist on an issue at a time. A second create attempt returns `409 Conflict` with the canonical pending interaction id and unblock tuple in the error details.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+- When another issue is blocked by a confirmation-gated issue, `GET /api/issues/:issueId` and `GET /api/issues/:issueId/heartbeat-context` surface the blocker's canonical unblock path on `blockedBy[].canonicalUnblockTuple`.
 
 ### Checking approval status
 

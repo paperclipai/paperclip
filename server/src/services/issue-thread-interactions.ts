@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -367,6 +367,34 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+async function listPendingRequestConfirmationRows(
+  db: Db | any,
+  args: { companyId: string; issueId: string },
+) {
+  return db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, args.companyId),
+      eq(issueThreadInteractions.issueId, args.issueId),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "pending"),
+    ))
+    .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+}
+
+async function lockIssueRowForRequestConfirmationCreate(
+  db: Db | any,
+  args: { companyId: string; issueId: string },
+) {
+  await db.execute(
+    sql`select ${issues.id} from ${issues}
+        where ${issues.companyId} = ${args.companyId}
+          and ${issues.id} = ${args.issueId}
+        for update`,
+  );
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -673,34 +701,67 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
-      if (data.kind === "request_confirmation") {
-        await assertRequestConfirmationTargetIsCurrent(db, {
-          companyId: issue.companyId,
-          issueId: issue.id,
-          target: data.payload.target ?? null,
-        });
-      }
-
       let created: IssueThreadInteractionRow;
       try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
+        created = await db.transaction(async (tx) => {
+          if (data.kind === "request_confirmation") {
+            await lockIssueRowForRequestConfirmationCreate(tx, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+            });
+
+            await assertRequestConfirmationTargetIsCurrent(tx, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              target: data.payload.target ?? null,
+            });
+
+            const pendingRows = await listPendingRequestConfirmationRows(tx, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+            });
+            const stillPending: IssueThreadInteractionRow[] = [];
+            for (const row of pendingRows) {
+              const expired = await expireStaleRequestConfirmationTarget(tx, {
+                row,
+                actor,
+              });
+              if (!expired) stillPending.push(row);
+            }
+            if (stillPending.length > 0) {
+              const canonical = stillPending[0];
+              throw conflict("Issue already has a canonical pending request_confirmation interaction", {
+                issueId: issue.id,
+                interactionId: canonical?.id ?? null,
+                interactionKind: "request_confirmation",
+                interactionStatus: "pending",
+                pendingInteractionCount: stillPending.length,
+                unblockOwnerType: "user",
+                unblockAction: "resolve_pending_request_confirmation",
+              });
+            }
+          }
+
+          const [inserted] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+          return inserted;
+        });
       } catch (error) {
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;

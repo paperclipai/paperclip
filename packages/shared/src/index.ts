@@ -404,6 +404,7 @@ export type {
   IssueExecutionMonitorState,
   IssueRelation,
   IssueRelationIssueSummary,
+  IssueCanonicalUnblockTuple,
   IssueExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,

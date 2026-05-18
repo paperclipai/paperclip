@@ -137,8 +137,23 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  canonicalUnblockTuple?: IssueCanonicalUnblockTuple | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
+}
+
+export interface IssueCanonicalUnblockTuple {
+  kind: "request_confirmation";
+  interactionId: string;
+  interactionStatus: Extract<IssueThreadInteractionStatus, "pending">;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  unblockOwnerType: "user";
+  unblockAction: "resolve_pending_request_confirmation";
+  pendingInteractionCount: number;
+  targetIssueId?: string | null;
+  targetDocumentId?: string | null;
+  targetDocumentKey?: string | null;
+  targetRevisionId?: string | null;
 }
 
 export type IssueBlockerAttentionState = "none" | "covered" | "stalled" | "needs_attention";

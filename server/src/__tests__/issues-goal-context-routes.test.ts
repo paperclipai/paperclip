@@ -319,10 +319,23 @@ describe.sequential("issue goal context routes", () => {
           id: "55555555-5555-4555-8555-555555555555",
           identifier: "PAP-580",
           title: "Finish wakeup plumbing",
-          status: "done",
+          status: "in_review",
           priority: "medium",
           assigneeAgentId: null,
-          assigneeUserId: null,
+          assigneeUserId: "local-board",
+          canonicalUnblockTuple: {
+            kind: "request_confirmation",
+            interactionId: "interaction-1",
+            interactionStatus: "pending",
+            continuationPolicy: "wake_assignee",
+            unblockOwnerType: "user",
+            unblockAction: "resolve_pending_request_confirmation",
+            pendingInteractionCount: 1,
+            targetIssueId: null,
+            targetDocumentId: null,
+            targetDocumentKey: null,
+            targetRevisionId: null,
+          },
         },
       ],
       blocks: [],
@@ -337,6 +350,10 @@ describe.sequential("issue goal context routes", () => {
       expect.objectContaining({
         id: "55555555-5555-4555-8555-555555555555",
         identifier: "PAP-580",
+        canonicalUnblockTuple: expect.objectContaining({
+          interactionId: "interaction-1",
+          unblockAction: "resolve_pending_request_confirmation",
+        }),
       }),
     ]);
   });
