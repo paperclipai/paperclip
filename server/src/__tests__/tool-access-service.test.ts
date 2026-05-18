@@ -132,5 +132,101 @@ describeEmbeddedPostgres("toolAccessService", () => {
         },
       },
     });
+    expect(rendered.metadata).toMatchObject({
+      toolAccessRender: {
+        version: 1,
+        toolsets: ["terminal"],
+        mcpServers: {
+          gbrain: {
+            include: ["query"],
+            created: true,
+          },
+        },
+      },
+    });
+  });
+
+  it("removes previously rendered Hermes grants without deleting manual config", async () => {
+    const { companyId, agentId, agent } = await seedCompanyAndAgent();
+
+    const terminal = await svc.createTool(companyId, {
+      key: "adapter_toolset.terminal",
+      label: "Terminal",
+      source: "adapter_toolset",
+      adapter: "hermes_local",
+      risk: "admin",
+      supportedModes: ["off", "admin"],
+      render: { hermes: { toolset: "terminal" } },
+    });
+    const gbrain = await svc.createTool(companyId, {
+      key: "mcp.gbrain.query",
+      label: "GBrain query",
+      source: "mcp_tool",
+      adapter: "hermes_local",
+      serverKey: "gbrain",
+      toolName: "query",
+      risk: "read",
+      supportedModes: ["off", "read"],
+      render: { hermes: { mcpServer: "gbrain", includeTool: "query" } },
+    });
+
+    await svc.setGrant(companyId, agentId, terminal.id, "admin", null);
+    await svc.setGrant(companyId, agentId, gbrain.id, "read", null);
+    const renderedWithGrants = await svc.renderHermesAgentConfig(companyId, {
+      ...agent,
+      adapterConfig: {
+        toolsets: "base,manual",
+        mcp_servers: {
+          gbrain: {
+            enabled: true,
+            tools: {
+              include: ["manual_tool"],
+              resources: true,
+              prompts: true,
+            },
+          },
+        },
+      },
+      metadata: { runtimeIdentity: { profileSlug: "gbrain-researcher" } },
+    });
+
+    expect(renderedWithGrants.adapterConfig).toMatchObject({
+      toolsets: "base,manual,terminal",
+      mcp_servers: {
+        gbrain: {
+          enabled: true,
+          tools: {
+            include: ["manual_tool", "query"],
+            resources: true,
+            prompts: true,
+          },
+        },
+      },
+    });
+
+    await svc.setGrant(companyId, agentId, terminal.id, "off", null);
+    await svc.setGrant(companyId, agentId, gbrain.id, "off", null);
+    const renderedAfterRevocation = await svc.renderHermesAgentConfig(companyId, {
+      ...agent,
+      adapterConfig: renderedWithGrants.adapterConfig,
+      metadata: renderedWithGrants.metadata,
+    });
+
+    expect(renderedAfterRevocation.adapterConfig).toMatchObject({
+      toolsets: "base,manual",
+      mcp_servers: {
+        gbrain: {
+          enabled: true,
+          tools: {
+            include: ["manual_tool"],
+            resources: true,
+            prompts: true,
+          },
+        },
+      },
+    });
+    expect(renderedAfterRevocation.metadata).toEqual({
+      runtimeIdentity: { profileSlug: "gbrain-researcher" },
+    });
   });
 });

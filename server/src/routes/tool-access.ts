@@ -12,7 +12,6 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 export function toolAccessRoutes(db: Db) {
   const router = Router();
   const svc = toolAccessService(db);
-  const agents = agentService(db);
   const access = accessService(db);
 
   async function assertCanManage(req: Request, companyId: string) {
@@ -53,40 +52,54 @@ export function toolAccessRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCanManage(req, companyId);
     const actor = getActorInfo(req);
-    const grants = [];
-    for (const grant of req.body.grants) {
-      const saved = await svc.setGrant(
+    const grants = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const txSvc = toolAccessService(txDb);
+      const txAgents = agentService(txDb);
+      const savedGrants = [];
+      for (const grant of req.body.grants) {
+        const saved = await txSvc.setGrant(
+          companyId,
+          grant.agentId,
+          grant.toolId,
+          grant.mode,
+          actor.actorType === "user" ? actor.actorId : null,
+        );
+        savedGrants.push(saved);
+      }
+      const matrix = await txSvc.listMatrix(companyId);
+      const affectedAgentIds = new Set(savedGrants.map((grant) => grant.agentId));
+      for (const agentId of affectedAgentIds) {
+        const agent = await txAgents.getById(agentId);
+        if (!agent || agent.companyId !== companyId || agent.adapterType !== "hermes_local") continue;
+        const rendered = await txSvc.renderHermesAgentConfig(companyId, agent, matrix);
+        await txAgents.update(
+          agent.id,
+          {
+            adapterConfig: rendered.adapterConfig,
+            metadata: rendered.metadata,
+          },
+          {
+            recordRevision: {
+              createdByAgentId: actor.agentId,
+              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              source: "tool_access_policy_render",
+            },
+          },
+        );
+      }
+      await logActivity(txDb, {
         companyId,
-        grant.agentId,
-        grant.toolId,
-        grant.mode,
-        actor.actorType === "user" ? actor.actorId : null,
-      );
-      grants.push(saved);
-    }
-    const affectedAgentIds = new Set(grants.map((grant) => grant.agentId));
-    for (const agentId of affectedAgentIds) {
-      const agent = await agents.getById(agentId);
-      if (!agent || agent.companyId !== companyId || agent.adapterType !== "hermes_local") continue;
-      const rendered = await svc.renderHermesAgentConfig(companyId, agent);
-      await agents.update(agent.id, { adapterConfig: rendered.adapterConfig }, {
-        recordRevision: {
-          createdByAgentId: actor.agentId,
-          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-          source: "tool_access_policy_render",
-        },
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.tool_grants_updated",
+        entityType: "company",
+        entityId: companyId,
+        details: { count: savedGrants.length },
       });
-    }
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "company.tool_grants_updated",
-      entityType: "company",
-      entityId: companyId,
-      details: { count: grants.length },
+      return savedGrants;
     });
     res.json({ grants });
   });

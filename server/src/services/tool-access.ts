@@ -4,7 +4,22 @@ import { agentToolGrants, agents, companyTools } from "@paperclipai/db";
 import type { ToolAccessMode } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 
-type ToolAccessAgent = Pick<typeof agents.$inferSelect, "id" | "adapterType" | "adapterConfig">;
+type ToolAccessAgent = Pick<typeof agents.$inferSelect, "id" | "adapterType" | "adapterConfig" | "metadata">;
+type ToolAccessMatrix = {
+  tools: Array<typeof companyTools.$inferSelect>;
+  grants: Array<typeof agentToolGrants.$inferSelect>;
+};
+
+interface ToolAccessRenderState {
+  version: 1;
+  toolsets: string[];
+  mcpServers: Record<string, {
+    include: string[];
+    created: boolean;
+  }>;
+}
+
+const TOOL_ACCESS_RENDER_METADATA_KEY = "toolAccessRender";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,25 +44,160 @@ function parseToolsets(value: unknown): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+function sortedStrings(values: Iterable<string>) {
+  return [...new Set(values)].sort();
+}
+
 function hermesRenderSpec(render: unknown): Record<string, unknown> | null {
   if (!isRecord(render) || !isRecord(render.hermes)) return null;
   return render.hermes;
 }
 
+function readToolAccessRenderState(metadata: unknown): ToolAccessRenderState {
+  const raw = isRecord(metadata) ? metadata[TOOL_ACCESS_RENDER_METADATA_KEY] : null;
+  if (!isRecord(raw)) {
+    return { version: 1, toolsets: [], mcpServers: {} };
+  }
+
+  const mcpServers: ToolAccessRenderState["mcpServers"] = {};
+  if (isRecord(raw.mcpServers)) {
+    for (const [serverKey, value] of Object.entries(raw.mcpServers)) {
+      const spec = isRecord(value) ? value : {};
+      const include = sortedStrings(stringList(spec.include));
+      if (include.length === 0) continue;
+      mcpServers[serverKey] = {
+        include,
+        created: spec.created === true,
+      };
+    }
+  }
+
+  return {
+    version: 1,
+    toolsets: sortedStrings(stringList(raw.toolsets)),
+    mcpServers,
+  };
+}
+
+function hasToolAccessRenderState(state: ToolAccessRenderState) {
+  return state.toolsets.length > 0 || Object.keys(state.mcpServers).length > 0;
+}
+
+function metadataWithToolAccessRenderState(metadata: unknown, state: ToolAccessRenderState) {
+  const next = isRecord(metadata) ? { ...metadata } : {};
+  if (hasToolAccessRenderState(state)) {
+    next[TOOL_ACCESS_RENDER_METADATA_KEY] = {
+      version: 1,
+      toolsets: sortedStrings(state.toolsets),
+      mcpServers: Object.fromEntries(
+        Object.entries(state.mcpServers)
+          .filter(([, spec]) => spec.include.length > 0)
+          .map(([serverKey, spec]) => [
+            serverKey,
+            {
+              include: sortedStrings(spec.include),
+              created: spec.created,
+            },
+          ]),
+      ),
+    };
+  } else {
+    delete next[TOOL_ACCESS_RENDER_METADATA_KEY];
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function copyMcpServers(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).map(([serverKey, server]) => [
+      serverKey,
+      isRecord(server)
+        ? {
+          ...server,
+          tools: isRecord(server.tools) ? { ...server.tools } : server.tools,
+        }
+        : server,
+    ]),
+  );
+}
+
+function isGeneratedMcpServerShell(server: Record<string, unknown>) {
+  if (server.enabled !== true) return false;
+  if (!Object.keys(server).every((key) => key === "enabled" || key === "tools")) return false;
+  const tools = isRecord(server.tools) ? server.tools : {};
+  return Object.entries(tools).every(([key, value]) =>
+    (key === "resources" || key === "prompts") && value === false
+  );
+}
+
+function stripPreviousRender(
+  adapterConfig: Record<string, unknown>,
+  previousRender: ToolAccessRenderState,
+) {
+  const previousToolsets = new Set(previousRender.toolsets);
+  const toolsets = new Set(parseToolsets(adapterConfig.toolsets).filter((toolset) => !previousToolsets.has(toolset)));
+  const mcpServers = copyMcpServers(adapterConfig.mcp_servers);
+
+  for (const [serverKey, spec] of Object.entries(previousRender.mcpServers)) {
+    const existingServer = mcpServers[serverKey];
+    if (!isRecord(existingServer)) continue;
+    const server = { ...existingServer };
+    const tools = isRecord(server.tools) ? { ...server.tools } : {};
+    const managedIncludes = new Set(spec.include);
+    const remainingIncludes = stringList(tools.include).filter((toolName) => !managedIncludes.has(toolName));
+    if (remainingIncludes.length > 0) {
+      tools.include = sortedStrings(remainingIncludes);
+    } else {
+      delete tools.include;
+    }
+
+    if (Object.keys(tools).length > 0) {
+      server.tools = tools;
+    } else {
+      delete server.tools;
+    }
+
+    if (spec.created && isGeneratedMcpServerShell(server)) {
+      delete mcpServers[serverKey];
+    } else {
+      mcpServers[serverKey] = server;
+    }
+  }
+
+  return { toolsets, mcpServers };
+}
+
+function trackMcpInclude(
+  state: ToolAccessRenderState,
+  serverKey: string,
+  toolName: string,
+  created: boolean,
+) {
+  const existing = state.mcpServers[serverKey] ?? { include: [], created: false };
+  state.mcpServers[serverKey] = {
+    include: sortedStrings([...existing.include, toolName]),
+    created: existing.created || created,
+  };
+}
+
 function addMcpInclude(mcpServers: Record<string, unknown>, serverKey: string, toolName: string) {
   const existingServer = isRecord(mcpServers[serverKey]) ? mcpServers[serverKey] : {};
   const existingTools = isRecord(existingServer.tools) ? existingServer.tools : {};
-  const include = new Set([...stringList(existingTools.include), toolName]);
+  const existingInclude = new Set(stringList(existingTools.include));
+  const added = !existingInclude.has(toolName);
+  const include = new Set([...existingInclude, toolName]);
   mcpServers[serverKey] = {
     ...existingServer,
     enabled: true,
     tools: {
       ...existingTools,
       include: [...include].sort(),
-      resources: false,
-      prompts: false,
+      resources: Object.prototype.hasOwnProperty.call(existingTools, "resources") ? existingTools.resources : false,
+      prompts: Object.prototype.hasOwnProperty.call(existingTools, "prompts") ? existingTools.prompts : false,
     },
   };
+  return added;
 }
 
 export function toolAccessService(db: Db) {
@@ -67,16 +217,21 @@ export function toolAccessService(db: Db) {
       return created;
     },
 
-    renderHermesAgentConfig: async (companyId: string, agent: ToolAccessAgent) => {
+    renderHermesAgentConfig: async (
+      companyId: string,
+      agent: ToolAccessAgent,
+      preloadedMatrix?: ToolAccessMatrix,
+    ) => {
       const adapterConfig = isRecord(agent.adapterConfig) ? { ...agent.adapterConfig } : {};
-      if (agent.adapterType !== "hermes_local") return { adapterConfig };
+      if (agent.adapterType !== "hermes_local") {
+        return { adapterConfig, metadata: agent.metadata ?? null };
+      }
 
-      const { tools, grants } = await listMatrix(companyId);
+      const { tools, grants } = preloadedMatrix ?? await listMatrix(companyId);
       const toolsById = new Map(tools.map((tool) => [tool.id, tool]));
-      const toolsets = new Set(parseToolsets(adapterConfig.toolsets));
-      const mcpServers: Record<string, unknown> = isRecord(adapterConfig.mcp_servers)
-        ? { ...adapterConfig.mcp_servers }
-        : {};
+      const previousRender = readToolAccessRenderState(agent.metadata);
+      const { toolsets, mcpServers } = stripPreviousRender(adapterConfig, previousRender);
+      const nextRenderState: ToolAccessRenderState = { version: 1, toolsets: [], mcpServers: {} };
 
       for (const grant of grants) {
         if (grant.agentId !== agent.id || grant.mode === "off") continue;
@@ -86,7 +241,10 @@ export function toolAccessService(db: Db) {
         if (!hermes) continue;
 
         if (typeof hermes.toolset === "string" && hermes.toolset.length > 0) {
-          toolsets.add(hermes.toolset);
+          if (!toolsets.has(hermes.toolset)) {
+            toolsets.add(hermes.toolset);
+            nextRenderState.toolsets.push(hermes.toolset);
+          }
         }
         if (
           typeof hermes.mcpServer === "string"
@@ -94,7 +252,10 @@ export function toolAccessService(db: Db) {
           && typeof hermes.includeTool === "string"
           && hermes.includeTool.length > 0
         ) {
-          addMcpInclude(mcpServers, hermes.mcpServer, hermes.includeTool);
+          const serverWasCreated = !isRecord(mcpServers[hermes.mcpServer]);
+          if (addMcpInclude(mcpServers, hermes.mcpServer, hermes.includeTool)) {
+            trackMcpInclude(nextRenderState, hermes.mcpServer, hermes.includeTool, serverWasCreated);
+          }
         }
       }
 
@@ -104,6 +265,7 @@ export function toolAccessService(db: Db) {
           toolsets: [...toolsets].sort().join(","),
           mcp_servers: mcpServers,
         },
+        metadata: metadataWithToolAccessRenderState(agent.metadata, nextRenderState),
       };
     },
 
@@ -124,12 +286,16 @@ export function toolAccessService(db: Db) {
       const existing = await db
         .select()
         .from(agentToolGrants)
-        .where(and(eq(agentToolGrants.agentId, agentId), eq(agentToolGrants.toolId, toolId)))
+        .where(and(
+          eq(agentToolGrants.companyId, companyId),
+          eq(agentToolGrants.agentId, agentId),
+          eq(agentToolGrants.toolId, toolId),
+        ))
         .then((rows) => rows[0] ?? null);
       if (existing) {
         const [updated] = await db.update(agentToolGrants)
           .set({ mode, grantedByUserId, updatedAt: new Date() })
-          .where(eq(agentToolGrants.id, existing.id))
+          .where(and(eq(agentToolGrants.id, existing.id), eq(agentToolGrants.companyId, companyId)))
           .returning();
         return updated;
       }

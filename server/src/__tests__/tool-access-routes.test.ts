@@ -134,4 +134,48 @@ describeEmbeddedPostgres("tool access routes", () => {
       },
     });
   });
+
+  it("rolls back all grant changes when one grant is invalid", async () => {
+    const app = createApp();
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const [readOnlyTool] = await db.insert(companyTools).values({
+      companyId,
+      key: "mcp.gbrain.query",
+      label: "GBrain query",
+      source: "mcp_tool",
+      adapter: "hermes_local",
+      serverKey: "gbrain",
+      toolName: "query",
+      risk: "read",
+      supportedModes: ["off", "read"],
+      render: { hermes: { mcpServer: "gbrain", includeTool: "query" } },
+    }).returning();
+    const [adminTool] = await db.insert(companyTools).values({
+      companyId,
+      key: "adapter_toolset.terminal",
+      label: "Terminal",
+      source: "adapter_toolset",
+      adapter: "hermes_local",
+      risk: "admin",
+      supportedModes: ["off", "admin"],
+      render: { hermes: { toolset: "terminal" } },
+    }).returning();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/tool-grants`)
+      .send({
+        grants: [
+          { agentId, toolId: adminTool.id, mode: "admin" },
+          { agentId, toolId: readOnlyTool.id, mode: "write" },
+        ],
+      })
+      .expect(422);
+
+    const grants = await db.select().from(agentToolGrants);
+    const logs = await db.select().from(activityLog);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(grants).toEqual([]);
+    expect(logs).toEqual([]);
+    expect(agent?.adapterConfig).toEqual({});
+  });
 });
