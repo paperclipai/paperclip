@@ -7,6 +7,9 @@ import {
   getCreateProviderBlockReason,
   getDefaultProviderConfigId,
   getProviderConfigBlockReason,
+  redactAbsolutePathsInMessage,
+  validateSecretKeyClient,
+  SECRET_KEY_HINT,
 } from "./Secrets";
 import type { SecretProviderHealthResponse } from "../api/secrets";
 
@@ -125,5 +128,58 @@ describe("Secrets page provider helpers", () => {
         status: "coming_soon",
       } as never),
     ).toBe("This provider vault is saved as draft metadata only.");
+  });
+});
+
+describe("redactAbsolutePathsInMessage", () => {
+  it("redacts unix absolute paths to a basename-only suffix", () => {
+    const message =
+      "Local encrypted provider configured with key file /tmp/paperclip-vitest-1821900-9-IHQ6xi/home/instances/vitest-1821900-9/secrets/master.key";
+    const redacted = redactAbsolutePathsInMessage(message);
+    expect(redacted).not.toContain("/tmp/paperclip-vitest");
+    expect(redacted).not.toContain("/home/instances");
+    expect(redacted).toContain("~/…/master.key");
+  });
+
+  it("redacts a trailing-punctuation path without losing the period", () => {
+    const message = "Secrets key file does not exist yet: /var/lib/paperclip/secrets/master.key.";
+    const redacted = redactAbsolutePathsInMessage(message);
+    expect(redacted).not.toContain("/var/lib/paperclip");
+    expect(redacted).toContain("~/…/master.key");
+  });
+
+  it("leaves short or non-path text alone", () => {
+    expect(redactAbsolutePathsInMessage("AWS managed path: paperclip/prod-us-1/company/key")).toBe(
+      "AWS managed path: paperclip/prod-us-1/company/key",
+    );
+    expect(redactAbsolutePathsInMessage("All good")).toBe("All good");
+  });
+
+  it("does not corrupt ARN references", () => {
+    const message = "Linked external reference arn:aws:secretsmanager:us-east-1:123:secret:foo/bar";
+    expect(redactAbsolutePathsInMessage(message)).toBe(message);
+  });
+});
+
+describe("validateSecretKeyClient", () => {
+  it("accepts allowed characters", () => {
+    expect(validateSecretKeyClient("sandbox.e2b.apiKey.pilot")).toBeNull();
+    expect(validateSecretKeyClient("OPENAI_API_KEY")).toBeNull();
+    expect(validateSecretKeyClient("my-secret-1")).toBeNull();
+    expect(validateSecretKeyClient("")).toBeNull();
+  });
+
+  it("rejects slashes with the user-friendly hint", () => {
+    expect(validateSecretKeyClient("foo/bar")).toBe(SECRET_KEY_HINT);
+  });
+
+  it("rejects other separators with the same hint", () => {
+    expect(validateSecretKeyClient("foo bar")).toBe(SECRET_KEY_HINT);
+    expect(validateSecretKeyClient("foo:bar")).toBe(SECRET_KEY_HINT);
+  });
+
+  it("publishes the same hint as a constant for the inline UI", () => {
+    expect(SECRET_KEY_HINT).toMatch(/slashes/i);
+    expect(SECRET_KEY_HINT).toMatch(/sandbox\.e2b\.apiKey\.pilot/);
   });
 });

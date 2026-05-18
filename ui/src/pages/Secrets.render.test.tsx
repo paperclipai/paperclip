@@ -1,11 +1,22 @@
 // @vitest-environment jsdom
 
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// React 19 only exports `act` from `react` when the development bundle is
+// loaded — i.e. when `process.env.NODE_ENV !== "production"`. QA environments
+// pin NODE_ENV to "production" before vitest starts. Force a non-production
+// NODE_ENV before any React import is evaluated.
+vi.hoisted(() => {
+  if (process.env.NODE_ENV === "production") {
+    process.env.NODE_ENV = "test";
+  }
+});
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CompanySecretProviderConfig, SecretProviderDescriptor } from "@paperclipai/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderVaultsTab, Secrets } from "./Secrets";
 
 const mockSecretsApi = vi.hoisted(() => ({
@@ -300,6 +311,160 @@ describe("Secrets page layout", () => {
     expect(document.body.textContent).toContain("Secret references");
     expect(document.body.textContent).toContain("CodexCoder");
     expect(document.body.textContent).toContain("env.OPENAI_API_KEY");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("masks the create-secret Value field by default and toggles to plain text on Show", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Secrets />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const openButtons = Array.from(container.querySelectorAll("button")).filter(
+      (btn) => btn.textContent?.trim() === "New secret",
+    );
+    expect(openButtons.length).toBeGreaterThan(0);
+    await act(async () => {
+      openButtons[0]!.click();
+    });
+    await flushReact();
+
+    const valueInput = document.querySelector(
+      '[data-testid="create-secret-value-input"]',
+    ) as HTMLInputElement | null;
+    expect(valueInput).not.toBeNull();
+    expect(valueInput!.type).toBe("password");
+
+    const toggleButton = document.querySelector(
+      '[data-testid="toggle-create-secret-value"]',
+    ) as HTMLButtonElement | null;
+    expect(toggleButton).not.toBeNull();
+    expect(toggleButton!.textContent).toContain("Show");
+
+    await act(async () => {
+      toggleButton!.click();
+    });
+    await flushReact();
+
+    const revealedInput = document.querySelector(
+      '[data-testid="create-secret-value-input"]',
+    ) as HTMLInputElement | null;
+    expect(revealedInput!.type).toBe("text");
+    expect(toggleButton!.textContent).toContain("Hide");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows a slash-rejecting inline hint on the Key field with no generic 'Validation error' shell", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Secrets />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const openButtons = Array.from(container.querySelectorAll("button")).filter(
+      (btn) => btn.textContent?.trim() === "New secret",
+    );
+    await act(async () => {
+      openButtons[0]!.click();
+    });
+    await flushReact();
+
+    const keyInput = document.querySelector("#new-secret-key") as HTMLInputElement | null;
+    expect(keyInput).not.toBeNull();
+
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      nativeInputValueSetter?.call(keyInput!, "foo/bar");
+      keyInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const hint = document.querySelector("#new-secret-key-hint");
+    expect(hint?.textContent ?? "").toMatch(/Slashes and other separators are not allowed/);
+    expect(hint?.textContent ?? "").toMatch(/sandbox\.e2b\.apiKey\.pilot/);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not render an absolute filesystem path in the provider health text by default", async () => {
+    mockSecretsApi.providerHealth.mockResolvedValue({
+      providers: [
+        {
+          provider: "local_encrypted",
+          status: "ok",
+          message:
+            "Local encrypted provider configured with key file /tmp/paperclip-vitest-1821900-9-IHQ6xi/home/instances/vitest-1821900-9/secrets/master.key",
+        },
+      ],
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Secrets />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const openButtons = Array.from(container.querySelectorAll("button")).filter(
+      (btn) => btn.textContent?.trim() === "New secret",
+    );
+    await act(async () => {
+      openButtons[0]!.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("/tmp/paperclip-vitest");
+    expect(document.body.textContent).not.toContain("/home/instances");
+    expect(document.body.textContent).toContain("~/…/master.key");
+
+    const detailsToggle = document.querySelector(
+      '[data-testid="toggle-provider-health-details"]',
+    ) as HTMLButtonElement | null;
+    expect(detailsToggle).not.toBeNull();
+    await act(async () => {
+      detailsToggle!.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("/tmp/paperclip-vitest");
 
     await act(async () => {
       root.unmount();
