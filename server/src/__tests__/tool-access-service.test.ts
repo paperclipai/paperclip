@@ -49,20 +49,20 @@ describeEmbeddedPostgres("toolAccessService", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    await db.insert(agents).values({
+    const [agent] = await db.insert(agents).values({
       id: agentId,
       companyId,
       name: "GBrain Researcher",
       role: "researcher",
       status: "active",
       adapterType: "hermes_local",
-      adapterConfig: {},
+      adapterConfig: { toolsets: "base" },
       runtimeConfig: {},
       permissions: {},
       createdAt: new Date(),
       updatedAt: new Date(),
-    });
-    return { companyId, agentId };
+    }).returning();
+    return { companyId, agentId, agent };
   }
 
   it("lists an empty matrix, creates a tool, and validates grant modes", async () => {
@@ -88,5 +88,49 @@ describeEmbeddedPostgres("toolAccessService", () => {
 
     expect(grant.mode).toBe("read");
     await expect(svc.setGrant(companyId, agentId, created.id, "write", null)).rejects.toThrow(/does not support mode/);
+  });
+
+  it("renders granted tools into Hermes adapter config", async () => {
+    const { companyId, agentId, agent } = await seedCompanyAndAgent();
+
+    const terminal = await svc.createTool(companyId, {
+      key: "adapter_toolset.terminal",
+      label: "Terminal",
+      source: "adapter_toolset",
+      adapter: "hermes_local",
+      risk: "admin",
+      supportedModes: ["off", "admin"],
+      render: { hermes: { toolset: "terminal" } },
+    });
+    const gbrain = await svc.createTool(companyId, {
+      key: "mcp.gbrain.query",
+      label: "GBrain query",
+      source: "mcp_tool",
+      adapter: "hermes_local",
+      serverKey: "gbrain",
+      toolName: "query",
+      risk: "read",
+      supportedModes: ["off", "read"],
+      render: { hermes: { mcpServer: "gbrain", includeTool: "query" } },
+    });
+
+    await svc.setGrant(companyId, agentId, terminal.id, "admin", null);
+    await svc.setGrant(companyId, agentId, gbrain.id, "read", null);
+
+    const rendered = await svc.renderHermesAgentConfig(companyId, agent);
+
+    expect(rendered.adapterConfig).toMatchObject({
+      toolsets: "base,terminal",
+      mcp_servers: {
+        gbrain: {
+          enabled: true,
+          tools: {
+            include: ["query"],
+            resources: false,
+            prompts: false,
+          },
+        },
+      },
+    });
   });
 });

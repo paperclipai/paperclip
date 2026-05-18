@@ -5,13 +5,14 @@ import {
   companyToolCreateSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, toolAccessService } from "../services/index.js";
+import { accessService, agentService, logActivity, toolAccessService } from "../services/index.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function toolAccessRoutes(db: Db) {
   const router = Router();
   const svc = toolAccessService(db);
+  const agents = agentService(db);
   const access = accessService(db);
 
   async function assertCanManage(req: Request, companyId: string) {
@@ -62,6 +63,19 @@ export function toolAccessRoutes(db: Db) {
         actor.actorType === "user" ? actor.actorId : null,
       );
       grants.push(saved);
+    }
+    const affectedAgentIds = new Set(grants.map((grant) => grant.agentId));
+    for (const agentId of affectedAgentIds) {
+      const agent = await agents.getById(agentId);
+      if (!agent || agent.companyId !== companyId || agent.adapterType !== "hermes_local") continue;
+      const rendered = await svc.renderHermesAgentConfig(companyId, agent);
+      await agents.update(agent.id, { adapterConfig: rendered.adapterConfig }, {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "tool_access_policy_render",
+        },
+      });
     }
     await logActivity(db, {
       companyId,

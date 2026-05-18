@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agentToolGrants, agents, companies, companyTools, createDb } from "@paperclipai/db";
@@ -100,6 +101,7 @@ describeEmbeddedPostgres("tool access routes", () => {
         toolName: "query",
         risk: "read",
         supportedModes: ["off", "read"],
+        render: { hermes: { mcpServer: "gbrain", includeTool: "query" } },
       })
       .expect(201);
 
@@ -117,5 +119,19 @@ describeEmbeddedPostgres("tool access routes", () => {
         mode: "read",
       }),
     ]);
+
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.adapterConfig).toMatchObject({
+      mcp_servers: {
+        gbrain: {
+          enabled: true,
+          tools: {
+            include: ["query"],
+            resources: false,
+            prompts: false,
+          },
+        },
+      },
+    });
   });
 });
