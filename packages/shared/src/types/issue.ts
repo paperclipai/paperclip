@@ -412,7 +412,9 @@ export interface IssueExecutionState {
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
   parentProofEnvelope?: Record<string, unknown>;
+  /** @deprecated Write parentProofEnvelope instead. Read support is backward-compatible only. */
   parentClosureProofEnvelope?: Record<string, unknown>;
+  /** @deprecated Write parentProofEnvelope instead. Read support is backward-compatible only. */
   parent_proof_envelope_v0_1?: Record<string, unknown>;
 }
 

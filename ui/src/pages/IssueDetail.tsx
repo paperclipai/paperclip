@@ -152,20 +152,14 @@ import {
   type IssueWorkMode,
   type IssueThreadInteraction,
   type RequestConfirmationInteraction,
+  type ResolveIssueRecoveryAction,
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
 } from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
 type ActionableIssueThreadInteraction = SuggestTasksInteraction | RequestConfirmationInteraction;
-type ResolveRecoveryActionOutcome =
-  | "restored"
-  | "false_positive"
-  | "blocked"
-  | "held"
-  | "resource_capped"
-  | "operator_paused"
-  | "cancelled";
+type ResolveRecoveryActionOutcome = ResolveIssueRecoveryAction["outcome"];
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;

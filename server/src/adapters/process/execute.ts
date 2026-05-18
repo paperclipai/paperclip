@@ -27,6 +27,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken && !env.PAPERCLIP_API_KEY?.trim()) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  // Always refresh the run ID from the current invocation so a configured/stale
+  // value cannot leak into the child process, unlike explicit API keys.
   env.PAPERCLIP_RUN_ID = runId;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
