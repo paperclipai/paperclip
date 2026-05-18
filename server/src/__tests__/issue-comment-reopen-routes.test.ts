@@ -67,6 +67,9 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  getActiveForIssue: vi.fn(async () => null),
+}));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
@@ -125,6 +128,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
+  issueRecoveryActionService: () => mockIssueRecoveryActionService,
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -238,6 +242,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
@@ -274,6 +279,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",

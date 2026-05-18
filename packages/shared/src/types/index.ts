@@ -136,11 +136,6 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
-  AgentDocumentSummary,
-  AgentDocument,
-  AgentDocumentRevision,
-} from "./agent-document.js";
-export type {
   IssueWorkProduct,
   IssueWorkProductType,
   IssueWorkProductProvider,
@@ -154,8 +149,18 @@ export type {
   IssueBlockerAttention,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueInboxAttentionKind,
+  IssueBlockedInboxAction,
+  IssueBlockedInboxAttention,
+  IssueBlockedInboxIssueRef,
+  IssueBlockedInboxOwner,
+  IssueBlockedInboxOwnerType,
+  IssueBlockedInboxReason,
+  IssueBlockedInboxSeverity,
+  IssueBlockedInboxState,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssueRecoveryAction,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
   IssueScheduledRetry,
@@ -274,6 +279,7 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineEnvConfig,
   RoutineManagedByPlugin,
   RoutineVariable,
   RoutineVariableDefaultValue,

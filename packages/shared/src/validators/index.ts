@@ -148,20 +148,21 @@ export {
 } from "./project.js";
 
 export {
-  documentKeySchema,
-  upsertAgentDocumentSchema,
-  type UpsertAgentDocument,
-} from "./agent-document.js";
-
-export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
+  issueBlockedInboxAttentionSchema,
+  issueBlockedInboxIssueRefSchema,
+  issueBlockedInboxReasonSchema,
+  issueBlockedInboxSeveritySchema,
+  issueBlockedInboxStateSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
+  issueRecoveryActionReadModelSchema,
+  resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -204,6 +205,8 @@ export {
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueExecutionWorkspaceSettings,
+  type IssueRecoveryActionReadModel,
+  type ResolveIssueRecoveryAction,
   type CheckoutIssue,
   type AddIssueComment,
   type CreateIssueThreadInteraction,

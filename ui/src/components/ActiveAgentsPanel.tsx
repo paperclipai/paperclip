@@ -1,16 +1,43 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+} from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+
+function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
+  const state = deriveActiveRecoveryDisplayState(action);
+  if (!state) return null;
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const Icon = tone.icon;
+  return (
+    <span
+      data-testid="active-agent-run-recovery-indicator"
+      data-recovery-state={state}
+      role="status"
+      aria-label={tone.label}
+      title={`${tone.label} — open the source issue to act.`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        tone.className,
+      )}
+    >
+      <Icon className="h-2.5 w-2.5" aria-hidden />
+      {tone.label}
+    </span>
+  );
+}
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -189,6 +216,11 @@ const AgentRunCard = memo(function AgentRunCard({
               {issue?.identifier ?? run.issueId.slice(0, 8)}
               {issue?.title ? ` - ${issue.title}` : ""}
             </Link>
+            {issue?.activeRecoveryAction ? (
+              <div className="mt-1.5">
+                <RunCardRecoveryChip action={issue.activeRecoveryAction} />
+              </div>
+            ) : null}
           </div>
         )}
       </div>

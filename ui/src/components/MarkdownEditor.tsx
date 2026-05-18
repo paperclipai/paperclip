@@ -31,8 +31,13 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildAgentMentionHref, buildProjectMentionHref, buildUserMentionHref } from "@paperclipai/shared";
-import { Boxes, User } from "lucide-react";
+import {
+  buildAgentMentionHref,
+  buildProjectMentionHref,
+  buildRoutineMentionHref,
+  buildUserMentionHref,
+} from "@paperclipai/shared";
+import { Boxes, CalendarClock, User } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -41,7 +46,7 @@ import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
-import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
+import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
 
@@ -188,7 +193,7 @@ interface MentionState {
   endPos: number;
 }
 
-type AutocompleteOption = MentionOption | SkillCommandOption;
+type AutocompleteOption = MentionOption | SlashCommandOption;
 
 interface MentionMenuViewport {
   offsetLeft: number;
@@ -260,7 +265,9 @@ export function findMentionMatch(
 
   if (atPos === -1) return null;
   const query = text.slice(atPos + 1, offset);
-  if (trigger === "skill" && /\s/.test(query)) return null;
+  if (trigger === "skill" && /\s/.test(query) && !query.toLowerCase().startsWith("routine:")) {
+    return null;
+  }
 
   return {
     trigger: trigger ?? "mention",
@@ -423,12 +430,21 @@ function mentionMarkdown(option: MentionOption): string {
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
-function skillMarkdown(option: SkillCommandOption): string {
+function slashCommandLabel(option: SlashCommandOption): string {
+  return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
+}
+
+function slashCommandMarkdown(option: SlashCommandOption): string {
+  if (option.kind === "routine") {
+    return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
+  }
   return `[/${option.slug}](${option.href}) `;
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" ? skillMarkdown(option) : mentionMarkdown(option);
+  return option.kind === "skill" || option.kind === "routine"
+    ? slashCommandMarkdown(option)
+    : mentionMarkdown(option);
 }
 
 export function shouldAcceptAutocompleteKey(
@@ -460,6 +476,9 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
 
   if (option.kind === "skill") {
     return parsed.kind === "skill" && parsed.skillId === option.skillId;
+  }
+  if (option.kind === "routine") {
+    return parsed.kind === "routine" && parsed.routineId === option.routineId;
   }
 
   if (option.kind === "project" && option.projectId) {
@@ -785,7 +804,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "skill") {
+      if (parsed.kind === "skill" || parsed.kind === "routine") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
@@ -1256,7 +1275,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   setMentionIndex(i);
                 }}
               >
-                {option.kind === "skill" ? (
+                {option.kind === "routine" ? (
+                  <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
@@ -1271,7 +1292,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>{option.kind === "skill" ? `/${option.slug}` : option.name}</span>
+                <span>
+                  {option.kind === "skill" || option.kind === "routine"
+                    ? slashCommandLabel(option)
+                    : option.name}
+                </span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project
@@ -1285,6 +1310,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "skill" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Skill
+                  </span>
+                )}
+                {option.kind === "routine" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Routine
                   </span>
                 )}
               </button>

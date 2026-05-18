@@ -25,7 +25,7 @@ export const envBindingSchema = z.union([
   envBindingSecretRefSchema,
 ]);
 
-export const envConfigSchema = z.record(envBindingSchema);
+export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
 export const createSecretSchema = z.object({
   name: z.string().min(1),
@@ -36,7 +36,7 @@ export const createSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
 }).superRefine((value, ctx) => {
   if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
@@ -83,7 +83,7 @@ export const updateSecretSchema = z.object({
   providerConfigId: z.string().uuid().optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export type UpdateSecret = z.infer<typeof updateSecretSchema>;
@@ -198,7 +198,7 @@ export const createSecretProviderConfigSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
 }).superRefine((value, ctx) => {
   rejectSensitiveProviderConfigKeys(value.config, ctx);
   const parsed = secretProviderConfigPayloadSchema.safeParse({
@@ -236,7 +236,7 @@ export const updateSecretProviderConfigSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
 }).superRefine((value, ctx) => {
   if (value.config !== undefined) {
     rejectSensitiveProviderConfigKeys(value.config, ctx);
@@ -268,7 +268,7 @@ export const remoteSecretImportSelectionSchema = z.object({
   key: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]+$/).optional().nullable(),
   description: z.string().trim().max(500).optional().nullable(),
   providerVersionRef: z.string().trim().min(1).max(512).optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export const remoteSecretImportSchema = z.object({

@@ -61,6 +61,19 @@ export type SuccessfulRunHandoffNotice = {
   metadata: IssueCommentMetadata;
 };
 
+export function noticeMetadataReferencesRecoveryAction(
+  metadata: IssueCommentMetadata | null | undefined,
+  recoveryActionId: string,
+) {
+  return (metadata?.sections ?? []).some((section) =>
+    section.rows.some((row) =>
+      row.type === "key_value" &&
+      row.label === "Recovery action" &&
+      row.value === recoveryActionId,
+    ),
+  );
+}
+
 export type SuccessfulRunHandoffDecision =
   | {
       kind: "enqueue";
@@ -181,6 +194,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
   correctiveRun: NullableNoticeRun;
   sourceAssignee: NullableNoticeAgent;
   recoveryIssue: NullableNoticeIssue;
+  recoveryActionId?: string | null;
   recoveryOwner: NullableNoticeAgent;
   latestIssueStatus: string;
   latestHandoffRunStatus: string;
@@ -200,7 +214,9 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
           title: "Recovery owner",
           rows: [
             issueLinkRow("Source issue", input.issue),
-            issueLinkRow("Recovery issue", input.recoveryIssue),
+            input.recoveryActionId
+              ? keyValueRow("Recovery action", input.recoveryActionId)
+              : issueLinkRow("Recovery issue", input.recoveryIssue),
             agentLinkRow("Recovery owner", input.recoveryOwner),
             agentLinkRow("Source assignee", input.sourceAssignee),
             keyValueRow("Suggested action", "choose and record a valid issue disposition without copying transcript content"),
