@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -621,6 +621,66 @@ export function issueThreadInteractionService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return row ? hydrateInteraction(row) : null;
+    },
+
+    listPendingForIssues: async (
+      companyId: string,
+      issueIds: string[],
+    ): Promise<Map<string, Array<{
+      id: string;
+      kind: string;
+      title: string | null;
+      summary: string | null;
+      createdAt: Date;
+      createdByAgentId: string | null;
+      createdByUserId: string | null;
+    }>>> => {
+      const result = new Map<string, Array<{
+        id: string;
+        kind: string;
+        title: string | null;
+        summary: string | null;
+        createdAt: Date;
+        createdByAgentId: string | null;
+        createdByUserId: string | null;
+      }>>();
+      if (issueIds.length === 0) return result;
+
+      const rows = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          kind: issueThreadInteractions.kind,
+          title: issueThreadInteractions.title,
+          summary: issueThreadInteractions.summary,
+          createdAt: issueThreadInteractions.createdAt,
+          createdByAgentId: issueThreadInteractions.createdByAgentId,
+          createdByUserId: issueThreadInteractions.createdByUserId,
+        })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            inArray(issueThreadInteractions.issueId, issueIds),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id));
+
+      for (const row of rows) {
+        const list = result.get(row.issueId) ?? [];
+        list.push({
+          id: row.id,
+          kind: row.kind,
+          title: row.title ?? null,
+          summary: row.summary ?? null,
+          createdAt: row.createdAt,
+          createdByAgentId: row.createdByAgentId ?? null,
+          createdByUserId: row.createdByUserId ?? null,
+        });
+        result.set(row.issueId, list);
+      }
+      return result;
     },
 
     create: async (
