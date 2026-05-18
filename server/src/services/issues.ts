@@ -53,6 +53,7 @@ import {
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { trackStaleExecutionRunIdDetected } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -3372,10 +3373,10 @@ export function issueService(db: Db) {
 
       const tc = getTelemetryClient();
       if (tc) {
-        tc.track("stale_execution_run_id_detected", {
-          issue_id: issueId,
-          stale_run_id: staleRunId,
-          age_minutes: ageMinutes,
+        trackStaleExecutionRunIdDetected(tc, {
+          issueId,
+          staleRunId,
+          ageMinutes,
         });
       }
     } catch (err) {
