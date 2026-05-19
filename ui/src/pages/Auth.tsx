@@ -5,8 +5,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
-import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles } from "lucide-react";
+import { CheckCircle2, ClipboardList, Sparkles, Workflow } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -175,9 +174,66 @@ export function AuthPage() {
         </div>
       </div>
 
-      {/* Right half — ASCII art animation (hidden on mobile) */}
-      <div className="hidden md:block w-1/2 overflow-hidden">
-        <AsciiArtAnimation />
+      {/* Right half — product value hero (hidden on mobile) */}
+      <div className="hidden md:flex w-1/2 overflow-hidden bg-slate-950 text-white">
+        <div className="relative flex min-h-full w-full items-center justify-center p-12">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_25%_20%,rgba(59,130,246,0.32),transparent_34%),radial-gradient(circle_at_78%_72%,rgba(249,115,22,0.26),transparent_30%),linear-gradient(135deg,rgba(15,23,42,1),rgba(30,41,59,1))]" />
+          <div className="absolute left-12 top-12 h-24 w-24 rounded-full bg-blue-500/10 blur-2xl" />
+          <div className="absolute bottom-14 right-12 h-32 w-32 rounded-full bg-orange-500/10 blur-2xl" />
+
+          <div className="relative z-10 w-full max-w-lg space-y-8">
+            <div className="space-y-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-xs font-medium text-blue-100 shadow-sm backdrop-blur">
+                <Sparkles className="h-3.5 w-3.5" />
+                AI work operating system
+              </div>
+              <h2 className="text-4xl font-semibold leading-tight tracking-tight">
+                Turn every request into visible, trackable work.
+              </h2>
+              <p className="max-w-md text-base leading-7 text-slate-300">
+                Paperclip keeps goals, agents, issues, reviews, and outcomes in one control plane so the team can see what is moving and what needs attention.
+              </p>
+            </div>
+
+            <div className="grid gap-3">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-2xl backdrop-blur">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-blue-500/20 p-2 text-blue-200">
+                    <ClipboardList className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-white">Plan</p>
+                    <p className="mt-1 text-sm leading-6 text-slate-300">Break goals into clear issues with owners, priority, and success criteria.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-2xl backdrop-blur">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-orange-500/20 p-2 text-orange-200">
+                    <Workflow className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-white">Operate</p>
+                    <p className="mt-1 text-sm leading-6 text-slate-300">Follow work through Todo, Doing, Review, Blocked, and Done without losing context.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-2xl backdrop-blur">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-emerald-500/20 p-2 text-emerald-200">
+                    <CheckCircle2 className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-white">Verify</p>
+                    <p className="mt-1 text-sm leading-6 text-slate-300">Review outputs, capture decisions, and keep the final result connected to the work.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
