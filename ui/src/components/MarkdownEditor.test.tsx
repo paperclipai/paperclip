@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
@@ -553,6 +553,16 @@ describe("MarkdownEditor", () => {
     expect(findMentionMatch("/open issue", "/open issue".length)).toBeNull();
   });
 
+  it("keeps routine slash queries active across spaces", () => {
+    expect(findMentionMatch("/routine:Weekly release review", "/routine:Weekly release review".length)).toEqual({
+      trigger: "skill",
+      marker: "/",
+      query: "routine:Weekly release review",
+      atPos: 0,
+      endPos: "/routine:Weekly release review".length,
+    });
+  });
+
   it("does not treat Enter as skill autocomplete accept", () => {
     expect(shouldAcceptAutocompleteKey("Enter", "skill")).toBe(false);
     expect(shouldAcceptAutocompleteKey("Enter", "skill", true)).toBe(true);
@@ -621,6 +631,26 @@ describe("MarkdownEditor", () => {
     });
 
     expect(found).toBe(skillLink);
+  });
+
+  it("finds routine anchors by mention metadata instead of visible text", () => {
+    const editable = document.createElement("div");
+    const routineLink = document.createElement("a");
+    routineLink.setAttribute("href", buildRoutineMentionHref("routine-123"));
+    routineLink.textContent = "/routine:Weekly release review ";
+    editable.appendChild(routineLink);
+
+    const found = findClosestAutocompleteAnchor(editable, {
+      id: "routine:routine-123",
+      kind: "routine",
+      routineId: "routine-123",
+      name: "Weekly release review",
+      status: "active",
+      href: buildRoutineMentionHref("routine-123"),
+      aliases: ["routine:Weekly release review", "Weekly release review"],
+    });
+
+    expect(found).toBe(routineLink);
   });
 
   it("places the caret after the mention's trailing space when present", () => {
@@ -717,6 +747,19 @@ describe("MarkdownEditor", () => {
     expect(handleChange).toHaveBeenCalledWith(
       `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("marks the autocomplete portal as floating UI for modal pointer handling", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+
+    const menu = option.closest("[data-paperclip-floating-ui]");
+    expect(menu).toBeTruthy();
+    expect(menu?.className).toContain("pointer-events-auto");
 
     await act(async () => {
       root.unmount();

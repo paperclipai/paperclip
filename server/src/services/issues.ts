@@ -73,7 +73,10 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
-import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+import {
+  parseIssueGraphLivenessIncidentKey,
+  RECOVERY_ORIGIN_KINDS,
+} from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -4515,6 +4518,25 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status &&
+          existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+        ) {
+          const parsedIncident = parseIssueGraphLivenessIncidentKey(existing.originId);
+          if (parsedIncident?.issueId && parsedIncident.companyId === existing.companyId) {
+            await tx
+              .delete(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, existing.companyId),
+                  eq(issueRelations.issueId, existing.id),
+                  eq(issueRelations.relatedIssueId, parsedIncident.issueId),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              );
+          }
+        }
         return enriched;
       };
 

@@ -486,8 +486,12 @@ export async function writePluginLocalFolderTextAtomic(
   contents: string,
 ) {
   const rootRealPath = await fs.realpath(rootPath);
-  const resolved = await resolvePluginLocalFolderPath(rootPath, relativePath);
-  await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+  const normalized = normalizeRelativePath(relativePath);
+  const parentRelativePath = path.dirname(normalized);
+  if (parentRelativePath !== ".") {
+    await ensureDirectoryInsideRoot(rootRealPath, parentRelativePath);
+  }
+  const resolved = await resolvePluginLocalFolderPath(rootRealPath, normalized);
   await assertPathInsideRoot(rootRealPath, path.dirname(resolved.absolutePath));
   const tempPath = path.join(
     path.dirname(resolved.absolutePath),

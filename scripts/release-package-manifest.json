@@ -37,7 +37,7 @@
   {
     "dir": "packages/adapters/grok-local",
     "name": "@paperclipai/adapter-grok-local",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/adapters/opencode-local",
@@ -68,6 +68,11 @@
     "dir": "packages/plugins/sdk",
     "name": "@paperclipai/plugin-sdk",
     "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/plugin-workspace-diff",
+    "name": "@paperclipai/plugin-workspace-diff",
+    "publishFromCi": false
   },
   {
     "dir": "server",
@@ -107,6 +112,11 @@
   {
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@paperclipai/plugin-e2b",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/modal",
+    "name": "@paperclipai/plugin-modal",
     "publishFromCi": true
   },
   {
