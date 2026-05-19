@@ -1008,22 +1008,20 @@ describe("claude execute", () => {
 
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-rate-limit-"));
-    const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "claude");
-    await fs.mkdir(workspace, { recursive: true });
-    await writeFailingClaudeCommand(commandPath, {
-      resultEvent: {
-        type: "result",
-        subtype: "error",
-        session_id: "claude-session-overloaded",
-        is_error: true,
-        result: "Overloaded",
-        errors: [{ type: "overloaded_error", message: "Overloaded_error: API is overloaded." }],
-      },
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (targetPath) =>
+        writeFailingClaudeCommand(targetPath, {
+          resultEvent: {
+            type: "result",
+            subtype: "error",
+            session_id: "claude-session-overloaded",
+            is_error: true,
+            result: "Overloaded",
+            errors: [{ type: "overloaded_error", message: "Overloaded_error: API is overloaded." }],
+          },
+        }),
     });
-
-    const previousHome = process.env.HOME;
-    process.env.HOME = root;
+    const logs: string[] = [];
 
     try {
       const result = await execute({
@@ -1045,10 +1043,13 @@ describe("claude execute", () => {
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Follow the paperclip heartbeat.",
+          transientRetryBudgetMs: 0,
         },
         context: {},
         authToken: "run-jwt-token",
-        onLog: async () => {},
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
       });
 
       expect(result.exitCode).toBe(1);
@@ -1057,9 +1058,9 @@ describe("claude execute", () => {
       expect(result.retryNotBefore ?? null).toBeNull();
       expect(result.resultJson?.retryNotBefore ?? null).toBeNull();
       expect(result.resultJson?.transientRetryNotBefore ?? null).toBeNull();
+      expect(logs.join("")).toContain("Transient retry budget (0ms) exhausted");
     } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
+      restore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
