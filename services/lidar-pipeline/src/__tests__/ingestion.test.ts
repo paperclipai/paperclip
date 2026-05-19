@@ -30,6 +30,31 @@ describe("parseLas", () => {
     expect(p.timestamp).toBe(ts);
   });
 
+  it("converts GPS adjusted standard time to Unix ms for format 1 (globalEncoding bit 0 = 1)", () => {
+    // GPS adjusted standard time for ~2023-01-01 00:00:00 UTC:
+    //   Unix = 1_672_531_200  →  GPS std = 1_672_531_200 − 315_964_800 = 1_356_566_400
+    //   GPS adjusted = 1_356_566_400 − 1_000_000_000 = 356_566_400
+    const gpsAdjusted = 356_566_400;
+    const expectedUnixMs = (gpsAdjusted + 1_000_000_000 + 315_964_800) * 1000;
+
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 1, globalEncoding: 0x01, gpsTimesPerPoint: [gpsAdjusted] },
+    );
+    const [p] = parseLas(buf, Date.now());
+    expect(p.timestamp).toBe(expectedUnixMs);
+  });
+
+  it("falls back to receivedAt for format 1 with GPS week time (globalEncoding bit 0 = 0)", () => {
+    const receivedAt = 1_700_000_000_000;
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 1, globalEncoding: 0x00, gpsTimesPerPoint: [12345.678] },
+    );
+    const [p] = parseLas(buf, receivedAt);
+    expect(p.timestamp).toBe(receivedAt);
+  });
+
   it("throws LasParseError for an empty buffer", () => {
     expect(() => parseLas(Buffer.alloc(10), Date.now())).toThrow(LasParseError);
   });
