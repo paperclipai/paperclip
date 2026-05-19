@@ -20,6 +20,11 @@ on:
         required: true
         type: boolean
         default: false
+      publish_canary:
+        description: Explicitly publish an npm canary for source_ref. Default off. When true, the stable jobs are skipped and the canary verify/publish path runs instead. Missing npm auth still fails the job closed without exposing secrets.
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.event_name }}-${{ github.ref }}
@@ -27,7 +32,13 @@ concurrency:
 
 jobs:
   verify_canary:
-    if: github.event_name == 'push'
+    # Canary verification runs on every push to master so the enterprise release
+    # path keeps proving typecheck/tests/build green even when the optional npm
+    # publish below is disabled. Also runs on workflow_dispatch when an operator
+    # explicitly opts in to a canary publish.
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_canary == true)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -38,6 +49,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -66,7 +78,16 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Optional, default-off. Two ways to enable:
+    #   1. Repo-level variable `ENABLE_NPM_CANARY_PUBLISH=true` makes every push
+    #      to master attempt a canary publish.
+    #   2. workflow_dispatch input `publish_canary=true` is a one-shot operator
+    #      gate that publishes a canary for the chosen `source_ref`.
+    # When neither gate is set, `verify_canary` still proves the release path is
+    # green, and a missing or misconfigured npm trust does not red the run.
+    if: |
+      (github.event_name == 'push' && vars.ENABLE_NPM_CANARY_PUBLISH == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_canary == true)
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -80,6 +101,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -109,7 +131,22 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
-        run: ./scripts/release.sh canary --skip-verify
+        run: |
+          set -o pipefail
+          publish_log="$(mktemp)"
+          if ./scripts/release.sh canary --skip-verify 2>&1 | tee "$publish_log"; then
+            exit 0
+          fi
+          status=${PIPESTATUS[0]}
+          if grep -qiE 'ENEEDAUTH|need auth|E401|401 Unauthorized|missing.*auth' "$publish_log"; then
+            {
+              echo "::error title=npm canary publish blocked::pnpm publish reported a missing or invalid npm credential."
+              echo "::error::This job is gated and only runs when ENABLE_NPM_CANARY_PUBLISH=true (push) or workflow_dispatch input publish_canary=true."
+              echo "::error::Trusted publishing requires the npm package owners to grant OIDC trust to this repository and workflow on registry.npmjs.org."
+              echo "::error::Do NOT paste raw npm tokens into logs, comments, or this workflow. Configure trusted publishing via the npm web UI and retry."
+            } >&2
+          fi
+          exit "$status"
 
       - name: Push canary tag
         run: |
@@ -121,7 +158,7 @@ jobs:
           git push origin "refs/tags/${tag}"
 
   verify_stable:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_canary != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -161,7 +198,7 @@ jobs:
         run: pnpm build
 
   preview_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_canary != true && inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -203,7 +240,7 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_canary != true && !inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
