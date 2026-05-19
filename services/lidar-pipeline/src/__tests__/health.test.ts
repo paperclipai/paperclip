@@ -113,3 +113,62 @@ describe("IngestionTracker", () => {
     expect(status.ingestionRate).toBe(10); // 600 / 60
   });
 });
+
+describe("IngestionTracker — degraded status", () => {
+  it("returns degraded when the most-recent sensor event is older than the stale threshold", () => {
+    const tracker = new IngestionTracker();
+    const now = 1_000_000;
+    // Record at 31 s ago — within the 60 s eviction window but past the 30 s stale threshold
+    tracker.record("sensor-a", 100, now - 31_000);
+    const status = tracker.getStatus(now);
+    expect(status.status).toBe("degraded");
+    expect(status.activeSensors).toBe(1);
+  });
+
+  it("returns ok when the most-recent event is exactly at the stale threshold boundary", () => {
+    const tracker = new IngestionTracker();
+    const now = 1_000_000;
+    // Exactly 30 s ago — at the boundary, should still be ok
+    tracker.record("sensor-a", 100, now - 30_000);
+    const status = tracker.getStatus(now);
+    expect(status.status).toBe("ok");
+  });
+
+  it("returns degraded when multiple sensors are active but all are stale", () => {
+    const tracker = new IngestionTracker();
+    const now = 1_000_000;
+    tracker.record("sensor-a", 100, now - 45_000);
+    tracker.record("sensor-b", 200, now - 35_000);
+    const status = tracker.getStatus(now);
+    expect(status.status).toBe("degraded");
+    expect(status.activeSensors).toBe(2);
+  });
+
+  it("returns ok when at least one sensor has a fresh event even if others are stale", () => {
+    const tracker = new IngestionTracker();
+    const now = 1_000_000;
+    tracker.record("sensor-a", 100, now - 45_000); // stale
+    tracker.record("sensor-b", 200, now - 5_000);  // fresh
+    const status = tracker.getStatus(now);
+    expect(status.status).toBe("ok");
+  });
+
+  it("respects a custom staleThresholdMs on construction", () => {
+    const tracker = new IngestionTracker({ staleThresholdMs: 10_000 });
+    const now = 1_000_000;
+    // 11 s old — past the custom 10 s threshold
+    tracker.record("sensor-a", 100, now - 11_000);
+    const status = tracker.getStatus(now);
+    expect(status.status).toBe("degraded");
+  });
+
+  it("reverts from degraded back to ok after a fresh record arrives", () => {
+    const tracker = new IngestionTracker();
+    const now = 1_000_000;
+    tracker.record("sensor-a", 100, now - 40_000);
+    expect(tracker.getStatus(now).status).toBe("degraded");
+
+    tracker.record("sensor-a", 200, now);
+    expect(tracker.getStatus(now).status).toBe("ok");
+  });
+});
