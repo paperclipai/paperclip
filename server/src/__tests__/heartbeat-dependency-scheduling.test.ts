@@ -138,7 +138,20 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns);
       const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
+      // Also drain pending agentWakeupRequests. finalizeIssueCommentPolicy
+      // enqueues a `missing_issue_comment` retry wake when a successful run
+      // didn't post an issue comment (heartbeat.ts:4977). That wake lives in
+      // agentWakeupRequests until the dispatcher claims it; if afterEach
+      // only watched heartbeatRuns it could exit during the gap between
+      // wake-queued and run-claimed, then the in-flight wake would dispatch
+      // mid-cleanup and insert an issue_comment row between line 152
+      // (delete issueComments) and line 158 (delete issues) → FK violation
+      // on `issue_comments_issue_id_issues_id_fk`.
+      const pendingWakes = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests);
+      const hasPendingWake = pendingWakes.some((wake) => wake.status === "queued");
+      if (!hasActiveRun && !hasPendingWake) {
         idlePolls += 1;
         if (idlePolls >= 3) break;
       } else {
