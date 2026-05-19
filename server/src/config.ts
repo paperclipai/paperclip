@@ -85,6 +85,8 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  heartbeatRunMaxRuntimeMs: number;
+  heartbeatRunReaperGraceMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +333,8 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    heartbeatRunMaxRuntimeMs: Math.max(60_000, Number(process.env.HEARTBEAT_RUN_MAX_RUNTIME_MS) || 15 * 60_000),
+    heartbeatRunReaperGraceMs: Math.max(1_000, Number(process.env.HEARTBEAT_RUN_REAPER_GRACE_MS) || 30_000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

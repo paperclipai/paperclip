@@ -108,15 +108,17 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       await db.delete(companies);
       return;
     } catch (error) {
-      const isLateCommentRace =
+      // Heartbeat completion can write issue-thread comments and activity_log
+      // entries shortly after the run leaves queued/running. Retry the
+      // dependent deletes once those late writes land.
+      const isLateWriteRace =
         error instanceof Error &&
-        error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 4) {
+        (error.message.includes("issue_comments_issue_id_issues_id_fk") ||
+          error.message.includes("activity_log_run_id_heartbeat_runs_id_fk"));
+      if (!isLateWriteRace || attempt === 4) {
         throw error;
       }
 
-      // Heartbeat completion can write issue-thread comments shortly after the
-      // run leaves queued/running. Retry the dependent deletes once those land.
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
