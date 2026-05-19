@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   createPluginSecretsHandler,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 
-describe("createPluginSecretsHandler", () => {
+// Fork patch: this whole file tests upstream PR #5429's "fail closed" gate
+// (plugin secret refs disabled until company-scoped plugin config lands).
+// Our companion patch in services/plugin-secrets-handler.ts restores the
+// working secret-resolution path so installed plugins (telegram, slack,
+// etc.) keep functioning. Skip the gate-specific cases until upstream lands
+// company-scoped config and we revert the restore.
+describe.skip("createPluginSecretsHandler (gate)", () => {
   it("fails closed for plugin secret resolution until company scoping lands", async () => {
     const handler = createPluginSecretsHandler({
       db: {} as never,
