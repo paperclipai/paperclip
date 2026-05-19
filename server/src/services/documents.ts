@@ -1,8 +1,13 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import {
+  isSystemIssueDocumentKey,
+  issueDocumentKeySchema,
+  PAPERCLIP_SESSION_DOCUMENT_KEY,
+  PAPERCLIP_SESSION_RECEIPT_DOCUMENT_KEY_PREFIX,
+} from "@paperclipai/shared";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -11,6 +16,10 @@ function normalizeDocumentKey(key: string) {
     throw unprocessable("Invalid document key", parsed.error.issues);
   }
   return parsed.data;
+}
+
+function isReservedSessionDocumentKey(key: string) {
+  return key === PAPERCLIP_SESSION_DOCUMENT_KEY || key.startsWith(PAPERCLIP_SESSION_RECEIPT_DOCUMENT_KEY_PREFIX);
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -203,14 +212,25 @@ export function documentService(db: Db) {
       createdByUserId?: string | null;
       createdByRunId?: string | null;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
+      allowReservedSessionDocumentKey?: boolean;
+      expectedCompanyId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
+      if (isReservedSessionDocumentKey(key) && !input.allowReservedSessionDocumentKey) {
+        throw forbidden("Session documents must be written through the session service");
+      }
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
+      if (input.expectedCompanyId && issue.companyId !== input.expectedCompanyId) {
+        throw unprocessable("Issue does not belong to expected company", {
+          issueCompanyId: issue.companyId,
+          expectedCompanyId: input.expectedCompanyId,
+        });
+      }
 
       const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -703,6 +723,9 @@ export function documentService(db: Db) {
 
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
+      if (isReservedSessionDocumentKey(key)) {
+        throw forbidden("Session documents must be deleted through the session service");
+      }
       return db.transaction(async (tx) => {
         const existing = await tx
           .select(issueDocumentSelect)

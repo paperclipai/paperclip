@@ -9,6 +9,7 @@ import type {
   RoutineVariableType,
 } from "../constants.js";
 import type { EnvBinding } from "./secrets.js";
+import type { PaperclipLinkedSessionRoutinePolicy } from "../validators/session.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -65,6 +66,7 @@ export interface Routine {
   env?: RoutineEnvConfig | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
+  linkedSessionPolicy: PaperclipLinkedSessionRoutinePolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;
@@ -103,6 +105,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   catchUpPolicy: RoutineCatchUpPolicy;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  linkedSessionPolicy: PaperclipLinkedSessionRoutinePolicy | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {

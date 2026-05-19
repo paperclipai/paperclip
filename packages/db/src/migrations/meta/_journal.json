@@ -631,6 +631,13 @@
       "when": 1779129600000,
       "tag": "0089_direct_exec_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1779210328000,
+      "tag": "0090_routine_linked_session_policy",
+      "breakpoints": true
     }
   ]
 }

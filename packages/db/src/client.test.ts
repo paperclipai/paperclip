@@ -129,7 +129,8 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       expect(pendingState.appliedMigrations.at(-2)).toBe("0050_tiresome_gambit.sql");
       expect(pendingState.appliedMigrations.at(-1)).toBe("0051_calm_puff_adder.sql");
       expect(pendingState.pendingMigrations[0]).toBe("0052_stiff_luckman.sql");
-      expect(pendingState.pendingMigrations.at(-1)).toBe("0089_direct_exec_contract.sql");
+      expect(pendingState.pendingMigrations).toContain("0089_direct_exec_contract.sql");
+      expect(pendingState.pendingMigrations.at(-1)).toBe("0090_routine_linked_session_policy.sql");
 
       await applyPendingMigrations(connectionString);
 
@@ -182,7 +183,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND (
-                (table_name = 'routines' AND column_name = 'env')
+                (table_name = 'routines' AND column_name IN ('env', 'linked_session_policy'))
                 OR (table_name = 'routine_runs' AND column_name = 'routine_revision_id')
               )
             ORDER BY table_name, column_name
@@ -191,6 +192,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         expect(routineColumns).toEqual([
           { table_name: "routine_runs", column_name: "routine_revision_id" },
           { table_name: "routines", column_name: "env" },
+          { table_name: "routines", column_name: "linked_session_policy" },
         ]);
       } finally {
         await verifySql.end();

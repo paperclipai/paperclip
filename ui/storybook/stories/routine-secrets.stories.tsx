@@ -158,6 +158,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
       catchUpPolicy: "skip_missed",
       variables: [],
       env,
+      linkedSessionPolicy: null,
     },
     triggers: [],
   };
@@ -178,6 +179,7 @@ function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Ro
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
     variables: [],
+    linkedSessionPolicy: null,
     env: makeSnapshot({
       OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai", version: "latest" },
       STAGE: { type: "plain", value: "production" },

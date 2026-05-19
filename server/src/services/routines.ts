@@ -23,9 +23,12 @@ import {
   standupPolicies,
   standupSessions,
 } from "@paperclipai/db";
+import { PAPERCLIP_SESSION_SCHEMA_VERSION } from "@paperclipai/shared";
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
+  PaperclipLinkedSessionRoutinePolicy,
+  PaperclipSessionDocument,
   Routine,
   RoutineDetail,
   RoutineListItem,
@@ -63,6 +66,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import { standupService } from "./standups.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { sessionService } from "./sessions.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -511,6 +515,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    linkedSessionPolicy: routine.linkedSessionPolicy ?? null,
   };
 }
 
@@ -580,6 +585,7 @@ export function routineService(
     pluginWorkerManager: deps.pluginWorkerManager,
   });
   const standupSvc = standupService(db);
+  const sessionSvc = sessionService(db);
 
   async function getRoutineById(id: string) {
     return db
@@ -1472,6 +1478,259 @@ export function routineService(
       );
   }
 
+  async function createRoutineSessionServiceRun(input: {
+    routine: typeof routines.$inferSelect;
+    policy: PaperclipLinkedSessionRoutinePolicy;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    source: "schedule" | "manual" | "api" | "webhook";
+    routineRunId: string;
+    triggeredAt: Date;
+    assigneeAgentId: string;
+  }) {
+    const [serviceRun] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: input.routine.companyId,
+        agentId: input.assigneeAgentId,
+        invocationSource: "routine_session",
+        triggerDetail: input.source,
+        status: "completed",
+        startedAt: input.triggeredAt,
+        finishedAt: input.triggeredAt,
+        contextSnapshot: {
+          routineId: input.routine.id,
+          routineRunId: input.routineRunId,
+          triggerId: input.trigger?.id ?? null,
+          source: input.source,
+          policyKey: input.policy.policyKey,
+          policyVersion: input.policy.policyVersion,
+          sessionType: input.policy.sessionType,
+          allowedSessionTypes: [input.policy.sessionType],
+          routerRevoked: false,
+          routerKillSwitch: false,
+        },
+      })
+      .returning({ id: heartbeatRuns.id });
+    return serviceRun.id;
+  }
+
+  async function dispatchSessionRoutineRun(
+    input: DispatchRoutineRunInput,
+    policy: PaperclipLinkedSessionRoutinePolicy,
+  ) {
+    const assigneeAgentId = input.routine.assigneeAgentId;
+    if (!assigneeAgentId) {
+      throw unprocessable("Default agent required");
+    }
+    const claim = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(
+        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+      );
+
+      if (input.idempotencyKey) {
+        const existing = await txDb
+          .select()
+          .from(routineRuns)
+          .where(
+            and(
+              eq(routineRuns.companyId, input.routine.companyId),
+              eq(routineRuns.routineId, input.routine.id),
+              eq(routineRuns.source, input.source),
+              eq(routineRuns.idempotencyKey, input.idempotencyKey),
+              input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
+            ),
+          )
+          .orderBy(desc(routineRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) return { run: existing, existing: true, nextRunAt: undefined, triggeredAt: existing.triggeredAt };
+      }
+
+      const triggeredAt = input.triggeredAt ?? new Date();
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          source: input.source,
+          status: "received",
+          triggeredAt,
+          idempotencyKey: input.idempotencyKey ?? null,
+          triggerPayload: input.payload ?? null,
+        })
+        .returning();
+
+      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
+        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+        : undefined;
+
+      return { run: createdRun, existing: false, nextRunAt, triggeredAt };
+    });
+
+    if (claim.existing) return claim.run;
+
+    const payload = asRecord(input.payload);
+    let sessionIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
+    const serviceRunId = optionalString(payload.serviceRunId) ?? await createRoutineSessionServiceRun({
+      routine: input.routine,
+      policy,
+      trigger: input.trigger,
+      source: input.source,
+      routineRunId: claim.run.id,
+      triggeredAt: claim.triggeredAt,
+      assigneeAgentId,
+    });
+
+    try {
+      sessionIssue = await issueSvc.create(input.routine.companyId, {
+        projectId: input.routine.projectId,
+        goalId: input.routine.goalId,
+        parentId: input.routine.parentIssueId,
+        title: input.routine.title,
+        description: [
+          input.routine.description ?? policy.objective,
+          "",
+          `Session policy: ${policy.policyKey}@${policy.policyVersion}`,
+          `Routine run: ${claim.run.id}`,
+          `Service run: ${serviceRunId}`,
+        ].join("\n"),
+        status: "todo",
+        priority: input.routine.priority,
+        assigneeAgentId,
+        originKind: "session_routine",
+        originId: input.routine.id,
+        originRunId: claim.run.id,
+      });
+
+      const now = claim.triggeredAt.toISOString();
+      const triggerSnapshot = {
+        routineId: input.routine.id,
+        triggerId: input.trigger?.id ?? null,
+        routineRunId: claim.run.id,
+        serviceRunId,
+        source: input.source,
+        triggerSource: input.source,
+        idempotencyKey: input.idempotencyKey ?? null,
+        scheduledFor: input.scheduledFor?.toISOString() ?? null,
+        missedRunRecovered: input.missedRunRecovered ?? false,
+        payload,
+      };
+      const source = policy.source ?? {
+        triggerClass: null,
+        source: "paperclip-routine",
+        sourceId: input.routine.id,
+        collectedAt: now,
+        snapshot: triggerSnapshot,
+      };
+      const sessionState: PaperclipSessionDocument = {
+        schemaVersion: PAPERCLIP_SESSION_SCHEMA_VERSION,
+        policyKey: policy.policyKey,
+        policyVersion: policy.policyVersion,
+        companyId: input.routine.companyId,
+        issueId: sessionIssue.id,
+        sessionType: policy.sessionType,
+        state: "open",
+        stateRevision: 0,
+        idempotencyKey: input.idempotencyKey ?? `routine-session:${claim.run.id}`,
+        objective: policy.objective,
+        source: {
+          ...source,
+          snapshot: {
+            ...asRecord(source.snapshot),
+            ...triggerSnapshot,
+          },
+          collectedAt: source.collectedAt ?? now,
+        },
+        participants: policy.participants.map((participant) => ({
+          role: participant.role,
+          agentId: participant.agentId,
+          issueId: null,
+          status: "pending",
+        })),
+        receipts: [],
+        taskRoutes: [],
+        reviews: [],
+        eodFindings: [],
+        health: [],
+        lastTransition: {
+          transitionId: crypto.randomUUID(),
+          transition: "create",
+          actor: {
+            actorType: "service",
+            actorId: "routine-session-dispatch",
+            agentId: assigneeAgentId,
+            runId: serviceRunId,
+          },
+          beforeState: null,
+          afterState: "open",
+          at: now,
+        },
+      };
+
+      const inspection = await sessionSvc.transition({
+        issueId: sessionIssue.id,
+        expectedRevisionId: null,
+        expectedState: null,
+        transition: "create",
+        nextState: sessionState,
+        actor: sessionState.lastTransition.actor,
+        idempotencyKey: sessionState.idempotencyKey,
+      });
+
+      const updated = await finalizeRun(claim.run.id, {
+        status: "issue_created",
+        linkedIssueId: sessionIssue.id,
+      });
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger?.id ?? null,
+        triggeredAt: claim.triggeredAt,
+        status: "issue_created",
+        issueId: sessionIssue.id,
+        nextRunAt: claim.nextRunAt,
+      });
+      await logActivity(db, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId: "routine-session-dispatch",
+        agentId: assigneeAgentId,
+        runId: serviceRunId,
+        action: "routine.session_dispatched",
+        entityType: "routine_run",
+        entityId: claim.run.id,
+        details: {
+          routineId: input.routine.id,
+          issueId: sessionIssue.id,
+          sessionDocumentRevisionId: inspection.document.latestRevisionId,
+          policyKey: policy.policyKey,
+          sessionType: policy.sessionType,
+        },
+      });
+      return updated ?? claim.run;
+    } catch (error) {
+      if (sessionIssue) {
+        await db.delete(issues).where(and(eq(issues.parentId, sessionIssue.id), eq(issues.originKind, "session_participant_obligation")));
+        await db.delete(issues).where(eq(issues.id, sessionIssue.id));
+      }
+      const failureReason = error instanceof Error ? error.message : String(error);
+      const failed = await finalizeRun(claim.run.id, {
+        status: "failed",
+        failureReason,
+        completedAt: new Date(),
+      });
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger?.id ?? null,
+        triggeredAt: claim.triggeredAt,
+        status: "failed",
+        nextRunAt: claim.nextRunAt,
+      });
+      return failed ?? claim.run;
+    }
+  }
+
   async function dispatchRoutineRun(input: DispatchRoutineRunInput) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
@@ -1507,6 +1766,10 @@ export function routineService(
     const linkedStandupPolicy = await getLinkedStandupPolicy(input.routine);
     if (linkedStandupPolicy) {
       return dispatchStandupRoutineRun({ ...input, payload: triggerPayload }, linkedStandupPolicy);
+    }
+
+    if (input.routine.linkedSessionPolicy) {
+      return dispatchSessionRoutineRun({ ...input, payload: triggerPayload }, input.routine.linkedSessionPolicy);
     }
 
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
@@ -1927,6 +2190,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            linkedSessionPolicy: input.linkedSessionPolicy ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -2025,6 +2289,9 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          linkedSessionPolicy: patch.linkedSessionPolicy === undefined
+            ? locked.linkedSessionPolicy
+            : patch.linkedSessionPolicy,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2074,6 +2341,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            linkedSessionPolicy: candidate.linkedSessionPolicy,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),

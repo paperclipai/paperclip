@@ -17,7 +17,12 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type {
+  PaperclipLinkedSessionRoutinePolicy,
+  RoutineEnvConfig,
+  RoutineRevisionSnapshotV1,
+  RoutineVariable,
+} from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -38,6 +43,7 @@ export const routines = pgTable(
     env: jsonb("env").$type<RoutineEnvConfig>(),
     latestRevisionId: uuid("latest_revision_id"),
     latestRevisionNumber: integer("latest_revision_number").notNull().default(1),
+    linkedSessionPolicy: jsonb("linked_session_policy").$type<PaperclipLinkedSessionRoutinePolicy | null>(),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
