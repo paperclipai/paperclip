@@ -170,6 +170,31 @@ persistence:
   # bind to a standalone PVC by name.
   existingClaim: paperclip-data
 
+# HA API/worker split (§2 — Phase 1 server + Phase 2 chart shipped via
+# Blockcast/paperclip#73, image sha-f324704). The chart splits the single-pod
+# StatefulSet into a multi-replica HTTP API Deployment plus a singleton worker
+# StatefulSet. The worker owns heartbeat scheduler + plugin workers + Linear
+# tunnel + DB backup; the API tier serves HTTP traffic only with
+# `PAPERCLIP_NODE_ROLE=api` (plugin RPC paths 503 cleanly on it via stub —
+# acceptable trade-off for HA; bridge is Phase 3 follow-up).
+#
+# Two-step rollout:
+#   Phase A (current): api.enabled=false — new image with NODE_ROLE code rolls
+#     onto paperclip-0 as before; no topology change. Verify paperclip-0 healthy.
+#   Phase B (after verify): set api.enabled=true — chart creates
+#     Deployment/paperclip-api (2 replicas, RollingUpdate maxSurge=1
+#     maxUnavailable=0). Service selector switches to component=api. Workers
+#     stay on the StatefulSet, mount same paperclip-data PVC (RWX cephfs).
+#
+# Rollback: flip api.enabled back to false + helm upgrade. Service selector
+# reverts; Deployment is reaped; StatefulSet stays.
+api:
+  enabled: false
+  replicas: 2
+  maxSurge: 1
+  maxUnavailable: 0
+  spreadAcrossNodes: true
+
 # Service account must mount its bearer token so the k8s-Job adapters can
 # create Jobs / read Pod logs / patch Secrets via the in-cluster kubeconfig.
 serviceAccount:
