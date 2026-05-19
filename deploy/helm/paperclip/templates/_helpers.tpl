@@ -49,6 +49,40 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Worker tier selector labels. When `api.enabled` is true the workers tier
+carries `component: worker` so the Service selector can route HTTP traffic
+to the API tier instead. When `api.enabled` is false this is identical to
+`selectorLabels` for backwards compatibility with single-pod deploys.
+*/}}
+{{- define "paperclip.workerSelectorLabels" -}}
+{{ include "paperclip.selectorLabels" . }}
+{{- if .Values.api.enabled }}
+app.kubernetes.io/component: worker
+{{- end }}
+{{- end }}
+
+{{/*
+API tier selector labels. Only meaningful when `api.enabled` is true.
+*/}}
+{{- define "paperclip.apiSelectorLabels" -}}
+{{ include "paperclip.selectorLabels" . }}
+app.kubernetes.io/component: api
+{{- end }}
+
+{{/*
+Service selector — routes HTTP traffic. When `api.enabled`, points at the
+API Deployment pods (component=api). Otherwise points at the StatefulSet
+(historical behavior).
+*/}}
+{{- define "paperclip.serviceSelectorLabels" -}}
+{{- if .Values.api.enabled }}
+{{ include "paperclip.apiSelectorLabels" . }}
+{{- else }}
+{{ include "paperclip.selectorLabels" . }}
+{{- end }}
+{{- end }}
+
+{{/*
 Service account name.
 */}}
 {{- define "paperclip.serviceAccountName" -}}

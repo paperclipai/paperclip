@@ -42,6 +42,7 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createApiTierPluginWorkerManagerStub } from "./services/plugin-worker-manager-stub.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -803,7 +804,13 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
-  const pluginWorkerManager = createPluginWorkerManager();
+  // PAPERCLIP_NODE_ROLE=api uses a stub manager that throws on operations and
+  // returns safe-empty for read queries. All other roles ("worker", "all")
+  // get the real subprocess-spawning manager.
+  const pluginWorkerManager =
+    config.paperclipNodeRole === "api"
+      ? createApiTierPluginWorkerManagerStub()
+      : createPluginWorkerManager();
   // One-shot token used by autoInstallBundledPlugins to authenticate its
   // loopback HTTP calls to /api/plugins/install (which require instance admin).
   // Lives only in this Node process — never written to disk or logged.
@@ -1014,7 +1021,10 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
-  if (config.databaseBackupEnabled) {
+  // Database backup is a singleton scheduled task (writes one file per
+  // interval; multiple replicas racing would clobber the same target).
+  // Worker tier owns this; API tier skips it entirely.
+  if (config.databaseBackupEnabled && config.paperclipNodeRole !== "api") {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -1123,16 +1133,28 @@ export async function startServer(): Promise<StartedServer> {
     logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
   }
 
-  // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
-    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
-    copyWorkspaceSdkFiles();
-  }).catch((err) => {
-    logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
-  });
+  // Auto-install bundled plugins (idempotent — skips if already installed).
+  // Skipped on the API tier: /api/plugins/install hits pluginWorkerManager
+  // which is stubbed; the workers tier owns plugin installs.
+  if (config.paperclipNodeRole !== "api") {
+    void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
+      // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
+      copyWorkspaceSdkFiles();
+    }).catch((err) => {
+      logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
+    });
+  } else {
+    logger.info(
+      { role: config.paperclipNodeRole },
+      "skipping auto-install of bundled plugins (API tier — workers tier owns plugin lifecycle)",
+    );
+  }
 
-  // Start Linear tunnel if Linear is connected and cloudflared is available
-  if (config.linearOAuthClientId) {
+  // Start Linear tunnel if Linear is connected and cloudflared is available.
+  // The tunnel is a singleton outbound cloudflared process; running multiple
+  // copies (one per API replica) would point Linear's webhooks at whichever
+  // tunnel won the race. Worker tier owns this.
+  if (config.linearOAuthClientId && config.paperclipNodeRole !== "api") {
     void (async () => {
       try {
         const { secretService } = await import("./services/index.js");

@@ -106,6 +106,16 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  // Process role for HA topology. When set to "api", the process serves
+  // HTTP traffic only — no in-process plugin workers, no heartbeat
+  // scheduler. When set to "worker", the process owns the heartbeat
+  // scheduler + plugin workers (and may also serve HTTP — though typically
+  // only an internal Service points at workers). When set to "all" (the
+  // default), behavior is identical to pre-split single-pod paperclip:
+  // one process owns everything.
+  // Set via PAPERCLIP_NODE_ROLE env. Used by index.ts to gate which
+  // subsystems start.
+  paperclipNodeRole: "api" | "worker" | "all";
   companyDeletionEnabled: boolean;
   linearOAuthClientId: string;
   linearOAuthClientSecret: string;
@@ -279,6 +289,16 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  // PAPERCLIP_NODE_ROLE — defaults to "all" (single-pod, pre-split behavior).
+  // Set to "api" for HTTP-only API replicas (no plugin workers, no scheduler).
+  // Set to "worker" for the singleton workload that drives heartbeat dispatch
+  // and hosts plugin workers. Unknown values fall back to "all" to preserve
+  // safety (the worst case is a single process doing everything).
+  const paperclipNodeRoleRaw = process.env.PAPERCLIP_NODE_ROLE ?? "all";
+  const paperclipNodeRole: "api" | "worker" | "all" =
+    paperclipNodeRoleRaw === "api" || paperclipNodeRoleRaw === "worker"
+      ? paperclipNodeRoleRaw
+      : "all";
   const databaseBackupEnabled =
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -364,8 +384,14 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled:
+      // API role implies scheduler off regardless of HEARTBEAT_SCHEDULER_ENABLED.
+      // Setting both lets `kubectl set env` toggles work the way operators expect.
+      paperclipNodeRole === "api"
+        ? false
+        : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    paperclipNodeRole,
     companyDeletionEnabled,
     linearOAuthClientId: process.env.PAPERCLIP_LINEAR_CLIENT_ID ?? "",
     linearOAuthClientSecret: process.env.PAPERCLIP_LINEAR_CLIENT_SECRET ?? "",

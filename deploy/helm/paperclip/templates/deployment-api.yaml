@@ -1,0 +1,155 @@
+{{- /*
+HA API tier — multi-replica HTTP Deployment paired with the singleton
+worker StatefulSet. Only created when `.Values.api.enabled` is true.
+
+This tier sets `PAPERCLIP_NODE_ROLE=api` so plugin operations 503 cleanly
+(see server/src/services/plugin-worker-manager-stub.ts) and the heartbeat
+scheduler is forced off. Hot paths (GitHub webhooks, agent MCP calls) work
+end-to-end without pluginWorkerManager because `enqueueWakeup` only writes
+DB rows; the workers tier drains the queue async.
+
+The Service `paperclip.serviceSelectorLabels` switches to `component=api`
+when api.enabled, so HTTP traffic routes here. StatefulSet pods get a
+`component: worker` label that distinguishes them from API pods (additive,
+not in StatefulSet selector — selectors are immutable).
+
+Both tiers mount the SAME paperclip-data PVC (must be RWX when api.enabled —
+set `persistence.existingClaim` to a pre-provisioned cephfs RWX PVC).
+*/}}
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "paperclip.fullname" . }}-api
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.api.maxSurge }}
+      maxUnavailable: {{ .Values.api.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "paperclip.apiSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paperclip.apiSelectorLabels" . | nindent 8 }}
+        {{- with .Values.pod.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.pod.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "paperclip.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      shareProcessNamespace: {{ .Values.pod.shareProcessNamespace }}
+      securityContext:
+        {{- toYaml .Values.pod.securityContext | nindent 8 }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- if .Values.api.spreadAcrossNodes }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "paperclip.apiSelectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+        {{- with .Values.affinity }}
+        {{- range $key, $value := . }}
+        {{- if ne $key "podAntiAffinity" }}
+        {{ $key }}:
+          {{- toYaml $value | nindent 10 }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: paperclip
+          image: {{ include "paperclip.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.pod.containerSecurityContext | nindent 12 }}
+          workingDir: /app
+          command: ["node"]
+          args:
+            - --import
+            - ./server/node_modules/tsx/dist/loader.mjs
+            - server/dist/index.js
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.port }}
+              protocol: TCP
+          env:
+            # API tier — no plugin workers, scheduler off (forced inside config.ts).
+            - name: PAPERCLIP_NODE_ROLE
+              value: api
+            - name: HOST
+              value: {{ .Values.env.host | quote }}
+            - name: PORT
+              value: {{ .Values.env.port | quote }}
+            - name: SERVE_UI
+              value: {{ .Values.env.serveUi | quote }}
+            - name: PAPERCLIP_HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: PAPERCLIP_INSTANCE_ID
+              value: {{ .Values.env.instanceId | quote }}
+            - name: PAPERCLIP_AGENT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "paperclip.secretName" . }}
+                  key: agentJwtSecret
+            {{- with .Values.env.extra }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            # When api.enabled, the persistence.existingClaim MUST be a
+            # pre-provisioned RWX PVC (e.g. cephfs RWX paperclip-data) so
+            # both this Deployment and the workers StatefulSet can mount it.
+            # The chart values fail-fast in NOTES.txt if existingClaim is unset.
+            claimName: {{ required "api.enabled requires persistence.existingClaim (set to a pre-provisioned RWX PVC)" .Values.persistence.existingClaim | quote }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

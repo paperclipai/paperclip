@@ -37,6 +37,28 @@ persistence:
   # `accessMode`, and `size` are ignored — the PVC must already exist in the release namespace.
   existingClaim: ""
 
+# -- HA API tier — splits the single-pod StatefulSet into a multi-replica
+# HTTP API Deployment plus a singleton worker StatefulSet. When enabled,
+# the workers tier owns the heartbeat scheduler + plugin workers + Linear
+# tunnel + database backup; the API tier serves HTTP traffic only with
+# `PAPERCLIP_NODE_ROLE=api` (so plugin operations 503 cleanly on it).
+# See server/src/services/plugin-worker-manager-stub.ts.
+api:
+  # -- Enable the API/worker split. When `false` (default) the chart behaves
+  # like the single-replica StatefulSet that ships with upstream paperclip —
+  # no migration impact for existing deploys.
+  enabled: false
+  # -- Number of API tier replicas. 2+ is the point of the split. Each replica
+  # runs `PAPERCLIP_NODE_ROLE=api`, no plugin workers, no scheduler.
+  replicas: 2
+  # -- Rolling update budget for the API Deployment. `maxSurge: 1` +
+  # `maxUnavailable: 0` gives zero-downtime rolls for HTTP traffic.
+  maxSurge: 1
+  maxUnavailable: 0
+  # -- Soft anti-affinity to spread API replicas across nodes. Falls back to
+  # co-located if the cluster has only one schedulable paperclip node.
+  spreadAcrossNodes: true
+
 # -- Kubernetes Service exposing the HTTP UI/API.
 service:
   # -- Service type. Keep `ClusterIP`; cloudflared or Ingress handle external exposure.

@@ -17,6 +17,11 @@ spec:
     metadata:
       labels:
         {{- include "paperclip.selectorLabels" . | nindent 8 }}
+        {{- if .Values.api.enabled }}
+        # Additive (not in selector — StatefulSet selectors are immutable).
+        # Distinguishes worker-tier pods from API-tier pods for Service routing.
+        app.kubernetes.io/component: worker
+        {{- end }}
         {{- with .Values.pod.labels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -533,6 +538,12 @@ spec:
               containerPort: {{ .Values.env.port }}
               protocol: TCP
           env:
+            {{- if .Values.api.enabled }}
+            # HA split: this is the workers tier. Heartbeat scheduler + plugin
+            # workers + Linear tunnel + database backup all live here.
+            - name: PAPERCLIP_NODE_ROLE
+              value: worker
+            {{- end }}
             - name: HOST
               value: {{ .Values.env.host | quote }}
             - name: PORT
