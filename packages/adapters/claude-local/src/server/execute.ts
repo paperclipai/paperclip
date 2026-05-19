@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -63,6 +64,68 @@ import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+// MCP server script candidates — compiled .js in same dir (production) or dist/ (dev via tsx)
+const PLUGIN_TOOLS_MCP_CANDIDATES = [
+  path.resolve(__moduleDir, "plugin-tools-mcp.js"),                 // production: dist/server/
+  path.resolve(__moduleDir, "../../dist/server/plugin-tools-mcp.js"), // dev: src/server/ → dist/server/
+];
+
+/**
+ * Resolve the plugin-tools-mcp script.
+ * Checks the same-directory compiled .js first (production: dist/server/),
+ * then falls back to dist/ relative to the package root (dev build).
+ */
+async function resolvePluginToolsMcpScript(): Promise<string | null> {
+  for (const candidate of PLUGIN_TOOLS_MCP_CANDIDATES) {
+    const exists = await fs.stat(candidate).then(() => true).catch(() => false);
+    if (exists) return candidate;
+  }
+  return null;
+}
+
+interface PluginToolsMcpHandle {
+  mcpConfigPath: string;
+  dispose: () => Promise<void>;
+}
+
+/**
+ * If plugin tools are available, write a tools JSON file and an MCP config
+ * that points Claude Code at the plugin-tools-mcp stdio server.
+ * Returns a handle with the MCP config path and a dispose() to clean up,
+ * or null if no tools or the MCP server script can't be resolved.
+ */
+async function buildPluginToolsMcpConfig(
+  pluginTools: unknown[],
+): Promise<PluginToolsMcpHandle | null> {
+  if (pluginTools.length === 0) return null;
+
+  const mcpScript = await resolvePluginToolsMcpScript();
+  if (!mcpScript) return null;
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-mcp-"));
+  const toolsPath = path.join(tmpDir, "plugin-tools.json");
+  await fs.writeFile(toolsPath, JSON.stringify(pluginTools), "utf-8");
+
+  const mcpConfig = {
+    mcpServers: {
+      "paperclip-plugin-tools": {
+        command: "node",
+        args: [mcpScript, toolsPath],
+      },
+    },
+  };
+  const mcpConfigPath = path.join(tmpDir, "mcp-config.json");
+  await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig), "utf-8");
+
+  return {
+    mcpConfigPath,
+    dispose: async () => {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    },
+  };
+}
+
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -526,6 +589,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? preparedExecutionTargetRuntime?.assetDirs.skills ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude", "skills")
     : promptBundle.addDir;
+  // MCP plugin-tools bridge: only attempt for local execution. The bridge spawns
+  // a stdio child of the local Claude CLI, so it cannot be reached when Claude
+  // runs on a remote target.
+  const pluginTools = Array.isArray(context.pluginTools) ? context.pluginTools : [];
+  const pluginToolsMcp = !executionTargetIsRemote
+    ? await buildPluginToolsMcpConfig(pluginTools)
+    : null;
   const effectiveInstructionsFilePath = promptBundle.instructionsFilePath
     ? executionTargetIsRemote
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
@@ -698,6 +768,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (pluginToolsMcp) args.push("--mcp-config", pluginToolsMcp.mcpConfigPath);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -969,6 +1040,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
       await restoreRemoteWorkspace();
+    }
+    if (pluginToolsMcp) {
+      await pluginToolsMcp.dispose();
     }
   }
 }

@@ -175,45 +175,8 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
 
-  // Mount API routes
-  const api = Router();
-  api.use(boardMutationGuard());
-  api.use(
-    "/health",
-    healthRoutes(db, {
-      deploymentMode: opts.deploymentMode,
-      deploymentExposure: opts.deploymentExposure,
-      authReady: opts.authReady,
-      companyDeletionEnabled: opts.companyDeletionEnabled,
-    }),
-  );
-  api.use("/companies", companyRoutes(db, opts.storageService));
-  api.use(companySkillRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(assetRoutes(db, opts.storageService));
-  api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
-  api.use(issueTreeControlRoutes(db));
-  api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(executionWorkspaceRoutes(db));
-  api.use(goalRoutes(db));
-  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(secretRoutes(db));
-  api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(activityRoutes(db));
-  api.use(dashboardRoutes(db));
-  api.use(userProfileRoutes(db));
-  api.use(sidebarBadgeRoutes(db));
-  api.use(sidebarPreferenceRoutes(db));
-  api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db));
-  if (opts.databaseBackupService) {
-    api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
-  }
+  // Initialize plugin infrastructure before route mounting so toolDispatcher
+  // can be threaded into routes that construct heartbeatService.
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -235,6 +198,47 @@ export async function createApp(
     scheduler,
     jobStore,
   });
+
+  // Mount API routes
+  const api = Router();
+  api.use(boardMutationGuard());
+  api.use(
+    "/health",
+    healthRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      authReady: opts.authReady,
+      companyDeletionEnabled: opts.companyDeletionEnabled,
+    }),
+  );
+  api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(companySkillRoutes(db));
+  api.use(agentRoutes(db, { pluginWorkerManager: workerManager, toolDispatcher }));
+  api.use(assetRoutes(db, opts.storageService));
+  api.use(projectRoutes(db));
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    toolDispatcher,
+  }));
+  api.use(issueTreeControlRoutes(db));
+  api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(executionWorkspaceRoutes(db));
+  api.use(goalRoutes(db));
+  api.use(approvalRoutes(db, { pluginWorkerManager: workerManager, toolDispatcher }));
+  api.use(secretRoutes(db));
+  api.use(costRoutes(db, { pluginWorkerManager: workerManager, toolDispatcher }));
+  api.use(activityRoutes(db));
+  api.use(dashboardRoutes(db));
+  api.use(userProfileRoutes(db));
+  api.use(sidebarBadgeRoutes(db));
+  api.use(sidebarPreferenceRoutes(db));
+  api.use(inboxDismissalRoutes(db));
+  api.use(instanceSettingsRoutes(db));
+  if (opts.databaseBackupService) {
+    api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
+  }
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
@@ -263,6 +267,7 @@ export async function createApp(
         };
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
+          toolDispatcher,
           manifest,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());
@@ -445,5 +450,5 @@ export async function createApp(
     void flushPluginLogBuffer();
   });
 
-  return app;
+  return Object.assign(app, { toolDispatcher });
 }

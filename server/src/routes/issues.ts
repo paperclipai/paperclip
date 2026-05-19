@@ -51,6 +51,7 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
@@ -830,6 +831,7 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    toolDispatcher?: PluginToolDispatcher;
   } = {},
 ) {
   const router = Router();
@@ -837,6 +839,7 @@ export function issueRoutes(
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
+    toolDispatcher: opts.toolDispatcher,
   });
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);

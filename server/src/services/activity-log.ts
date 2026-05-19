@@ -26,6 +26,21 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   budget_incident_resolved: "budget.incident.resolved",
 };
 
+/** Maps entity types to their payload ID key names for plugin events. */
+const ENTITY_ID_KEY: Record<string, string> = {
+  issue: "issueId",
+  agent: "agentId",
+  project: "projectId",
+  goal: "goalId",
+  label: "labelId",
+  approval: "approvalId",
+  heartbeat_run: "heartbeatRunId",
+  instance_settings: "instanceSettingsId",
+  comment: "commentId",
+  document: "documentId",
+  budget: "budgetId",
+};
+
 let _pluginEventBus: PluginEventBus | null = null;
 
 /** Wire the plugin event bus so domain events are forwarded to plugins. */
@@ -110,8 +125,13 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       companyId: input.companyId,
       payload: {
         ...redactedDetails,
+        // Include entity ID under a domain-specific key (e.g. issueId, agentId)
+        // so plugin handlers can access it directly from the payload.
+        // companyId is duplicated from the top-level event for plugin convenience.
+        companyId: input.companyId,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        ...(ENTITY_ID_KEY[input.entityType] ? { [ENTITY_ID_KEY[input.entityType]]: input.entityId } : {}),
       },
     };
     publishPluginDomainEvent(event);
