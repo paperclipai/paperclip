@@ -272,7 +272,7 @@ export function NewAgentDialog() {
                 </Button>
                 <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
                   <MailPlus className="h-4 w-4 mr-2" />
-                  Invite an external agent
+                  Invite an external agent (OpenClaw, Hermes, etc.)
                 </Button>
               </div>
             </>
@@ -330,7 +330,7 @@ export function NewAgentDialog() {
                   Back
                 </button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
+                  <h2 className="text-sm font-semibold">Invite an external agent (OpenClaw, Hermes, etc.)</h2>
                   <p className="text-sm text-muted-foreground">
                     Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
                   </p>
@@ -360,7 +360,7 @@ export function NewAgentDialog() {
                   {createAgentInviteMutation.isPending ? "Generating…" : "Generate onboarding prompt"}
                 </Button>
                 <span className="text-sm text-muted-foreground">
-                  Works for OpenClaw or any agent that can call the Paperclip invite API.
+                  Works for OpenClaw, Hermes, or any agent that can call the Paperclip invite API.
                 </span>
               </div>
             </div>

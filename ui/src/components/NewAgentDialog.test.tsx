@@ -152,7 +152,7 @@ describe("NewAgentDialog", () => {
     expect(container.textContent).toContain("Invite an external agent");
 
     const inviteButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Invite an external agent",
+      (button) => button.textContent?.startsWith("Invite an external agent"),
     );
 
     await act(async () => {
