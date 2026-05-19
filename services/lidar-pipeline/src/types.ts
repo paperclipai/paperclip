@@ -31,6 +31,10 @@ export interface NormalizedPoint {
   intensity: number;
   classification: number;
   timestamp: number;
+  /** Return number within a single pulse (1-based) */
+  returnNumber: number;
+  /** Total number of returns for the pulse */
+  numberOfReturns: number;
   /** RGB color channels (uint16, 0–65535) — present when source format includes color */
   r?: number;
   g?: number;

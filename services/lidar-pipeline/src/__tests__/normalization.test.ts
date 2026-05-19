@@ -69,6 +69,18 @@ describe("normalizePoints", () => {
     expect(p.timestamp).toBe(999);
   });
 
+  it("preserves return metadata (returnNumber and numberOfReturns) on each point", () => {
+    const raw: RawLidarPoint[] = [
+      { x: 526914, y: 5040778, z: 50, intensity: 1000, classification: 1, timestamp: 1000, returnNumber: 2, numberOfReturns: 3 },
+      { x: 527000, y: 5040900, z: 55, intensity: 900, classification: 2, timestamp: 1001, returnNumber: 1, numberOfReturns: 1 },
+    ];
+    const result = normalizePoints(raw, UTM_ZONE_10N_CONFIG);
+    expect(result[0].returnNumber).toBe(2);
+    expect(result[0].numberOfReturns).toBe(3);
+    expect(result[1].returnNumber).toBe(1);
+    expect(result[1].numberOfReturns).toBe(1);
+  });
+
   it("returns an empty array for an empty input batch", () => {
     expect(normalizePoints([], UTM_ZONE_10N_CONFIG)).toEqual([]);
   });

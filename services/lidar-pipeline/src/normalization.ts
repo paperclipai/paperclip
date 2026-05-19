@@ -113,6 +113,8 @@ export function normalizePoints(
       intensity: p.intensity,
       classification: p.classification,
       timestamp: p.timestamp,
+      returnNumber: p.returnNumber,
+      numberOfReturns: p.numberOfReturns,
       ...(p.r !== undefined && { r: p.r, g: p.g, b: p.b }),
     };
   });
