@@ -107,7 +107,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     return { agentId, companyId, issueId, runId };
   }
 
-  it("removes agent-owned issue comments and run-linked activity before deleting the agent", async () => {
+  it("preserves agent-authored comments and run-linked activity while clearing agent FKs", async () => {
     const { agentId, companyId, issueId, runId } = await seedFixture();
 
     await db.insert(issueComments).values({
@@ -147,8 +147,15 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.id).toBe(agentId);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
-    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
-    await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.authorAgentId).toBeNull();
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(activityRows).toHaveLength(1);
+    expect(activityRows[0]?.agentId).toBeNull();
+    expect(activityRows[0]?.runId).toBeNull();
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {

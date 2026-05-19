@@ -531,14 +531,13 @@ export function agentService(db: Db) {
         // Delete rows with NOT NULL agent FK (would block deletion)
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(activityLog).where(
+        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
+        await tx.update(activityLog).set({ agentId: null, runId: null }).where(
           or(
             eq(activityLog.agentId, id),
             sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
           ),
         );
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
@@ -557,7 +556,6 @@ export function agentService(db: Db) {
         await tx.update(routineRevisions).set({ createdByAgentId: null }).where(eq(routineRevisions.createdByAgentId, id));
         await tx.update(routineTriggers).set({ createdByAgentId: null }).where(eq(routineTriggers.createdByAgentId, id));
         await tx.update(routineTriggers).set({ updatedByAgentId: null }).where(eq(routineTriggers.updatedByAgentId, id));
-        await tx.update(activityLog).set({ agentId: null }).where(eq(activityLog.agentId, id));
         await tx.update(issueComments).set({ authorAgentId: null }).where(eq(issueComments.authorAgentId, id));
         await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
         await tx.update(approvals).set({ requestedByAgentId: null }).where(eq(approvals.requestedByAgentId, id));
