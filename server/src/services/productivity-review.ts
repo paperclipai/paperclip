@@ -679,7 +679,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     const recentProgressSignal = collectRecentProgressSignal(evidence);
-    if (existing && recentProgressSignal) {
+    const freshProgressApplies =
+      evidence.trigger === "no_comment_streak" || evidence.trigger === "long_active_duration";
+    if (existing && recentProgressSignal && freshProgressApplies) {
       await issuesSvc.addComment(
         existing.id,
         [
@@ -709,7 +711,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       });
       return { kind: "resolved" as const, reviewIssueId: existing.id };
     }
-    if (recentProgressSignal && (evidence.trigger === "no_comment_streak" || evidence.trigger === "long_active_duration")) {
+    if (recentProgressSignal && freshProgressApplies) {
       return { kind: "suppressed" as const, reviewIssueId: null };
     }
     if (existing) {

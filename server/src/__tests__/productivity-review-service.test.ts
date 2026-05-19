@@ -543,6 +543,43 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Runs in rolling windows: 10/1h");
   });
 
+  it("does not auto-resolve an open high-churn productivity review when fresh assignee progress appears", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      nextActionText: "Continue scaling the import worker for the next batch.",
+    });
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const [unchangedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.resolved).toBe(0);
+    expect(unchangedReview?.status).toBe("todo");
+  });
+
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
