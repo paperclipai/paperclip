@@ -1,0 +1,42 @@
+server:
+  - changed-files:
+      - any-glob-to-any-file: "server/**"
+
+ui:
+  - changed-files:
+      - any-glob-to-any-file: "ui/**"
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file: "cli/**"
+
+database:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "packages/db/**"
+
+adapters:
+  - changed-files:
+      - any-glob-to-any-file: "packages/adapters/**"
+
+shared:
+  - changed-files:
+      - any-glob-to-any-file: "packages/shared/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "doc/**"
+          - "docs/**"
+          - "*.md"
+          - "skills/**/*.md"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "pnpm-lock.yaml"
+          - "**/package.json"
