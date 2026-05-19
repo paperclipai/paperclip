@@ -6,7 +6,7 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ShieldAlert } from "lucide-react";
+import { Plus, ShieldAlert } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -65,6 +65,14 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
         >
           Agents
         </h1>
+        <Link
+          to="/eaos/agents/new"
+          data-testid="eaos-agents-new-cta"
+          className="inline-flex items-center gap-1 self-start rounded-md border border-foreground bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:self-auto"
+        >
+          <Plus className="h-3 w-3" aria-hidden="true" />
+          New agent
+        </Link>
       </header>
 
       {!selectedCompanyId ? (

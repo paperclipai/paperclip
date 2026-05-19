@@ -56,6 +56,7 @@ import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
 import { MissionDetail } from "./eaos/MissionDetail";
 import { MissionsListPage } from "./eaos/missions/MissionsListPage";
 import { AgentsRosterPage } from "./eaos/agents/AgentsRosterPage";
+import { AgentBuilderPage } from "./eaos/agents/builder/AgentBuilderPage";
 import { ApprovalsQueuePage } from "./eaos/approvals/ApprovalsQueuePage";
 import { RunsTimelinePage } from "./eaos/runs/RunsTimelinePage";
 import { ProjectsRoadmapPage } from "./eaos/projects/ProjectsRoadmapPage";
@@ -403,6 +404,16 @@ export function App() {
                 surface only shows status, adapter, heartbeat, and budget.
               */}
               <Route path="agents" element={<AgentsRosterPage />} />
+              {/*
+                LET-504 — Manual agent builder under the canonical EAOS
+                shell. Single primary `Create agent` CTA on the final
+                step; integration / channel rows with no backend wiring
+                are surfaced as truthful `Save agent first` / `Backend
+                gap` / `Connect` placeholders rather than fake-success
+                controls. Operator path at `/agents/new` remains
+                untouched for adapter-specific configuration.
+              */}
+              <Route path="agents/new" element={<AgentBuilderPage />} />
               {/*
                 LET-503 (LET-502 contract §5) — `/eaos/org` is a first-class
                 route showing company/team/agent structure. Until the team
