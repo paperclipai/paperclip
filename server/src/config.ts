@@ -116,6 +116,14 @@ export interface Config {
   // Set via PAPERCLIP_NODE_ROLE env. Used by index.ts to gate which
   // subsystems start.
   paperclipNodeRole: "api" | "worker" | "all";
+  // Base URL of the worker tier's internal Service, e.g.
+  // "http://paperclip-workers:3100". Only consulted on the API tier
+  // (PAPERCLIP_NODE_ROLE=api): worker-dependent plugin routes reverse-proxy
+  // here so plugin lifecycle/bridge calls land on the pod that actually
+  // owns pluginWorkerManager. Unset → those routes 503 via the API-tier
+  // stub as before (no worker tier reachable). Set via
+  // PAPERCLIP_WORKERS_INTERNAL_URL env.
+  paperclipWorkersInternalUrl: string | null;
   companyDeletionEnabled: boolean;
   linearOAuthClientId: string;
   linearOAuthClientSecret: string;
@@ -392,6 +400,8 @@ export function loadConfig(): Config {
         : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     paperclipNodeRole,
+    paperclipWorkersInternalUrl:
+      process.env.PAPERCLIP_WORKERS_INTERNAL_URL?.trim().replace(/\/+$/, "") || null,
     companyDeletionEnabled,
     linearOAuthClientId: process.env.PAPERCLIP_LINEAR_CLIENT_ID ?? "",
     linearOAuthClientSecret: process.env.PAPERCLIP_LINEAR_CLIENT_SECRET ?? "",

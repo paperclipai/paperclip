@@ -1,0 +1,251 @@
+// Tests for the API/worker-split reverse proxy. Verifies that
+// registerWorkerTierProxyRoutes forwards worker-dependent plugin routes to a
+// configured worker-tier URL, shadows the real handlers, leaves
+// non-allowlisted routes alone, and degrades cleanly when the worker tier is
+// unreachable.
+
+import { afterEach, describe, expect, it } from "vitest";
+import express from "express";
+import { createServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
+import request from "supertest";
+import {
+  registerWorkerTierProxyRoutes,
+  WORKER_DEPENDENT_PLUGIN_ROUTES,
+} from "../routes/worker-tier-proxy.js";
+
+interface CapturedRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/** Stub worker tier — records the request and replies with a scripted response. */
+function startWorkerStub(
+  handler: (captured: CapturedRequest) => {
+    status: number;
+    headers?: Record<string, string>;
+    body: string;
+  },
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const result = handler({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        headers: req.headers,
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+      res.writeHead(result.status, {
+        "content-type": "application/json",
+        ...result.headers,
+      });
+      res.end(result.body);
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise<void>((r) => server.close(() => r())),
+      });
+    });
+  });
+}
+
+function buildApp(workersUrl: string) {
+  const app = express();
+  app.use(express.json());
+  const router = express.Router();
+  registerWorkerTierProxyRoutes(router, workersUrl);
+  // Real handlers registered AFTER the proxy — they must be shadowed for
+  // allowlisted routes and reached for everything else.
+  router.post("/plugins/:pluginId/enable", (_req, res) => {
+    res.status(200).json({ handledBy: "local" });
+  });
+  router.get("/plugins", (_req, res) => {
+    res.status(200).json({ handledBy: "local" });
+  });
+  app.use("/api", router);
+  return app;
+}
+
+describe("registerWorkerTierProxyRoutes", () => {
+  let worker: { url: string; close: () => Promise<void> } | undefined;
+
+  afterEach(async () => {
+    await worker?.close();
+    worker = undefined;
+  });
+
+  it("proxies an allowlisted route to the worker tier, shadowing the local handler", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 201, body: JSON.stringify({ handledBy: "worker" }) };
+    });
+    const app = buildApp(worker.url);
+
+    const res = await request(app)
+      .post("/api/plugins/ccrotate/enable")
+      .send({ note: "activate" });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ handledBy: "worker" });
+    expect(captured?.method).toBe("POST");
+    expect(captured?.url).toBe("/api/plugins/ccrotate/enable");
+    expect(JSON.parse(captured?.body ?? "{}")).toEqual({ note: "activate" });
+  });
+
+  it("does NOT proxy non-allowlisted routes — they reach the local handler", async () => {
+    let workerHit = false;
+    worker = await startWorkerStub(() => {
+      workerHit = true;
+      return { status: 200, body: "{}" };
+    });
+    const app = buildApp(worker.url);
+
+    const res = await request(app).get("/api/plugins");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ handledBy: "local" });
+    expect(workerHit).toBe(false);
+  });
+
+  it("forwards auth-bearing headers so the worker tier can re-authorize", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: "{}" };
+    });
+    const app = buildApp(worker.url);
+
+    await request(app)
+      .post("/api/plugins/install")
+      .set("cookie", "paperclip.session=abc123")
+      .set("authorization", "Bearer tok")
+      .send({ package: "@paperclipai/plugin-ccrotate" });
+
+    expect(captured?.headers.cookie).toBe("paperclip.session=abc123");
+    expect(captured?.headers.authorization).toBe("Bearer tok");
+  });
+
+  it("pins x-forwarded-host to the original hostname so the worker hostname guard passes", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: "{}" };
+    });
+    const app = buildApp(worker.url);
+
+    await request(app)
+      .post("/api/plugins/ccrotate/enable")
+      .set("host", "paperclip.blockcast.net")
+      .send({});
+
+    // host is rewritten to the worker Service by fetch; the original
+    // hostname survives as x-forwarded-host (checked first by the guard).
+    expect(captured?.headers["x-forwarded-host"]).toBe("paperclip.blockcast.net");
+  });
+
+  it("preserves an existing x-forwarded-host instead of overwriting it", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: "{}" };
+    });
+    const app = buildApp(worker.url);
+
+    await request(app)
+      .post("/api/plugins/ccrotate/enable")
+      .set("host", "paperclip-api.internal")
+      .set("x-forwarded-host", "paperclip.blockcast.net")
+      .send({});
+
+    expect(captured?.headers["x-forwarded-host"]).toBe("paperclip.blockcast.net");
+  });
+
+  it("rewrites the host header away from the original public hostname", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: "{}" };
+    });
+    const app = buildApp(worker.url);
+
+    await request(app)
+      .post("/api/plugins/ccrotate/enable")
+      .set("host", "paperclip.blockcast.net")
+      .send({});
+
+    // fetch addresses the worker Service, so the worker sees its own host —
+    // never the original public hostname (which it would forward verbatim).
+    expect(captured?.headers.host).not.toBe("paperclip.blockcast.net");
+  });
+
+  it("forwards a worker-tier 5xx verbatim to the client", async () => {
+    worker = await startWorkerStub(() => ({
+      status: 503,
+      body: JSON.stringify({ error: "plugin worker crashed" }),
+    }));
+    const app = buildApp(worker.url);
+
+    const res = await request(app).post("/api/plugins/ccrotate/enable").send({});
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "plugin worker crashed" });
+  });
+
+  it("returns 502 when the worker tier is unreachable", async () => {
+    // Port 1 is privileged and never listening — fetch fails fast.
+    const app = buildApp("http://127.0.0.1:1");
+
+    const res = await request(app).post("/api/plugins/ccrotate/disable").send({});
+
+    expect(res.status).toBe(502);
+    expect(res.body.error).toMatch(/worker tier unreachable/i);
+  });
+
+  it("streams the worker response body for the SSE bridge route", async () => {
+    worker = await startWorkerStub(() => ({
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+      body: "event: ping\ndata: 1\n\nevent: ping\ndata: 2\n\n",
+    }));
+    const app = buildApp(worker.url);
+
+    const res = await request(app).get(
+      "/api/plugins/ccrotate/bridge/stream/pool",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/event-stream/);
+    expect(res.text).toContain("data: 1");
+    expect(res.text).toContain("data: 2");
+  });
+
+  it("covers exactly the worker-dependent plugin routes", () => {
+    // Guard against accidental scope creep / drops in the allowlist.
+    expect(WORKER_DEPENDENT_PLUGIN_ROUTES.map((r) => `${r.method} ${r.path}`))
+      .toEqual([
+        "post /plugins/install",
+        "post /plugins/tools/execute",
+        "post /plugins/:pluginId/enable",
+        "post /plugins/:pluginId/disable",
+        "post /plugins/:pluginId/upgrade",
+        "delete /plugins/:pluginId",
+        "post /plugins/:pluginId/config",
+        "post /plugins/:pluginId/config/test",
+        "post /plugins/:pluginId/jobs/:jobId/trigger",
+        "post /plugins/:pluginId/bridge/data",
+        "post /plugins/:pluginId/bridge/action",
+        "post /plugins/:pluginId/data/:key",
+        "post /plugins/:pluginId/actions/:key",
+        "get /plugins/:pluginId/bridge/stream/:channel",
+      ]);
+  });
+});

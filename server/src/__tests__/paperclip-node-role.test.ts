@@ -74,6 +74,36 @@ describe("PAPERCLIP_NODE_ROLE", () => {
   });
 });
 
+describe("PAPERCLIP_WORKERS_INTERNAL_URL", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.PAPERCLIP_WORKERS_INTERNAL_URL;
+    process.env.PAPERCLIP_PUBLIC_URL = "http://localhost:3100";
+    process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
+    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
+    process.env.PAPERCLIP_AUTH_BASE_URL_MODE = "explicit";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("defaults to null when unset", () => {
+    expect(loadConfig().paperclipWorkersInternalUrl).toBeNull();
+  });
+
+  it("parses the worker tier URL and strips trailing slashes", () => {
+    process.env.PAPERCLIP_WORKERS_INTERNAL_URL = "http://paperclip-workers:3100/";
+    expect(loadConfig().paperclipWorkersInternalUrl).toBe("http://paperclip-workers:3100");
+  });
+
+  it("treats an empty/whitespace value as unset", () => {
+    process.env.PAPERCLIP_WORKERS_INTERNAL_URL = "   ";
+    expect(loadConfig().paperclipWorkersInternalUrl).toBeNull();
+  });
+});
+
 describe("createApiTierPluginWorkerManagerStub", () => {
   it("returns safe-empty for read queries", () => {
     const stub = createApiTierPluginWorkerManagerStub();

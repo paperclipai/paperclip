@@ -1,0 +1,30 @@
+{{- /*
+Internal Service for the worker tier of the API/worker split.
+
+The primary `paperclip` Service routes to the API tier (component=api) when
+api.enabled, so it cannot reach the worker StatefulSet. This Service selects
+the worker pods (component=worker) and gives the API tier a stable in-cluster
+address to reverse-proxy worker-dependent plugin routes to
+(PAPERCLIP_WORKERS_INTERNAL_URL on the API Deployment).
+
+Only created when api.enabled — without the split there is a single tier and
+the primary Service already points at it.
+*/}}
+{{- if .Values.api.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "paperclip.fullname" . }}-workers
+  labels:
+    {{- include "paperclip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "paperclip.workerSelectorLabels" . | nindent 4 }}
+{{- end }}

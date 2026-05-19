@@ -109,6 +109,11 @@ spec:
             # API tier — no plugin workers, scheduler off (forced inside config.ts).
             - name: PAPERCLIP_NODE_ROLE
               value: api
+            # Worker tier internal Service — worker-dependent plugin routes
+            # (activation, bridge, etc.) reverse-proxy here instead of hitting
+            # the throwing API-tier stub manager. See service-workers.yaml.
+            - name: PAPERCLIP_WORKERS_INTERNAL_URL
+              value: http://{{ include "paperclip.fullname" . }}-workers:{{ .Values.service.port }}
             - name: HOST
               value: {{ .Values.env.host | quote }}
             - name: PORT

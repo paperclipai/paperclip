@@ -75,6 +75,7 @@ import {
 } from "../services/plugin-local-folders.js";
 import { extractSecretRefPathsFromConfig } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { registerWorkerTierProxyRoutes } from "./worker-tier-proxy.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -356,6 +357,10 @@ interface PluginToolExecuteRequest {
  * @param webhookDeps - Optional webhook ingestion dependencies
  * @param toolDeps - Optional tool dispatcher dependencies
  * @param bridgeDeps - Optional bridge proxy dependencies for getData/performAction
+ * @param workerProxy - Optional API/worker-split routing. When the process
+ *   runs as the API tier (`nodeRole === "api"`) and a worker-tier URL is
+ *   configured, worker-dependent plugin routes reverse-proxy to the worker
+ *   tier instead of hitting the throwing API-tier stub manager.
  * @returns Express router with plugin routes mounted
  */
 export function pluginRoutes(
@@ -365,8 +370,24 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  workerProxy?: {
+    nodeRole: "api" | "worker" | "all";
+    workersInternalUrl: string | null;
+  },
 ) {
   const router = Router();
+
+  // API tier: forward worker-dependent plugin routes to the worker tier
+  // before any real handler is registered, so Express matches the proxy
+  // first. Without this, plugin lifecycle/bridge routes hit the API-tier
+  // stub pluginWorkerManager and 503. See routes/worker-tier-proxy.ts.
+  if (
+    workerProxy?.nodeRole === "api" &&
+    workerProxy.workersInternalUrl
+  ) {
+    registerWorkerTierProxyRoutes(router, workerProxy.workersInternalUrl);
+  }
+
   const registry = pluginRegistryService(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,

@@ -538,6 +538,10 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
       { workerManager },
       { toolDispatcher },
       { workerManager, streamBus },
+      {
+        nodeRole: appConfig.paperclipNodeRole,
+        workersInternalUrl: appConfig.paperclipWorkersInternalUrl,
+      },
     ),
   );
   api.use(adapterRoutes());
