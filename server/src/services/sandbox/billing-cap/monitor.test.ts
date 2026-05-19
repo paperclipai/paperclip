@@ -78,11 +78,11 @@ function newMonitor(opts: {
 describe("BillingCapMonitor — tick orchestration", () => {
   it("AC #3 daily soft cap: emits warning notification + soft event, does not flip provider", async () => {
     const { monitor, store, capCalls } = newMonitor({
-      sourceB: new StaticSourceB({ dayCents: 16_00, monthCents: 16_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 8_00, monthCents: 8_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
     });
     const result = await monitor.tick({ companyId: COMPANY, now: NOW });
     expect(result.capState).toBe("soft-cap-breached");
-    expect(result.spend.dayCents).toBe(16_00);
+    expect(result.spend.dayCents).toBe(8_00);
     const state = await store.load(COMPANY, E2B_PROVIDER_KEY);
     expect(state?.providerEnableLayerEnabled).toBe(true);
     expect(state?.dayHardCapBreachedAt).toBeNull();
@@ -92,7 +92,7 @@ describe("BillingCapMonitor — tick orchestration", () => {
 
   it("AC #3 daily hard cap: atomically flips provider-enable, emits danger+interrupt notification", async () => {
     const { monitor, store, capCalls } = newMonitor({
-      sourceB: new StaticSourceB({ dayCents: 20_00, monthCents: 20_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 10_00, monthCents: 10_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
     });
     const result = await monitor.tick({ companyId: COMPANY, now: NOW });
     expect(result.capState).toBe("hard-cap-breached-auto-disabled");
@@ -108,7 +108,7 @@ describe("BillingCapMonitor — tick orchestration", () => {
   it("AC #3 monthly hard cap: flips provider-enable AND opens an incident issue via hook", async () => {
     const openIncident = vi.fn(async () => "incident-issue-99");
     const { monitor, store, capCalls } = newMonitor({
-      sourceB: new StaticSourceB({ dayCents: 5_00, monthCents: 250_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 5_00, monthCents: 120_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
       openMonthlyIncident: openIncident,
     });
     const result = await monitor.tick({ companyId: COMPANY, now: NOW });
@@ -151,11 +151,11 @@ describe("BillingCapMonitor — tick orchestration", () => {
   it("AC #1 SourceA failure falls back to SourceB and continues without aborting the tick", async () => {
     const { monitor, capCalls } = newMonitor({
       sourceA: new ThrowingSourceA(),
-      sourceB: new StaticSourceB({ dayCents: 15_50, monthCents: 15_50, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 8_50, monthCents: 8_50, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
     });
     const result = await monitor.tick({ companyId: COMPANY, now: NOW });
     expect(result.source).toBe("internal-estimate");
-    expect(result.spend.dayCents).toBe(15_50);
+    expect(result.spend.dayCents).toBe(8_50);
     expect(capCalls.some((c) => c.kind === "soft_cap_breached")).toBe(true);
   });
 
@@ -171,19 +171,19 @@ describe("BillingCapMonitor — tick orchestration", () => {
   it("AC #6 SourceA payload carrying a credential-shaped field is treated as parse-error → fallback", async () => {
     const { monitor } = newMonitor({
       sourceA: new StaticSourceA({
-        dayCents: 18_00,
-        monthCents: 18_00,
+        dayCents: 9_00,
+        monthCents: 9_00,
         rawRedacted: { e2bSandboxToken: "e2b_abcdefghijklmnopqrstu" } as Record<string, unknown>,
       }),
-      sourceB: new StaticSourceB({ dayCents: 12_00, monthCents: 12_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 6_00, monthCents: 6_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
     });
     const result = await monitor.tick({ companyId: COMPANY, now: NOW });
     expect(result.source).toBe("internal-estimate");
-    expect(result.spend.dayCents).toBe(12_00);
+    expect(result.spend.dayCents).toBe(6_00);
   });
 
   it("idempotent: a second tick at the same hard-cap level does not re-notify", async () => {
-    const sourceB = new StaticSourceB({ dayCents: 20_00, monthCents: 20_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 });
+    const sourceB = new StaticSourceB({ dayCents: 10_00, monthCents: 10_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 });
     const { monitor, capCalls } = newMonitor({ sourceB });
     await monitor.tick({ companyId: COMPANY, now: NOW });
     const beforeSecondTick = capCalls.length;
@@ -212,7 +212,7 @@ describe("BillingCapMonitor — tick orchestration", () => {
     const monitor = new BillingCapMonitor({
       store: new InMemoryBillingCapStore(),
       sourceA: null,
-      sourceB: new StaticSourceB({ dayCents: 20_00, monthCents: 20_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 10_00, monthCents: 10_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
       notifier: { async notify() {} },
       logger: log,
       activitySink: async (entry) => {
@@ -231,7 +231,7 @@ describe("BillingCapMonitor — tick orchestration", () => {
     const monitor = new BillingCapMonitor({
       store: new InMemoryBillingCapStore(),
       sourceA: null,
-      sourceB: new StaticSourceB({ dayCents: 16_00, monthCents: 16_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
+      sourceB: new StaticSourceB({ dayCents: 8_00, monthCents: 8_00, dayRuntimeSeconds: 0, monthRuntimeSeconds: 0, ratePerSecondCents: 0.01 }),
       notifier: { async notify() {} },
       logger: log,
       activitySink: async () => {
@@ -273,13 +273,13 @@ describe("Cap notifier composition", () => {
   });
 });
 
-describe("E2B pilot thresholds (S3 §3)", () => {
+describe("E2B pilot thresholds (LET-441 trial-credit alignment)", () => {
   it("matches the documented cap values", () => {
     expect(E2B_PILOT_THRESHOLDS).toEqual({
-      daySoftCents: 15_00,
-      dayHardCents: 20_00,
-      monthSoftCents: 150_00,
-      monthHardCents: 200_00,
+      daySoftCents: 7_00,
+      dayHardCents: 10_00,
+      monthSoftCents: 75_00,
+      monthHardCents: 100_00,
     });
   });
 });

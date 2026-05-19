@@ -8,22 +8,22 @@
 
 /** All amounts are USD cents. */
 export interface BillingCapThresholds {
-  /** Daily soft cap (USD 15.00 default per S3 §3). */
+  /** Daily soft cap (USD 7.00 default — 50% of S3 day hard, half the monthly hard / 10). */
   daySoftCents: number;
-  /** Daily hard cap (USD 20.00 default per S3 §3). */
+  /** Daily hard cap (USD 10.00 default — 10% of the monthly hard cap). */
   dayHardCents: number;
-  /** Monthly soft cap (USD 150.00 default per S3 §3). */
+  /** Monthly soft cap (USD 75.00 default — 75% of the trial-credit-aligned hard cap). */
   monthSoftCents: number;
-  /** Monthly hard cap (USD 200.00 default per S3 §3). */
+  /** Monthly hard cap (USD 100.00 default — aligned with the E2B trial credit ceiling). */
   monthHardCents: number;
 }
 
-/** S3 §3 defaults for the E2B pilot. */
+// Aligned with E2B $100 trial credit per LET-365 comment `98c7828f`.
 export const E2B_PILOT_THRESHOLDS: Readonly<BillingCapThresholds> = Object.freeze({
-  daySoftCents: 15_00,
-  dayHardCents: 20_00,
-  monthSoftCents: 150_00,
-  monthHardCents: 200_00,
+  daySoftCents: 7_00,
+  dayHardCents: 10_00,
+  monthSoftCents: 75_00,
+  monthHardCents: 100_00,
 });
 
 export type CapTier = "within" | "soft" | "hard";

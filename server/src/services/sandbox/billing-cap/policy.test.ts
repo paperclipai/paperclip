@@ -7,29 +7,29 @@ import {
 
 describe("billing-cap policy", () => {
   it("classifies day spend under soft cap as within", () => {
-    const result = evaluateWindow("day", 14_99, E2B_PILOT_THRESHOLDS);
+    const result = evaluateWindow("day", 6_99, E2B_PILOT_THRESHOLDS);
     expect(result.tier).toBe("within");
     expect(result.thresholdCents).toBeNull();
   });
   it("classifies day spend at soft cap exactly as soft", () => {
-    const result = evaluateWindow("day", 15_00, E2B_PILOT_THRESHOLDS);
+    const result = evaluateWindow("day", 7_00, E2B_PILOT_THRESHOLDS);
     expect(result.tier).toBe("soft");
-    expect(result.thresholdCents).toBe(15_00);
+    expect(result.thresholdCents).toBe(7_00);
   });
   it("classifies day spend at hard cap exactly as hard", () => {
-    const result = evaluateWindow("day", 20_00, E2B_PILOT_THRESHOLDS);
+    const result = evaluateWindow("day", 10_00, E2B_PILOT_THRESHOLDS);
     expect(result.tier).toBe("hard");
-    expect(result.thresholdCents).toBe(20_00);
+    expect(result.thresholdCents).toBe(10_00);
   });
   it("treats month soft cap symmetrically", () => {
-    expect(evaluateWindow("month", 149_99, E2B_PILOT_THRESHOLDS).tier).toBe("within");
-    expect(evaluateWindow("month", 150_00, E2B_PILOT_THRESHOLDS).tier).toBe("soft");
-    expect(evaluateWindow("month", 200_00, E2B_PILOT_THRESHOLDS).tier).toBe("hard");
+    expect(evaluateWindow("month", 74_99, E2B_PILOT_THRESHOLDS).tier).toBe("within");
+    expect(evaluateWindow("month", 75_00, E2B_PILOT_THRESHOLDS).tier).toBe("soft");
+    expect(evaluateWindow("month", 100_00, E2B_PILOT_THRESHOLDS).tier).toBe("hard");
   });
   it("returns hard-cap-breached-auto-disabled when either window is hard", () => {
     const r = evaluateCaps({
       daySpentCents: 99,
-      monthSpentCents: 200_00,
+      monthSpentCents: 100_00,
       thresholds: E2B_PILOT_THRESHOLDS,
     });
     expect(r.shouldAutoDisable).toBe(true);
@@ -37,8 +37,8 @@ describe("billing-cap policy", () => {
   });
   it("returns soft when only soft is breached", () => {
     const r = evaluateCaps({
-      daySpentCents: 15_00,
-      monthSpentCents: 50_00,
+      daySpentCents: 7_00,
+      monthSpentCents: 25_00,
       thresholds: E2B_PILOT_THRESHOLDS,
     });
     expect(r.shouldAutoDisable).toBe(false);
@@ -48,5 +48,13 @@ describe("billing-cap policy", () => {
     const r = evaluateWindow("day", -5, E2B_PILOT_THRESHOLDS);
     expect(r.tier).toBe("within");
     expect(r.spentCents).toBe(0);
+  });
+  it("pins E2B pilot thresholds to the trial-credit-aligned values (LET-441 / LET-365)", () => {
+    expect(E2B_PILOT_THRESHOLDS).toEqual({
+      daySoftCents: 7_00,
+      dayHardCents: 10_00,
+      monthSoftCents: 75_00,
+      monthHardCents: 100_00,
+    });
   });
 });
