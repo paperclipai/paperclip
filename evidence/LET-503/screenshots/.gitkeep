@@ -1,0 +1,9 @@
+# Screenshots directory layout
+#
+#   1440/    — desktop 1440×900 (one file per route + per builder step)
+#   1920/    — wide 1920×1080
+#   scroll/  — 1440×720 scroll-to-bottom proof
+#
+# Populated by `tsx scripts/evidence/eaos-screenshots.ts` — see ../README.md
+# for the exact invocation. Files written under this directory are not
+# committed (the runner output is reproducible from the branch).
