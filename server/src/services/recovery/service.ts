@@ -2475,7 +2475,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             ? sql`${issues.originId} like ${issuePrefix}`
             : eq(issues.originId, incidentKey),
           isNull(issues.hiddenAt),
-          eq(issues.status, "done"),
+          inArray(issues.status, ["done", "cancelled"]),
           gt(issues.updatedAt, cooldownCutoff),
         ),
       )
