@@ -48,6 +48,7 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
+import { sseRegistry } from "../services/sse-registry.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
@@ -1438,12 +1439,14 @@ export function pluginRoutes(
 
     // Send initial comment to establish the connection
     res.write(":ok\n\n");
+    sseRegistry.register(res);
 
     let unsubscribed = false;
     const safeUnsubscribe = () => {
       if (!unsubscribed) {
         unsubscribed = true;
         unsubscribe();
+        sseRegistry.unregister(res);
       }
     };
 

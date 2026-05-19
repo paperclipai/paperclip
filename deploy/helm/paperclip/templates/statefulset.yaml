@@ -568,6 +568,14 @@ spec:
             {{- toYaml .Values.probes.readiness | nindent 12 }}
           startupProbe:
             {{- toYaml .Values.probes.startup | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                # Sleep so the Service endpoint removal propagates to kube-proxy /
+                # Cilium before SIGTERM hits the process. The Node SIGTERM handler
+                # then has the full terminationGracePeriodSeconds (default 30s) to
+                # drain SSE connections via sseRegistry.drain(timeoutMs: 25_000).
+                command: ["sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

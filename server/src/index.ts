@@ -1185,6 +1185,28 @@ export async function startServer(): Promise<StartedServer> {
 
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      logger.info({ signal }, "Shutdown signal received — beginning graceful drain");
+
+      // 1. Stop accepting new connections + close idle keep-alives. In-flight
+      //    requests get to finish; long-lived SSE streams keep the promise
+      //    pending until we drain them explicitly below.
+      await new Promise<void>((resolve) => {
+        server.close((err) => {
+          if (err) logger.warn({ err }, "server.close error");
+          resolve();
+        });
+      });
+
+      // 2. Drain SSE bridge streams — emit `event: shutdown` on each and end()
+      //    the socket so clients can reconnect cleanly. Bounded so a wedged
+      //    stream can't hold the whole process past terminationGracePeriod.
+      try {
+        const { sseRegistry } = await import("./services/sse-registry.js");
+        await sseRegistry.drain({ timeoutMs: 25_000, reason: `shutdown:${signal}` });
+      } catch (err) {
+        logger.warn({ err }, "sseRegistry.drain failed");
+      }
+
       // Flush telemetry
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
