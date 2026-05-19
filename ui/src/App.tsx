@@ -53,8 +53,8 @@ import { EaosShell } from "./eaos/EaosShell";
 import { EaosProductLayout } from "./eaos/EaosProductLayout";
 import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
 import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
-import { MissionsLanding } from "./eaos/MissionsLanding";
 import { MissionDetail } from "./eaos/MissionDetail";
+import { MissionsListPage } from "./eaos/missions/MissionsListPage";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -376,7 +376,7 @@ export function App() {
             <Route element={<EaosShell variant="eaos" />}>
               <Route index element={<CommandCenterLanding />} />
               <Route path="sandbox" element={<Eaos />} />
-              <Route path="missions" element={<MissionsLanding />} />
+              <Route path="missions" element={<MissionsListPage />} />
               {/*
                 LET-467 — EAOS Mission detail under the canonical full-screen
                 EaosShell. `missionRef` accepts either an issue UUID or an
