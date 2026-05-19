@@ -37,6 +37,23 @@ is set, the monitor auto-resumes at the next UTC day rollover and you do not
 need this runbook — wait for the rollover or open a separate request to
 operate Layer 4 instead.
 
+## Current threshold values
+
+`E2B_PILOT_THRESHOLDS` in `server/src/services/sandbox/billing-cap/policy.ts`
+is aligned with the E2B trial-credit ceiling so the Paperclip kill-switch
+trips at the same point the vendor trial runs out (see LET-441 / LET-365):
+
+| Window | Soft cap | Hard cap (auto-disable) |
+| --- | --- | --- |
+| Day | **USD 7.00** | **USD 10.00** |
+| Month | **USD 75.00** | **USD 100.00** |
+
+The fresh-projection acceptance criterion in the evidence package below is
+"below the soft cap" — i.e. below **USD 7/day** and **USD 75/month** — not
+just below the hard cap. The numbers persisted on the
+`sandbox_billing_cap_state` row will be in cents (e.g. `1000` for the day
+hard cap, `10000` for the month hard cap).
+
 ## Required evidence package
 
 Before requesting Andrii confirmation, assemble the following. The request
