@@ -45,7 +45,16 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "executionPolicy"
+  | "monitorNextCheckAt"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -282,6 +291,37 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/**
+ * Returns true when the issue has a scheduled continuation path via its monitor
+ * fields — either the DB-level monitorNextCheckAt column or the executionPolicy
+ * monitor's nextCheckAt — and that checkpoint is still in the future.
+ *
+ * Routine-backed issues (e.g. ones driven by a daily scheduled routine) only
+ * need a handoff disposition once the current monitoring window has passed.
+ * Firing a corrective-handoff wake before that time would incorrectly mark the
+ * issue "missing disposition" and trigger a blocked/recovery cycle.
+ */
+function hasScheduledMonitorContinuation(issue: IssueRow, nowMs = Date.now()): boolean {
+  // Prefer the DB-indexed column (monitorNextCheckAt) which is always authoritative.
+  const dbNextMs = readDateMs(issue.monitorNextCheckAt);
+  if (dbNextMs !== null && dbNextMs > nowMs) return true;
+
+  // Fall back to the executionPolicy monitor's nextCheckAt so we catch issues
+  // whose monitor was declared in policy but whose DB column hasn't been synced yet.
+  const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
+  const policyNextMs = readDateMs(policyMonitor.nextCheckAt);
+  if (policyNextMs !== null && policyNextMs > nowMs) return true;
+
+  return false;
+}
+
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
@@ -364,6 +404,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  if (hasScheduledMonitorContinuation(issue)) {
+    return { kind: "skip", reason: "issue has a future scheduled monitor continuation path" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }

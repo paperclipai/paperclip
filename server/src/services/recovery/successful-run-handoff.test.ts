@@ -30,6 +30,8 @@ const issue = {
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
   executionState: null,
+  executionPolicy: null,
+  monitorNextCheckAt: null,
 } as any;
 
 const agent = {
@@ -176,6 +178,49 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue monitor run owns its own recovery path",
     });
+  });
+
+  it("does not queue when the issue has a future monitorNextCheckAt (routine-backed continuation)", () => {
+    // Regression guard for: routine-backed in_progress issues were getting incorrectly
+    // flagged as missing-disposition and escalated to blocked between routine ticks.
+    // A future monitorNextCheckAt means the issue has a live scheduled continuation path.
+    const futureDate = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour from now
+    expect(decide({
+      issue: { ...issue, monitorNextCheckAt: futureDate, executionPolicy: null } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has a future scheduled monitor continuation path",
+    });
+  });
+
+  it("does not queue when executionPolicy.monitor.nextCheckAt is in the future (routine-backed, DB column not yet synced)", () => {
+    const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours from now
+    expect(decide({
+      issue: {
+        ...issue,
+        monitorNextCheckAt: null,
+        executionPolicy: {
+          mode: "normal",
+          monitor: {
+            kind: "external_service",
+            nextCheckAt: futureDate,
+            serviceName: "routine:ba937eda-9871-4761-9491-e69fbf5f0e37",
+          },
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has a future scheduled monitor continuation path",
+    });
+  });
+
+  it("does queue when monitorNextCheckAt is in the past (overdue monitor)", () => {
+    const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1 hour ago
+    const decision = decide({
+      issue: { ...issue, monitorNextCheckAt: pastDate, executionPolicy: null } as any,
+    });
+    // Overdue monitor = no live path; handoff should still fire if all other checks pass.
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("uses a stable one-attempt idempotency key", () => {

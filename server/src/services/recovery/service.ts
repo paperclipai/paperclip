@@ -280,6 +280,42 @@ function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) 
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
 
+function readIssueMonitorRecord(issue: typeof issues.$inferSelect): Record<string, unknown> | null {
+  const state = issue.executionState as Record<string, unknown> | null;
+  const policy = issue.executionPolicy as Record<string, unknown> | null;
+  const stateMonitor = state?.monitor as Record<string, unknown> | null;
+  const policyMonitor = policy?.monitor as Record<string, unknown> | null;
+  return stateMonitor ?? policyMonitor ?? null;
+}
+
+/**
+ * Returns true when the issue has a future scheduled monitor checkpoint.
+ *
+ * Issues backed by a scheduled routine or an external-service monitor declare
+ * their next wake via monitorNextCheckAt (the authoritative DB column) or via
+ * executionPolicy/executionState monitor.nextCheckAt.  While that checkpoint is
+ * in the future the issue has a live continuation path — recovery actions must
+ * not treat it as stranded and must not escalate it to blocked.
+ */
+function issueHasFutureScheduledMonitor(issue: typeof issues.$inferSelect, nowMs = Date.now()): boolean {
+  // Authoritative DB-indexed column — set whenever the issue scheduler syncs monitor state.
+  const dbNextAt = issue.monitorNextCheckAt;
+  if (dbNextAt !== null && dbNextAt !== undefined) {
+    const dbMs = dbNextAt instanceof Date ? dbNextAt.getTime() : new Date(dbNextAt as string).getTime();
+    if (!Number.isNaN(dbMs) && dbMs > nowMs) return true;
+  }
+
+  // Fallback: read from the monitor blob in executionState (preferred) or executionPolicy.
+  const monitor = readIssueMonitorRecord(issue);
+  if (monitor?.nextCheckAt) {
+    const rawAt = monitor.nextCheckAt as string | Date;
+    const monMs = rawAt instanceof Date ? rawAt.getTime() : new Date(rawAt).getTime();
+    if (!Number.isNaN(monMs) && monMs > nowMs) return true;
+  }
+
+  return false;
+}
+
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
@@ -2382,6 +2418,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Skip issues that have a future scheduled monitor continuation — the next
+      // monitor check or routine tick is the declared live path, so recovery would
+      // be a false positive.  This mirrors the hasScheduledMonitor guard used by
+      // the liveness graph classifier for blocked/in_review issues.
+      if (issueHasFutureScheduledMonitor(issue)) {
         result.skipped += 1;
         continue;
       }
