@@ -363,6 +363,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(companySkills);
+      // Re-delete documentRevisions + documents inside the retry loop: a
+      // fire-and-forget background wake from the previous test (e.g.,
+      // handleSuccessfulRunHandoff queueing a continuation-summary document)
+      // can race the cleanup and re-insert document_revisions rows AFTER
+      // the bulk delete higher up. Without this re-delete the companies
+      // delete below trips document_revisions_company_id_companies_id_fk
+      // and the retry loop keeps failing on the orphan row. Same shape as
+      // the issueDocuments re-delete inside the issues loop above.
+      await db.delete(issueDocuments);
+      await db.delete(documentRevisions);
+      await db.delete(documents);
       try {
         await db.delete(companies);
         break;
