@@ -923,4 +923,37 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       );
     expect(openEscalations.filter((e) => e.status !== "done")).toHaveLength(0);
   });
+
+  it("suppresses new escalation creation when a matching cancelled escalation is within the 24h cooldown window", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const recentlyClosedId = randomUUID();
+    const recentlyClosedAt = new Date(Date.now() - 30 * 60 * 1000);
+
+    await db.insert(issues).values({
+      id: recentlyClosedId,
+      companyId,
+      title: "Recently cancelled escalation",
+      status: "cancelled",
+      priority: "high",
+      parentId: blockedIssueId,
+      issueNumber: 3,
+      identifier: "CLOSED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      updatedAt: recentlyClosedAt,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(0);
+  });
 });
