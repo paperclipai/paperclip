@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_BILLING_CASCADE_THRESHOLD,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -120,6 +121,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    error?: string;
+    errorCode?: string;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -129,14 +132,16 @@ describeEmbeddedPostgres("productivity review service", () => {
         id: runId,
         companyId: input.companyId,
         agentId: input.agentId,
-        status: "succeeded",
+        status: input.error ? "failed" : "succeeded",
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
         finishedAt: new Date(createdAt.getTime() + 30_000),
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
-        livenessState: "advanced",
+        livenessState: input.error ? "failed" : "advanced",
         nextAction: "Continue processing the next batch.",
+        error: input.error ?? null,
+        errorCode: input.errorCode ?? null,
         createdAt,
         updatedAt: createdAt,
       });
@@ -562,5 +567,91 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("suppresses productivity review when >=50% of terminal runs are billing/quota errors (positive guard)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+
+    // Insert runs that simulate a billing cascade: all terminal runs have plan-cap error text.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      error: "You've hit your usage limit. out of extra usage · resets 11am ET",
+      errorCode: "adapter_failed",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates review for genuine unproductive runs that have no billing errors (negative guard)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+
+    // Insert runs with no billing error — genuine inactivity (no comments, real tool failures).
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
+  it("suppresses review when billing errors meet the threshold but does not suppress below it", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+
+    // 5 billing error runs + 5 normal no-comment runs = 50% billing → suppressed at default threshold.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now,
+      error: "out of extra usage · resets 11am ET",
+      errorCode: "adapter_failed",
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now: new Date(now.getTime() + 5 * 60_000),
+    });
+
+    const suppressedResult = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+      thresholds: { billingCascadeThreshold: DEFAULT_PRODUCTIVITY_REVIEW_BILLING_CASCADE_THRESHOLD },
+    });
+    expect(suppressedResult.created).toBe(0);
+
+    // With threshold=0.6, the 50% billing ratio is below the threshold → review IS created.
+    const unsuppressedResult = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+      thresholds: { billingCascadeThreshold: 0.6 },
+    });
+    expect(unsuppressedResult.created).toBe(1);
   });
 });
