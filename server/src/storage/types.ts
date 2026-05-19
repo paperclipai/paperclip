@@ -53,9 +53,17 @@ export interface PutFileResult {
   originalFilename: string | null;
 }
 
+export interface PutObjectDirectInput {
+  companyId: string;
+  objectKey: string;
+  body: Buffer;
+  contentType: string;
+}
+
 export interface StorageService {
   provider: StorageProviderId;
   putFile(input: PutFileInput): Promise<PutFileResult>;
+  putObjectDirect(input: PutObjectDirectInput): Promise<void>;
   getObject(companyId: string, objectKey: string): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string): Promise<HeadObjectResult>;
   deleteObject(companyId: string, objectKey: string): Promise<void>;

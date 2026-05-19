@@ -52,6 +52,8 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   if (!PATH_SEGMENT_RE.test(trimmed)) {
     throw new Error(`Invalid agent id for workspace path '${agentId}'.`);
   }
+  const customDir = process.env.PAPERCLIP_AGENT_WORKSPACE_DIR;
+  if (customDir) return path.resolve(customDir, trimmed);
   return path.resolve(resolvePaperclipInstanceRoot(), "workspaces", trimmed);
 }
 

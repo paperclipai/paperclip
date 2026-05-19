@@ -1,10 +1,12 @@
 import { createReadStream, promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { getStorageService, type StorageService } from "../storage/index.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "object_store";
 
 export interface RunLogHandle {
   store: RunLogStoreType;
@@ -147,11 +149,100 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
   };
 }
 
+const FLUSH_THRESHOLD_BYTES = 1024 * 1024; // 1MB
+
+function createObjectStorageRunLogStore(storage: StorageService): RunLogStore {
+  const buffers = new Map<string, { tmpPath: string; byteCount: number }>();
+
+  function bufferKey(companyId: string, runId: string) {
+    return `${companyId}::${runId}`;
+  }
+
+  async function uploadBuffer(companyId: string, objectKey: string, tmpPath: string): Promise<void> {
+    const body = await fs.readFile(tmpPath);
+    await storage.putObjectDirect({ companyId, objectKey, body, contentType: "application/x-ndjson" });
+  }
+
+  return {
+    async begin(input) {
+      const { companyId, runId } = input;
+      const tmpPath = path.join(os.tmpdir(), `paperclip-runlog-${randomUUID()}.ndjson`);
+      await fs.writeFile(tmpPath, "", "utf8");
+      buffers.set(bufferKey(companyId, runId), { tmpPath, byteCount: 0 });
+      const logRef = `${companyId}/runs/${runId}/stdout.ndjson`;
+      return { store: "object_store", logRef };
+    },
+
+    async append(handle, event) {
+      if (handle.store !== "object_store") return 0;
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const runId = parts[2]!;
+      const entry = buffers.get(bufferKey(companyId, runId));
+      if (!entry) return 0;
+      const line = JSON.stringify({ ts: event.ts, stream: event.stream, chunk: event.chunk });
+      const persisted = `${line}\n`;
+      await fs.appendFile(entry.tmpPath, persisted, "utf8");
+      const bytes = Buffer.byteLength(persisted, "utf8");
+      entry.byteCount += bytes;
+      if (entry.byteCount >= FLUSH_THRESHOLD_BYTES) {
+        await uploadBuffer(companyId, handle.logRef, entry.tmpPath);
+        entry.byteCount = 0;
+      }
+      return bytes;
+    },
+
+    async finalize(handle) {
+      if (handle.store !== "object_store") return { bytes: 0, compressed: false };
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const runId = parts[2]!;
+      const entry = buffers.get(bufferKey(companyId, runId));
+      if (!entry) return { bytes: 0, compressed: false };
+      const body = await fs.readFile(entry.tmpPath);
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      await storage.putObjectDirect({ companyId, objectKey: handle.logRef, body, contentType: "application/x-ndjson" });
+      buffers.delete(bufferKey(companyId, runId));
+      await fs.rm(entry.tmpPath, { force: true });
+      return { bytes: body.length, sha256, compressed: false };
+    },
+
+    async read(handle, opts) {
+      if (handle.store !== "object_store") throw notFound("Run log not found");
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const result = await storage.getObject(companyId, handle.logRef);
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        result.stream.on("data", (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        result.stream.on("error", reject);
+        result.stream.on("end", resolve);
+      });
+      const full = Buffer.concat(chunks);
+      const offset = opts?.offset ?? 0;
+      const limitBytes = opts?.limitBytes ?? 256_000;
+      const slice = full.subarray(offset, offset + limitBytes);
+      const nextOffset = offset + slice.length < full.length ? offset + slice.length : undefined;
+      return { content: slice.toString("utf8"), nextOffset };
+    },
+  };
+}
+
 let cachedStore: RunLogStore | null = null;
 
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createLocalFileRunLogStore(basePath);
+  const storage = getStorageService();
+  const useObjectStore =
+    process.env.PAPERCLIP_OBJECT_RUN_LOGS === "1" ||
+    storage.provider !== "local_disk";
+  if (useObjectStore) {
+    cachedStore = createObjectStorageRunLogStore(storage);
+  } else {
+    const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+    cachedStore = createLocalFileRunLogStore(basePath);
+  }
   return cachedStore;
 }

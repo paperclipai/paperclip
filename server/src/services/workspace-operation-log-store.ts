@@ -1,10 +1,12 @@
 import { createReadStream, promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { getStorageService, type StorageService } from "../storage/index.js";
 
-export type WorkspaceOperationLogStoreType = "local_file";
+export type WorkspaceOperationLogStoreType = "local_file" | "object_store";
 
 export interface WorkspaceOperationLogHandle {
   store: WorkspaceOperationLogStoreType;
@@ -145,12 +147,83 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
   };
 }
 
+function createObjectStorageWorkspaceOpLogStore(storage: StorageService): WorkspaceOperationLogStore {
+  const buffers = new Map<string, { tmpPath: string; byteCount: number }>();
+
+  function bufferKey(companyId: string, operationId: string) {
+    return `${companyId}::${operationId}`;
+  }
+
+  return {
+    async begin(input) {
+      const { companyId, operationId } = input;
+      const tmpPath = path.join(os.tmpdir(), `paperclip-wsoplog-${randomUUID()}.ndjson`);
+      await fs.writeFile(tmpPath, "", "utf8");
+      buffers.set(bufferKey(companyId, operationId), { tmpPath, byteCount: 0 });
+      const logRef = `${companyId}/workspace-ops/${operationId}/log.ndjson`;
+      return { store: "object_store", logRef };
+    },
+
+    async append(handle, event) {
+      if (handle.store !== "object_store") return;
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const operationId = parts[2]!;
+      const entry = buffers.get(bufferKey(companyId, operationId));
+      if (!entry) return;
+      const line = JSON.stringify({ ts: event.ts, stream: event.stream, chunk: event.chunk });
+      await fs.appendFile(entry.tmpPath, `${line}\n`, "utf8");
+      entry.byteCount += Buffer.byteLength(`${line}\n`, "utf8");
+    },
+
+    async finalize(handle) {
+      if (handle.store !== "object_store") return { bytes: 0, compressed: false };
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const operationId = parts[2]!;
+      const entry = buffers.get(bufferKey(companyId, operationId));
+      if (!entry) return { bytes: 0, compressed: false };
+      const body = await fs.readFile(entry.tmpPath);
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      await storage.putObjectDirect({ companyId, objectKey: handle.logRef, body, contentType: "application/x-ndjson" });
+      buffers.delete(bufferKey(companyId, operationId));
+      await fs.rm(entry.tmpPath, { force: true });
+      return { bytes: body.length, sha256, compressed: false };
+    },
+
+    async read(handle, opts) {
+      if (handle.store !== "object_store") throw notFound("Workspace operation log not found");
+      const parts = handle.logRef.split("/");
+      const companyId = parts[0]!;
+      const result = await storage.getObject(companyId, handle.logRef);
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        result.stream.on("data", (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        result.stream.on("error", reject);
+        result.stream.on("end", resolve);
+      });
+      const full = Buffer.concat(chunks);
+      const offset = opts?.offset ?? 0;
+      const limitBytes = opts?.limitBytes ?? 256_000;
+      const slice = full.subarray(offset, offset + limitBytes);
+      const nextOffset = offset + slice.length < full.length ? offset + slice.length : undefined;
+      return { content: slice.toString("utf8"), nextOffset };
+    },
+  };
+}
+
 let cachedStore: WorkspaceOperationLogStore | null = null;
 
 export function getWorkspaceOperationLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH
-    ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "workspace-operation-logs");
-  cachedStore = createLocalFileWorkspaceOperationLogStore(basePath);
+  if (getStorageService().provider !== "local_disk") {
+    cachedStore = createObjectStorageWorkspaceOpLogStore(getStorageService());
+  } else {
+    const basePath = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH
+      ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "workspace-operation-logs");
+    cachedStore = createLocalFileWorkspaceOperationLogStore(basePath);
+  }
   return cachedStore;
 }
