@@ -27,6 +27,7 @@ import {
   MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { issueExternalRefsSchema } from "./external-links.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -390,6 +391,7 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  externalRefs: issueExternalRefsSchema,
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

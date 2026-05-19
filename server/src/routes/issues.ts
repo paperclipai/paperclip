@@ -109,6 +109,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { externalLinkService } from "../services/external-links.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -857,6 +858,7 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const externalLinksSvc = externalLinkService(db);
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -2052,7 +2054,20 @@ export function issueRoutes(
     const currentExecutionWorkspace = issue.executionWorkspaceId
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const [workProducts, jiraLink] = await Promise.all([
+      workProductsSvc.listForIssue(issue.id),
+      externalLinksSvc.getJiraLink(issue.id),
+    ]);
+    const externalRefs = jiraLink
+      ? {
+          jira: {
+            key: jiraLink.externalKey,
+            externalUrl: jiraLink.externalUrl,
+            projectKey: (jiraLink.metadata as Record<string, unknown>)?.projectKey as string | null ?? null,
+            instanceUrl: (jiraLink.metadata as Record<string, unknown>)?.instanceUrl as string | null ?? null,
+          },
+        }
+      : null;
     res.json({
       ...issue,
       goalId: goal?.id ?? issue.goalId,
@@ -2072,6 +2087,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      externalRefs,
     });
   });
 
@@ -3259,6 +3275,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      externalRefs: externalRefsInput,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -4138,7 +4155,27 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    // Handle externalRefs.jira upsert/delete
+    if (externalRefsInput !== undefined) {
+      if (externalRefsInput?.jira != null) {
+        await externalLinksSvc.upsertJiraLink(id, externalRefsInput.jira);
+      } else if (externalRefsInput?.jira === null) {
+        await externalLinksSvc.deleteJiraLinks(id);
+      }
+    }
+    const jiraLink = await externalLinksSvc.getJiraLink(id);
+    const externalRefs = jiraLink
+      ? {
+          jira: {
+            key: jiraLink.externalKey,
+            externalUrl: jiraLink.externalUrl,
+            projectKey: (jiraLink.metadata as Record<string, unknown>)?.projectKey as string | null ?? null,
+            instanceUrl: (jiraLink.metadata as Record<string, unknown>)?.instanceUrl as string | null ?? null,
+          },
+        }
+      : null;
+
+    res.json({ ...issueResponse, comment, externalRefs });
   });
 
   router.delete("/issues/:id", async (req, res) => {

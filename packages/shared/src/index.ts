@@ -648,6 +648,8 @@ export {
   type IssueReferenceMatch,
 } from "./issue-references.js";
 
+export { extractJiraKey, extractAllJiraKeys } from "./jira-key.js";
+
 export {
   sidebarOrderPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
@@ -1040,6 +1042,17 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./validators/index.js";
+
+export {
+  EXTERNAL_LINK_PLATFORMS,
+  createExternalLinkSchema,
+  lookupExternalLinkQuerySchema,
+  issueExternalRefsSchema,
+  issueExternalRefsJiraSchema,
+  type CreateExternalLink,
+  type IssueExternalRefs,
+  type IssueExternalRefsJira,
+} from "./validators/external-links.js";
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
