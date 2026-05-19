@@ -416,43 +416,7 @@ describe("server adapter registry", () => {
     expect(hermesExecuteMock).toHaveBeenCalledWith(ctx);
   });
 
-  it("preserves an explicit Hermes Paperclip API key and does not set promptTemplate when none was configured", async () => {
-    const adapter = requireServerAdapter("hermes_local");
-
-    await adapter.execute({
-      runId: "run-123",
-      agent: {
-        id: "agent-123",
-        companyId: "company-123",
-        name: "Hermes Agent",
-        role: "engineer",
-        adapterType: "hermes_local",
-        adapterConfig: {
-          env: {
-            PAPERCLIP_API_KEY: "explicit-agent-key",
-            PAPERCLIP_RUN_ID: "stale-run-id",
-          },
-        },
-      },
-      runtime: {},
-      config: {},
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-      onSpawn: async () => {},
-      authToken: "agent-run-jwt",
-    });
-
-    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("explicit-agent-key");
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_RUN_ID).toBe("run-123");
-    // No custom promptTemplate was set — Hermes must use its built-in default.
-    // Setting promptTemplate here would replace the full default with just the auth guard text,
-    // stripping assigned issue / workflow instructions.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
-  });
-
-  it("does not set promptTemplate when no custom template is configured, preserving Hermes default", async () => {
+  it("injects safe prompt when no custom promptTemplate is set", async () => {
     const adapter = requireServerAdapter("hermes_local");
 
     await adapter.execute({
@@ -475,10 +439,220 @@ describe("server adapter registry", () => {
     });
 
     const [patchedCtx] = hermesExecuteMock.mock.calls[0];
-    // promptTemplate must remain unset so Hermes uses its built-in heartbeat/task prompt.
-    expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
-    // Auth token is still injected.
-    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+    const tmpl = patchedCtx.agent.adapterConfig.promptTemplate as string;
+    expect(tmpl).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    expect(tmpl).toContain("Never pipe curl output to python");
+    expect(tmpl).toContain("PAPERCLIP_TASK_ID");
+    expect(tmpl).toContain("PAPERCLIP_WAKE_REASON");
+    expect(tmpl).toContain("PAPERCLIP_TASK_TITLE");
+    expect(tmpl).toContain("PAPERCLIP_TASK_BODY");
+  });
+
+  it("injects task context vars into env when issue is assigned", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {
+        taskId: "issue-456",
+        issueId: "issue-456",
+        wakeReason: "issue_assigned",
+        paperclipIssue: {
+          id: "issue-456",
+          title: "Fix the bug",
+          description: "There is a bug in the login flow",
+        },
+        paperclipWorkspace: {
+          cwd: "/workspace/project",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_TASK_ID).toBe("issue-456");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_TASK_TITLE).toBe("Fix the bug");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_TASK_BODY).toBe("There is a bug in the login flow");
+    expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_WAKE_REASON).toBe("issue_assigned");
+    expect(patchedCtx.agent.adapterConfig.taskId).toBe("issue-456");
+    expect(patchedCtx.agent.adapterConfig.taskTitle).toBe("Fix the bug");
+    expect(patchedCtx.agent.adapterConfig.taskBody).toBe("There is a bug in the login flow");
+  });
+
+  it("maps custom promptTemplate safety rules without erasing the custom template", async () => {
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          promptTemplate: "Do your work and汇报",
+        },
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const [patchedCtx] = hermesExecuteMock.mock.calls[0];
+    const tmpl = patchedCtx.agent.adapterConfig.promptTemplate as string;
+    expect(tmpl).toContain("Authorization: Bearer $PAPERCLIP_API_KEY");
+    expect(tmpl).toContain("Do your work and汇报");
+    expect(tmpl).not.toContain("Never pipe curl output to python");
+  });
+
+  it("retries with fresh session when Hermes returns 'Session not found'", async () => {
+    hermesExecuteMock.mockReset();
+    hermesExecuteMock.mockImplementationOnce(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      resultJson: { error: "Session not found: 20260519_130929_" },
+    })).mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionId: "fresh-session-abc",
+      sessionParams: { sessionId: "fresh-session-abc" },
+      sessionDisplayId: "fresh-session-abc",
+      resultJson: { result: "done" },
+    }));
+
+    const adapter = requireServerAdapter("hermes_local");
+    const logs: Array<{ stream: string; chunk: string }> = [];
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "stale-session-xyz",
+        sessionParams: { sessionId: "stale-session-xyz" },
+        sessionDisplayId: "stale-session-xyz",
+        taskKey: null,
+      },
+      config: {},
+      context: {},
+      onLog: async (stream, chunk) => { logs.push({ stream, chunk }); },
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    expect(hermesExecuteMock).toHaveBeenCalledTimes(2);
+    const [firstCall, secondCall] = hermesExecuteMock.mock.calls;
+    expect((firstCall[0] as { runtime: { sessionId: string } }).runtime.sessionId).toBe("stale-session-xyz");
+    expect((secondCall[0] as { runtime: { sessionId: string } }).runtime.sessionId).toBeNull();
+    const retryResult = hermesExecuteMock.mock.results[1].value;
+    expect(retryResult.sessionDisplayId).toBe("fresh-session-abc");
+    expect(retryResult.clearSession).toBe(false);
+    expect(logs.some(l => l.chunk.includes("unavailable"))).toBe(true);
+  });
+
+  it("rejects truncated session IDs (YYYYMMD_HHMMSS_ pattern) and clears them", async () => {
+    hermesExecuteMock.mockReset();
+    hermesExecuteMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionId: "20260519_130929_",
+      sessionParams: { sessionId: "20260519_130929_" },
+      sessionDisplayId: "20260519_130929_",
+      resultJson: { result: "ok" },
+    }));
+
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const result = hermesExecuteMock.mock.results[0].value;
+    expect(result.sessionDisplayId).toBeNull();
+    expect(result.sessionParams).toBeNull();
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("keeps valid non-truncated session IDs intact", async () => {
+    hermesExecuteMock.mockReset();
+    hermesExecuteMock.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      sessionId: "sess_abc123def456",
+      sessionParams: { sessionId: "sess_abc123def456" },
+      sessionDisplayId: "sess_abc123def456",
+      resultJson: { result: "ok" },
+    }));
+
+    const adapter = requireServerAdapter("hermes_local");
+
+    await adapter.execute({
+      runId: "run-123",
+      agent: {
+        id: "agent-123",
+        companyId: "company-123",
+        name: "Hermes Agent",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: async () => {},
+      authToken: "agent-run-jwt",
+    });
+
+    const result = hermesExecuteMock.mock.results[0].value;
+    expect(result.sessionDisplayId).toBe("sess_abc123def456");
+    expect(result.sessionParams).toEqual({ sessionId: "sess_abc123def456" });
+    expect(result.clearSession).toBeUndefined();
   });
 });
 

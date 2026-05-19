@@ -63,18 +63,19 @@ COPY --chown=node:node --from=build /app /app
 # but expose its CLI inside the Paperclip container so adapters can invoke
 # `hermes` exactly like `claude`, `codex`, and `opencode`.
 COPY --from=hermes_runtime /opt/hermes /opt/hermes
+COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
 RUN chmod -R a+rX /opt/hermes \
+  && chmod +x /usr/local/bin/uv /usr/local/bin/uvx \
   && ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
   && ln -sf /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
   && ln -sf /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
-  && if [ -x /opt/hermes/.venv/bin/pip ]; then \
-       /opt/hermes/.venv/bin/pip install --no-cache-dir "anthropic>=0.39.0"; \
-     elif [ -x /opt/hermes/.venv/bin/python ]; then \
-       /opt/hermes/.venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true; \
-       /opt/hermes/.venv/bin/python -m pip install --no-cache-dir "anthropic>=0.39.0"; \
-     else \
+  && if [ ! -x /opt/hermes/.venv/bin/python ]; then \
        echo "ERROR: Hermes venv python not found at /opt/hermes/.venv/bin/python" >&2; \
        exit 1; \
+     fi \
+  && if ! /opt/hermes/.venv/bin/python -c "import anthropic" >/dev/null 2>&1; then \
+       uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir "anthropic>=0.39.0"; \
      fi
 
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \

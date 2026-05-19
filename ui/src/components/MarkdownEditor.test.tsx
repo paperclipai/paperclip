@@ -753,6 +753,19 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("marks the autocomplete portal as floating UI for modal pointer handling", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+
+    const menu = option.closest("[data-paperclip-floating-ui]");
+    expect(menu).toBeTruthy();
+    expect(menu?.className).toContain("pointer-events-auto");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not preventDefault on touchstart so the mention menu can scroll on mobile", async () => {
     const handleChange = vi.fn();
     const { option, root } = await openMentionMenuFor(handleChange);

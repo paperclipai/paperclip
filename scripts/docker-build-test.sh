@@ -40,6 +40,10 @@ echo "==> Verifying key binaries in image"
   rg --version
   python3 --version
   curl --version | head -1
+  uv --version
+  command -v hermes || echo "hermes not in PATH (OK)"
+  command -v hermes-agent || echo "hermes-agent not in PATH (OK)"
+  /opt/hermes/.venv/bin/python -c "import anthropic; print(\"anthropic ok\")" 2>/dev/null || echo "anthropic not in venv (OK — may be installed at build time)"
   claude --version 2>/dev/null || echo "claude CLI not found (OK in minimal builds)"
 '
 

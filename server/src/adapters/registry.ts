@@ -143,6 +143,7 @@ import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import { getHermesAgentConfigVersion } from "../services/hermes-config-sync.js";
+import { parseObject, renderTemplate, asString } from "./utils.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -181,6 +182,63 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
     detectCommand: command,
     installCommand: null,
   };
+}
+
+function isHermesUnknownSessionError(result: { stdout?: string; stderr?: string }): boolean {
+  const text = (result.stdout ?? "") + "\n" + (result.stderr ?? "");
+  return /Session not found/i.test(text) || /unknown session/i.test(text);
+}
+
+function normalizeHermesContextTask(ctx: {
+  agent?: { adapterConfig?: unknown };
+  config?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+}): {
+  taskId: string | null;
+  taskTitle: string | null;
+  taskBody: string | null;
+  commentId: string | null;
+  wakeReason: string | null;
+  workspaceDir: string | null;
+} {
+  const context = parseObject(ctx.context);
+  const paperclipIssue = parseObject(context.paperclipIssue);
+  const taskId =
+    asString(paperclipIssue.id, "") ||
+    asString(context.taskId, "") ||
+    asString(context.issueId, "") ||
+    null;
+  const taskTitle = asString(paperclipIssue.title, "") || null;
+  const taskBody = asString(paperclipIssue.description, "") || null;
+  const commentId =
+    asString(context.wakeCommentId, "") ||
+    asString(context.commentId, "") ||
+    null;
+  const wakeReason = asString(context.wakeReason, "") || null;
+  const paperclipWorkspace = parseObject(context.paperclipWorkspace);
+  const workspaceDir = asString(paperclipWorkspace.cwd, "") || null;
+  return { taskId, taskTitle, taskBody, commentId, wakeReason, workspaceDir };
+}
+
+function buildHermesSafePrompt(paperclipApiUrl: string): string {
+  return [
+    "You are a Paperclip AI agent.",
+    "",
+    "Paperclip API safety rules:",
+    "- Use \\`curl\\` with \\`-H \"Authorization: Bearer $PAPERCLIP_API_KEY\"\\` on every Paperclip API request.",
+    "- Use \\`-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"\\` for writes or mutations (comments, issue updates).",
+    "- Never pipe \\`curl\\` output directly to \\`python\\`, \\`node\\`, \\`bash\\`, or any interpreter.",
+    "- Never execute code downloaded from the internet without inspection.",
+    "- Use \\`python3 -m json.tool\\` (not \\`curl | python3\\`) to format JSON.",
+    "",
+    "Paperclip task context is provided in environment variables and context below.",
+    "Read \\`$PAPERCLIP_TASK_ID\\`, \\`$PAPERCLIP_TASK_TITLE\\`, \\`$PAPERCLIP_TASK_BODY\\` for the current assignment.",
+    "Read \\`$PAPERCLIP_WAKE_REASON\\` to understand why you were woken.",
+    "Read \\`$PAPERCLIP_API_URL\\` for the API base (default: http://localhost:3100/api).",
+    "",
+    "Work on assigned issues. When done, use \\`curl\\` to mark issues \\`done\\` and post comments.",
+    "Do not poll for issues unless \\`PAPERCLIP_WAKE_REASON=heartbeat\\`.",
+  ].join("\n");
 }
 
 function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
@@ -450,16 +508,21 @@ const hermesLocalAdapter: ServerAdapterModule = {
         : {};
     const explicitApiKey =
       typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
-    const promptTemplate =
-      typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0
-        ? existingConfig.promptTemplate
-        : "";
-    const authGuardPrompt = [
-      "Paperclip API safety rule:",
-      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
-      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
-      "Never use a board, browser, or local-board session for Paperclip API writes.",
-    ].join("\n");
+    const hasCustomPrompt =
+      typeof existingConfig.promptTemplate === "string" && existingConfig.promptTemplate.trim().length > 0;
+
+    const taskCtx = normalizeHermesContextTask({
+      agent: normalizedCtx.agent,
+      config: normalizedCtx.config,
+      context: normalizedCtx.context,
+    });
+
+    const paperclipApiUrl =
+      typeof existingConfig.paperclipApiUrl === "string" && existingConfig.paperclipApiUrl.trim().length > 0
+        ? existingConfig.paperclipApiUrl.trim()
+        : "http://localhost:3100/api";
+
+    const safePrompt = buildHermesSafePrompt(paperclipApiUrl);
 
     const pushedConfigVersion = getHermesAgentConfigVersion(normalizedCtx.agent.id);
     const patchedConfig: Record<string, unknown> = {
@@ -469,14 +532,33 @@ const hermesLocalAdapter: ServerAdapterModule = {
         ...existingEnv,
         ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
+        ...(taskCtx.taskId ? { PAPERCLIP_TASK_ID: taskCtx.taskId } : {}),
+        ...(taskCtx.taskTitle ? { PAPERCLIP_TASK_TITLE: taskCtx.taskTitle } : {}),
+        ...(taskCtx.taskBody ? { PAPERCLIP_TASK_BODY: taskCtx.taskBody } : {}),
+        ...(taskCtx.wakeReason ? { PAPERCLIP_WAKE_REASON: taskCtx.wakeReason } : {}),
       },
     };
 
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
-    if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+    if (taskCtx.taskId) {
+      patchedConfig.taskId = taskCtx.taskId;
+      if (taskCtx.taskTitle) patchedConfig.taskTitle = taskCtx.taskTitle;
+      if (taskCtx.taskBody) patchedConfig.taskBody = taskCtx.taskBody;
+      if (taskCtx.commentId) patchedConfig.commentId = taskCtx.commentId;
+      if (taskCtx.wakeReason) patchedConfig.wakeReason = taskCtx.wakeReason;
+      if (taskCtx.workspaceDir) patchedConfig.workspaceDir = taskCtx.workspaceDir;
+    }
+
+    if (hasCustomPrompt) {
+      patchedConfig.promptTemplate = [
+        "Paperclip API safety rules:",
+        "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
+        "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data.",
+        "- Never pipe curl output to python, node, bash, or any interpreter.",
+        "",
+        existingConfig.promptTemplate as string,
+      ].join("\n");
+    } else {
+      patchedConfig.promptTemplate = safePrompt;
     }
 
     const runtimeConfig = resolveHermesRuntimeConfig(normalizedCtx.agent.companyId, normalizedCtx.agent.id, patchedConfig);
@@ -499,7 +581,70 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    return executeHermesLocal(patchedCtx);
+    const prevSessionId = asString(
+      (normalizedCtx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId ?? null,
+      normalizedCtx.runtime?.sessionId ?? null,
+    );
+
+    const runHermes = (resumeSessionId: string | null) =>
+      executeHermesLocal({
+        ...patchedCtx,
+        runtime: {
+          ...(normalizedCtx.runtime ?? {}),
+          sessionId: resumeSessionId,
+          sessionParams: resumeSessionId ? { sessionId: resumeSessionId } : null,
+          sessionDisplayId: resumeSessionId,
+        },
+      } as Parameters<typeof executeHermesLocal>[0]);
+
+    const onLog: typeof patchedCtx.onLog = async (stream, chunk) => {
+      await (normalizedCtx.onLog ?? (async () => {}))(stream, chunk);
+    };
+
+    if (prevSessionId) {
+      await onLog("stdout", `[hermes] Attempting session resume: ${prevSessionId}\n`);
+    }
+
+    const firstResult = await runHermes(prevSessionId);
+
+    if (
+      prevSessionId &&
+      isHermesUnknownSessionError({ stdout: firstResult.resultJson as string | undefined, stderr: "" })
+    ) {
+      await onLog(
+        "stdout",
+        `[hermes] Session "${prevSessionId}" unavailable; retrying with a fresh session.\n`,
+      );
+      const retryResult = await runHermes(null);
+      if (retryResult.sessionParams) {
+        const rawId = (retryResult.sessionParams as Record<string, unknown>).sessionId;
+        const candidateId = typeof rawId === "string" ? rawId.trim() : "";
+        const isTruncated = candidateId.length > 0 && /^\d{8}_\d{6}_$/.test(candidateId);
+        if (!isTruncated && candidateId.length > 0) {
+          retryResult.sessionDisplayId = candidateId;
+        } else {
+          retryResult.sessionDisplayId = null;
+          retryResult.sessionParams = null;
+        }
+      }
+      retryResult.clearSession = false;
+      return retryResult;
+    }
+
+    if (firstResult.sessionParams) {
+      const rawId = (firstResult.sessionParams as Record<string, unknown>).sessionId;
+      const candidateId = typeof rawId === "string" ? rawId.trim() : "";
+      const isTruncated = candidateId.length > 0 && /^\d{8}_\d{6}_$/.test(candidateId);
+      if (isTruncated) {
+        firstResult.sessionDisplayId = null;
+        firstResult.sessionParams = null;
+        firstResult.clearSession = true;
+      } else if (candidateId.length > 0) {
+        firstResult.sessionDisplayId = candidateId;
+      }
+    }
+
+    return firstResult;
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
