@@ -270,10 +270,15 @@ export function NewAgentDialog() {
                   <Settings2 className="h-4 w-4 mr-2" />
                   Configure a runtime manually
                 </Button>
-                <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
-                  <MailPlus className="h-4 w-4 mr-2" />
-                  Invite an external agent (OpenClaw, Hermes, etc.)
-                </Button>
+                <div className="space-y-1">
+                  <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
+                    <MailPlus className="h-4 w-4 mr-2" />
+                    Invite an external agent
+                  </Button>
+                  <p className="text-xs text-muted-foreground text-center">
+                    OpenClaw, Hermes, etc.
+                  </p>
+                </div>
               </div>
             </>
           ) : mode === "runtime" ? (
@@ -330,7 +335,7 @@ export function NewAgentDialog() {
                   Back
                 </button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent (OpenClaw, Hermes, etc.)</h2>
+                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
                   <p className="text-sm text-muted-foreground">
                     Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
                   </p>
