@@ -4,6 +4,7 @@ import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
   DraftInput,
+  ToggleField,
   help,
 } from "../../components/agent-config-primitives";
 import {
@@ -233,6 +234,13 @@ export function OpenClawGatewayConfigFields({
               placeholder="120000"
             />
           </Field>
+
+          <ToggleField
+            label="Omit Paperclip payload"
+            hint="Enable for strict OpenClaw gateways that reject unknown root-level fields."
+            checked={eff("adapterConfig", "includePaperclipPayload", config.includePaperclipPayload !== false) === false}
+            onChange={(v) => mark("adapterConfig", "includePaperclipPayload", v ? false : undefined)}
+          />
 
           <Field label="Device auth">
             <div className="text-xs text-muted-foreground leading-relaxed">
