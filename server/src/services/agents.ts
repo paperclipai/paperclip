@@ -15,12 +15,29 @@ import {
   approvalComments,
   approvals,
   assets,
+  companySecretProviderConfigs,
+  companySecretVersions,
+  documents,
+  documentRevisions,
+  financeEvents,
   goals,
+  heartbeatRunWatchdogDecisions,
+  issueApprovals,
   issueExecutionDecisions,
+  issueRecoveryActions,
+  issueRelations,
+  issueThreadInteractions,
+  issueTreeHoldMembers,
+  issueTreeHolds,
   issues,
   issueComments,
   joinRequests,
   projects,
+  routines,
+  routineRevisions,
+  routineRuns,
+  routineTriggers,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -534,11 +551,38 @@ export function agentService(db: Db) {
         await tx.update(issues).set({ createdByAgentId: null }).where(eq(issues.createdByAgentId, id));
         await tx.update(projects).set({ leadAgentId: null }).where(eq(projects.leadAgentId, id));
         await tx.update(goals).set({ ownerAgentId: null }).where(eq(goals.ownerAgentId, id));
+        await tx.update(workspaceRuntimeServices).set({ ownerAgentId: null }).where(eq(workspaceRuntimeServices.ownerAgentId, id));
+        await tx.update(routines).set({ assigneeAgentId: null }).where(eq(routines.assigneeAgentId, id));
+        await tx.update(routines).set({ createdByAgentId: null }).where(eq(routines.createdByAgentId, id));
+        await tx.update(routines).set({ updatedByAgentId: null }).where(eq(routines.updatedByAgentId, id));
+        await tx.update(routineRevisions).set({ createdByAgentId: null }).where(eq(routineRevisions.createdByAgentId, id));
+        await tx.update(routineTriggers).set({ createdByAgentId: null }).where(eq(routineTriggers.createdByAgentId, id));
+        await tx.update(routineTriggers).set({ updatedByAgentId: null }).where(eq(routineTriggers.updatedByAgentId, id));
+        await tx.update(routineRuns).set({ createdByAgentId: null }).where(eq(routineRuns.createdByAgentId, id));
         await tx.update(activityLog).set({ agentId: null }).where(eq(activityLog.agentId, id));
         await tx.update(issueComments).set({ authorAgentId: null }).where(eq(issueComments.authorAgentId, id));
         await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
         await tx.update(approvals).set({ requestedByAgentId: null }).where(eq(approvals.requestedByAgentId, id));
         await tx.update(assets).set({ createdByAgentId: null }).where(eq(assets.createdByAgentId, id));
+        await tx.update(agentConfigRevisions).set({ createdByAgentId: null }).where(eq(agentConfigRevisions.createdByAgentId, id));
+        await tx.update(companySecretProviderConfigs).set({ createdByAgentId: null }).where(eq(companySecretProviderConfigs.createdByAgentId, id));
+        await tx.update(companySecretVersions).set({ createdByAgentId: null }).where(eq(companySecretVersions.createdByAgentId, id));
+        await tx.update(documents).set({ createdByAgentId: null }).where(eq(documents.createdByAgentId, id));
+        await tx.update(documents).set({ updatedByAgentId: null }).where(eq(documents.updatedByAgentId, id));
+        await tx.update(documents).set({ lockedByAgentId: null }).where(eq(documents.lockedByAgentId, id));
+        await tx.update(documentRevisions).set({ createdByAgentId: null }).where(eq(documentRevisions.createdByAgentId, id));
+        await tx.update(financeEvents).set({ agentId: null }).where(eq(financeEvents.agentId, id));
+        await tx.update(heartbeatRunWatchdogDecisions).set({ createdByAgentId: null }).where(eq(heartbeatRunWatchdogDecisions.createdByAgentId, id));
+        await tx.update(issueApprovals).set({ linkedByAgentId: null }).where(eq(issueApprovals.linkedByAgentId, id));
+        await tx.update(issueRelations).set({ createdByAgentId: null }).where(eq(issueRelations.createdByAgentId, id));
+        await tx.update(issueThreadInteractions).set({ createdByAgentId: null }).where(eq(issueThreadInteractions.createdByAgentId, id));
+        await tx.update(issueThreadInteractions).set({ resolvedByAgentId: null }).where(eq(issueThreadInteractions.resolvedByAgentId, id));
+        await tx.update(issueTreeHolds).set({ createdByAgentId: null }).where(eq(issueTreeHolds.createdByAgentId, id));
+        await tx.update(issueTreeHolds).set({ releasedByAgentId: null }).where(eq(issueTreeHolds.releasedByAgentId, id));
+        await tx.update(issueTreeHoldMembers).set({ assigneeAgentId: null }).where(eq(issueTreeHoldMembers.assigneeAgentId, id));
+        await tx.update(issueRecoveryActions).set({ ownerAgentId: null }).where(eq(issueRecoveryActions.ownerAgentId, id));
+        await tx.update(issueRecoveryActions).set({ previousOwnerAgentId: null }).where(eq(issueRecoveryActions.previousOwnerAgentId, id));
+        await tx.update(issueRecoveryActions).set({ returnOwnerAgentId: null }).where(eq(issueRecoveryActions.returnOwnerAgentId, id));
 
         const deleted = await tx
           .delete(agents)
