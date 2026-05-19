@@ -1,7 +1,7 @@
 ---
 name: release-changelog
 description: >
-  Generate the stable Paperclip release changelog at releases/v{version}.md by
+  Generate the stable Paperclip release changelog at releases/vYYYY.MDD.P.md by
   reading commits, changesets, and merged PR context since the last stable tag.
 ---
 
@@ -9,20 +9,33 @@ description: >
 
 Generate the user-facing changelog for the **stable** Paperclip release.
 
+## Versioning Model
+
+Paperclip uses **calendar versioning (calver)**:
+
+- Stable releases: `YYYY.MDD.P` (e.g. `2026.318.0`)
+- Canary releases: `YYYY.MDD.P-canary.N` (e.g. `2026.318.1-canary.0`)
+- Git tags: `vYYYY.MDD.P` for stable, `canary/vYYYY.MDD.P-canary.N` for canary
+
+There are no major/minor/patch bumps. The stable version is derived from the
+intended release date (UTC) plus the next same-day stable patch slot.
+
 Output:
 
-- `releases/v{version}.md`
+- `releases/vYYYY.MDD.P.md`
 
-Important rule:
+Important rules:
 
-- even if there are canary releases such as `1.2.3-canary.0`, the changelog file stays `releases/v1.2.3.md`
+- even if there are canary releases such as `2026.318.1-canary.0`, the changelog file stays `releases/v2026.318.1.md`
+- do not derive versions from semver bump types
+- do not create canary changelog files
 
 ## Step 0 — Idempotency Check
 
 Before generating anything, check whether the file already exists:
 
 ```bash
-ls releases/v{version}.md 2>/dev/null
+ls releases/vYYYY.MDD.P.md 2>/dev/null
 ```
 
 If it exists:
@@ -41,13 +54,14 @@ git tag --list 'v*' --sort=-version:refname | head -1
 git log v{last}..HEAD --oneline --no-merges
 ```
 
-The planned stable version comes from one of:
+The stable version comes from one of:
 
 - an explicit maintainer request
-- the chosen bump type applied to the last stable tag
+- `./scripts/release.sh stable --date YYYY-MM-DD --print-version`
 - the release plan already agreed in `doc/RELEASING.md`
 
 Do not derive the changelog version from a canary tag or prerelease suffix.
+Do not derive major/minor/patch bumps from API intent — calver uses the date and same-day stable slot.
 
 ## Step 2 — Gather the Raw Inputs
 
@@ -73,7 +87,6 @@ Look for:
 - destructive migrations
 - removed or changed API fields/endpoints
 - renamed or removed config keys
-- `major` changesets
 - `BREAKING:` or `BREAKING CHANGE:` commit signals
 
 Key commands:
@@ -85,7 +98,8 @@ git diff v{last}..HEAD -- server/src/routes/ server/src/api/
 git log v{last}..HEAD --format="%s" | rg -n 'BREAKING CHANGE|BREAKING:|^[a-z]+!:' || true
 ```
 
-If the requested bump is lower than the minimum required bump, flag that before the release proceeds.
+If breaking changes are detected, flag them prominently — they must appear in the
+Breaking Changes section with an upgrade path.
 
 ## Step 4 — Categorize for Users
 
@@ -130,9 +144,9 @@ Rules:
 Template:
 
 ```markdown
-# v{version}
+# vYYYY.MDD.P
 
-> Released: {YYYY-MM-DD}
+> Released: YYYY-MM-DD
 
 ## Breaking Changes
 
@@ -163,8 +177,12 @@ real name or email). To find GitHub usernames:
 
 **Never expose contributor email addresses.** Use `@username` only.
 
-Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list. List contributors
-in alphabetical order by GitHub username (case-insensitive).
+Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list.
+Exclude Paperclip founders from the list (e.g. `cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`)
+
+List contributors in alphabetical order by GitHub username (case-insensitive).
+
+If there are no contributors left after exclusions, then just skip this section and don't mention it.
 
 ## Step 6 — Review Before Release
 

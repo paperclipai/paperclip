@@ -2,6 +2,16 @@
   "name": "@paperclipai/plugin-sdk",
   "version": "1.0.0",
   "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/sdk"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -93,6 +103,7 @@
   "scripts": {
     "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
+    "ensure-build-deps": "node ../../../scripts/ensure-plugin-build-deps.mjs",
     "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
     "dev:server": "tsx src/dev-cli.ts"
   },

@@ -1,7 +1,7 @@
 # Paperclip V1 Implementation Spec
 
 Status: Implementation contract for first release (V1)
-Date: 2026-02-17
+Date: 2026-04-28
 Audience: Product, engineering, and agent-integration authors
 Source inputs: `GOAL.md`, `PRODUCT.md`, `SPEC.md`, `DATABASE.md`, current monorepo code
 
@@ -37,8 +37,9 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | No automatic reassignment; work recovery stays manual/explicit |
-| Agent adapters | Built-in `process` and `http` adapters |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
+| Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
+| Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
 | Budget enforcement | Soft alerts + hard limit auto-pause |
@@ -73,7 +74,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 
 ## 5.2 Out of Scope (V1)
 
-- Plugin framework and third-party extension SDK
+- Cloud-grade plugin marketplace/distribution beyond the local/self-hosted plugin runtime
 - Revenue/expense accounting beyond model/token costs
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
@@ -123,6 +124,16 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `name` text not null
 - `description` text null
 - `status` enum: `active | paused | archived`
+- `pause_reason` text null
+- `paused_at` timestamptz null
+- `issue_prefix` text not null
+- `issue_counter` int not null
+- `budget_monthly_cents` int not null default 0
+- `spent_monthly_cents` int not null default 0
+- `attachment_max_bytes` int not null
+- `require_board_approval_for_new_agents` boolean not null default false
+- feedback sharing consent fields
+- branding fields such as `brand_color`
 
 Invariant: every business record belongs to exactly one company.
 
@@ -133,15 +144,21 @@ Invariant: every business record belongs to exactly one company.
 - `name` text not null
 - `role` text not null
 - `title` text null
-- `status` enum: `active | paused | idle | running | error | terminated`
+- `icon` text null
+- `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` enum: `process | http`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
+- `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
+- `default_environment_id` uuid fk `environments.id` null
 - `context_mode` enum: `thin | fat` default `thin`
 - `budget_monthly_cents` int not null default 0
 - `spent_monthly_cents` int not null default 0
+- pause fields: `pause_reason`, `paused_at`
+- `permissions` jsonb not null default `{}`
 - `last_heartbeat_at` timestamptz null
+- `metadata` jsonb null
 
 Invariants:
 
@@ -184,12 +201,20 @@ Invariant: at least one root `company` level goal per company.
 - `status` enum: `backlog | planned | in_progress | completed | cancelled`
 - `lead_agent_id` uuid fk `agents.id` null
 - `target_date` date null
+- `env` jsonb null (same secret-aware env binding format used by agent config)
+
+Invariant:
+
+- project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
+
+Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `project_id` uuid fk `projects.id` null
+- `project_workspace_id` uuid fk `project_workspaces.id` null
 - `goal_id` uuid fk `goals.id` null
 - `parent_id` uuid fk `issues.id` null
 - `title` text not null
@@ -197,13 +222,22 @@ Invariant: at least one root `company` level goal per company.
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
+- `assignee_user_id` text null
+- checkout/execution locks: `checkout_run_id`, `execution_run_id`, `execution_agent_name_key`, `execution_locked_at`
 - `created_by_agent_id` uuid fk `agents.id` null
 - `created_by_user_id` uuid fk `users.id` null
+- identifier fields: `issue_number`, `identifier`
+- origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
 - `request_depth` int not null default 0
 - `billing_code` text null
+- `assignee_adapter_overrides` jsonb null
+- `execution_policy` jsonb null
+- `execution_state` jsonb null
+- execution workspace fields: `execution_workspace_id`, `execution_workspace_preference`, `execution_workspace_settings`
 - `started_at` timestamptz null
 - `completed_at` timestamptz null
 - `cancelled_at` timestamptz null
+- `hidden_at` timestamptz null
 
 Invariants:
 
@@ -256,10 +290,10 @@ Invariant: each event must attach to agent and company; rollups are aggregation,
 
 - `id` uuid pk
 - `company_id` uuid fk not null
-- `type` enum: `hire_agent | approve_ceo_strategy`
+- `type` enum: `hire_agent | approve_ceo_strategy | budget_override_required | request_board_approval`
 - `requested_by_agent_id` uuid fk `agents.id` null
 - `requested_by_user_id` uuid fk `users.id` null
-- `status` enum: `pending | approved | rejected | cancelled`
+- `status` enum: `pending | revision_requested | approved | rejected | cancelled`
 - `payload` jsonb not null
 - `decision_note` text null
 - `decided_by_user_id` uuid fk `users.id` null
@@ -344,6 +378,10 @@ Operational policy:
   - `created_by_user_id` uuid/text fk null
   - `updated_by_agent_id` uuid fk null
   - `updated_by_user_id` uuid/text fk null
+  - `locked_at` timestamptz null
+  - `locked_by_agent_id` uuid fk null
+  - `locked_by_user_id` uuid/text fk null
+  - Locked documents are immutable until unlocked. Board operators can lock/unlock; agent writes to a locked key create a new issue document with a derived key instead of overwriting the locked document.
 - `document_revisions` stores append-only history:
   - `id` uuid pk
   - `company_id` uuid fk not null
@@ -357,6 +395,15 @@ Operational policy:
   - `issue_id` uuid fk not null
   - `document_id` uuid fk not null
   - `key` text not null (`plan`, `design`, `notes`, etc.)
+
+## 7.16 Current Implementation Addenda
+
+The current implementation includes additional V1-control-plane tables beyond the original February snapshot:
+
+- Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
+- Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
+- Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
+- Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
 ## 8. State Machines
 
@@ -389,6 +436,16 @@ Side effects:
 - entering `in_progress` sets `started_at` if null
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+
+V1 non-terminal liveness rule:
+
+- agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
+- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
+- a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
+- when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
+- explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
+
+Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
 ## 8.3 Approval Status
 
@@ -441,6 +498,7 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies`
 - `GET /companies/:companyId`
 - `PATCH /companies/:companyId`
+- `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
 
 ## 10.2 Goals
@@ -472,10 +530,13 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
+- `POST /issues/:issueId/documents/:key/lock`
+- `POST /issues/:issueId/documents/:key/unlock`
 - `GET /issues/:issueId/documents/:key/revisions`
 - `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
 - `POST /issues/:issueId/release`
+- `POST /issues/:issueId/admin/force-release` (board-only lock recovery)
 - `POST /issues/:issueId/comments`
 - `GET /issues/:issueId/comments`
 - `POST /companies/:companyId/issues/:issueId/attachments` (multipart upload)
@@ -490,7 +551,7 @@ All endpoints are under `/api` and return JSON.
 ```json
 {
   "agentId": "uuid",
-  "expectedStatuses": ["todo", "backlog", "blocked"]
+  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
 }
 ```
 
@@ -499,6 +560,8 @@ Server behavior:
 1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+
+`POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects
 
@@ -544,6 +607,17 @@ Dashboard payload must include:
 - `409` state conflict (checkout conflict, invalid transition)
 - `422` semantic rule violation
 - `500` server error
+
+## 10.10 Current Implementation API Addenda
+
+The current app also exposes V1-supporting surfaces for:
+
+- issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
+- issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- execution workspaces, project workspaces, workspace runtime services, and workspace operations
+- routines and scheduled/API/webhook triggers
+- plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
+- company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
 
 ## 11. Heartbeat and Adapter Contract
 
@@ -611,7 +685,7 @@ Per-agent schedule fields in `adapter_config`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
-- `maxConcurrentRuns` fixed at `1` for V1
+- `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
 
 Scheduler must skip invocation when:
 
@@ -720,13 +794,14 @@ Required UX behaviors:
 
 - Node 20+
 - `DATABASE_URL` optional
-- if unset, auto-use PGlite and push schema
+- if unset, auto-use embedded PostgreSQL under `~/.paperclip/instances/default/db`
 
 ## 15.2 Migrations
 
 - Drizzle migrations are source of truth
+- local/dev startup applies pending migrations automatically where supported
+- `pnpm db:migrate` applies pending migrations manually
 - no destructive migration in-place for V1 upgrade path
-- provide migration script from existing minimal tables to company-scoped schema
 
 ## 15.3 Logging and Audit
 
@@ -781,6 +856,8 @@ A release candidate is blocked unless these pass:
 
 ## 18. Delivery Plan
 
+Current implementation note: the milestones below describe the original V1 sequencing. Several systems originally framed as future work have since shipped or advanced materially, including issue documents/interactions, blockers, routines, execution workspaces, import/export portability, authenticated deployment modes, multi-user basics, and the local/self-hosted plugin runtime.
+
 ## Milestone 1: Company Core and Auth
 
 - add `companies` and company scoping to existing entities
@@ -833,7 +910,7 @@ V1 is complete only when all criteria are true:
 
 ## 20. Post-V1 Backlog (Explicitly Deferred)
 
-- plugin architecture
+- cloud-grade plugin marketplace/distribution
 - richer workflow-state customization per team
 - milestones/labels/dependency graph depth beyond V1 minimum
 - realtime transport optimization (SSE/WebSockets)
@@ -843,20 +920,31 @@ V1 is complete only when all criteria are true:
 
 V1 supports company import/export using a portable package contract:
 
-- exactly one JSON entrypoint: `paperclip.manifest.json`
-- all other package files are markdown with frontmatter
-- agent convention:
-  - `agents/<slug>/AGENTS.md` (required for V1 export/import)
-  - `agents/<slug>/HEARTBEAT.md` (optional, import accepted)
-  - `agents/<slug>/*.md` (optional, import accepted)
+- markdown-first package rooted at `COMPANY.md`
+- implicit folder discovery by convention
+- `.paperclip.yaml` sidecar for Paperclip-specific fidelity
+- canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
+- common conventions:
+  - `agents/<slug>/AGENTS.md`
+  - `teams/<slug>/TEAM.md`
+  - `projects/<slug>/PROJECT.md`
+  - `projects/<slug>/tasks/<slug>/TASK.md`
+  - `tasks/<slug>/TASK.md`
+  - `skills/<slug>/SKILL.md`
 
 Export/import behavior in V1:
 
-- export includes company metadata and/or agents based on selection
-- export strips environment-specific paths (`cwd`, local instruction file paths)
-- export never includes secret values; secret requirements are reported
+- export emits a clean vendor-neutral markdown package plus `.paperclip.yaml`
+- projects and starter tasks are opt-in export content rather than default package content
+- recurring `TASK.md` entries use `recurring: true` in the base package and Paperclip routine fidelity in `.paperclip.yaml`
+- Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
+- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
+- export never includes secret values; env inputs are reported as portable declarations instead
 - import supports target modes:
   - create a new company
   - import into an existing company
+- import recreates exported project workspaces and remaps portable workspace keys back to target-local workspace ids
+- import forces imported agent timer heartbeats off so packages never start scheduled runs implicitly
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
+- GitHub imports warn on unpinned refs instead of blocking

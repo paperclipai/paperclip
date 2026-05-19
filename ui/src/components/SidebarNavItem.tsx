@@ -1,4 +1,5 @@
 import { NavLink } from "@/lib/router";
+import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import type { LucideIcon } from "lucide-react";
@@ -11,6 +12,8 @@ interface SidebarNavItemProps {
   className?: string;
   badge?: number;
   badgeTone?: "default" | "danger";
+  textBadge?: string;
+  textBadgeTone?: "default" | "amber";
   alert?: boolean;
   liveCount?: number;
 }
@@ -23,6 +26,8 @@ export function SidebarNavItem({
   className,
   badge,
   badgeTone = "default",
+  textBadge,
+  textBadgeTone = "default",
   alert = false,
   liveCount,
 }: SidebarNavItemProps) {
@@ -31,6 +36,7 @@ export function SidebarNavItem({
   return (
     <NavLink
       to={to}
+      state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
@@ -50,6 +56,18 @@ export function SidebarNavItem({
         )}
       </span>
       <span className="flex-1 truncate">{label}</span>
+      {textBadge && (
+        <span
+          className={cn(
+            "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none",
+            textBadgeTone === "amber"
+              ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+              : "bg-muted text-muted-foreground",
+          )}
+        >
+          {textBadge}
+        </span>
+      )}
       {liveCount != null && liveCount > 0 && (
         <span className="ml-auto flex items-center gap-1.5">
           <span className="relative flex h-2 w-2">

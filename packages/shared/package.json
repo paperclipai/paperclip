@@ -1,9 +1,20 @@
 {
   "name": "@paperclipai/shared",
   "version": "0.3.1",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/shared"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./telemetry": "./src/telemetry/index.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -12,6 +23,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./telemetry": {
+        "types": "./dist/telemetry/index.d.ts",
+        "import": "./dist/telemetry/index.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",

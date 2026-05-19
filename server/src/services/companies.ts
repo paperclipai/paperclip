@@ -1,4 +1,4 @@
-import { eq, count } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -16,6 +16,8 @@ import {
   heartbeatRuns,
   heartbeatRunEvents,
   costEvents,
+  financeEvents,
+  issueReadStates,
   approvalComments,
   approvals,
   activityLog,
@@ -24,11 +26,15 @@ import {
   invites,
   principalPermissionGrants,
   companyMemberships,
+  companySkills,
+  documents,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { environmentService } from "./environments.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
+  const environmentsSvc = environmentService(db);
 
   const companySelection = {
     id: companies.id,
@@ -39,7 +45,12 @@ export function companyService(db: Db) {
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
+    attachmentMaxBytes: companies.attachmentMaxBytes,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
+    feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
+    feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
+    feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     brandColor: companies.brandColor,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,
@@ -51,6 +62,49 @@ export function companyService(db: Db) {
       ...company,
       logoUrl: company.logoAssetId ? `/api/assets/${company.logoAssetId}/content` : null,
     };
+  }
+
+  function currentUtcMonthWindow(now = new Date()) {
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+    return {
+      start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
+      end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
+    };
+  }
+
+  async function getMonthlySpendByCompanyIds(
+    companyIds: string[],
+    database: Pick<Db, "select"> = db,
+  ) {
+    if (companyIds.length === 0) return new Map<string, number>();
+    const { start, end } = currentUtcMonthWindow();
+    const rows = await database
+        .select({
+          companyId: costEvents.companyId,
+          spentMonthlyCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+        })
+      .from(costEvents)
+      .where(
+        and(
+          inArray(costEvents.companyId, companyIds),
+          gte(costEvents.occurredAt, start),
+          lt(costEvents.occurredAt, end),
+        ),
+      )
+      .groupBy(costEvents.companyId);
+    return new Map(rows.map((row) => [row.companyId, Number(row.spentMonthlyCents ?? 0)]));
+  }
+
+  async function hydrateCompanySpend<T extends { id: string; spentMonthlyCents: number }>(
+    rows: T[],
+    database: Pick<Db, "select"> = db,
+  ) {
+    const spendByCompanyId = await getMonthlySpendByCompanyIds(rows.map((row) => row.id), database);
+    return rows.map((row) => ({
+      ...row,
+      spentMonthlyCents: spendByCompanyId.get(row.id) ?? 0,
+    }));
   }
 
   function getCompanyQuery(database: Pick<Db, "select">) {
@@ -103,21 +157,30 @@ export function companyService(db: Db) {
   }
 
   return {
-    list: () =>
-      getCompanyQuery(db).then((rows) => rows.map((row) => enrichCompany(row))),
+    list: async () => {
+      const rows = await getCompanyQuery(db);
+      const hydrated = await hydrateCompanySpend(rows);
+      return hydrated.map((row) => enrichCompany(row));
+    },
 
-    getById: (id: string) =>
-      getCompanyQuery(db)
+    getById: async (id: string) => {
+      const row = await getCompanyQuery(db)
         .where(eq(companies.id, id))
-        .then((rows) => (rows[0] ? enrichCompany(rows[0]) : null)),
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [hydrated] = await hydrateCompanySpend([row], db);
+      return enrichCompany(hydrated);
+    },
 
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
+      await environmentsSvc.ensureLocalEnvironment(created.id);
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Company not found after creation");
-      return enrichCompany(row);
+      const [hydrated] = await hydrateCompanySpend([row], db);
+      return enrichCompany(hydrated);
     },
 
     update: (
@@ -174,10 +237,12 @@ export function companyService(db: Db) {
           await tx.delete(assets).where(eq(assets.id, existing.logoAssetId));
         }
 
-        return enrichCompany({
+        const [hydrated] = await hydrateCompanySpend([{
           ...updated,
           logoAssetId: logoAssetId === undefined ? existing.logoAssetId : logoAssetId,
-        });
+        }], tx);
+
+        return enrichCompany(hydrated);
       }),
 
     archive: (id: string) =>
@@ -192,7 +257,9 @@ export function companyService(db: Db) {
         const row = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
-        return row ? enrichCompany(row) : null;
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return enrichCompany(hydrated);
       }),
 
     remove: (id: string) =>
@@ -200,12 +267,14 @@ export function companyService(db: Db) {
         // Delete from child tables in dependency order
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
+        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
@@ -213,13 +282,15 @@ export function companyService(db: Db) {
         await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
+        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))

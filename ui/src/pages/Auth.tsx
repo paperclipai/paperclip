@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
+import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
@@ -19,7 +20,10 @@ export function AuthPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
+  const nextPath = useMemo(
+    () => searchParams.get("next") || getRememberedInvitePath() || "/",
+    [searchParams],
+  );
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -57,8 +61,8 @@ export function AuthPage() {
 
   const canSubmit =
     email.trim().length > 0 &&
-    password.trim().length >= 8 &&
-    (mode === "sign_in" || name.trim().length > 0);
+    password.trim().length > 0 &&
+    (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
 
   if (isSessionLoading) {
     return (
@@ -89,15 +93,24 @@ export function AuthPage() {
 
           <form
             className="mt-6 space-y-4"
+            method="post"
+            action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
             onSubmit={(event) => {
               event.preventDefault();
+              if (mutation.isPending) return;
+              if (!canSubmit) {
+                setError("Please fill in all required fields.");
+                return;
+              }
               mutation.mutate();
             }}
           >
             {mode === "sign_up" && (
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Name</label>
+                <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
                 <input
+                  id="name"
+                  name="name"
                   className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -107,8 +120,10 @@ export function AuthPage() {
               </div>
             )}
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Email</label>
+              <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
               <input
+                id="email"
+                name="email"
                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="email"
                 value={email}
@@ -118,8 +133,10 @@ export function AuthPage() {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">Password</label>
+              <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
               <input
+                id="password"
+                name="password"
                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="password"
                 value={password}
@@ -128,7 +145,12 @@ export function AuthPage() {
               />
             </div>
             {error && <p className="text-xs text-destructive">{error}</p>}
-            <Button type="submit" disabled={!canSubmit || mutation.isPending} className="w-full">
+            <Button
+              type="submit"
+              disabled={mutation.isPending}
+              aria-disabled={!canSubmit || mutation.isPending}
+              className={`w-full ${!canSubmit && !mutation.isPending ? "opacity-50" : ""}`}
+            >
               {mutation.isPending
                 ? "Working…"
                 : mode === "sign_in"

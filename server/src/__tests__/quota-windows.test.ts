@@ -1,0 +1,853 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import type { QuotaWindow } from "@paperclipai/adapter-utils";
+
+// Pure utility functions — import directly from adapter source
+import {
+  toPercent,
+  fetchWithTimeout,
+  fetchClaudeQuota,
+  parseClaudeCliUsageText,
+  readClaudeToken,
+  claudeConfigDir,
+} from "@paperclipai/adapter-claude-local/server";
+
+import {
+  secondsToWindowLabel,
+  readCodexAuthInfo,
+  readCodexToken,
+  fetchCodexQuota,
+  mapCodexRpcQuota,
+  codexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
+
+// ---------------------------------------------------------------------------
+// toPercent
+// ---------------------------------------------------------------------------
+
+describe("toPercent", () => {
+  it("returns null for null input", () => {
+    expect(toPercent(null)).toBe(null);
+  });
+
+  it("returns null for undefined input", () => {
+    expect(toPercent(undefined)).toBe(null);
+  });
+
+  it("converts 0 to 0", () => {
+    expect(toPercent(0)).toBe(0);
+  });
+
+  it("treats values < 1 as fraction and multiplies by 100 (0.5 → 50%)", () => {
+    expect(toPercent(0.5)).toBe(50);
+  });
+
+  it("treats values >= 1 as already-percentage (34 → 34%)", () => {
+    expect(toPercent(34.0)).toBe(34);
+    expect(toPercent(91.0)).toBe(91);
+  });
+
+  it("treats value exactly 1.0 as 1% (not 100%) — the < 1 heuristic boundary", () => {
+    // 1.0 is NOT < 1, so it is treated as already-percentage → 1%
+    expect(toPercent(1.0)).toBe(1);
+  });
+
+  it("clamps overshoot to 100", () => {
+    expect(toPercent(105)).toBe(100);
+    expect(toPercent(101)).toBe(100);
+  });
+
+  it("rounds to nearest integer for fractions", () => {
+    expect(toPercent(0.333)).toBe(33);
+    expect(toPercent(0.666)).toBe(67);
+  });
+
+  it("rounds to nearest integer for percentages", () => {
+    expect(toPercent(48.52)).toBe(49);
+    expect(toPercent(23.4)).toBe(23);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// secondsToWindowLabel
+// ---------------------------------------------------------------------------
+
+describe("secondsToWindowLabel", () => {
+  it("returns fallback for null seconds", () => {
+    expect(secondsToWindowLabel(null, "Primary")).toBe("Primary");
+  });
+
+  it("returns fallback for undefined seconds", () => {
+    expect(secondsToWindowLabel(undefined, "Secondary")).toBe("Secondary");
+  });
+
+  it("labels windows under 6 hours as '5h'", () => {
+    expect(secondsToWindowLabel(3600, "fallback")).toBe("5h");   // 1h
+    expect(secondsToWindowLabel(18000, "fallback")).toBe("5h");  // 5h exactly
+  });
+
+  it("labels windows up to 24 hours as '24h'", () => {
+    expect(secondsToWindowLabel(21600, "fallback")).toBe("24h"); // 6h (≥6h boundary)
+    expect(secondsToWindowLabel(86400, "fallback")).toBe("24h"); // 24h exactly
+  });
+
+  it("labels windows up to 7 days as '7d'", () => {
+    expect(secondsToWindowLabel(86401, "fallback")).toBe("7d");   // just over 24h
+    expect(secondsToWindowLabel(604800, "fallback")).toBe("7d"); // 7d exactly
+  });
+
+  it("labels windows beyond 7 days with actual day count", () => {
+    expect(secondsToWindowLabel(1209600, "fallback")).toBe("14d"); // 14d
+    expect(secondsToWindowLabel(2592000, "fallback")).toBe("30d"); // 30d
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHAM used_percent normalization (codex / openai)
+// ---------------------------------------------------------------------------
+
+describe("WHAM used_percent normalization via fetchCodexQuota", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(body: unknown) {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => body,
+    } as Response);
+  }
+
+  it("treats values >= 1 as already-percentage (50 → 50%)", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          used_percent: 50,
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(50);
+  });
+
+  it("treats values < 1 as fraction and multiplies by 100 (0.5 → 50%)", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          used_percent: 0.5,
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(50);
+  });
+
+  it("treats value exactly 1.0 as 1% (not 100%) — the < 1 heuristic boundary", async () => {
+    // 1.0 is NOT < 1, so it is treated as already-percentage → 1%
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          used_percent: 1.0,
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(1);
+  });
+
+  it("treats value 0 as 0%", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          used_percent: 0,
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(0);
+  });
+
+  it("clamps 100% to 100 (no overshoot)", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          used_percent: 105,
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(100);
+  });
+
+  it("sets usedPercent to null when used_percent is absent", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: {
+          limit_window_seconds: 18000,
+          reset_at: null,
+        },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.usedPercent).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readClaudeToken — filesystem paths
+// ---------------------------------------------------------------------------
+
+describe("readClaudeToken", () => {
+  const savedEnv = process.env.CLAUDE_CONFIG_DIR;
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = savedEnv;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("returns null when credentials.json does not exist", async () => {
+    // Point to a directory that does not have credentials.json
+    process.env.CLAUDE_CONFIG_DIR = "/tmp/__no_such_paperclip_dir__";
+    const token = await readClaudeToken();
+    expect(token).toBe(null);
+  });
+
+  it("returns null for malformed JSON", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "credentials.json"), "not-json"),
+      ),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    const token = await readClaudeToken();
+    expect(token).toBe(null);
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("returns null when claudeAiOauth key is missing", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify({ other: "data" })),
+      ),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    const token = await readClaudeToken();
+    expect(token).toBe(null);
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("returns null when accessToken is an empty string", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+    const creds = { claudeAiOauth: { accessToken: "" } };
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds)),
+      ),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    const token = await readClaudeToken();
+    expect(token).toBe(null);
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("returns the token when credentials file is well-formed", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+    const creds = { claudeAiOauth: { accessToken: "my-test-token" } };
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds)),
+      ),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    const token = await readClaudeToken();
+    expect(token).toBe("my-test-token");
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("reads the token from .credentials.json when that is the available Claude auth file", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+    const creds = { claudeAiOauth: { accessToken: "dotfile-token" } };
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, ".credentials.json"), JSON.stringify(creds)),
+      ),
+    );
+    process.env.CLAUDE_CONFIG_DIR = tmpDir;
+    const token = await readClaudeToken();
+    expect(token).toBe("dotfile-token");
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+});
+
+describe("parseClaudeCliUsageText", () => {
+  it("parses the Claude usage panel layout into quota windows", () => {
+    const raw = `
+      Settings:  Status   Config   Usage
+      Current session
+      2% used
+      Resets 5pm (America/Chicago)
+
+      Current week (all models)
+      47% used
+      Resets Mar 18 at 7:59am (America/Chicago)
+
+      Current week (Sonnet only)
+      0% used
+      Resets Mar 18 at 8:59am (America/Chicago)
+
+      Extra usage
+      Extra usage not enabled • /extra-usage to enable
+    `;
+
+    expect(parseClaudeCliUsageText(raw)).toEqual([
+      {
+        label: "Current session",
+        usedPercent: 2,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets 5pm (America/Chicago)",
+      },
+      {
+        label: "Current week (all models)",
+        usedPercent: 47,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets Mar 18 at 7:59am (America/Chicago)",
+      },
+      {
+        label: "Current week (Sonnet only)",
+        usedPercent: 0,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets Mar 18 at 8:59am (America/Chicago)",
+      },
+      {
+        label: "Extra usage",
+        usedPercent: null,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Extra usage not enabled • /extra-usage to enable",
+      },
+    ]);
+  });
+
+  it("throws a useful error when the Claude CLI panel reports a usage load failure", () => {
+    expect(() => parseClaudeCliUsageText("Failed to load usage data")).toThrow(
+      "Claude CLI could not load usage data. Open the CLI and retry `/usage`.",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readCodexAuthInfo / readCodexToken — filesystem paths
+// ---------------------------------------------------------------------------
+
+describe("readCodexAuthInfo", () => {
+  const savedEnv = process.env.CODEX_HOME;
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = savedEnv;
+    }
+  });
+
+  it("returns null when auth.json does not exist", async () => {
+    process.env.CODEX_HOME = "/tmp/__no_such_paperclip_codex_dir__";
+    const result = await readCodexAuthInfo();
+    expect(result).toBe(null);
+  });
+
+  it("returns null for malformed JSON", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "auth.json"), "{bad json"),
+      ),
+    );
+    process.env.CODEX_HOME = tmpDir;
+    const result = await readCodexAuthInfo();
+    expect(result).toBe(null);
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("returns null when accessToken is absent", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify({ accountId: "acc-1" })),
+      ),
+    );
+    process.env.CODEX_HOME = tmpDir;
+    const result = await readCodexAuthInfo();
+    expect(result).toBe(null);
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("reads the legacy flat auth shape", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
+    const auth = { accessToken: "codex-token", accountId: "acc-123" };
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth)),
+      ),
+    );
+    process.env.CODEX_HOME = tmpDir;
+    const result = await readCodexAuthInfo();
+    expect(result).toMatchObject({
+      accessToken: "codex-token",
+      accountId: "acc-123",
+      email: null,
+      planType: null,
+    });
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("reads the modern nested auth shape", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
+    const jwtPayload = Buffer.from(
+      JSON.stringify({
+        email: "codex@example.com",
+        "https://api.openai.com/auth": {
+          chatgpt_plan_type: "pro",
+          chatgpt_user_email: "codex@example.com",
+        },
+      }),
+    ).toString("base64url");
+    const auth = {
+      tokens: {
+        access_token: `header.${jwtPayload}.sig`,
+        account_id: "acc-modern",
+        refresh_token: "refresh-me",
+        id_token: `header.${jwtPayload}.sig`,
+      },
+      last_refresh: "2026-03-14T12:00:00Z",
+    };
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify(auth)),
+      ),
+    );
+    process.env.CODEX_HOME = tmpDir;
+    const result = await readCodexAuthInfo();
+    expect(result).toMatchObject({
+      accessToken: `header.${jwtPayload}.sig`,
+      accountId: "acc-modern",
+      refreshToken: "refresh-me",
+      email: "codex@example.com",
+      planType: "pro",
+      lastRefresh: "2026-03-14T12:00:00Z",
+    });
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+});
+
+describe("readCodexToken", () => {
+  const savedEnv = process.env.CODEX_HOME;
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = savedEnv;
+    }
+  });
+
+  it("returns token and accountId from the nested auth shape", async () => {
+    const tmpDir = path.join(os.tmpdir(), `paperclip-test-codex-${Date.now()}`);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(tmpDir, { recursive: true }).then(() =>
+        fs.writeFile(path.join(tmpDir, "auth.json"), JSON.stringify({
+          tokens: {
+            access_token: "nested-token",
+            account_id: "acc-nested",
+          },
+        })),
+      ),
+    );
+    process.env.CODEX_HOME = tmpDir;
+    const result = await readCodexToken();
+    expect(result).toEqual({ token: "nested-token", accountId: "acc-nested" });
+    await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchClaudeQuota — response parsing
+// ---------------------------------------------------------------------------
+
+describe("fetchClaudeQuota", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(body: unknown, ok = true, status = 200) {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok,
+      status,
+      json: async () => body,
+    } as Response);
+  }
+
+  it("throws when the API returns a non-200 status", async () => {
+    mockFetch({}, false, 401);
+    await expect(fetchClaudeQuota("token")).rejects.toThrow("anthropic usage api returned 401");
+  });
+
+  it("returns an empty array when all window fields are absent", async () => {
+    mockFetch({});
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toEqual([]);
+  });
+
+  it("parses five_hour window with percentage-range utilization", async () => {
+    mockFetch({ five_hour: { utilization: 34.0, resets_at: "2026-01-01T00:00:00Z" } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      label: "Current session",
+      usedPercent: 34,
+      resetsAt: "2026-01-01T00:00:00Z",
+    });
+  });
+
+  it("parses seven_day window with percentage-range utilization", async () => {
+    mockFetch({ seven_day: { utilization: 91.0, resets_at: null } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      label: "Current week (all models)",
+      usedPercent: 91,
+      resetsAt: null,
+    });
+  });
+
+  it("still handles legacy 0-1 fraction utilization", async () => {
+    mockFetch({ five_hour: { utilization: 0.4, resets_at: null } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows[0]).toMatchObject({
+      label: "Current session",
+      usedPercent: 40,
+    });
+  });
+
+  it("parses seven_day_sonnet and seven_day_opus windows", async () => {
+    mockFetch({
+      seven_day_sonnet: { utilization: 23.0, resets_at: null },
+      seven_day_opus: { utilization: 85.0, resets_at: null },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(2);
+    expect(windows[0]!.label).toBe("Current week (Sonnet only)");
+    expect(windows[0]!.usedPercent).toBe(23);
+    expect(windows[1]!.label).toBe("Current week (Opus only)");
+    expect(windows[1]!.usedPercent).toBe(85);
+  });
+
+  it("sets usedPercent to null when utilization is absent", async () => {
+    mockFetch({ five_hour: { resets_at: null } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows[0]!.usedPercent).toBe(null);
+  });
+
+  it("includes all four windows when all are present", async () => {
+    mockFetch({
+      five_hour: { utilization: 10.0, resets_at: null },
+      seven_day: { utilization: 20.0, resets_at: null },
+      seven_day_sonnet: { utilization: 30.0, resets_at: null },
+      seven_day_opus: { utilization: 40.0, resets_at: null },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(4);
+    const labels = windows.map((w: QuotaWindow) => w.label);
+    expect(labels).toEqual([
+      "Current session",
+      "Current week (all models)",
+      "Current week (Sonnet only)",
+      "Current week (Opus only)",
+    ]);
+    expect(windows.map((w: QuotaWindow) => w.usedPercent)).toEqual([10, 20, 30, 40]);
+  });
+
+  it("parses extra usage when the OAuth response includes it", async () => {
+    mockFetch({
+      extra_usage: {
+        is_enabled: false,
+        utilization: null,
+      },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toEqual([
+      {
+        label: "Extra usage",
+        usedPercent: null,
+        resetsAt: null,
+        valueLabel: "Not enabled",
+        detail: "Extra usage not enabled",
+      },
+    ]);
+  });
+
+  it("formats extra usage credits from cents to dollars", async () => {
+    mockFetch({
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 14000,
+        used_credits: 6793,
+        utilization: 48.52,
+      },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      label: "Extra usage",
+      usedPercent: 49,
+      valueLabel: "$67.93 / $140.00",
+      detail: "Monthly extra usage pool",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchCodexQuota — response parsing (credits, windows)
+// ---------------------------------------------------------------------------
+
+describe("fetchCodexQuota", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function mockFetch(body: unknown, ok = true, status = 200) {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok,
+      status,
+      json: async () => body,
+    } as Response);
+  }
+
+  it("throws when the WHAM API returns a non-200 status", async () => {
+    mockFetch({}, false, 403);
+    await expect(fetchCodexQuota("token", null)).rejects.toThrow("chatgpt wham api returned 403");
+  });
+
+  it("passes ChatGPT-Account-Id header when accountId is provided", async () => {
+    mockFetch({});
+    await fetchCodexQuota("token", "acc-xyz");
+    const callInit = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    expect((callInit.headers as Record<string, string>)["ChatGPT-Account-Id"]).toBe("acc-xyz");
+  });
+
+  it("omits ChatGPT-Account-Id header when accountId is null", async () => {
+    mockFetch({});
+    await fetchCodexQuota("token", null);
+    const callInit = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    expect((callInit.headers as Record<string, string>)["ChatGPT-Account-Id"]).toBeUndefined();
+  });
+
+  it("returns empty array when response body is empty", async () => {
+    mockFetch({});
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toEqual([]);
+  });
+
+  it("normalizes numeric reset timestamps from WHAM", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: { used_percent: 30, limit_window_seconds: 86400, reset_at: 1_767_312_000 },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ label: "5h limit", usedPercent: 30, resetsAt: "2026-01-02T00:00:00.000Z" });
+  });
+
+  it("parses secondary_window alongside primary_window", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: { used_percent: 10, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 60, limit_window_seconds: 604800 },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toHaveLength(2);
+    expect(windows[0]!.label).toBe("5h limit");
+    expect(windows[1]!.label).toBe("Weekly limit");
+  });
+
+  it("includes Credits window when credits present and not unlimited", async () => {
+    mockFetch({
+      credits: { balance: 420, unlimited: false },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ label: "Credits", valueLabel: "$4.20 remaining", usedPercent: null });
+  });
+
+  it("omits Credits window when unlimited is true", async () => {
+    mockFetch({
+      credits: { balance: 9999, unlimited: true },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toEqual([]);
+  });
+
+  it("shows 'N/A' valueLabel when credits balance is null", async () => {
+    mockFetch({
+      credits: { balance: null, unlimited: false },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0]!.valueLabel).toBe("N/A");
+  });
+});
+
+describe("mapCodexRpcQuota", () => {
+  it("maps account and model-specific Codex limits into quota windows", () => {
+    const snapshot = mapCodexRpcQuota(
+      {
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 1, windowDurationMins: 300, resetsAt: 1_763_500_000 },
+          secondary: { usedPercent: 27, windowDurationMins: 10_080 },
+          planType: "pro",
+        },
+        rateLimitsByLimitId: {
+          codex_bengalfox: {
+            limitId: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            primary: { usedPercent: 8, windowDurationMins: 300 },
+            secondary: { usedPercent: 20, windowDurationMins: 10_080 },
+          },
+        },
+      },
+      {
+        account: {
+          email: "codex@example.com",
+          planType: "pro",
+        },
+      },
+    );
+
+    expect(snapshot.email).toBe("codex@example.com");
+    expect(snapshot.planType).toBe("pro");
+    expect(snapshot.windows).toEqual([
+      {
+        label: "5h limit",
+        usedPercent: 1,
+        resetsAt: "2025-11-18T21:06:40.000Z",
+        valueLabel: null,
+        detail: null,
+      },
+      {
+        label: "Weekly limit",
+        usedPercent: 27,
+        resetsAt: null,
+        valueLabel: null,
+        detail: null,
+      },
+      {
+        label: "GPT-5.3-Codex-Spark · 5h limit",
+        usedPercent: 8,
+        resetsAt: null,
+        valueLabel: null,
+        detail: null,
+      },
+      {
+        label: "GPT-5.3-Codex-Spark · Weekly limit",
+        usedPercent: 20,
+        resetsAt: null,
+        valueLabel: null,
+        detail: null,
+      },
+    ]);
+  });
+
+  it("includes a credits row when the root Codex limit reports finite credits", () => {
+    const snapshot = mapCodexRpcQuota({
+      rateLimits: {
+        limitId: "codex",
+        credits: {
+          unlimited: false,
+          balance: "12.34",
+        },
+      },
+    });
+
+    expect(snapshot.windows).toEqual([
+      {
+        label: "Credits",
+        usedPercent: null,
+        resetsAt: null,
+        valueLabel: "$12.34 remaining",
+        detail: null,
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchWithTimeout — abort on timeout
+// ---------------------------------------------------------------------------
+
+describe("fetchWithTimeout", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("resolves normally when fetch completes before timeout", async () => {
+    const mockResponse = { ok: true, status: 200, json: async () => ({}) } as Response;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse));
+
+    const result = await fetchWithTimeout("https://example.com", {}, 5000);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects with abort error when fetch takes too long", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          }),
+      ),
+    );
+
+    const promise = fetchWithTimeout("https://example.com", {}, 1000);
+    vi.advanceTimersByTime(1001);
+    await expect(promise).rejects.toThrow("aborted");
+  });
+});
