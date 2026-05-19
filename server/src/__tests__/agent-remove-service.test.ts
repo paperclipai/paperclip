@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { activityLog, agents as agentsTable, issueComments } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, issueComments, issueExecutionDecisions } from "@paperclipai/db";
 import { agentService } from "../services/agents.ts";
 
 type Row = Record<string, unknown>;
@@ -80,12 +80,14 @@ describe("agentService.remove", () => {
     const removed = await service.remove("agent-1");
 
     expect(removed?.id).toBe("agent-1");
-    expect(updateCalls).toHaveLength(37);
-    expect(deleteCalls).toHaveLength(9);
+    expect(updateCalls).toHaveLength(39);
+    expect(deleteCalls).toHaveLength(8);
     expect(updateCalls).toContain(activityLog);
     expect(updateCalls).toContain(issueComments);
+    expect(updateCalls).toContain(issueExecutionDecisions);
     expect(deleteCalls).not.toContain(activityLog);
     expect(deleteCalls).not.toContain(issueComments);
+    expect(deleteCalls).not.toContain(issueExecutionDecisions);
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 });

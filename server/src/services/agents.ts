@@ -531,18 +531,16 @@ export function agentService(db: Db) {
         // Delete rows with NOT NULL agent FK (would block deletion)
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
-        await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.update(activityLog).set({ agentId: null, runId: null }).where(
-          or(
-            eq(activityLog.agentId, id),
-            sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
-          ),
+        await tx.update(activityLog).set({ agentId: null }).where(eq(activityLog.agentId, id));
+        await tx.update(activityLog).set({ runId: null }).where(
+          sql`${activityLog.runId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
         );
+        await tx.update(issueExecutionDecisions).set({ actorAgentId: null }).where(eq(issueExecutionDecisions.actorAgentId, id));
+        await tx.delete(costEvents).where(eq(costEvents.agentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
-        await tx.delete(costEvents).where(eq(costEvents.agentId, id));
         // Nullify nullable agent FK columns to avoid FK violations while preserving history.
         await tx.update(joinRequests).set({ createdAgentId: null }).where(eq(joinRequests.createdAgentId, id));
         await tx.update(issues).set({ assigneeAgentId: null }).where(eq(issues.assigneeAgentId, id));
