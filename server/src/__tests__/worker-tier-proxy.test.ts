@@ -246,6 +246,61 @@ describe("registerWorkerTierProxyRoutes", () => {
         "post /plugins/:pluginId/data/:key",
         "post /plugins/:pluginId/actions/:key",
         "get /plugins/:pluginId/bridge/stream/:channel",
+        "get /plugins/:pluginId/api/*splat",
+        "post /plugins/:pluginId/api/*splat",
+        "put /plugins/:pluginId/api/*splat",
+        "delete /plugins/:pluginId/api/*splat",
       ]);
+  });
+
+  // Regression for 2026-05-19: PR #84's first cut missed plugin-declared
+  // scoped API routes (`/plugins/:pluginId/api/*`), so the UI's ccrotate
+  // pool view 503'd from the API tier with "Plugin worker is not running"
+  // even though the worker had activated on the worker tier. The proxy
+  // must forward GET (snapshot, state-get) and POST (refresh, state-put,
+  // import) on any inner path, since `apiRoutes` are manifest-declared
+  // per-plugin and only the worker tier knows whether the inner path is
+  // valid.
+  it("proxies plugin scoped API routes (GET/POST/PUT/DELETE) on any inner path", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: JSON.stringify({ ok: true, by: "worker" }) };
+    });
+    const app = buildApp(worker.url);
+
+    // GET on an arbitrary inner path — exactly what the UI calls.
+    const getRes = await request(app).get(
+      "/api/plugins/kkroo.ccrotate/api/snapshot?companyId=abc",
+    );
+    expect(getRes.status).toBe(200);
+    expect(getRes.body).toEqual({ ok: true, by: "worker" });
+    expect(captured?.method).toBe("GET");
+    expect(captured?.url).toBe(
+      "/api/plugins/kkroo.ccrotate/api/snapshot?companyId=abc",
+    );
+
+    // POST on a different inner path with a body.
+    const postRes = await request(app)
+      .post("/api/plugins/kkroo.ccrotate/api/refresh")
+      .send({ companyId: "abc" });
+    expect(postRes.status).toBe(200);
+    expect(captured?.method).toBe("POST");
+    expect(captured?.url).toBe("/api/plugins/kkroo.ccrotate/api/refresh");
+    expect(JSON.parse(captured?.body ?? "{}")).toEqual({ companyId: "abc" });
+
+    // PUT — covered for plugins that declare PUT routes.
+    const putRes = await request(app)
+      .put("/api/plugins/some.plugin/api/state/key1")
+      .send({ value: "v" });
+    expect(putRes.status).toBe(200);
+    expect(captured?.method).toBe("PUT");
+
+    // DELETE — same.
+    const delRes = await request(app).delete(
+      "/api/plugins/some.plugin/api/items/42",
+    );
+    expect(delRes.status).toBe(200);
+    expect(captured?.method).toBe("DELETE");
   });
 });

@@ -29,7 +29,7 @@ import { logger } from "../middleware/logger.js";
  * relative to the plugin router mount (the router is mounted under /api).
  */
 export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
-  method: "get" | "post" | "delete";
+  method: "get" | "post" | "put" | "delete";
   path: string;
   /** Long-lived response (SSE) — skip the request timeout, stream the body. */
   streaming?: boolean;
@@ -53,6 +53,23 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
   { method: "post", path: "/plugins/:pluginId/data/:key" },
   { method: "post", path: "/plugins/:pluginId/actions/:key" },
   { method: "get", path: "/plugins/:pluginId/bridge/stream/:channel", streaming: true },
+  // Plugin-declared scoped API routes (manifest.apiRoutes). The dispatcher
+  // at routes/plugins.ts:`router.use("/plugins/:pluginId/api", …)` calls
+  // `workerManager.isRunning(plugin.id)` and 503s with `Plugin worker is
+  // not running` when the worker isn't local — which is ALWAYS the case
+  // on the API tier (the stub manager hardcodes `isRunning: () => false`).
+  // Real incident 2026-05-19: the UI's ccrotate pool view hit
+  // `/api/plugins/kkroo.ccrotate/api/snapshot?companyId=…` and got that
+  // 503 even though the worker had activated successfully on paperclip-0.
+  //
+  // The splat (`*splat`, express 5 syntax) captures the trailing inner
+  // path so one entry per method covers every plugin's apiRoutes manifest.
+  // The dispatcher on the worker tier still validates the inner path
+  // against the manifest and 404s if the plugin didn't declare it.
+  { method: "get", path: "/plugins/:pluginId/api/*splat" },
+  { method: "post", path: "/plugins/:pluginId/api/*splat" },
+  { method: "put", path: "/plugins/:pluginId/api/*splat" },
+  { method: "delete", path: "/plugins/:pluginId/api/*splat" },
 ];
 
 /** Non-streaming proxied requests abort after this long. */
