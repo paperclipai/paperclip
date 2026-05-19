@@ -80,7 +80,7 @@ describe("agentService.remove", () => {
     const removed = await service.remove("agent-1");
 
     expect(removed?.id).toBe("agent-1");
-    expect(updateCalls).toHaveLength(38);
+    expect(updateCalls).toHaveLength(37);
     expect(deleteCalls).toHaveLength(11);
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });

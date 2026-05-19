@@ -35,7 +35,6 @@ import {
   projects,
   routines,
   routineRevisions,
-  routineRuns,
   routineTriggers,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -558,7 +557,6 @@ export function agentService(db: Db) {
         await tx.update(routineRevisions).set({ createdByAgentId: null }).where(eq(routineRevisions.createdByAgentId, id));
         await tx.update(routineTriggers).set({ createdByAgentId: null }).where(eq(routineTriggers.createdByAgentId, id));
         await tx.update(routineTriggers).set({ updatedByAgentId: null }).where(eq(routineTriggers.updatedByAgentId, id));
-        await tx.update(routineRuns).set({ createdByAgentId: null }).where(eq(routineRuns.createdByAgentId, id));
         await tx.update(activityLog).set({ agentId: null }).where(eq(activityLog.agentId, id));
         await tx.update(issueComments).set({ authorAgentId: null }).where(eq(issueComments.authorAgentId, id));
         await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
