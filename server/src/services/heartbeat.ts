@@ -2822,6 +2822,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           assigneeAgentId: issues.assigneeAgentId,
           executionState: issues.executionState,
           projectId: issues.projectId,
+          originKind: issues.originKind,
         })
         .from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -6253,6 +6254,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        return { kind: "released" as const };
+      }
+
+      // Routine execution issues are re-triggered by their cron schedule;
+      // auto-recovery and blocking are not appropriate for scheduled gaps.
+      if (issue.originKind === "routine_execution") {
         return { kind: "released" as const };
       }
 

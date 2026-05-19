@@ -17,7 +17,7 @@ const IDEMPOTENT_WAKE_STATUSES = ["queued", "deferred_issue_execution", "complet
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "executionState" | "projectId"
+  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "executionState" | "projectId" | "originKind"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 
@@ -120,6 +120,11 @@ export function decideRunLivenessContinuation(input: {
   }
   if (issue.executionState) {
     return { kind: "skip", reason: "issue is blocked by execution policy state" };
+  }
+  // Routine execution issues are expected to stay in_progress between scheduled
+  // runs — the cron schedule is the continuation path, not liveness wakeups.
+  if (issue.originKind === "routine_execution") {
+    return { kind: "skip", reason: "routine execution issues use schedule-based continuation" };
   }
   if (!CONTINUATION_AGENT_STATUSES.has(agent.status)) {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
