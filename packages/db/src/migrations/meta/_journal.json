@@ -610,6 +610,13 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1778966210569,
+      "tag": "0087_plugin_config_company_scope",
+      "breakpoints": true
     }
   ]
 }

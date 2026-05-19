@@ -302,6 +302,8 @@ export interface RunJobParams {
 export interface GetDataParams {
   /** Plugin-defined data key (e.g. `"sync-health"`). */
   key: string;
+  /** Current host company scope, when the bridge call is company-scoped. */
+  companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
   /** Optional launcher/container metadata from the host render environment. */
@@ -316,6 +318,8 @@ export interface GetDataParams {
 export interface PerformActionParams {
   /** Plugin-defined action key (e.g. `"resync"`). */
   key: string;
+  /** Current host company scope, when the bridge call is company-scoped. */
+  companyId?: string | null;
   /** Action parameters from the UI. */
   params: Record<string, unknown>;
   /** Optional launcher/container metadata from the host render environment. */
@@ -576,7 +580,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  */
 export interface WorkerToHostMethods {
   // Config
-  "config.get": [params: Record<string, never>, result: Record<string, unknown>];
+  "config.get": [params: { companyId?: string | null }, result: Record<string, unknown>];
 
   // Trusted local folders
   "localFolders.declarations": [
@@ -713,7 +717,7 @@ export interface WorkerToHostMethods {
 
   // Secrets
   "secrets.resolve": [
-    params: { secretRef: string },
+    params: { secretRef: string; companyId?: string | null },
     result: string,
   ];
 
