@@ -120,6 +120,11 @@ function promptSectionLabel(sectionId: string): string {
   return sectionId in titles ? titles[sectionId as keyof typeof titles] : sectionId;
 }
 
+function promptMetricLabel(metricKey: string): string {
+  const labels = orchestrationInjectionPage.promptMetricLabels;
+  return metricKey in labels ? labels[metricKey as keyof typeof labels] : metricKey;
+}
+
 function MetricPill({ label, value }: { label: string; value: number }) {
   return (
     <div className="border border-border px-3 py-2">
@@ -596,7 +601,7 @@ export function OrchestrationInjectionRunDetail() {
               {metricEntries.length > 0 ? (
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   {metricEntries.map((entry) => (
-                    <MetricPill key={entry.key} label={entry.key} value={entry.value} />
+                    <MetricPill key={entry.key} label={promptMetricLabel(entry.key)} value={entry.value} />
                   ))}
                 </div>
               ) : null}

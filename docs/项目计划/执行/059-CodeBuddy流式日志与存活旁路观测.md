@@ -134,3 +134,47 @@ status: 已完成
 | 日期 | 摘要 |
 | --- | --- |
 | 2026-05-19 | 初稿：存活旁路（最后输出 Δt）、流式原始日志、致命错误快停；明确非目标与可行性（复用 lastOutputAt） |
+| 2026-05-19 | 落地并关闭：`95c82b6f`；实例重启后人工验收通过（见 §9） |
+
+---
+
+## 9. 执行回写（关闭）
+
+### 9.1 结论
+
+**任务完成。** CodeBuddy 无头默认 `stream-json`，运行中日志按块落盘且旁路可观测「距上次输出」；致命错误快停与 `terminalResultCleanup` 已接入。编排侧诉求「不必读懂 NDJSON，只需知道 CLI 还在动、静默多久」已满足。
+
+### 9.2 交付物与代码索引
+
+| 区域 | 路径 | 摘要 |
+| --- | --- | --- |
+| 适配器默认格式 + 快停 | `packages/adapters/codebuddy-local/src/server/execute.ts` | `outputFormat` 默认 `stream-json`；`createCodeBuddyStreamLogHandler`；`terminalResultCleanup` |
+| 行级存活/致命检测 | `packages/adapters/codebuddy-local/src/server/stream-liveness.ts` | stderr 模式表、`result`+`is_error`、子进程终止 |
+| 单测 | `packages/adapters/codebuddy-local/src/server/stream-liveness.test.ts` | 4 cases |
+| 运行详情旁路 | `ui/src/components/HeartbeatRunDetailPanel.tsx` | running 时 2s 拉 `lastOutputAt`，展示「距上次输出」 |
+| 原始日志时间戳 | `ui/src/components/transcript/RunTranscriptView.tsx` | raw 模式每行 `HH:mm:ss.mmm` |
+| 文案 | `ui/src/lib/i18n.ts` | `runSilenceSinceOutputLabel` 等 |
+| 适配器文档 | `docs/适配器/10 CodeBuddy 本地适配器 codebuddy-local.md` | 默认 stream-json、059 行为说明 |
+
+**关联 commit：** `95c82b6f` — `feat(codebuddy): stream-json 流式日志与存活旁路观测（059）`
+
+### 9.3 验收对照（§5）
+
+| # | 项 | 结果 |
+| --- | --- | --- |
+| 1 | 长/短任务：日志边跑边增；旁路「距上次输出」在吐字时回落、停吐后递增 | **通过**（实例 `http://127.0.0.1:4100` 停机重启后，`codebuddy_local` + `volcengine/custom-local:glm-5.1` 测试 run 成功，约 3 分 22 秒） |
+| 2 | 认证失败 / max-turns 等：分钟内快停、无长期僵尸进程 | **未在本轮人工复测**；逻辑与单测已覆盖，留作回归项 |
+| 3 | `stream-liveness.test.ts` | **通过**（`pnpm exec vitest run packages/adapters/codebuddy-local/src/server/stream-liveness.test.ts`） |
+| 4 | 055 exit0 解析跳过、048 Windows 启动链 | **未专项回归**；改动未改 055 成功路径语义 |
+
+### 9.4 已知残留（不阻塞关闭）
+
+- **Token 展示偏大**：小测试任务仍可能显示会话级累计 input/cache（见 [`015-实践-CLI累计计量与成本控制面台账口径.md`](../最佳实践/015-实践-CLI累计计量与成本控制面台账口径.md)）；属计量口径/会话策略，**非 059 范围**。
+- **running 时 2s 轮询 `lastOutputAt`**：单用户本地压力可忽略；后续可改为 WebSocket 日志 `ts` 本地更新以减少请求。
+- **`includePartialMessages`**：已配置项，默认关；未作为本轮必验收项。
+
+### 9.5 后续（显式不归本单）
+
+- **[`047-适配器_stdout解析失败与结构化摘要.md`](047-适配器_stdout解析失败与结构化摘要.md)**：适配器收薄（尾行 `type:result` + exitCode）、禁止全文硬解析、`resultJson` 不塞全量 stdout；解析器异步抽 usage/session（**2026-05-19 已写入该单「产品共识」**）。
+- 长期 **027**：异步解析器、两层执行/解析状态 UI。
+- 同 run 内换模型/续跑（中期，需 CLI 能力对齐）。

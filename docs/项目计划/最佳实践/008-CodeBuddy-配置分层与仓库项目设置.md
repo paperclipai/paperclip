@@ -1,6 +1,7 @@
 # CodeBuddy 配置分层（项目 / 用户 / 会话）与回形针
 
-> 官方机制摘要见本机调研 [摘录-CodeBuddy本机调研回写.md](../探查/011-摘录-CodeBuddy本机调研回写.md) §08.2、§08.7。此处对齐 **本仓库 + Paperclip `codebuddy_local`** 怎么叠。
+> 官方机制摘要见本机调研 [摘录-CodeBuddy本机调研回写.md](../探查/011-摘录-CodeBuddy本机调研回写.md) §08.2、§08.7。此处对齐 **本仓库 + Paperclip `codebuddy_local`** 怎么叠。  
+> **无头 stdin 拼块、厂商底稿、日志 vs 账单** 见 **[022-实践-无头编排提示词叠层与可观测性.md](022-实践-无头编排提示词叠层与可观测性.md)**（本文只管 **JSON settings / env / CLI 参数** 三层文件配置）。
 
 ---
 
