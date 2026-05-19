@@ -1187,25 +1187,31 @@ export async function startServer(): Promise<StartedServer> {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       logger.info({ signal }, "Shutdown signal received — beginning graceful drain");
 
-      // 1. Stop accepting new connections + close idle keep-alives. In-flight
-      //    requests get to finish; long-lived SSE streams keep the promise
-      //    pending until we drain them explicitly below.
-      await new Promise<void>((resolve) => {
-        server.close((err) => {
-          if (err) logger.warn({ err }, "server.close error");
-          resolve();
-        });
-      });
-
-      // 2. Drain SSE bridge streams — emit `event: shutdown` on each and end()
-      //    the socket so clients can reconnect cleanly. Bounded so a wedged
-      //    stream can't hold the whole process past terminationGracePeriod.
+      // 1. Drain SSE bridge streams FIRST — emit `event: shutdown` on each,
+      //    end() the socket, and await each response's 'finish' event so the
+      //    shutdown frame actually hits the wire before we proceed. Order
+      //    matters: server.close() below blocks on existing connections, so
+      //    if we awaited it before draining we'd deadlock on the SSE sockets.
+      //    Bounded by timeoutMs so a wedged stream can't hold the whole
+      //    process past terminationGracePeriod.
       try {
         const { sseRegistry } = await import("./services/sse-registry.js");
         await sseRegistry.drain({ timeoutMs: 25_000, reason: `shutdown:${signal}` });
       } catch (err) {
         logger.warn({ err }, "sseRegistry.drain failed");
       }
+
+      // 2. Now stop accepting new connections. With SSEs drained, server.close
+      //    has no long-lived connections to wait on and resolves quickly. The
+      //    closeIdleConnections call sweeps up any remaining keep-alive
+      //    sockets that might otherwise keep the callback pending.
+      await new Promise<void>((resolve) => {
+        server.close((err) => {
+          if (err) logger.warn({ err }, "server.close error");
+          resolve();
+        });
+        server.closeIdleConnections?.();
+      });
 
       // Flush telemetry
       const telemetryClient = getTelemetryClient();
@@ -1238,6 +1244,15 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
+
+      logger.info({ signal }, "Shutdown handler complete; exiting");
+
+      // Flush pino's async buffer before process.exit. Otherwise the trailing
+      // log lines (and any straggler writes from the drain/close steps) are
+      // dropped when libuv stops, making post-mortem debugging blind.
+      try {
+        (logger as unknown as { flush?: (cb?: () => void) => void }).flush?.();
+      } catch { /* best effort */ }
 
       process.exit(0);
     };

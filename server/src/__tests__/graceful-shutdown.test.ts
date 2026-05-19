@@ -1,5 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { Response } from "express";
 
 import { sseRegistry } from "../services/sse-registry.js";
@@ -24,6 +26,10 @@ function fakeRes(): FakeRes {
   emitter.end = () => {
     emitter._ended = true;
     emitter.writable = false;
+    // Model real Node: 'finish' fires once the underlying socket flushes the
+    // queued bytes. The default fake assumes a healthy socket — tests that
+    // want to simulate a wedged socket override end() to skip the emit.
+    setImmediate(() => emitter.emit("finish"));
   };
   return emitter;
 }
@@ -97,4 +103,141 @@ describe("sseRegistry", () => {
     // Final clear should remove the wedged entry
     expect(sseRegistry.size()).toBe(0);
   });
+
+  it("drain waits for the socket 'finish' event, not just res.writable flipping", async () => {
+    // Real-Node semantics: res.end() flips res.writable=false synchronously, but the
+    // underlying socket may still be flushing the buffered shutdown frame. drain()
+    // must await the 'finish' event so the bytes are guaranteed on the wire before
+    // the caller (the SIGTERM handler) proceeds to process.exit(0).
+    //
+    // The buggy implementation polled res.writable and resolved as soon as it
+    // flipped — well before the socket flush completed. process.exit then raced
+    // with libuv's pending write and the shutdown frame was lost on the wire.
+    const slow = new EventEmitter() as FakeRes;
+    slow._written = [];
+    slow._ended = false;
+    slow.writable = true;
+    slow.write = (chunk: string) => {
+      slow._written.push(chunk);
+      return true;
+    };
+    slow.end = () => {
+      slow._ended = true;
+      slow.writable = false; // mimics Node: flips synchronously on .end()
+      // 'finish' fires later, after the kernel actually accepts the bytes
+      setTimeout(() => slow.emit("finish"), 100);
+    };
+
+    sseRegistry.register(slow as unknown as Response);
+
+    let drainResolved = false;
+    const drainPromise = sseRegistry
+      .drain({ timeoutMs: 1000, reason: "shutdown:SIGTERM" })
+      .then(() => {
+        drainResolved = true;
+      });
+
+    // 40ms in — long enough for the buggy implementation (~10ms polling) to have
+    // already resolved, but well before the 100ms-delayed 'finish' event.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(drainResolved).toBe(false);
+
+    await drainPromise;
+    expect(drainResolved).toBe(true);
+    expect(slow._ended).toBe(true);
+    expect(sseRegistry.size()).toBe(0);
+  });
+
+  it(
+    "end-to-end: drain delivers shutdown frame to a real SSE client AND unblocks server.close()",
+    async () => {
+      // This test models the production shutdown sequence end-to-end:
+      //   1. boot a real http.Server, register the SSE response in sseRegistry
+      //      from inside the request handler (mirrors routes/plugins.ts)
+      //   2. open a real HTTP client connection and read it as a stream
+      //   3. invoke sseRegistry.drain — must emit the shutdown frame on the wire
+      //   4. invoke server.close — must resolve promptly (no SSE keep-alive
+      //      deadlock) now that the drain has ended() the response
+      //
+      // Regression coverage for BLO-4137: the old ordering (server.close before
+      // drain) would deadlock here because http.Server.close keeps existing
+      // connections open until they end themselves — and a registered SSE
+      // never ends on its own.
+      const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+        res.write(":ok\n\n");
+        sseRegistry.register(res as unknown as Response);
+        res.on("close", () => sseRegistry.unregister(res as unknown as Response));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+
+      const received: string[] = [];
+      let clientEnded = false;
+      const clientReq = httpGet(`http://127.0.0.1:${port}/`, (res) => {
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => received.push(chunk as string));
+        res.on("end", () => {
+          clientEnded = true;
+        });
+      });
+
+      // Wait until the SSE is registered AND the client has the :ok heartbeat
+      const heartbeatDeadline = Date.now() + 2000;
+      while (
+        (sseRegistry.size() === 0 || !received.some((c) => c.includes(":ok"))) &&
+        Date.now() < heartbeatDeadline
+      ) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(sseRegistry.size()).toBe(1);
+      expect(received.some((c) => c.includes(":ok"))).toBe(true);
+
+      // Drain — must emit shutdown frame and end the response.
+      await sseRegistry.drain({ timeoutMs: 5000, reason: "shutdown:SIGTERM" });
+
+      // Client should have received the shutdown frame (the FIN that follows
+      // res.end() triggers the client's 'end'; give libuv a tick to flush).
+      const drainDeadline = Date.now() + 1000;
+      while (
+        !received.join("").includes("event: shutdown") &&
+        Date.now() < drainDeadline
+      ) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      const body = received.join("");
+      expect(body).toContain("event: shutdown\n");
+      expect(body).toContain('"reason":"shutdown:SIGTERM"');
+
+      // server.close() must resolve promptly — with the SSE drained there are
+      // no long-lived connections holding the callback. If we ever regress
+      // and put server.close before drain, this would hang forever.
+      const closeStart = Date.now();
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("server.close did not resolve within 2s — SSE drain failed to release the connection")),
+          2000,
+        );
+        server.close((err) => {
+          clearTimeout(timer);
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      expect(Date.now() - closeStart).toBeLessThan(1000);
+
+      // Tidy up the client; it's fine if it's already ended.
+      clientReq.destroy();
+      // Give the 'end' handler a tick if it hasn't fired yet (the FIN sent by
+      // res.end() should have driven it before this point).
+      if (!clientEnded) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    },
+    10_000,
+  );
 });
