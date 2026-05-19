@@ -303,6 +303,14 @@ export type {
   AgentSkillEntry,
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
+  CompanyExperimentalFeaturesByCompanyId,
+  CompanyExperimentalFeaturesConfig,
+  CompanyConfig,
+  ExperimentalAgentDualModeConfig,
+  ExperimentalAgentProvider,
+  ExperimentalFeatureDefinition,
+  ExperimentalFeatureKey,
+  ExperimentalFeatureResolverInput,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
@@ -683,6 +691,14 @@ export {
 } from "./types/instance.js";
 
 export {
+  EXPERIMENTAL_FEATURES,
+  EXPERIMENTAL_FEATURE_KEYS,
+  PAPERCLIP_EXPERIMENTAL_MODE_ENV,
+  isExperimentalFeatureEnabled,
+  isPaperclipExperimentalModeEnabled,
+} from "./experimental-features.js";
+
+export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";
@@ -694,6 +710,10 @@ export {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
+  companyExperimentalFeaturesConfigSchema,
+  experimentalAgentDualModeConfigSchema,
+  experimentalAgentProviderSchema,
+  experimentalFeatureKeySchema,
   type PatchInstanceExperimentalSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
 } from "./validators/index.js";

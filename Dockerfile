@@ -44,6 +44,8 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+ARG VITE_PAPERCLIP_EXPERIMENTAL_MODE=false
+ENV VITE_PAPERCLIP_EXPERIMENTAL_MODE=${VITE_PAPERCLIP_EXPERIMENTAL_MODE}
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build

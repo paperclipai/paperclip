@@ -227,6 +227,14 @@ export function CompanySettings() {
     );
   }
 
+  if (!selectedCompanyId) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        No company selected. Select a company from the switcher above.
+      </div>
+    );
+  }
+
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
