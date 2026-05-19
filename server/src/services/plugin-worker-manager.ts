@@ -653,7 +653,9 @@ export function createPluginWorkerHandle(
     // Handle process errors (e.g. spawn failure)
     child.on("error", (err) => {
       log.error({ err: err.message }, "worker process error");
-      emitter.emit("error", { pluginId, error: err });
+      if (emitter.listenerCount("error") > 0) {
+        emitter.emit("error", { pluginId, error: err });
+      }
       if (status === "starting") {
         setStatus("crashed");
         rejectAllPending(
