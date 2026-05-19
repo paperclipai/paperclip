@@ -53,7 +53,7 @@ export function resolveHeartbeatRunTimeoutPolicy(
 ): HeartbeatRunTimeoutPolicy {
   const config = adapterConfig ?? {};
 
-  if (adapterType === "http") {
+  if (adapterType === "http" || adapterType === "atomic_agent_http") {
     const hasTimeoutMs = hasOwn(config, "timeoutMs");
     const rawTimeoutMs = hasTimeoutMs ? readFiniteNumber(config.timeoutMs) : 0;
     const timeoutMs = Math.max(0, Math.floor(rawTimeoutMs ?? 0));

@@ -12,6 +12,7 @@ import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { hermesLocalUIAdapter } from "./hermes-local";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
+import { atomicAgentHttpUIAdapter } from "./atomic-agent-http";
 import { loadDynamicParser, invalidateDynamicParser, setDynamicParserResultNotifier } from "./dynamic-loader";
 import { SchemaConfigFields, buildSchemaAdapterConfig } from "./schema-config-fields";
 
@@ -59,6 +60,7 @@ function registerBuiltInUIAdapters() {
     geminiLocalUIAdapter,
     grokLocalUIAdapter,
     hermesLocalUIAdapter,
+    atomicAgentHttpUIAdapter,
     openCodeLocalUIAdapter,
     piLocalUIAdapter,
     cursorLocalUIAdapter,
@@ -84,7 +86,7 @@ export function registerUIAdapter(adapter: UIAdapterModule): void {
 }
 
 export function unregisterUIAdapter(type: string): void {
-  if (type === processUIAdapter.type || type === httpUIAdapter.type) return;
+  if (type === processUIAdapter.type || type === httpUIAdapter.type || type === atomicAgentHttpUIAdapter.type) return;
   const existingIndex = uiAdapters.findIndex((entry) => entry.type === type);
   if (existingIndex >= 0) {
     uiAdapters.splice(existingIndex, 1);
