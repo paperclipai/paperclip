@@ -186,6 +186,80 @@ describe("parseLas — format 6 (LAS 1.4 extended records)", () => {
   });
 });
 
+describe("parseLas — format 2 (LAS 1.2 with RGB color)", () => {
+  it("parses XYZ and RGB values from a format-2 buffer", () => {
+    const pts = [{ x: 526914.12, y: 5040778.56, z: 50.0, intensity: 1200 }];
+    const buf = buildSyntheticLasBuffer(pts, {
+      format: 2,
+      rgbPerPoint: [{ r: 60000, g: 30000, b: 10000 }],
+    });
+    const result = parseLas(buf, Date.now());
+    expect(result).toHaveLength(1);
+    expect(result[0].x).toBeCloseTo(pts[0].x, 1);
+    expect(result[0].r).toBe(60000);
+    expect(result[0].g).toBe(30000);
+    expect(result[0].b).toBe(10000);
+  });
+
+  it("reads classification at byte 15 (same as format 0) in format 2", () => {
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0, classification: 3 }],
+      { format: 2, rgbPerPoint: [{ r: 0, g: 0, b: 0 }] },
+    );
+    const [p] = parseLas(buf, Date.now());
+    expect(p.classification).toBe(3);
+  });
+
+  it("uses receivedAt timestamp for format 2 (no GPS time)", () => {
+    const ts = 1_700_000_000_000;
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 2, rgbPerPoint: [{ r: 0, g: 0, b: 0 }] },
+    );
+    const [p] = parseLas(buf, ts);
+    expect(p.timestamp).toBe(ts);
+  });
+});
+
+describe("parseLas — format 3 (LAS 1.2 with GPS time + RGB color)", () => {
+  it("parses XYZ, GPS time, and RGB values from a format-3 buffer", () => {
+    const gpsAdjusted = 356_566_400;
+    const expectedUnixMs = (gpsAdjusted + 1_000_000_000 + 315_964_800) * 1000;
+    const pts = [{ x: 526914.12, y: 5040778.56, z: 50.0 }];
+    const buf = buildSyntheticLasBuffer(pts, {
+      format: 3,
+      globalEncoding: 0x01,
+      gpsTimesPerPoint: [gpsAdjusted],
+      rgbPerPoint: [{ r: 65535, g: 32768, b: 0 }],
+    });
+    const result = parseLas(buf, Date.now());
+    expect(result).toHaveLength(1);
+    expect(result[0].timestamp).toBe(expectedUnixMs);
+    expect(result[0].r).toBe(65535);
+    expect(result[0].g).toBe(32768);
+    expect(result[0].b).toBe(0);
+  });
+
+  it("falls back to receivedAt for format 3 with GPS week time (globalEncoding bit 0 = 0)", () => {
+    const receivedAt = 1_700_000_000_000;
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 3, globalEncoding: 0x00, gpsTimesPerPoint: [12345.678], rgbPerPoint: [{ r: 0, g: 0, b: 0 }] },
+    );
+    const [p] = parseLas(buf, receivedAt);
+    expect(p.timestamp).toBe(receivedAt);
+  });
+
+  it("reads classification at byte 15 in format 3", () => {
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0, classification: 5 }],
+      { format: 3, rgbPerPoint: [{ r: 0, g: 0, b: 0 }] },
+    );
+    const [p] = parseLas(buf, Date.now());
+    expect(p.classification).toBe(5);
+  });
+});
+
 describe("filterOutliers — edge cases for ingestion pipeline", () => {
   it("removes LAS noise class (7) points regardless of statistics", () => {
     const pts = Array.from({ length: 10 }, (_, i) => ({

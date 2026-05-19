@@ -14,6 +14,10 @@ export interface RawLidarPoint {
   /** Return number within a single pulse */
   returnNumber: number;
   numberOfReturns: number;
+  /** RGB color channels (uint16, 0–65535) — present for LAS formats 2, 3, 7, 8 */
+  r?: number;
+  g?: number;
+  b?: number;
 }
 
 /** Point normalised to WGS84 / EPSG:4326 */
@@ -27,6 +31,10 @@ export interface NormalizedPoint {
   intensity: number;
   classification: number;
   timestamp: number;
+  /** RGB color channels (uint16, 0–65535) — present when source format includes color */
+  r?: number;
+  g?: number;
+  b?: number;
 }
 
 /** Immutable sensor configuration attached to every ingestion event. */

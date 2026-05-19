@@ -115,9 +115,9 @@ function readHeader(buf: Buffer): LasHeader {
 export function parseLas(buf: Buffer, timestampMs: number): RawLidarPoint[] {
   const hdr = readHeader(buf);
 
-  if (![0, 1, 6].includes(hdr.pointDataFormatId)) {
+  if (![0, 1, 2, 3, 6].includes(hdr.pointDataFormatId)) {
     throw new LasParseError(
-      `Point Data Format ${hdr.pointDataFormatId} is not supported (supported: 0, 1, 6)`,
+      `Point Data Format ${hdr.pointDataFormatId} is not supported (supported: 0, 1, 2, 3, 6)`,
     );
   }
 
@@ -152,6 +152,9 @@ export function parseLas(buf: Buffer, timestampMs: number): RawLidarPoint[] {
     let numberOfReturns: number;
     let classification: number;
     let ts = timestampMs;
+    let r: number | undefined;
+    let g: number | undefined;
+    let b: number | undefined;
 
     if (hdr.pointDataFormatId === 6) {
       // LAS 1.4 format 6: 4-bit return fields, classification at byte 16, GPS time at byte 22.
@@ -166,8 +169,8 @@ export function parseLas(buf: Buffer, timestampMs: number): RawLidarPoint[] {
         }
       }
     } else {
-      // Formats 0 and 1: 3-bit return fields, classification at byte 15.
-      // Format 1 carries a GPS time at bytes 20-27 (LE double).
+      // Formats 0, 1, 2, 3: 3-bit return fields, classification at byte 15.
+      // Format 1/3 carry GPS time at bytes 20-27; formats 2/3 carry RGB after GPS/XYZ data.
       // Bit 0=0 → GPS week time, which we cannot reliably convert without the week
       // number, so fall back to the event receive time.
       returnNumber = returnByte & 0x07;
@@ -178,6 +181,20 @@ export function parseLas(buf: Buffer, timestampMs: number): RawLidarPoint[] {
         if (hdr.globalEncoding & 0x01) {
           ts = (gpsRaw + GPS_ADJUSTED_BIAS + GPS_TO_UNIX_OFFSET) * 1000;
         }
+      } else if (hdr.pointDataFormatId === 2 && stride >= 26) {
+        // Format 2: RGB at bytes 20-25 (no GPS time)
+        r = buf.readUInt16LE(offset + 20);
+        g = buf.readUInt16LE(offset + 22);
+        b = buf.readUInt16LE(offset + 24);
+      } else if (hdr.pointDataFormatId === 3 && stride >= 34) {
+        // Format 3: GPS time at bytes 20-27, then RGB at bytes 28-33
+        const gpsRaw = buf.readDoubleLE(offset + 20);
+        if (hdr.globalEncoding & 0x01) {
+          ts = (gpsRaw + GPS_ADJUSTED_BIAS + GPS_TO_UNIX_OFFSET) * 1000;
+        }
+        r = buf.readUInt16LE(offset + 28);
+        g = buf.readUInt16LE(offset + 30);
+        b = buf.readUInt16LE(offset + 32);
       }
     }
 
@@ -190,6 +207,7 @@ export function parseLas(buf: Buffer, timestampMs: number): RawLidarPoint[] {
       timestamp: ts,
       returnNumber,
       numberOfReturns,
+      ...(r !== undefined && { r, g, b }),
     });
   }
 
@@ -212,9 +230,11 @@ export function buildSyntheticLasBuffer(
     offsetX?: number;
     offsetY?: number;
     offsetZ?: number;
-    format?: 0 | 1 | 6;
+    format?: 0 | 1 | 2 | 3 | 6;
     globalEncoding?: number;
     gpsTimesPerPoint?: number[];
+    /** Per-point RGB values (uint16 each). Used for formats 2 and 3. */
+    rgbPerPoint?: Array<{ r: number; g: number; b: number }>;
   } = {},
 ): Buffer {
   const scaleX = opts.scaleX ?? 0.01;
@@ -227,8 +247,12 @@ export function buildSyntheticLasBuffer(
   const globalEncoding = opts.globalEncoding ?? 0;
 
   const HEADER_SIZE = 227;
-  // Format 0: 20 bytes/point; Format 1: 28 bytes/point; Format 6 (LAS 1.4): 30 bytes/point
-  const POINT_STRIDE = format === 1 ? 28 : format === 6 ? 30 : 20;
+  // Format 0: 20 bytes; Format 1: 28 bytes; Format 2: 26 bytes; Format 3: 34 bytes; Format 6 (LAS 1.4): 30 bytes
+  const POINT_STRIDE =
+    format === 1 ? 28 :
+    format === 2 ? 26 :
+    format === 3 ? 34 :
+    format === 6 ? 30 : 20;
   const totalSize = HEADER_SIZE + points.length * POINT_STRIDE;
   const buf = Buffer.alloc(totalSize, 0);
 
@@ -238,7 +262,7 @@ export function buildSyntheticLasBuffer(
   // Global encoding (LAS 1.2+)
   buf.writeUInt16LE(globalEncoding, 6);
 
-  // Version: 1.4 for format 6, 1.2 for formats 0/1
+  // Version: 1.4 for format 6, 1.2 for formats 0/1/2/3
   buf.writeUInt8(1, 24);
   buf.writeUInt8(format === 6 ? 4 : 2, 25);
 
@@ -268,11 +292,27 @@ export function buildSyntheticLasBuffer(
     buf.writeInt32LE(Math.round((p.y - offsetY) / scaleY), base + 4);
     buf.writeInt32LE(Math.round((p.z - offsetZ) / scaleZ), base + 8);
     buf.writeUInt16LE(p.intensity ?? 1000, base + 12);
+    const rgb = opts.rgbPerPoint?.[i];
     if (format === 6) {
       // LAS 1.4 format 6: 4-bit return fields at byte 14, classification at byte 16, GPS time at byte 22
       buf.writeUInt8(0x11, base + 14); // return 1 of 1 (4-bit fields: 0x01 | (0x01 << 4))
       buf.writeUInt8(p.classification ?? 1, base + 16);
       buf.writeDoubleLE(opts.gpsTimesPerPoint?.[i] ?? 0, base + 22);
+    } else if (format === 2) {
+      // Format 2: 3-bit return fields, classification at byte 15, RGB at bytes 20-25
+      buf.writeUInt8(0x09, base + 14); // return 1 of 1 (3-bit fields: 0x01 | (0x01 << 3))
+      buf.writeUInt8(p.classification ?? 1, base + 15);
+      buf.writeUInt16LE(rgb?.r ?? 0, base + 20);
+      buf.writeUInt16LE(rgb?.g ?? 0, base + 22);
+      buf.writeUInt16LE(rgb?.b ?? 0, base + 24);
+    } else if (format === 3) {
+      // Format 3: 3-bit return fields, classification at byte 15, GPS time at bytes 20-27, RGB at bytes 28-33
+      buf.writeUInt8(0x09, base + 14); // return 1 of 1
+      buf.writeUInt8(p.classification ?? 1, base + 15);
+      buf.writeDoubleLE(opts.gpsTimesPerPoint?.[i] ?? 0, base + 20);
+      buf.writeUInt16LE(rgb?.r ?? 0, base + 28);
+      buf.writeUInt16LE(rgb?.g ?? 0, base + 30);
+      buf.writeUInt16LE(rgb?.b ?? 0, base + 32);
     } else {
       buf.writeUInt8(0x11, base + 14); // return 1 of 1
       buf.writeUInt8(p.classification ?? 1, base + 15);
