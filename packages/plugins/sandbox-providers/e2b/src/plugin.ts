@@ -34,11 +34,11 @@ function parseDriverConfig(raw: Record<string, unknown>): E2bDriverConfig {
   const template = typeof raw.template === "string" && raw.template.trim().length > 0
     ? raw.template.trim()
     : "base";
-  const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const timeoutMs = Number(raw.timeoutMs ?? 3_600_000);
   return {
     template,
     apiKey: typeof raw.apiKey === "string" && raw.apiKey.trim().length > 0 ? raw.apiKey.trim() : null,
-    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 3_600_000,
     reuseLease: raw.reuseLease === true,
   };
 }
@@ -391,6 +391,11 @@ const plugin = definePlugin({
 
     const config = parseDriverConfig(params.config);
     const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
+    // Refresh the sandbox death clock on every command. E2B's `timeoutMs` is
+    // the absolute sandbox lifetime from create/connect; without this, a run
+    // longer than `config.timeoutMs` will have its sandbox killed mid-command
+    // and the next call throws "Sandbox is probably not running anymore".
+    await sandbox.setTimeout(config.timeoutMs);
     const baseCommand = buildLoginShellScript({
       command: params.command,
       args: params.args ?? [],
