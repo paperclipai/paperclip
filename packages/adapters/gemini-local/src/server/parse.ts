@@ -64,7 +64,10 @@ function accumulateUsage(
   );
   target.cachedInputTokens += asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, 0)),
+    asNumber(
+      source.cachedInputTokens,
+      asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0)),
+    ),
   );
   target.outputTokens += asNumber(
     source.output_tokens,
@@ -121,16 +124,34 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
+    // Gemini CLI v0.38+ stream-json schema emits assistant turns as:
+    // {"type":"message","role":"assistant","content":"...","delta":true}
+    // These are discrete final messages (one per assistant turn), not
+    // cumulative streaming tokens, so collecting all of them produces the
+    // expected concatenated turn-by-turn summary rather than duplicated text.
+    if (type === "message") {
+      const role = asString(event.role, "").trim().toLowerCase();
+      if (role === "assistant") {
+        messages.push(...collectMessageText(event.content));
+      }
+      continue;
+    }
+
     if (type === "result") {
       resultEvent = event;
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       const resultText =
         asString(event.result, "").trim() ||
         asString(event.text, "").trim() ||
         asString(event.response, "").trim();
       if (resultText && messages.length === 0) messages.push(resultText);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
-      const isError = event.is_error === true || asString(event.subtype, "").toLowerCase() === "error";
+      const status = asString(event.status, "").toLowerCase();
+      const isError =
+        event.is_error === true ||
+        asString(event.subtype, "").toLowerCase() === "error" ||
+        status === "error" ||
+        status === "failed";
       if (isError) {
         const text = asErrorText(event.error ?? event.message ?? event.result).trim();
         if (text) errorMessage = text;
@@ -231,6 +252,8 @@ export function describeGeminiFailure(parsed: Record<string, unknown>): string |
 }
 
 const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
+const GEMINI_QUOTA_EXHAUSTED_RE =
+  /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
 
 export function detectGeminiAuthRequired(input: {
   parsed: Record<string, unknown> | null;
@@ -248,6 +271,22 @@ export function detectGeminiAuthRequired(input: {
   return { requiresAuth };
 }
 
+export function detectGeminiQuotaExhausted(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): { exhausted: boolean } {
+  const errors = extractGeminiErrorMessages(input.parsed ?? {});
+  const messages = [...errors, input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const exhausted = messages.some((line) => GEMINI_QUOTA_EXHAUSTED_RE.test(line));
+  return { exhausted };
+}
+
 export function isGeminiTurnLimitResult(
   parsed: Record<string, unknown> | null | undefined,
   exitCode?: number | null,
@@ -255,9 +294,18 @@ export function isGeminiTurnLimitResult(
   if (exitCode === 53) return true;
   if (!parsed) return false;
 
-  const status = asString(parsed.status, "").trim().toLowerCase();
-  if (status === "turn_limit" || status === "max_turns") return true;
+  const structuredStopReasons = [
+    parsed.status,
+    parsed.stopReason,
+    parsed.stop_reason,
+    parsed.errorCode,
+    parsed.error_code,
+  ].map((value) => asString(value, "").trim().toLowerCase());
 
-  const error = asString(parsed.error, "").trim();
-  return /turn\s*limit|max(?:imum)?\s+turns?/i.test(error);
+  return structuredStopReasons.some((reason) =>
+    reason === "turn_limit" ||
+    reason === "max_turns" ||
+    reason === "max_turns_exhausted" ||
+    reason === "turn_limit_exhausted",
+  );
 }
