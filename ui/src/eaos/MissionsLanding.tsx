@@ -349,7 +349,11 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
   const nextAction = deriveNextAction(issue);
   const gate = deriveGate(issue);
   const evidence = describeEvidence(issue);
-  const detailHref = `/issues/${issue.identifier ?? issue.id}`;
+  // LET-467 — primary action opens the EAOS Mission detail surface under the
+  // canonical shell; Kernel/Admin is demoted to a secondary escape hatch.
+  const missionRef = issue.identifier ?? issue.id;
+  const eaosDetailHref = `/eaos/missions/${missionRef}`;
+  const kernelDetailHref = `/issues/${missionRef}`;
 
   return (
     <li
@@ -379,8 +383,8 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
             />
             {issue.identifier ? (
               <span
-                aria-label={`Kernel identifier ${issue.identifier}`}
-                title="Kernel/Admin identifier — links into the legacy issue detail surface."
+                aria-label={`Mission identifier ${issue.identifier}`}
+                title="Mission identifier — opens the EAOS detail surface."
                 className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
               >
                 {issue.identifier}
@@ -391,15 +395,26 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
             {issue.title}
           </p>
         </div>
-        <Link
-          to={detailHref}
-          aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
-          data-testid={`eaos-missions-row-link-${issue.id}`}
-          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        >
-          <span aria-hidden="true">⎈</span>
-          <span>Kernel / Admin view</span>
-        </Link>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <Link
+            to={eaosDetailHref}
+            aria-label={`Open EAOS mission detail for ${issue.identifier ?? issue.title}`}
+            data-testid={`eaos-missions-row-detail-link-${issue.id}`}
+            className="inline-flex items-center gap-1 rounded-md border border-foreground bg-foreground px-2 py-1 text-xs font-medium text-background transition-colors hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <span>Open mission</span>
+            <span aria-hidden="true">→</span>
+          </Link>
+          <Link
+            to={kernelDetailHref}
+            aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
+            data-testid={`eaos-missions-row-link-${issue.id}`}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <span aria-hidden="true">⎈</span>
+            <span>Kernel / Admin</span>
+          </Link>
+        </div>
       </div>
       <dl
         className="grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4"

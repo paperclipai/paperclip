@@ -283,7 +283,7 @@ describe("MissionsLanding (LET-460 thin slice)", () => {
     }
   });
 
-  it("links mission rows to the Kernel/Admin issue detail via a clearly demoted action", async () => {
+  it("opens the EAOS mission detail as the primary action and keeps Kernel/Admin as a demoted secondary link", async () => {
     issuesListMock.mockResolvedValue([
       makeIssue({
         id: "issue-link",
@@ -295,14 +295,22 @@ describe("MissionsLanding (LET-460 thin slice)", () => {
     agentsListMock.mockResolvedValue([]);
     await renderMissions();
 
+    // Primary CTA — the EAOS detail surface under the canonical full-screen shell.
     await waitForMicrotaskAssertion(() => {
-      const link = container?.querySelector('[data-testid="eaos-missions-row-link-issue-link"]');
-      expect(link).not.toBeNull();
-      expect(link?.textContent ?? "").toContain("Kernel / Admin view");
-      expect(link?.getAttribute("aria-label") ?? "").toContain("Kernel/Admin");
+      const primary = container?.querySelector('[data-testid="eaos-missions-row-detail-link-issue-link"]');
+      expect(primary).not.toBeNull();
+      expect(primary?.textContent ?? "").toContain("Open mission");
+      expect(primary?.getAttribute("aria-label") ?? "").toContain("EAOS mission detail");
       // The href is rewritten by the company-aware Link wrapper into /LET/...
-      expect(link?.getAttribute("href")).toBe("/LET/issues/LET-200");
+      expect(primary?.getAttribute("href")).toBe("/LET/eaos/missions/LET-200");
     });
+
+    // Secondary CTA — Kernel/Admin escape hatch must remain available but demoted.
+    const secondary = container?.querySelector('[data-testid="eaos-missions-row-link-issue-link"]');
+    expect(secondary).not.toBeNull();
+    expect(secondary?.textContent ?? "").toContain("Kernel / Admin");
+    expect(secondary?.getAttribute("aria-label") ?? "").toContain("Kernel/Admin");
+    expect(secondary?.getAttribute("href")).toBe("/LET/issues/LET-200");
   });
 
   it("uses calm product copy in the empty state, not raw API error text", async () => {

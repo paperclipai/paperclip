@@ -53,6 +53,7 @@ import { EaosShell } from "./eaos/EaosShell";
 import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
 import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
 import { MissionsLanding } from "./eaos/MissionsLanding";
+import { MissionDetail } from "./eaos/MissionDetail";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -98,6 +99,15 @@ function boardRoutes() {
         <Route index element={<CommandCenterLanding />} />
         <Route path="sandbox" element={<Eaos />} />
         <Route path="missions" element={<MissionsLanding />} />
+        {/*
+          LET-467 — EAOS Mission detail under the canonical full-screen
+          EaosShell. `missionRef` accepts either an issue UUID or an
+          identifier (e.g. `LET-460`); resolution uses the same /issues/:id
+          endpoint as Kernel/Admin. Read-only thin slice: no approval,
+          deploy, release, runtime, spend, secret, or external write
+          controls — escape hatch into Kernel/Admin remains available.
+        */}
+        <Route path="missions/:missionRef" element={<MissionDetail />} />
         {EAOS_PRIMARY_NAV.filter(
           (zone) =>
             zone.path !== "/eaos"
