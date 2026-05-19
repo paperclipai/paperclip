@@ -155,6 +155,38 @@ describe("LidarPipeline — integration (synthetic data stream)", () => {
     expect(health.activeSensors).toBe(2);
   });
 
+  it("emits a health event after each successfully processed batch", async () => {
+    const pipeline = new LidarPipeline();
+    const healthUpdates: Array<{ status: string; activeSensors: number }> = [];
+    pipeline.on("health", (s) => healthUpdates.push({ status: s.status, activeSensors: s.activeSensors }));
+
+    await pipeline.process(makeEvent([{ x: 526914, y: 5040778, z: 50 }]));
+    await pipeline.process(makeEvent([{ x: 527000, y: 5040900, z: 55 }]));
+
+    expect(healthUpdates).toHaveLength(2);
+    expect(healthUpdates[0].status).toBe("ok");
+    expect(healthUpdates[0].activeSensors).toBe(1);
+    expect(healthUpdates[1].status).toBe("ok");
+  });
+
+  it("does not emit a health event when processing fails", async () => {
+    const pipeline = new LidarPipeline();
+    const healthUpdates: unknown[] = [];
+    pipeline.on("health", (s) => healthUpdates.push(s));
+    pipeline.on("error", () => {}); // suppress unhandled error event
+
+    const badEvent: IngestionEvent = {
+      eventId: "bad",
+      sensorConfig: SENSOR,
+      format: "las",
+      payload: Buffer.from("not a valid LAS"),
+      receivedAt: Date.now(),
+    };
+    await pipeline.process(badEvent);
+
+    expect(healthUpdates).toHaveLength(0);
+  });
+
   it("respects custom tracker options (staleThresholdMs) passed via PipelineOptions", async () => {
     vi.useFakeTimers();
     try {

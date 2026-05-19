@@ -65,6 +65,7 @@ export class LidarPipeline extends EventEmitter {
       );
 
       this.emit("batch", event.sensorConfig.sensorId, filtered);
+      this.emit("health", this.tracker.getStatus());
 
       if (this.opts.onBatch) {
         await this.opts.onBatch(event.sensorConfig.sensorId, filtered);

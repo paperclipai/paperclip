@@ -148,6 +148,42 @@ describe("parseLas — format 6 (LAS 1.4 extended records)", () => {
     expect(p.returnNumber).toBe(1);
     expect(p.numberOfReturns).toBe(1);
   });
+
+  it("reads point count from the LAS 1.4 uint64 field when the legacy 32-bit field is 0", () => {
+    // Build a LAS 1.4 buffer with a 375-byte header (spec size) so the 64-bit count
+    // at offset 247 does not overlap with point data.
+    const LAS_FILE_SIG = 0x4c415346; // "LASF" big-endian
+    const HEADER_SIZE = 375; // LAS 1.4 spec header size
+    const POINT_STRIDE = 30; // format 6
+    const pointCount = 2;
+    const buf = Buffer.alloc(HEADER_SIZE + pointCount * POINT_STRIDE, 0);
+
+    buf.writeUInt32BE(LAS_FILE_SIG, 0);
+    buf.writeUInt16LE(0x01, 6); // globalEncoding bit 0 = GPS adjusted time
+    buf.writeUInt8(1, 24); // version major
+    buf.writeUInt8(4, 25); // version minor (1.4)
+    buf.writeUInt16LE(HEADER_SIZE, 94); // header size
+    buf.writeUInt32LE(HEADER_SIZE, 96); // offset to point data
+    buf.writeUInt8(6, 104); // point data format 6
+    buf.writeUInt16LE(POINT_STRIDE, 105); // point record length
+    buf.writeUInt32LE(0, 107); // legacy count = 0 → must read 64-bit field
+    buf.writeBigUInt64LE(BigInt(pointCount), 247); // LAS 1.4 uint64 count
+    buf.writeDoubleLE(0.01, 131); // scaleX
+    buf.writeDoubleLE(0.01, 139); // scaleY
+    buf.writeDoubleLE(0.01, 147); // scaleZ
+
+    // Write two minimal point records
+    for (let i = 0; i < pointCount; i++) {
+      const base = HEADER_SIZE + i * POINT_STRIDE;
+      buf.writeInt32LE(100 * (i + 1), base); // x
+      buf.writeInt32LE(200 * (i + 1), base + 4); // y
+      buf.writeInt32LE(50 * (i + 1), base + 8); // z
+      buf.writeUInt8(1, base + 16); // classification
+    }
+
+    const result = parseLas(buf, Date.now());
+    expect(result).toHaveLength(pointCount);
+  });
 });
 
 describe("filterOutliers — edge cases for ingestion pipeline", () => {

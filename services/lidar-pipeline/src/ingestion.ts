@@ -72,8 +72,13 @@ function readHeader(buf: Buffer): LasHeader {
   const pointDataFormatId = buf.readUInt8(104);
   const pointDataRecordLength = buf.readUInt16LE(105);
 
-  // LAS 1.4 uses 64-bit record counts; we only read the legacy 32-bit field here.
-  const numberOfPointRecords = buf.readUInt32LE(107);
+  // LAS 1.4 stores the actual count as uint64 at offset 247 when the legacy
+  // 32-bit field (offset 107) is 0.  We read it via BigInt and convert to Number
+  // (safe up to 2^53 points per batch).
+  let numberOfPointRecords = buf.readUInt32LE(107);
+  if (versionMinor >= 4 && numberOfPointRecords === 0 && buf.length >= 255) {
+    numberOfPointRecords = Number(buf.readBigUInt64LE(247));
+  }
 
   const scaleX = buf.readDoubleLE(131);
   const scaleY = buf.readDoubleLE(139);
@@ -101,7 +106,8 @@ function readHeader(buf: Buffer): LasHeader {
 }
 
 /**
- * Parse a LAS 1.2/1.3 buffer (point formats 0, 1, 6) into raw point records.
+ * Parse a LAS 1.x buffer (point formats 0, 1, 6) into raw point records.
+ * Formats 0/1 follow the LAS 1.2/1.3 byte layout; format 6 follows LAS 1.4.
  *
  * LAZ files must be decompressed before calling this function — this parser
  * handles the uncompressed LAS byte stream only.
