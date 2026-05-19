@@ -1,7 +1,7 @@
 # ADR-001: CrewBrief Backend Architecture
 
 **Date:** 2026-05-17
-**Status:** Proposed
+**Status:** Pending Confirmation (confirmation ccb16224 expired 2026-05-18; fresh confirmation created)
 **Author:** Hunter (CTO)
 
 ## Context
