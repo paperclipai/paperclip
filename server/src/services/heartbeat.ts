@@ -6617,7 +6617,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // here means the child is wedged. Give it a grace window for a recovering
         // server to re-attach, then kill it and let the existing process-loss
         // finalization path take over below.
-        const detachedSinceMs = run.updatedAt ? new Date(run.updatedAt).getTime() : now.getTime();
+        const detachedSinceMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         const detachedMs = now.getTime() - detachedSinceMs;
         if (detachedMs < DETACHED_PROCESS_KILL_GRACE_MS) {
           continue;
