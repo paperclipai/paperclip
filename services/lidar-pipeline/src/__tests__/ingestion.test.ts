@@ -94,6 +94,62 @@ describe("parseLas", () => {
   });
 });
 
+describe("parseLas — format 6 (LAS 1.4 extended records)", () => {
+  it("parses XYZ coordinates from a format-6 buffer", () => {
+    const pts = [{ x: 526914.12, y: 5040778.56, z: 50.0 }];
+    const buf = buildSyntheticLasBuffer(pts, { format: 6 });
+    const result = parseLas(buf, Date.now());
+    expect(result).toHaveLength(1);
+    expect(result[0].x).toBeCloseTo(pts[0].x, 1);
+    expect(result[0].y).toBeCloseTo(pts[0].y, 1);
+    expect(result[0].z).toBeCloseTo(pts[0].z, 1);
+  });
+
+  it("reads classification from byte 16 (not byte 15) in format 6", () => {
+    const buf = buildSyntheticLasBuffer(
+      [
+        { x: 0, y: 0, z: 0, classification: 2 },
+        { x: 1, y: 1, z: 1, classification: 5 },
+        { x: 2, y: 2, z: 2, classification: 7 },
+      ],
+      { format: 6 },
+    );
+    const result = parseLas(buf, Date.now());
+    expect(result[0].classification).toBe(2);
+    expect(result[1].classification).toBe(5);
+    expect(result[2].classification).toBe(7);
+  });
+
+  it("converts GPS adjusted standard time from byte 22 for format 6", () => {
+    const gpsAdjusted = 356_566_400;
+    const expectedUnixMs = (gpsAdjusted + 1_000_000_000 + 315_964_800) * 1000;
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 6, globalEncoding: 0x01, gpsTimesPerPoint: [gpsAdjusted] },
+    );
+    const [p] = parseLas(buf, Date.now());
+    expect(p.timestamp).toBe(expectedUnixMs);
+  });
+
+  it("falls back to receivedAt for format 6 with GPS week time (globalEncoding bit 0 = 0)", () => {
+    const receivedAt = 1_700_000_000_000;
+    const buf = buildSyntheticLasBuffer(
+      [{ x: 0, y: 0, z: 0 }],
+      { format: 6, globalEncoding: 0x00, gpsTimesPerPoint: [12345.678] },
+    );
+    const [p] = parseLas(buf, receivedAt);
+    expect(p.timestamp).toBe(receivedAt);
+  });
+
+  it("uses 4-bit return number and number-of-returns fields in format 6", () => {
+    const buf = buildSyntheticLasBuffer([{ x: 0, y: 0, z: 0 }], { format: 6 });
+    const [p] = parseLas(buf, Date.now());
+    // buildSyntheticLasBuffer writes 0x11 at byte 14 for format 6: return=1, numberOfReturns=1
+    expect(p.returnNumber).toBe(1);
+    expect(p.numberOfReturns).toBe(1);
+  });
+});
+
 describe("filterOutliers — edge cases for ingestion pipeline", () => {
   it("removes LAS noise class (7) points regardless of statistics", () => {
     const pts = Array.from({ length: 10 }, (_, i) => ({

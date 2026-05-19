@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { LidarPipeline } from "../pipeline.js";
 import { buildSyntheticLasBuffer } from "../ingestion.js";
 import type { IngestionEvent, NormalizedPoint, SensorConfig } from "../types.js";
@@ -153,5 +153,22 @@ describe("LidarPipeline — integration (synthetic data stream)", () => {
 
     const health = pipeline.health();
     expect(health.activeSensors).toBe(2);
+  });
+
+  it("respects custom tracker options (staleThresholdMs) passed via PipelineOptions", async () => {
+    vi.useFakeTimers();
+    try {
+      const pipeline = new LidarPipeline({ tracker: { staleThresholdMs: 5_000 } });
+
+      // Process an event — tracker records at the current fake time (t=0)
+      await pipeline.process(makeEvent([{ x: 526914, y: 5040778, z: 50 }]));
+      expect(pipeline.health().status).toBe("ok");
+
+      // Advance past the custom 5 s stale threshold but stay inside the 60 s eviction window
+      vi.setSystemTime(Date.now() + 6_000);
+      expect(pipeline.health().status).toBe("degraded");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

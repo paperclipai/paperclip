@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { parseLas } from "./ingestion.js";
 import { normalizePoints } from "./normalization.js";
 import { filterOutliers, type FilterOptions } from "./filter.js";
-import { IngestionTracker } from "./health.js";
+import { IngestionTracker, type IngestionTrackerOptions } from "./health.js";
 import type {
   IngestionEvent,
   NormalizedPoint,
@@ -11,6 +11,7 @@ import type {
 
 export interface PipelineOptions {
   filter?: FilterOptions;
+  tracker?: IngestionTrackerOptions;
   /** Called after each successfully processed batch. */
   onBatch?: (sensorId: string, points: NormalizedPoint[]) => Promise<void> | void;
 }
@@ -30,12 +31,13 @@ export interface PipelineEvents {
  * RAWS data pipeline.
  */
 export class LidarPipeline extends EventEmitter {
-  private tracker = new IngestionTracker();
+  private tracker: IngestionTracker;
   private opts: PipelineOptions;
 
   constructor(opts: PipelineOptions = {}) {
     super();
     this.opts = opts;
+    this.tracker = new IngestionTracker(opts.tracker);
   }
 
   /**
