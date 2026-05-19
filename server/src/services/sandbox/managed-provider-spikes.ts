@@ -128,7 +128,15 @@ export interface ManagedSandboxFakeRequest {
 interface ManagedSandboxTransport {
   readonly mode: "mock-disabled" | "mock-http" | "live-http";
   createSandbox(input: ManagedSandboxCreateInput): Promise<ManagedSandboxRecord>;
-  startSandbox(input: { sandboxId: string; signal?: AbortSignal }): Promise<ManagedSandboxRecord>;
+  startSandbox(input: {
+    sandboxId: string;
+    signal?: AbortSignal;
+    /** Optional sandbox-lifetime budget. The live E2B transport propagates
+     *  this to the `/sandboxes/{id}/connect` body on the resume path
+     *  (matching the SDK shape `{ timeout: ceil(timeoutMs / 1000) }`).
+     *  Mock transports ignore it. */
+    timeoutMs?: number;
+  }): Promise<ManagedSandboxRecord>;
   executeCommand(input: ManagedSandboxExecuteTransportInput): Promise<SandboxExecuteResult>;
   readLogs(input: { sandboxId: string; tail?: number; cursor?: string | null; signal?: AbortSignal }): Promise<SandboxProviderLogsResult>;
   streamEvents(input: { sandboxId: string; signal?: AbortSignal }): AsyncIterable<SandboxProviderStreamEvent>;
@@ -586,7 +594,13 @@ abstract class BaseManagedSandboxProvider implements SandboxProvider {
     assertManagedConfig(this.surface.provider, input.config);
     const sandboxId = sandboxIdFromProviderLeaseId(this.surface, input.providerLeaseId);
     try {
-      const record = await this.transport.startSandbox({ sandboxId });
+      // Plumb config.timeoutMs into the resume call so the live E2B transport
+      // sends `{ timeout: ceil(timeoutMs / 1000) }` to `/connect`, matching
+      // the official SDK shape on the resume-from-id path.
+      const record = await this.transport.startSandbox({
+        sandboxId,
+        timeoutMs: input.config.timeoutMs,
+      });
       return {
         providerLeaseId: input.providerLeaseId,
         metadata: buildMetadata({

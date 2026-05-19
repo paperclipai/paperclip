@@ -29,7 +29,11 @@
  *
  * Lifecycle mapping (LET-365 plan, default pilot policy):
  *   Paperclip acquireLease  → POST   {apiBase}/sandboxes              (E2B create)
- *   Paperclip start         → POST   {apiBase}/sandboxes/{id}/connect (E2B connect/resume)
+ *   Paperclip start         → no HTTP when create response already carried
+ *                             `envdAccessToken` + `domain` (fresh sandbox);
+ *                             otherwise POST {apiBase}/sandboxes/{id}/connect
+ *                             (resume path — e.g. lease recovered after server
+ *                             restart, where the in-memory session is empty).
  *   Paperclip exec          → POST   {envdHost}/process.Process/Start (E2B Connect server-stream)
  *   Paperclip release       → DELETE {apiBase}/sandboxes/{id}         (pilot default; warm reuse is opt-in pause)
  *   Paperclip destroy       → DELETE {apiBase}/sandboxes/{id}
@@ -37,6 +41,19 @@
  * `release` can be remapped to pause via `releaseMode: "pause"` once warm
  * reuse becomes part of pilot scope. The pilot default is `delete` to keep
  * cost accounting trivial.
+ *
+ * LET-431 (Phase 4A-S4 B5-step-3): the original implementation unconditionally
+ * posted `{}` to `/sandboxes/{id}/connect` on every `startSandbox`, which the
+ * E2B control plane rejects with HTTP 400 for a freshly-created sandbox
+ * because the create response already returns the envd session — re-issuing
+ * `/connect` against a sandbox that has not been paused is a no-op the
+ * platform refuses to service. Cross-checked against the official E2B JS SDK
+ * (`e2b@2.20.x`, `packages/js-sdk`): `Sandbox.create` reads the envd session
+ * from the create response and only calls `/connect` on `Sandbox.connect`
+ * (resume-from-id). We now mirror that: `startSandbox` skips the HTTP call
+ * when the cached session already carries `envdAccessToken` + `domain`, and
+ * only falls back to `connectSandbox` when the in-memory session is empty
+ * (persisted-lease recovery / explicit resume).
  */
 
 import { SandboxProviderError, throwIfAborted } from "./provider-contract.js";
@@ -134,6 +151,11 @@ const DEFAULT_BASE_URL = "https://api.e2b.app";
 const DEFAULT_ENVD_HOST_TEMPLATE = "https://{port}-{sandboxId}.{domain}";
 const DEFAULT_ENVD_PORT = 49983;
 const DEFAULT_ENVD_DOMAIN = "e2b.app";
+/** Matches `DEFAULT_SANDBOX_TIMEOUT_MS` in the official E2B JS SDK
+ *  (`e2b@2.20.x`, `packages/js-sdk/dist/index.mjs`). Used as the fallback
+ *  timeout for `/sandboxes/{id}/connect` (resume) when the caller did not
+ *  supply one via `config.timeoutMs`. */
+const DEFAULT_SANDBOX_TIMEOUT_MS = 300_000;
 const API_KEY_HEADER = "X-API-Key" as const;
 const CONTENT_TYPE_HEADER = "Content-Type" as const;
 const ACCEPT_HEADER = "Accept" as const;
@@ -449,13 +471,34 @@ export class E2BLiveHttpTransport {
     };
   }
 
-  async startSandbox(input: { sandboxId: string; signal?: AbortSignal }): Promise<{
+  async startSandbox(input: {
+    sandboxId: string;
+    signal?: AbortSignal;
+    /** Sandbox-lifetime budget propagated to `/sandboxes/{id}/connect` body
+     *  on the resume path. Mirrors `Sandbox.connect(id, { timeoutMs })` in
+     *  `e2b@2.20.x`, which posts `{ timeout: ceil(timeoutMs / 1000) }`.
+     *  Optional — falls back to `DEFAULT_SANDBOX_TIMEOUT_MS` (300_000 ms,
+     *  matching the SDK default) when unspecified. Has no effect on the
+     *  fresh-create path because that path skips the `/connect` call. */
+    timeoutMs?: number;
+  }): Promise<{
     id: string;
     state: "running";
     metadata: Record<string, unknown>;
   }> {
     throwIfAborted(input.signal);
-    const session = await this.connectSandbox(input.sandboxId, input.signal);
+    // LET-431: skip `/sandboxes/{id}/connect` when the create response has
+    // already populated `envdAccessToken` + `domain`. The E2B control plane
+    // returns HTTP 400 if we call `/connect` against a freshly-created
+    // sandbox, and the SDK never makes that call after `Sandbox.create` —
+    // it only issues it on `Sandbox.connect(id)` (resume-from-id). When the
+    // in-memory session is empty (fresh provider instance recovering a
+    // persisted lease), `ensureSession` falls back to `/connect` to refresh
+    // the envd token, which IS the documented resume path.
+    const session = await this.ensureSession(input.sandboxId, {
+      signal: input.signal,
+      timeoutMs: input.timeoutMs,
+    });
     return {
       id: input.sandboxId,
       state: "running",
@@ -506,7 +549,13 @@ export class E2BLiveHttpTransport {
     // Lazy session refresh: a fresh provider instance recovering a persisted
     // lease may not yet have envdAccessToken/domain cached. Connect first to
     // populate them, then dispatch the Connect process.Process/Start request.
-    const session = await this.ensureSession(input.sandboxId, input.signal);
+    // `timeoutMs` flows through to the `/connect` body when this path
+    // actually issues a resume — for the fresh-create path the cached
+    // session is reused and no `/connect` is sent.
+    const session = await this.ensureSession(input.sandboxId, {
+      signal: input.signal,
+      timeoutMs: input.timeoutMs,
+    });
     // Mirror the official SDK: `Commands.run(cmd)` → `Commands.start(cmd)`
     // → `rpc.start({ process: { cmd: '/bin/bash', args: ['-l', '-c', cmd] } })`.
     // The user's command + args are combined into a single shell string and
@@ -643,12 +692,27 @@ export class E2BLiveHttpTransport {
     };
   }
 
-  private async connectSandbox(sandboxId: string, signal?: AbortSignal): Promise<E2BSandboxSession> {
+  /** Resume path: POST `/sandboxes/{id}/connect`. Body matches the official
+   *  E2B JS SDK shape: `{ timeout: ceil(timeoutMs / 1000) }`. The SDK's
+   *  `SandboxApi.connectSandbox` uses `DEFAULT_SANDBOX_TIMEOUT_MS = 300_000`
+   *  (5 minutes) when the caller omits `timeoutMs`; we mirror that fallback
+   *  so the on-the-wire shape stays SDK-equivalent even when the resume
+   *  caller (e.g. `provider.start({ lease })`) does not plumb a config-side
+   *  TTL through. */
+  private async connectSandbox(
+    sandboxId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<E2BSandboxSession> {
+    const timeoutMs =
+      typeof opts?.timeoutMs === "number" && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+        ? opts.timeoutMs
+        : DEFAULT_SANDBOX_TIMEOUT_MS;
+    const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
     const response = await this.controlPlaneRequest<E2BConnectResponse>({
       method: "POST",
       path: `/sandboxes/${encodeURIComponent(sandboxId)}/connect`,
-      body: {},
-      signal,
+      body: { timeout: timeoutSeconds },
+      signal: opts?.signal,
     });
     const session = this.sessionFromConnect(response);
     this.sessions.set(sandboxId, session);
@@ -659,10 +723,13 @@ export class E2BLiveHttpTransport {
    *  when no envdAccessToken/domain has been observed yet. This is the
    *  persisted-lease recovery path: a fresh provider instance receives an
    *  existing providerLeaseId and needs envd session data before exec. */
-  private async ensureSession(sandboxId: string, signal?: AbortSignal): Promise<E2BSandboxSession> {
+  private async ensureSession(
+    sandboxId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<E2BSandboxSession> {
     const cached = this.sessions.get(sandboxId);
     if (cached && cached.envdAccessToken && cached.domain) return cached;
-    return await this.connectSandbox(sandboxId, signal);
+    return await this.connectSandbox(sandboxId, opts);
   }
 
   private redact<T extends string | null | undefined>(value: T): T {

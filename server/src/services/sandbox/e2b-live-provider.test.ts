@@ -11,7 +11,10 @@
  *     the pre-provider redaction registry never reaches the captured outbound
  *     payload (request body, env values, command args, stdin, headers).
  *  3. Lifecycle mapping: acquireLease → POST /sandboxes (api.e2b.app),
- *     start → POST /sandboxes/{id}/connect (returns envdAccessToken/domain),
+ *     start → no HTTP call when create response already returned the envd
+ *     session (LET-431 fix; E2B rejects a redundant /connect with HTTP 400);
+ *     start → POST /sandboxes/{id}/connect ONLY on resume-from-id when the
+ *     in-memory session is empty (persisted-lease recovery path),
  *     exec → POST {envdHost}/process.Process/Start (Connect server-streaming),
  *     release → DELETE /sandboxes/{id} (pilot default), destroy → DELETE.
  *  4. SDK-aligned wire shape:
@@ -537,9 +540,12 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       config: e2bLiveConfig,
       providerLeaseId: lease.providerLeaseId,
     });
+    // LET-431: fresh-create start path no longer hits `/sandboxes/{id}/connect`
+    // — the create response already returned the envd session, and E2B rejects
+    // a redundant `/connect` call with HTTP 400 (see LET-370 canary evidence).
+    // `/connect` is reserved for the resume path (covered separately below).
     expect(recorded).toEqual([
       { method: "POST", host: "api.e2b.app", path: "/sandboxes" },
-      { method: "POST", host: "api.e2b.app", path: "/sandboxes/e2b-sandbox-lifecycle/connect" },
       // Exec leaves api.e2b.app and targets the sandbox-side envd Connect host.
       { method: "POST", host: "49983-e2b-sandbox-lifecycle.e2b.app", path: "/process.Process/Start" },
       // releaseLease maps to DELETE on api.e2b.app per pilot default (no warm reuse).
@@ -547,6 +553,9 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
       // destroyLease maps to DELETE.
       { method: "DELETE", host: "api.e2b.app", path: "/sandboxes/e2b-sandbox-lifecycle" },
     ]);
+    // Defensive: no captured request may target `/connect` after a successful
+    // create — that regresses to the LET-370 400 path.
+    expect(recorded.some((r) => r.path.endsWith("/connect"))).toBe(false);
   });
 
   it("can be configured to map releaseLease to pause for future warm-reuse pilots", async () => {
@@ -590,7 +599,8 @@ describe("LET-366 E2BSandboxProvider live transport gating", () => {
  * official E2B JS SDK (`e2b@2.20.x`, `packages/js-sdk`):
  *   - X-API-Key for sandbox CRUD,
  *   - templateID/timeout/envVars body field names,
- *   - `/sandboxes/{id}/connect` (NOT `/resume`) returns envd session,
+ *   - `/sandboxes/{id}/connect` (NOT `/resume`) returns envd session on the
+ *     resume-from-id path (LET-431: never invoked on fresh-create),
  *   - exec wraps user command as `/bin/bash -l -c <combined>`,
  *   - Connect protocol headers on the envd host,
  *   - no `Authorization: Basic base64(<apiKey>)` on envd by default,
@@ -650,7 +660,13 @@ describe("LET-366 E2B SDK-aligned HTTP contract", () => {
     expect(body.timeoutMs).toBeUndefined();
   });
 
-  it("uses POST /sandboxes/{id}/connect (not /resume) for start, returning the envd session", async () => {
+  it("does not call /connect after a successful create — the envd session from the create response is reused", async () => {
+    // LET-431: regression guard for the LET-370 canary 400. A freshly-created
+    // sandbox already carries the envd session in the create response, so
+    // `provider.start(...)` must NOT post to `/sandboxes/{id}/connect` —
+    // E2B's control plane rejects that call with HTTP 400. The `/connect`
+    // path is reserved for resume-from-persisted-id (covered separately in
+    // the persisted-lease describe block).
     process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
     const captured: Array<{ url: string; method: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -667,15 +683,9 @@ describe("LET-366 E2B SDK-aligned HTTP contract", () => {
           state: "created",
         }) as unknown as Response;
       }
+      // Any /connect hit here is a regression — fail loudly.
       if (parsed.pathname.endsWith("/connect")) {
-        return jsonResponse({
-          sandboxID: "sb-start-1",
-          envdAccessToken: "envd-token-start-refreshed",
-          envdVersion: "v0.1.99",
-          domain: "e2b.app",
-          trafficAccessToken: "traffic-tok",
-          state: "running",
-        }) as unknown as Response;
+        throw new Error(`unexpected /connect call: ${url}`);
       }
       return jsonResponse({}) as unknown as Response;
     });
@@ -693,10 +703,10 @@ describe("LET-366 E2B SDK-aligned HTTP contract", () => {
     await provider.start({ lease });
     expect(captured.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
       "POST /sandboxes",
-      "POST /sandboxes/sb-start-1/connect",
     ]);
-    // /resume must not be called.
+    // Neither /resume nor /connect must appear.
     expect(captured.every((c) => !new URL(c.url).pathname.endsWith("/resume"))).toBe(true);
+    expect(captured.every((c) => !new URL(c.url).pathname.endsWith("/connect"))).toBe(true);
   });
 
   it("wraps user command as /bin/bash -l -c <combined> and uses Connect headers without Basic auth", async () => {
@@ -1105,11 +1115,11 @@ describe("LET-366 persisted-lease cleanup without prior acquireLease", () => {
     ]);
   });
 
-  it("resumeLease on a persisted lease calls the live /connect endpoint without prior acquireLease", async () => {
+  it("resumeLease on a persisted lease calls the live /connect endpoint with the SDK-shaped { timeout } body", async () => {
     process.env.SANDBOX_PROVIDER_ALLOW_LIVE = "true";
-    const captured: Array<{ url: string; method: string }> = [];
+    const captured: Array<{ url: string; method: string; body: BodyInit | null | undefined }> = [];
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      captured.push({ url, method: init?.method ?? "GET" });
+      captured.push({ url, method: init?.method ?? "GET", body: init?.body });
       return jsonResponse({
         sandboxID: "persisted-sandbox-abc",
         envdAccessToken: "envd-resume-token",
@@ -1128,9 +1138,13 @@ describe("LET-366 persisted-lease cleanup without prior acquireLease", () => {
       providerLeaseId: persistedLeaseId,
     });
     expect(result?.providerLeaseId).toBe(persistedLeaseId);
-    expect(captured).toEqual([
+    expect(captured.map((c) => ({ url: c.url, method: c.method }))).toEqual([
       { url: "https://api.e2b.app/sandboxes/persisted-sandbox-abc/connect", method: "POST" },
     ]);
+    // LET-431 SDK-alignment: resume body must match `e2b@2.20.x`
+    // `SandboxApi.connectSandbox` shape — `{ timeout: ceil(timeoutMs / 1000) }`.
+    // `e2bLiveConfig.timeoutMs = 45_000` → 45 seconds.
+    expect(JSON.parse(captured[0]!.body as string)).toEqual({ timeout: 45 });
   });
 
   it("resumeLease then exec on a fresh provider instance refreshes the envd session and sends X-Access-Token", async () => {
