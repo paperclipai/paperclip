@@ -3139,6 +3139,7 @@ export function agentRoutes(
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
       processStartedAt: heartbeatRuns.processStartedAt,
+      runtimeConfig: agentsTable.runtimeConfig,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
     };
 
@@ -3157,6 +3158,14 @@ export function agentRoutes(
     const liveRuns = await liveRunsQuery.limit(limit);
     const targetRunCount = Math.min(minCount, limit);
 
+    async function mapRunWithSilence(row: typeof liveRuns[number]) {
+      const { runtimeConfig, ...run } = row;
+      return {
+        ...run,
+        outputSilence: await heartbeat.buildRunOutputSilence(run, undefined, runtimeConfig as Record<string, unknown> | undefined),
+      };
+    }
+
     if (targetRunCount > 0 && liveRuns.length < targetRunCount) {
       const activeIds = liveRuns.map((r) => r.id);
       const recentRuns = await db
@@ -3174,17 +3183,11 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
-        ...run,
-        outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      res.json(await Promise.all(rows.map(mapRunWithSilence)));
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    res.json(await Promise.all(liveRuns.map(mapRunWithSilence)));
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
@@ -3196,9 +3199,10 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, run.companyId);
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
+    const agent = await svc.getById(run.agentId);
     res.json(
       redactCurrentUserValue(
-        { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run, undefined, agent?.runtimeConfig) },
         await getCurrentUserRedactionOptions(),
       ),
     );
@@ -3355,6 +3359,7 @@ export function agentRoutes(
     const liveRuns = await db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,
@@ -3366,6 +3371,7 @@ export function agentRoutes(
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
         adapterType: agentsTable.adapterType,
+        runtimeConfig: agentsTable.runtimeConfig,
         logBytes: heartbeatRuns.logBytes,
         livenessState: heartbeatRuns.livenessState,
         livenessReason: heartbeatRuns.livenessReason,
@@ -3389,10 +3395,13 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
-      outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
-    }))));
+    res.json(await Promise.all(liveRuns.map(async (row) => {
+      const { runtimeConfig, ...run } = row;
+      return {
+        ...run,
+        outputSilence: await heartbeat.buildRunOutputSilence(run, undefined, runtimeConfig),
+      };
+    })));
   });
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
@@ -3440,7 +3449,7 @@ export function agentRoutes(
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
-      outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
+      outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }, undefined, agent.runtimeConfig),
     });
   });
 

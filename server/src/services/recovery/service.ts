@@ -66,6 +66,9 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const OUTPUT_SILENCE_MIN_FLOOR_MS = 30 * 60 * 1000;
+export const STALE_RUN_EVALUATION_COOLDOWN_MS = 30 * 60 * 1000;
+export const ACTIVE_RUN_RECENT_OUTPUT_GUARD_MS = 5 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -703,6 +706,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  function resolveEffectiveSilenceThresholds(runtimeConfig: Record<string, unknown> | undefined | null) {
+    const rawSuspicion = typeof runtimeConfig?.silenceSuspicionThresholdMs === "number"
+      ? runtimeConfig.silenceSuspicionThresholdMs as number
+      : null;
+    const rawCritical = typeof runtimeConfig?.silenceCriticalThresholdMs === "number"
+      ? runtimeConfig.silenceCriticalThresholdMs as number
+      : null;
+
+    return {
+      suspicionMs: Math.max(
+        rawSuspicion ?? ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+        ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+        OUTPUT_SILENCE_MIN_FLOOR_MS,
+      ),
+      criticalMs: Math.max(
+        rawCritical ?? ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+        ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+        OUTPUT_SILENCE_MIN_FLOOR_MS,
+      ),
+    };
+  }
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -744,26 +769,60 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findRecentlyClosedStaleRunEvaluation(
+    companyId: string,
+    runId: string,
+    cooldownMs: number,
+    now: Date,
+  ) {
+    const cooldownThreshold = new Date(now.getTime() - cooldownMs);
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        completedAt: issues.completedAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          eq(issues.originFingerprint, staleActiveRunOriginFingerprint(companyId, runId)),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gte(issues.completedAt, cooldownThreshold),
+        ),
+      )
+      .orderBy(desc(issues.completedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
+    runtimeConfig?: Record<string, unknown> | null,
   ): Promise<RunOutputSilenceSummary> {
     const [quietUntilDecision, evaluation] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
+    const thresholds = resolveEffectiveSilenceThresholds(runtimeConfig);
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
     const level = run.status !== "running"
       ? "not_applicable"
       : quietUntilDecision
         ? "snoozed"
-        : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
+        : (silenceAgeMs ?? 0) >= thresholds.criticalMs
           ? "critical"
-          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
+          : (silenceAgeMs ?? 0) >= thresholds.suspicionMs
             ? "suspicious"
             : "ok";
     return {
@@ -775,8 +834,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       silenceStartedAt,
       silenceAgeMs,
       level,
-      suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
-      criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+      suspicionThresholdMs: thresholds.suspicionMs,
+      criticalThresholdMs: thresholds.criticalMs,
       snoozedUntil: quietUntilDecision?.snoozedUntil ?? null,
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
@@ -1353,8 +1412,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
+    const effectiveThresholds = resolveEffectiveSilenceThresholds(runningAgent.runtimeConfig);
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
+    if (!existing && (silenceAgeMs ?? 0) < effectiveThresholds.suspicionMs) {
+      logger.info(
+        { runId: input.run.id, agentId: input.run.agentId, silenceAgeMs, suspicionThresholdMs: effectiveThresholds.suspicionMs },
+        "Skipping stale-run evaluation: silence age below agent-specific suspicion threshold",
+      );
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_below_agent_threshold_skipped",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          skipReason: "below_agent_suspicion_threshold",
+          silenceAgeMs,
+          agentSuspicionThresholdMs: effectiveThresholds.suspicionMs,
+        },
+      });
+      return { kind: "skipped" as const };
+    }
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,
