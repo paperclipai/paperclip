@@ -445,7 +445,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+    const notes: string[] = ["Prompt is passed to Gemini via stdin; --prompt flag is empty to trigger non-interactive mode without exceeding Windows cmd-line limits."];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -514,7 +514,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
+    // Pass empty --prompt to trigger non-interactive mode; actual prompt is piped via stdin
+    // to avoid the Windows 8191-char command-line limit when heartbeat context is large.
+    args.push("--prompt", "");
     return args;
   };
 
@@ -526,9 +528,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: [...args, `<stdin: prompt ${prompt.length} chars>`],
         env: loggedEnv,
         prompt,
         promptMetrics,
@@ -539,6 +539,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
+      stdin: prompt,
       timeoutSec,
       graceSec,
       onSpawn,
