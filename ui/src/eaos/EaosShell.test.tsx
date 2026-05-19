@@ -87,10 +87,11 @@ describe("EaosShell", () => {
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
     ).map((node) => node.textContent?.trim());
     expect(links).toEqual([
-      // Primary operator tier — LET-459 §"IA principle"
+      // Primary operator tier — LET-459 §"IA principle" + LET-501 §1
       "Command Center",
       "Missions",
       "Agents / Teams",
+      "Blueprints",
       "Approvals / Risk",
       "Knowledge / Playbooks",
       // Demoted Build/Admin tier
@@ -121,6 +122,7 @@ describe("EaosShell", () => {
       "Command Center",
       "Missions",
       "Agents / Teams",
+      "Blueprints",
       "Approvals / Risk",
       "Knowledge / Playbooks",
     ]);

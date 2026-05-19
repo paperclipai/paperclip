@@ -17,6 +17,7 @@ const EXPECTED_PRIMARY_TIER = [
   "Command Center",
   "Missions",
   "Agents / Teams",
+  "Blueprints",
   "Approvals / Risk",
   "Knowledge / Playbooks",
 ];

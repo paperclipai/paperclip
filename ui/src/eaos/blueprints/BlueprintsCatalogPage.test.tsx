@@ -1,0 +1,291 @@
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  if (process.env.NODE_ENV === "production") {
+    process.env.NODE_ENV = "test";
+  }
+});
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type {
+  BlueprintCatalogEntry,
+  BlueprintCatalogListResponse,
+} from "@/api/blueprints";
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: { id: "company-1", name: "Letsmake", issuePrefix: "LET", status: "active" },
+    selectedCompanyId: "company-1",
+  }),
+}));
+
+const listMock = vi.fn<(companyId: string) => Promise<BlueprintCatalogListResponse>>();
+
+vi.mock("@/api/blueprints", () => ({
+  blueprintsApi: {
+    list: (companyId: string) => listMock(companyId),
+    get: vi.fn(),
+  },
+}));
+
+import { BlueprintsCatalogPage } from "./BlueprintsCatalogPage";
+
+function makeEntry(overrides: Partial<BlueprintCatalogEntry> = {}): BlueprintCatalogEntry {
+  return {
+    ref: overrides.ref ?? "code-implementer@1",
+    key: overrides.key ?? "code-implementer",
+    version: overrides.version ?? "1",
+    title: overrides.title ?? "Code Implementer",
+    category: overrides.category ?? "engineering",
+    description: overrides.description ?? "Builds features with tests.",
+    status: overrides.status ?? "published",
+    requiredSkillRefs: overrides.requiredSkillRefs ?? ["test-driven-development"],
+    mcpBundleRefs: overrides.mcpBundleRefs ?? [],
+    requiredSecretInputs: overrides.requiredSecretInputs ?? [],
+    requiredProviderKeys: overrides.requiredProviderKeys ?? [],
+    permissionPolicies:
+      overrides.permissionPolicies ?? [{ key: "repo.write", gate: "lead", reason: "Writes code." }],
+    runtimeDefaults: overrides.runtimeDefaults ?? { adapter: "claude", modelProfile: "strong" },
+    budget: overrides.budget ?? { maxRunsPerDay: 12, maxSpendCentsPerDay: 2500 },
+    validationContract: overrides.validationContract ?? [],
+  };
+}
+
+let container: HTMLDivElement | null = null;
+let queryClient: QueryClient;
+
+beforeEach(() => {
+  listMock.mockReset();
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
+  });
+});
+
+afterEach(() => {
+  if (container) {
+    container.remove();
+    container = null;
+  }
+  queryClient.clear();
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function flushReact() {
+  await act(async () => {
+    await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
+}
+
+async function waitFor(assertion: () => void, attempts = 30) {
+  let lastError: unknown;
+  for (let index = 0; index < attempts; index += 1) {
+    await flushReact();
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function renderCatalog() {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/eaos/blueprints"]}>
+          <Routes>
+            <Route path="/eaos/blueprints" element={<BlueprintsCatalogPage />} />
+            <Route
+              path="/eaos/blueprints/:blueprintRef"
+              element={<div data-testid="blueprint-detail-stub" />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  });
+  return root;
+}
+
+describe("BlueprintsCatalogPage (LET-501 C)", () => {
+  it("renders the loading state until the backend read settles", async () => {
+    let resolve: (value: BlueprintCatalogListResponse) => void = () => {};
+    listMock.mockReturnValueOnce(
+      new Promise<BlueprintCatalogListResponse>((res) => {
+        resolve = res;
+      }),
+    );
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-loading"]')).not.toBeNull();
+    });
+    await act(async () => {
+      resolve({ enabled: true, versions: [] });
+    });
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-empty"]')).not.toBeNull();
+    });
+  });
+
+  it("labels data BACKEND-BACKED only after a successful read", async () => {
+    listMock.mockResolvedValue({ enabled: true, versions: [makeEntry()] });
+    await renderCatalog();
+    await waitFor(() => {
+      const posture = container?.querySelector('[data-testid="eaos-blueprints-posture"]');
+      const text = posture?.textContent ?? "";
+      expect(text).toContain("Shell · BACKEND-BACKED");
+      expect(text).toContain("Data · BACKEND-BACKED");
+    });
+  });
+
+  it("renders a feature-disabled callout when the catalog is off (not an empty state)", async () => {
+    listMock.mockResolvedValue({ enabled: false, versions: [] });
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-disabled"]')).not.toBeNull();
+    });
+    expect(container?.querySelector('[data-testid="eaos-blueprints-empty"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="eaos-blueprints-cards"]')).toBeNull();
+  });
+
+  it("renders the error state when the request fails (no card grid, no fake counts)", async () => {
+    listMock.mockRejectedValue(new Error("backend offline"));
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-error"]')).not.toBeNull();
+    });
+    expect(container?.querySelector('[data-testid="eaos-blueprints-cards"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="eaos-blueprints-count-truth"]')).toBeNull();
+  });
+
+  it("renders cards with backend-derived counts and a truthful loaded-result label", async () => {
+    listMock.mockResolvedValue({
+      enabled: true,
+      versions: [
+        makeEntry({ ref: "code-implementer@1", key: "code-implementer", category: "engineering" }),
+        makeEntry({
+          ref: "ceo-pm@1",
+          key: "ceo-pm",
+          title: "CEO/PM",
+          category: "leadership",
+          permissionPolicies: [],
+        }),
+        makeEntry({
+          ref: "outreach-drafter@1",
+          key: "outreach-drafter",
+          title: "Outreach Drafter",
+          category: "growth",
+          permissionPolicies: [
+            { key: "outreach.live_send", gate: "board", reason: "Live outreach." },
+          ],
+        }),
+      ],
+    });
+    await renderCatalog();
+    await waitFor(() => {
+      const cards = container?.querySelectorAll('[data-testid="eaos-blueprints-card"]');
+      expect(cards?.length).toBe(3);
+    });
+    const truth = container?.querySelector('[data-testid="eaos-blueprints-count-truth"]');
+    expect(truth?.textContent).toMatch(/Showing\s*3\s*of\s*3\s*loaded blueprint versions/);
+    expect(truth?.textContent).toContain(
+      "no popularity, activity, or success metrics",
+    );
+    // The outreach card flags live-external-action risk.
+    const outreachCard = container?.querySelector(
+      '[data-blueprint-key="outreach-drafter"]',
+    );
+    expect(outreachCard?.textContent).toContain("Risk · APPROVAL REQUIRED");
+  });
+
+  it("never renders raw secret-shaped strings in card content", async () => {
+    listMock.mockResolvedValue({
+      enabled: true,
+      versions: [
+        makeEntry({
+          title: "Code Implementer ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
+          description: "Leaks an Authorization=ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH header",
+        }),
+      ],
+    });
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-card"]')).not.toBeNull();
+    });
+    const text = container?.textContent ?? "";
+    expect(text).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH");
+  });
+
+  it("filters by search and category without inventing rows", async () => {
+    listMock.mockResolvedValue({
+      enabled: true,
+      versions: [
+        makeEntry({ ref: "code-implementer@1", category: "engineering", title: "Code Implementer" }),
+        makeEntry({
+          ref: "research-analyst@1",
+          category: "research",
+          title: "Research Analyst",
+        }),
+      ],
+    });
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelectorAll('[data-testid="eaos-blueprints-card"]').length).toBe(2);
+    });
+
+    // Apply category filter → only one card visible.
+    const engineeringBtn = container?.querySelector(
+      '[data-testid="eaos-blueprints-category-engineering"]',
+    ) as HTMLButtonElement | null;
+    expect(engineeringBtn).not.toBeNull();
+    await act(async () => {
+      engineeringBtn!.click();
+    });
+    await waitFor(() => {
+      const cards = container?.querySelectorAll('[data-testid="eaos-blueprints-card"]');
+      expect(cards?.length).toBe(1);
+      expect(cards?.[0]?.getAttribute("data-blueprint-category")).toBe("engineering");
+    });
+    const truth = container?.querySelector('[data-testid="eaos-blueprints-count-truth"]');
+    expect(truth?.textContent).toMatch(/Showing\s*1\s*of\s*2/);
+  });
+
+  it("renders no mutating buttons on the operator catalog path", async () => {
+    listMock.mockResolvedValue({
+      enabled: true,
+      versions: [makeEntry()],
+    });
+    await renderCatalog();
+    await waitFor(() => {
+      expect(container?.querySelector('[data-testid="eaos-blueprints-card"]')).not.toBeNull();
+    });
+    // The only buttons should be category filter toggles, never authoring /
+    // publish / deprecate / instantiate / restart.
+    const buttons = Array.from(container?.querySelectorAll("button") ?? []);
+    for (const button of buttons) {
+      const testId = button.getAttribute("data-testid") ?? "";
+      expect(testId.startsWith("eaos-blueprints-category-")).toBe(true);
+    }
+    // Anchors must only link inside /eaos (catalog → detail), never to
+    // instantiate / publish / deprecate / restart endpoints.
+    const anchors = Array.from(container?.querySelectorAll("a") ?? []);
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute("href") ?? "";
+      expect(href).toMatch(/^\/eaos(?:$|\/)/);
+      expect(href).not.toMatch(/instantiate|publish|deprecate|restart|deploy/i);
+    }
+  });
+});

@@ -62,6 +62,8 @@ import { ProjectsRoadmapPage } from "./eaos/projects/ProjectsRoadmapPage";
 import { KnowledgePage } from "./eaos/knowledge/KnowledgePage";
 import { CapabilitiesPage } from "./eaos/capabilities/CapabilitiesPage";
 import { AdminPage } from "./eaos/admin/AdminPage";
+import { BlueprintsCatalogPage } from "./eaos/blueprints/BlueprintsCatalogPage";
+import { BlueprintDetailPage } from "./eaos/blueprints/BlueprintDetailPage";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -445,6 +447,22 @@ export function App() {
                 temporary gaps.
               */}
               <Route path="admin" element={<AdminPage />} />
+              {/*
+                LET-501 follow-on C — Blueprint catalog and detail
+                workbench. Read-only inside the canonical /eaos shell;
+                instantiate / authoring / publish / deprecate remain in
+                the LET-501 D-lane wizard and the admin pages. Routes
+                cover the catalog landing, the detail tab states, and
+                the canonical `/versions/:version` + `/instances`
+                sub-paths from LET-497 §5.
+              */}
+              <Route path="blueprints" element={<BlueprintsCatalogPage />} />
+              <Route path="blueprints/:blueprintRef" element={<BlueprintDetailPage />} />
+              <Route
+                path="blueprints/:blueprintRef/versions/:version"
+                element={<BlueprintDetailPage />}
+              />
+              <Route path="blueprints/:blueprintRef/instances" element={<BlueprintDetailPage />} />
               {EAOS_PRIMARY_NAV.filter(
                 (zone) =>
                   zone.path !== "/eaos"
@@ -456,7 +474,8 @@ export function App() {
                   && zone.path !== "/eaos/projects"
                   && zone.path !== "/eaos/knowledge"
                   && zone.path !== "/eaos/capabilities"
-                  && zone.path !== "/eaos/admin",
+                  && zone.path !== "/eaos/admin"
+                  && zone.path !== "/eaos/blueprints",
               ).map((zone) => (
                 <Route
                   key={zone.id}

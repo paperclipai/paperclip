@@ -45,6 +45,14 @@ const PRIMARY_ZONES: readonly EaosNavZone[] = [
     tier: "primary",
   },
   {
+    id: "blueprints",
+    label: "Blueprints",
+    path: "/eaos/blueprints",
+    description: "Blueprint catalog, detail workbench, versions, instances.",
+    stubCount: 0,
+    tier: "primary",
+  },
+  {
     id: "approvals-risk",
     label: "Approvals / Risk",
     path: "/eaos/approvals",
