@@ -8720,6 +8720,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     };
 
+    // BEY-1737: Central Self-Wake-Filter. Catches all wake paths that pass a
+    // wakeCommentId. The existing route-level filters (routes/issues.ts:3626,
+    // :4638) only cover authenticated direct comment posts; this layer covers
+    // automation, recovery, and follow-up wakes. User-authored comments are
+    // not filtered here so human replies always wake the agent.
+    if (wakeCommentId) {
+      const [commentRow] = await db
+        .select({ authorAgentId: issueComments.authorAgentId })
+        .from(issueComments)
+        .where(
+          and(eq(issueComments.companyId, agent.companyId), eq(issueComments.id, wakeCommentId)),
+        )
+        .limit(1);
+      const commentAuthorAgentId = commentRow?.authorAgentId ?? null;
+      if (commentAuthorAgentId && commentAuthorAgentId === agentId) {
+        await writeSkippedRequest("self_comment_wake_skipped");
+        return null;
+      }
+    }
+
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
