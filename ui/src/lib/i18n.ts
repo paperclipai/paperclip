@@ -952,6 +952,7 @@ export const dashboardLive = {
 export const activeAgentsPanel = {
   defaultTitle: "智能体",
   defaultEmpty: "暂无最近的智能体运行。",
+  viewAll: "查看全部",
 } as const;
 
 export const companiesPage = {

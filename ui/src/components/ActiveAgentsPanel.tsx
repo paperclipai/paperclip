@@ -91,9 +91,19 @@ export function ActiveAgentsPanel({
 
   return (
     <div>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h3>
+      <div className="mb-3 flex items-center gap-2.5">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {title}
+        </h3>
+        {showMoreLink ? (
+          <Link
+            to="/dashboard/live"
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+          >
+            {activeAgentsPanel.viewAll}
+          </Link>
+        ) : null}
+      </div>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>

@@ -152,6 +152,11 @@ describe("ActiveAgentsPanel", () => {
       limit: undefined,
     });
 
+    const viewAllLink = [...container.querySelectorAll("a")].find((anchor) =>
+      anchor.textContent === "查看全部",
+    );
+    expect(viewAllLink?.getAttribute("href")).toBe("/dashboard/live");
+
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
       anchor.textContent?.includes("还有"),
     );
@@ -189,6 +194,7 @@ describe("ActiveAgentsPanel", () => {
       limit: 50,
     });
     expect(container.textContent).not.toContain("还有");
+    expect(container.textContent).not.toContain("查看全部");
 
     await act(async () => {
       root.unmount();
