@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -12,15 +13,74 @@ function statusLabel(status: string): string {
 
 interface StatusIconProps {
   status: string;
+  blockerAttention?: IssueBlockerAttention | null;
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
+  if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
+
+  if (blockerAttention.reason === "active_child") {
+    const count = blockerAttention.coveredBlockerCount;
+    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
+      return `Blocked · waiting on active sub-issue ${blockerAttention.sampleBlockerIdentifier}`;
+    }
+    if (count === 1) return "Blocked · waiting on 1 active sub-issue";
+    return `Blocked · waiting on ${count} active sub-issues`;
+  }
+
+  if (blockerAttention.reason === "active_dependency") {
+    const count = blockerAttention.coveredBlockerCount;
+    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
+      return `Blocked · covered by active dependency ${blockerAttention.sampleBlockerIdentifier}`;
+    }
+    if (count === 1) return "Blocked · covered by 1 active dependency";
+    return `Blocked · covered by ${count} active dependencies`;
+  }
+
+  if (blockerAttention.reason === "stalled_review") {
+    const count = blockerAttention.stalledBlockerCount;
+    const leaf = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
+    if (count === 1 && leaf) return `Blocked · review stalled on ${leaf}`;
+    if (count === 1) return "Blocked · review stalled with no clear next step";
+    return `Blocked · ${count} reviews stalled with no clear next step`;
+  }
+
+  if (blockerAttention.reason === "attention_required") {
+    const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
+    const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} attention`;
+    const coveredCount = blockerAttention.coveredBlockerCount;
+    if (coveredCount > 0) {
+      return `Blocked · ${attentionCopy}; ${coveredCount} covered by active work`;
+    }
+    return `Blocked · ${attentionCopy}`;
+  }
+
+  return "Blocked";
+}
+
+export function StatusIcon({ status, blockerAttention, onChange, className, showLabel }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
+  const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
+  const isStalledBlocked = status === "blocked" && blockerAttention?.state === "stalled";
+  const isAttentionBlocked = status === "blocked" && blockerAttention?.state === "needs_attention";
+  const hasCoveredBlockedWork = isAttentionBlocked && (blockerAttention?.coveredBlockerCount ?? 0) > 0;
+  const colorClass = isCoveredBlocked
+    ? "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400"
+    : isStalledBlocked
+      ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
+      : issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
+  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
+  const blockerAttentionState = isCoveredBlocked
+    ? "covered"
+    : isStalledBlocked
+      ? "stalled"
+      : isAttentionBlocked
+        ? "needs_attention"
+        : undefined;
 
   const circle = (
     <span
@@ -30,9 +90,21 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
         onChange && !showLabel && "cursor-pointer",
         className
       )}
+      data-blocker-attention-state={blockerAttentionState}
+      aria-label={ariaLabel}
+      title={ariaLabel}
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
+      )}
+      {isCoveredBlocked && (
+        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />
+      )}
+      {hasCoveredBlockedWork && (
+        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-cyan-600 dark:bg-cyan-400" />
+      )}
+      {isStalledBlocked && (
+        <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />
       )}
     </span>
   );

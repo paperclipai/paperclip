@@ -32,7 +32,7 @@ export interface RunLogStore {
   append(
     handle: RunLogHandle,
     event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
-  ): Promise<void>;
+  ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
 }
@@ -107,14 +107,16 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     },
 
     async append(handle, event) {
-      if (handle.store !== "local_file") return;
+      if (handle.store !== "local_file") return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
       });
-      await fs.appendFile(absPath, `${line}\n`, "utf8");
+      const persisted = `${line}\n`;
+      await fs.appendFile(absPath, persisted, "utf8");
+      return Buffer.byteLength(persisted, "utf8");
     },
 
     async finalize(handle) {
@@ -153,4 +155,3 @@ export function getRunLogStore() {
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }
-

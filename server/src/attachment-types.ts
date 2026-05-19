@@ -1,10 +1,10 @@
 /**
  * Shared attachment content-type configuration.
  *
- * By default only image types are allowed.  Set the
+ * By default a curated set of image/document/text types are allowed. Set the
  * `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES` environment variable to a
  * comma-separated list of MIME types or wildcard patterns to expand the
- * allowed set.
+ * allowed set for routes that use this allowlist.
  *
  * Examples:
  *   PAPERCLIP_ALLOWED_ATTACHMENT_TYPES=image/*,application/pdf
@@ -14,6 +14,10 @@
  *   - Exact types:   "application/pdf"
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
+import {
+  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+} from "@paperclipai/shared";
 
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
@@ -27,6 +31,17 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "application/json",
   "text/csv",
   "text/html",
+];
+
+export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
+export const SVG_CONTENT_TYPE = "image/svg+xml";
+export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
+  "image/*",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "text/csv",
 ];
 
 /**
@@ -59,6 +74,15 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
   });
 }
 
+export function normalizeContentType(contentType: string | null | undefined): string {
+  const normalized = (contentType ?? "").trim().toLowerCase();
+  return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+}
+
+export function isInlineAttachmentContentType(contentType: string): boolean {
+  return matchesContentType(contentType, [...INLINE_ATTACHMENT_TYPES]);
+}
+
 // ---------- Module-level singletons read once at startup ----------
 
 const allowedPatterns: string[] = parseAllowedTypes(
@@ -72,3 +96,10 @@ export function isAllowedContentType(contentType: string): boolean {
 
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+
+export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+  }
+  return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+}

@@ -31,6 +31,43 @@ export type ExecutionWorkspaceStatus =
   | "archived"
   | "cleanup_failed";
 
+export type ExecutionWorkspaceCloseReadinessState =
+  | "ready"
+  | "ready_with_warnings"
+  | "blocked";
+
+export type ExecutionWorkspaceCloseActionKind =
+  | "archive_record"
+  | "stop_runtime_services"
+  | "cleanup_command"
+  | "teardown_command"
+  | "git_worktree_remove"
+  | "git_branch_delete"
+  | "remove_local_directory";
+
+export type WorkspaceRuntimeDesiredState = "running" | "stopped" | "manual";
+export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
+export type WorkspaceCommandKind = "service" | "job";
+
+export interface WorkspaceCommandSource {
+  type: "paperclip";
+  key: "commands" | "services" | "jobs";
+  index: number;
+}
+
+export interface WorkspaceCommandDefinition {
+  id: string;
+  name: string;
+  kind: WorkspaceCommandKind;
+  command: string | null;
+  cwd: string | null;
+  lifecycle: "shared" | "ephemeral" | null;
+  serviceIndex: number | null;
+  disabledReason: string | null;
+  rawConfig: Record<string, unknown>;
+  source: WorkspaceCommandSource;
+}
+
 export interface ExecutionWorkspaceStrategy {
   type: ExecutionWorkspaceStrategyType;
   baseRef?: string | null;
@@ -40,11 +77,78 @@ export interface ExecutionWorkspaceStrategy {
   teardownCommand?: string | null;
 }
 
+export interface ExecutionWorkspaceConfig {
+  environmentId?: string | null;
+  provisionCommand: string | null;
+  teardownCommand: string | null;
+  cleanupCommand: string | null;
+  workspaceRuntime: Record<string, unknown> | null;
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface ProjectWorkspaceRuntimeConfig {
+  workspaceRuntime: Record<string, unknown> | null;
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface WorkspaceRuntimeControlTarget {
+  workspaceCommandId?: string | null;
+  runtimeServiceId?: string | null;
+  serviceIndex?: number | null;
+}
+
+export interface ExecutionWorkspaceCloseAction {
+  kind: ExecutionWorkspaceCloseActionKind;
+  label: string;
+  description: string;
+  command: string | null;
+}
+
+export interface ExecutionWorkspaceCloseLinkedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  isTerminal: boolean;
+}
+
+export interface ExecutionWorkspaceCloseGitReadiness {
+  repoRoot: string | null;
+  workspacePath: string | null;
+  branchName: string | null;
+  baseRef: string | null;
+  hasDirtyTrackedFiles: boolean;
+  hasUntrackedFiles: boolean;
+  dirtyEntryCount: number;
+  untrackedEntryCount: number;
+  aheadCount: number | null;
+  behindCount: number | null;
+  isMergedIntoBase: boolean | null;
+  createdByRuntime: boolean;
+}
+
+export interface ExecutionWorkspaceCloseReadiness {
+  workspaceId: string;
+  state: ExecutionWorkspaceCloseReadinessState;
+  blockingReasons: string[];
+  warnings: string[];
+  linkedIssues: ExecutionWorkspaceCloseLinkedIssue[];
+  plannedActions: ExecutionWorkspaceCloseAction[];
+  isDestructiveCloseAllowed: boolean;
+  isSharedWorkspace: boolean;
+  isProjectPrimaryWorkspace: boolean;
+  git: ExecutionWorkspaceCloseGitReadiness | null;
+  runtimeServices: WorkspaceRuntimeService[];
+}
+
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
+  environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
   branchPolicy?: Record<string, unknown> | null;
@@ -55,8 +159,16 @@ export interface ProjectExecutionWorkspacePolicy {
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
+}
+
+export interface ExecutionWorkspaceSummary {
+  id: string;
+  name: string;
+  mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
+  projectWorkspaceId: string | null;
 }
 
 export interface ExecutionWorkspace {
@@ -81,7 +193,9 @@ export interface ExecutionWorkspace {
   closedAt: Date | null;
   cleanupEligibleAt: Date | null;
   cleanupReason: string | null;
+  config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
+  runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -112,6 +226,89 @@ export interface WorkspaceRuntimeService {
   stoppedAt: Date | null;
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
+  configIndex?: number | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type WorkspaceRealizationTransport = "local" | "ssh" | "sandbox" | "plugin";
+
+export type WorkspaceRealizationSyncStrategy =
+  | "none"
+  | "ssh_git_import_export"
+  | "sandbox_archive_upload_download"
+  | "provider_defined";
+
+export interface WorkspaceRealizationRequest {
+  version: 1;
+  adapterType: string;
+  companyId: string;
+  environmentId: string;
+  executionWorkspaceId: string | null;
+  issueId: string | null;
+  heartbeatRunId: string;
+  requestedMode: string | null;
+  source: {
+    kind: "project_primary" | "task_session" | "agent_home";
+    localPath: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    strategy: "project_primary" | "git_worktree";
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  runtimeOverlay: {
+    provisionCommand: string | null;
+    teardownCommand: string | null;
+    cleanupCommand: string | null;
+    workspaceRuntime: Record<string, unknown> | null;
+  };
+}
+
+export interface WorkspaceRealizationRecord {
+  version: 1;
+  transport: WorkspaceRealizationTransport;
+  provider: string | null;
+  environmentId: string;
+  leaseId: string;
+  providerLeaseId: string | null;
+  local: {
+    path: string;
+    source: WorkspaceRealizationRequest["source"]["kind"];
+    strategy: WorkspaceRealizationRequest["source"]["strategy"];
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  remote: {
+    path: string | null;
+    host?: string | null;
+    port?: number | null;
+    username?: string | null;
+    sandboxId?: string | null;
+  };
+  sync: {
+    strategy: WorkspaceRealizationSyncStrategy;
+    prepare: string;
+    syncBack: string | null;
+  };
+  bootstrap: {
+    command: string | null;
+  };
+  rebuild: {
+    executionWorkspaceId: string | null;
+    mode: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+    localPath: string;
+    remotePath: string | null;
+    providerLeaseId: string | null;
+    metadata: Record<string, unknown>;
+  };
+  summary: string;
 }

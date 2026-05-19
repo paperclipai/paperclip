@@ -186,17 +186,21 @@ The heartbeat is a protocol, not a runtime. Paperclip defines how to initiate an
 
 ### Execution Adapters
 
-Agent configuration includes an **adapter** that defines how Paperclip invokes the agent. Initial adapters:
+Agent configuration includes an **adapter** that defines how Paperclip invokes the agent. Built-in adapters include:
 
-| Adapter              | Mechanism               | Example                                       |
-| -------------------- | ----------------------- | --------------------------------------------- |
-| `process`            | Execute a child process | `python run_agent.py --agent-id {id}`         |
-| `http`               | Send an HTTP request    | `POST https://openclaw.example.com/hook/{id}` |
-| `openclaw_gateway`   | OpenClaw gateway API    | Managed OpenClaw agent via gateway             |
-| `gemini_local`       | Gemini CLI process      | Local Gemini CLI with sandbox and approval     |
-| `hermes_local`       | Hermes agent process    | Local Hermes agent                             |
+| Adapter | Mechanism | Example |
+| ---------------- | -------------------------- | -------------------------------------------------- |
+| `process` | Execute a child process | `python run_agent.py --agent-id {id}` |
+| `http` | Send an HTTP request | `POST https://openclaw.example.com/hook/{id}` |
+| `claude_local` | Local Claude Code process | Claude Code heartbeat worker |
+| `codex_local` | Local Codex process | Codex CLI heartbeat worker |
+| `opencode_local` | Local OpenCode process | OpenCode heartbeat worker |
+| `pi_local` | Local Pi process | Pi CLI heartbeat worker |
+| `cursor` | Cursor API/CLI bridge | Cursor-integrated heartbeat worker |
+| `openclaw_gateway` | OpenClaw gateway API | Managed OpenClaw agent via gateway |
+| `hermes_local` | Local Hermes process | Hermes agent heartbeat worker |
 
-The `process` and `http` adapters ship as defaults. Additional adapters have been added for specific agent runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
+The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 
 ### Adapter Interface
 
@@ -376,7 +380,7 @@ Flow:
 | Layer    | Technology                                                   |
 | -------- | ------------------------------------------------------------ |
 | Frontend | React + Vite                                                 |
-| Backend  | TypeScript + Hono (REST API, not tRPC — need non-TS clients) |
+| Backend  | TypeScript + Express (REST API, not tRPC — need non-TS clients) |
 | Database | PostgreSQL (see [doc/DATABASE.md](./doc/DATABASE.md) for details — PGlite embedded for dev, Docker or hosted Supabase for production) |
 | Auth     | [Better Auth](https://www.better-auth.com/)                  |
 
@@ -406,7 +410,7 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 ### Work Artifacts
 
-Paperclip does **not** manage work artifacts (code repos, file systems, deployments, documents). That's entirely the agent's domain. Paperclip tracks tasks and costs. Where and how work gets done is outside scope.
+Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
 
 ### Open Questions
 
@@ -476,15 +480,14 @@ Each is a distinct page/route:
 - [ ] **Default agent** — basic Claude Code/Codex loop with Paperclip skill
 - [ ] **Default CEO** — strategic planning, delegation, board communication
 - [ ] **Paperclip skill (SKILL.md)** — teaches agents to interact with the API
-- [ ] **REST API** — full API for agent interaction (Hono)
+- [ ] **REST API** — full API for agent interaction (Express)
 - [ ] **Web UI** — React/Vite: org chart, task board, dashboard, cost views
 - [ ] **Agent auth** — connection string generation with URL + key + instructions
 - [ ] **One-command dev setup** — embedded PGlite, everything local
-- [ ] **Multiple Adapter types** (HTTP Adapter, OpenClaw Adapter)
+- [ ] **Multiple Adapter types** (HTTP, OpenClaw gateway, and local coding adapters)
 
 ### Not V1
 
-- Template export/import
 - Knowledge base - a future plugin
 - Advanced governance models (hiring budgets, multi-member boards)
 - Revenue/expense tracking beyond token costs - a future plugin
@@ -509,7 +512,7 @@ Things Paperclip explicitly does **not** do:
 - **Not a SaaS** — single-tenant, self-hosted
 - **Not opinionated about Agent implementation** — any language, any framework, any runtime
 - **Not automatically self-healing** — surfaces problems, doesn't silently fix them
-- **Does not manage work artifacts** — no repo management, no deployment, no file systems
+- **Does not manage delivery infrastructure** — no repo management, no deployment, no file systems (but does manage task-linked documents and attachments)
 - **Does not auto-reassign work** — stale tasks are surfaced, not silently redistributed
 - **Does not track external revenue/expenses** — that's a future plugin. Token/LLM cost budgeting is core.
 

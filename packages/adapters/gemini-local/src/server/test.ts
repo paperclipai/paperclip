@@ -6,16 +6,22 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
+  asNumber,
   asString,
   asStringArray,
-  ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePathInEnv,
   parseObject,
-  runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
-import { detectGeminiAuthRequired, parseGeminiJsonl } from "./parse.js";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
+  ensureAdapterExecutionTargetDirectory,
+  runAdapterExecutionTargetProcess,
+  describeAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
+import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -47,10 +53,28 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "gemini");
-  const cwd = asString(config.cwd, process.cwd());
+  const target = ctx.executionTarget ?? null;
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const targetLabel = targetIsRemote
+    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
+    : null;
+  const runId = `gemini-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (targetLabel) {
+    checks.push({
+      code: "gemini_environment_target",
+      level: "info",
+      message: `Probing inside environment: ${targetLabel}`,
+    });
+  }
 
   try {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "gemini_cwd_valid",
       level: "info",
@@ -70,9 +94,21 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
+    env.GEMINI_CLI_TRUST_WORKSPACE = "true";
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const installCheck = await maybeRunSandboxInstallCommand({
+    runId,
+    target,
+    adapterKey: "gemini",
+    installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+    env,
+  });
+  if (installCheck) checks.push(installCheck);
   try {
-    await ensureCommandResolvable(command, cwd, runtimeEnv);
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
       code: "gemini_command_resolvable",
       level: "info",
@@ -88,10 +124,10 @@ export async function testEnvironment(
   }
 
   const configGeminiApiKey = env.GEMINI_API_KEY;
-  const hostGeminiApiKey = process.env.GEMINI_API_KEY;
+  const hostGeminiApiKey = targetIsRemote ? undefined : process.env.GEMINI_API_KEY;
   const configGoogleApiKey = env.GOOGLE_API_KEY;
-  const hostGoogleApiKey = process.env.GOOGLE_API_KEY;
-  const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || process.env.GOOGLE_GENAI_USE_GCA === "true";
+  const hostGoogleApiKey = targetIsRemote ? undefined : process.env.GOOGLE_API_KEY;
+  const hasGca = env.GOOGLE_GENAI_USE_GCA === "true" || (!targetIsRemote && process.env.GOOGLE_GENAI_USE_GCA === "true");
   if (
     isNonEmpty(configGeminiApiKey) ||
     isNonEmpty(hostGeminiApiKey) ||
@@ -134,13 +170,14 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json"];
+      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
       if (sandbox) {
@@ -149,16 +186,16 @@ export async function testEnvironment(
         args.push("--sandbox=none");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("Respond with hello.");
 
-      const probe = await runChildProcess(
-        `gemini-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      const probe = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
         command,
         args,
         {
           cwd,
           env,
-          timeoutSec: 45,
+          timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },
         },
@@ -170,8 +207,23 @@ export async function testEnvironment(
         stdout: probe.stdout,
         stderr: probe.stderr,
       });
+      const quotaMeta = detectGeminiQuotaExhausted({
+        parsed: parsed.resultEvent,
+        stdout: probe.stdout,
+        stderr: probe.stderr,
+      });
 
-      if (probe.timedOut) {
+      if (quotaMeta.exhausted) {
+        checks.push({
+          code: "gemini_hello_probe_quota_exhausted",
+          level: "warn",
+          message: probe.timedOut
+            ? "Gemini CLI is retrying after quota exhaustion."
+            : "Gemini CLI authentication is configured, but the current account or API key is over quota.",
+          ...(detail ? { detail } : {}),
+          hint: "The configured Gemini account or API key is over quota. Check ai.google.dev usage/billing, then retry the probe.",
+        });
+      } else if (probe.timedOut) {
         checks.push({
           code: "gemini_hello_probe_timed_out",
           level: "warn",
