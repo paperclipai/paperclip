@@ -726,6 +726,7 @@ export const PLUGIN_CAPABILITIES = [
   "companies.read",
   "projects.read",
   "project.workspaces.read",
+  "execution.workspaces.read",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -961,6 +962,8 @@ export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
   "goal",
   "run",
   "comment",
+  "execution_workspace",
+  "project_workspace",
 ] as const;
 export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
 

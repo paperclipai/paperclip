@@ -1102,10 +1102,10 @@ export async function listPaperclipIngestionCandidates(ctx: PluginContext, input
   return { projects, rootIssues: issues };
 }
 
-export async function updateEventIngestionSettings(
-  ctx: PluginContext,
+  export async function updateEventIngestionSettings(
+    ctx: PluginContext,
   input: { companyId: string; settings: WikiEventIngestionSettingsUpdate },
-): Promise<WikiEventIngestionSettings> {
+  ): Promise<WikiEventIngestionSettings> {
   await requirePaperclipIngestionPolicy(ctx, {
     companyId: input.companyId,
     wikiId: normalizeWikiId(input.settings.wikiId),
