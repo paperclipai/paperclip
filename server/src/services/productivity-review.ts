@@ -33,6 +33,15 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
+// Runs whose errorCode matches one of these values short-circuited before the agent
+// executed any work — the provider's daily/rate limit was hit. They produce no output
+// by design and must not count against the no-comment streak heuristic.
+export const PROVIDER_RATE_LIMIT_ERROR_CODES = [
+  "claude_transient_upstream",
+  "codex_transient_upstream",
+] as const;
+type ProviderRateLimitErrorCode = (typeof PROVIDER_RATE_LIMIT_ERROR_CODES)[number];
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
@@ -423,8 +432,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const terminalRuns = latestRuns.filter((run) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
     );
+    const streakRuns = terminalRuns.filter(
+      (run) => !PROVIDER_RATE_LIMIT_ERROR_CODES.includes(run.errorCode as ProviderRateLimitErrorCode),
+    );
     let noCommentStreak = 0;
-    for (const run of terminalRuns) {
+    for (const run of streakRuns) {
       if (commentRunIds.has(run.id)) break;
       noCommentStreak += 1;
     }
