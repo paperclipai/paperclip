@@ -459,10 +459,15 @@ export function App() {
               <Route path="blueprints" element={<BlueprintsCatalogPage />} />
               <Route path="blueprints/:blueprintRef" element={<BlueprintDetailPage />} />
               <Route
+                path="blueprints/:blueprintRef/capabilities"
+                element={<BlueprintDetailPage />}
+              />
+              <Route
                 path="blueprints/:blueprintRef/versions/:version"
                 element={<BlueprintDetailPage />}
               />
               <Route path="blueprints/:blueprintRef/instances" element={<BlueprintDetailPage />} />
+              <Route path="blueprints/:blueprintRef/audit" element={<BlueprintDetailPage />} />
               {EAOS_PRIMARY_NAV.filter(
                 (zone) =>
                   zone.path !== "/eaos"

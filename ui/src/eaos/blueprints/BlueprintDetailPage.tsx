@@ -144,7 +144,7 @@ export function BlueprintDetailPage() {
             {hasData && detail ? redactSecretLikeText(detail.title) : "Blueprint detail"}
           </h1>
           <p className="text-xs text-muted-foreground" data-testid="eaos-blueprint-detail-ref">
-            {blueprintRef || "(no ref)"}
+            {blueprintRef ? redactSecretLikeText(blueprintRef) : "(no ref)"}
           </p>
         </div>
       </header>
@@ -283,13 +283,13 @@ function SummaryRow({
         className="rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
         data-testid="eaos-blueprint-detail-version"
       >
-        v{detail.version}
+        v{redactSecretLikeText(detail.version)}
       </span>
       <span
         className="rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
         data-testid="eaos-blueprint-detail-runtime"
       >
-        {detail.runtimeDefaults.adapter} · {detail.runtimeDefaults.modelProfile}
+        {redactSecretLikeText(detail.runtimeDefaults.adapter)} · {redactSecretLikeText(detail.runtimeDefaults.modelProfile)}
       </span>
       {posture.hasLiveExternalActionRisk ? (
         <EaosStateChip
@@ -337,14 +337,18 @@ function Tabs({ detail, active }: { detail: BlueprintCatalogDetail; active: Blue
 
 function tabHref(blueprintRef: string, tab: BlueprintDetailTab): string {
   const base = `/eaos/blueprints/${encodeURIComponent(blueprintRef)}`;
-  if (tab === "overview" || tab === "capabilities" || tab === "audit") {
-    // Overview, Capabilities, and Audit are rendered as tab states inside
-    // the detail route; only Versions and Instances have dedicated
-    // canonical paths per LET-501 §1.
-    return base;
+  switch (tab) {
+    case "overview":
+      return base;
+    case "capabilities":
+      return `${base}/capabilities`;
+    case "versions":
+      return `${base}/versions/latest`;
+    case "instances":
+      return `${base}/instances`;
+    case "audit":
+      return `${base}/audit`;
   }
-  if (tab === "versions") return `${base}/versions/latest`;
-  return `${base}/instances`;
 }
 
 function OverviewTab({
@@ -366,22 +370,22 @@ function OverviewTab({
       </Section>
       <Section title="Identity">
         <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-          <Field label="Ref">{detail.ref}</Field>
-          <Field label="Key">{detail.key}</Field>
+          <Field label="Ref">{redactSecretLikeText(detail.ref)}</Field>
+          <Field label="Key">{redactSecretLikeText(detail.key)}</Field>
           <Field label="Category">{BLUEPRINT_CATEGORY_LABEL[detail.category]}</Field>
           <Field label="Status">{detail.status}</Field>
           <Field label="Source kind">{detail.source.kind}</Field>
           {detail.source.kind === "ready_agent_pool" ? (
-            <Field label="Source key">{detail.source.key}</Field>
+            <Field label="Source key">{redactSecretLikeText(detail.source.key)}</Field>
           ) : (
-            <Field label="Source ref">{detail.source.ref}</Field>
+            <Field label="Source ref">{redactSecretLikeText(detail.source.ref)}</Field>
           )}
         </dl>
       </Section>
       <Section title="Runtime defaults">
         <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-          <Field label="Adapter">{detail.runtimeDefaults.adapter}</Field>
-          <Field label="Model profile">{detail.runtimeDefaults.modelProfile}</Field>
+          <Field label="Adapter">{redactSecretLikeText(detail.runtimeDefaults.adapter)}</Field>
+          <Field label="Model profile">{redactSecretLikeText(detail.runtimeDefaults.modelProfile)}</Field>
         </dl>
       </Section>
       <Section title="Budget (defaults)">
@@ -483,7 +487,9 @@ function CapabilitiesTab({ detail }: { detail: BlueprintCatalogDetail }) {
                 data-policy-gate={policy.gate}
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <code className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">{policy.key}</code>
+                  <code className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
+                    {redactSecretLikeText(policy.key)}
+                  </code>
                   <EaosStateChip
                     label="APPROVAL REQUIRED"
                     prefix={`Gate · ${policy.gate}`}
@@ -520,7 +526,9 @@ function CapabilitiesTab({ detail }: { detail: BlueprintCatalogDetail }) {
             {detail.configSchema.fields.map((field) => (
               <li key={field.key} className="rounded-md border border-border bg-background p-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <code className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">{field.key}</code>
+                  <code className="rounded-md bg-muted px-1.5 py-0.5 text-[11px]">
+                    {redactSecretLikeText(field.key)}
+                  </code>
                   <span className="text-[10px] uppercase tracking-wide">{field.type}</span>
                   {field.required ? (
                     <span className="text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
@@ -577,7 +585,7 @@ function VersionsTab({
               prefix={`Status · ${detail.status}`}
             />
             <span className="rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              v{detail.version}
+              v{redactSecretLikeText(detail.version)}
             </span>
             <span className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
               canonical
@@ -596,8 +604,9 @@ function VersionsTab({
         >
           <p className="font-medium">No matching version row.</p>
           <p className="mt-1">
-            URL requested version <code>{requestedVersionParam}</code>, but the catalog only
-            exposes <code>v{detail.version}</code>. This is a backend gap, not a leak —
+            URL requested version <code>{redactSecretLikeText(requestedVersionParam ?? "")}</code>,
+            but the catalog only exposes <code>v{redactSecretLikeText(detail.version)}</code>.
+            This is a backend gap, not a leak —
             the LET-501 D / E lanes will expose multi-version history.
           </p>
         </div>
@@ -681,7 +690,7 @@ function RefList({
           key={item}
           className="rounded-md border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground"
         >
-          <code>{item}</code>
+          <code>{redactSecretLikeText(item)}</code>
         </li>
       ))}
     </ul>
