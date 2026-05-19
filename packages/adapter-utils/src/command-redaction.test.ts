@@ -21,4 +21,16 @@ describe("command redaction", () => {
     expect(result).not.toContain("cli-password");
     expect(result).not.toContain("connection-password");
   });
+
+  it("does not redact benign working directory environment variables", () => {
+    const input = "PWD=/home/runner/work/paperclip OLDPWD=/home/runner/work PATH=/usr/bin POSTGRES_PWD=secret";
+
+    const result = redactCommandText(input);
+
+    expect(result).toContain("PWD=/home/runner/work/paperclip");
+    expect(result).toContain("OLDPWD=/home/runner/work");
+    expect(result).toContain("PATH=/usr/bin");
+    expect(result).toContain(`POSTGRES_PWD=${REDACTED_COMMAND_TEXT_VALUE}`);
+    expect(result).not.toContain("secret");
+  });
 });

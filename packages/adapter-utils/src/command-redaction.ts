@@ -1,7 +1,7 @@
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 const SECRET_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|pwd|credential|jwt|private[-_]?key|cookie|connection[-_]?string|(?:database|db|postgres|postgresql|pg)[-_]?(?:url|uri|dsn|connection[-_]?string|password|passwd|pwd)|openbrain[-_A-Za-z0-9]*(?:url|uri|dsn|secret|token|key|password|passwd|pwd))[A-Za-z0-9_-]*`;
+  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connection[-_]?string|(?:database|db|postgres|postgresql|pg)[-_]?(?:url|uri|dsn|connection[-_]?string|password|passwd|pwd)|openbrain[-_A-Za-z0-9]*(?:url|uri|dsn|secret|token|key|password|passwd|pwd))[A-Za-z0-9_-]*`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
   String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`]+(\2)`,
@@ -33,8 +33,8 @@ const COMMAND_SECRET_HINTS = [
   "database",
   "db_",
   "postgres",
+  "pg",
   "openbrain",
-  "pwd",
   "sk-",
   "ghp_",
   "gho_",
