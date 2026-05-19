@@ -260,7 +260,9 @@ export async function ensureCodexSkillsInjected(
         }
       }
 
-      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
+      const result = await ensurePaperclipSkillSymlink(entry.source, target, {
+        preserveExistingValidMismatchedLinks: true,
+      }, linkSkill);
       if (result === "skipped") continue;
 
       await onLog(
