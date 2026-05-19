@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   plugins,
   pluginConfig,
+  pluginCompanySettings,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -15,6 +16,7 @@ import type {
   UpdatePluginStatus,
   UpsertPluginConfig,
   PatchPluginConfig,
+  PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
   PluginJobRecord,
@@ -385,6 +387,64 @@ export function pluginRegistryService(db: Db) {
         .returning();
 
       return rows[0] ?? null;
+    },
+
+    // ----- Company settings ----------------------------------------------
+
+    /** Retrieve company-scoped plugin settings. */
+    getCompanySettings: (pluginId: string, companyId: string): Promise<PluginCompanySettings | null> =>
+      db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null) as Promise<PluginCompanySettings | null>,
+
+    /** Create or replace company-scoped plugin settings. */
+    upsertCompanySettings: async (
+      pluginId: string,
+      companyId: string,
+      input: { enabled?: boolean; settingsJson: Record<string, unknown>; lastError?: string | null },
+    ): Promise<PluginCompanySettings> => {
+      const plugin = await getById(pluginId);
+      if (!plugin) throw notFound("Plugin not found");
+
+      const existing = await db
+        .select()
+        .from(pluginCompanySettings)
+        .where(and(
+          eq(pluginCompanySettings.pluginId, pluginId),
+          eq(pluginCompanySettings.companyId, companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (existing) {
+        return db
+          .update(pluginCompanySettings)
+          .set({
+            enabled: input.enabled ?? existing.enabled,
+            settingsJson: input.settingsJson,
+            lastError: input.lastError ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(pluginCompanySettings.id, existing.id))
+          .returning()
+          .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
+      }
+
+      return db
+        .insert(pluginCompanySettings)
+        .values({
+          pluginId,
+          companyId,
+          enabled: input.enabled ?? true,
+          settingsJson: input.settingsJson,
+          lastError: input.lastError ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]) as Promise<PluginCompanySettings>;
     },
 
     // ----- Entities -------------------------------------------------------

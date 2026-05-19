@@ -48,6 +48,21 @@
  */
 
 import type { PluginContext } from "./types.js";
+import type {
+  PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentExecuteParams,
+  PluginEnvironmentExecuteResult,
+  PluginEnvironmentLease,
+  PluginEnvironmentProbeParams,
+  PluginEnvironmentProbeResult,
+  PluginEnvironmentRealizeWorkspaceParams,
+  PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentValidateConfigParams,
+  PluginEnvironmentValidationResult,
+} from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Health check result
@@ -105,6 +120,30 @@ export interface PluginWebhookInput {
   parsedBody?: unknown;
   /** Unique request identifier for idempotency checks. */
   requestId: string;
+}
+
+export interface PluginApiRequestInput {
+  routeKey: string;
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  actor: {
+    actorType: "user" | "agent";
+    actorId: string;
+    agentId?: string | null;
+    userId?: string | null;
+    runId?: string | null;
+  };
+  companyId: string;
+  headers: Record<string, string>;
+}
+
+export interface PluginApiResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +236,55 @@ export interface PluginDefinition {
    * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
    */
   onWebhook?(input: PluginWebhookInput): Promise<void>;
+
+  /**
+   * Called for manifest-declared scoped JSON API routes under
+   * `/api/plugins/:pluginId/api/*` after the host has enforced auth, company
+   * access, capabilities, and checkout policy.
+   */
+  onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
+  /**
+   * Called to validate provider-specific configuration for a plugin-hosted
+   * environment driver.
+   */
+  onEnvironmentValidateConfig?(
+    params: PluginEnvironmentValidateConfigParams,
+  ): Promise<PluginEnvironmentValidationResult>;
+
+  /** Called to test reachability or readiness of a plugin-hosted environment. */
+  onEnvironmentProbe?(
+    params: PluginEnvironmentProbeParams,
+  ): Promise<PluginEnvironmentProbeResult>;
+
+  /** Called before a run starts to acquire a provider lease. */
+  onEnvironmentAcquireLease?(
+    params: PluginEnvironmentAcquireLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called to reconnect to a previously acquired provider lease. */
+  onEnvironmentResumeLease?(
+    params: PluginEnvironmentResumeLeaseParams,
+  ): Promise<PluginEnvironmentLease>;
+
+  /** Called when a run finishes and the provider lease can be released. */
+  onEnvironmentReleaseLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<void>;
+
+  /** Called when the host needs to force-destroy provider state. */
+  onEnvironmentDestroyLease?(
+    params: PluginEnvironmentDestroyLeaseParams,
+  ): Promise<void>;
+
+  /** Called to materialize the run workspace inside the provider lease. */
+  onEnvironmentRealizeWorkspace?(
+    params: PluginEnvironmentRealizeWorkspaceParams,
+  ): Promise<PluginEnvironmentRealizeWorkspaceResult>;
+
+  /** Called to execute a command inside the provider lease. */
+  onEnvironmentExecute?(
+    params: PluginEnvironmentExecuteParams,
+  ): Promise<PluginEnvironmentExecuteResult>;
 }
 
 // ---------------------------------------------------------------------------

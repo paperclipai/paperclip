@@ -1,10 +1,18 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
-import { typeLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
+import {
+  approvalSubject,
+  typeIcon,
+  defaultTypeIcon,
+  ApprovalPayloadRenderer,
+  typeLabel,
+} from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
+import { cn } from "@/lib/utils";
 
 function statusIcon(status: string) {
   if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
@@ -21,86 +29,124 @@ export function ApprovalCard({
   onReject,
   onOpen,
   detailLink,
-  isPending,
+  isPending = false,
+  pendingAction = null,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
-  onApprove: () => void;
-  onReject: () => void;
+  onApprove?: () => void;
+  onReject?: () => void;
   onOpen?: () => void;
   detailLink?: string;
-  isPending: boolean;
+  isPending?: boolean;
+  pendingAction?: "approve" | "reject" | null;
 }) {
+  const payload = approval.payload as Record<string, unknown> | null;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = typeLabel[approval.type] ?? approval.type;
+  const kindLabel = typeLabel[approval.type] ?? approval.type;
+  const subject = approvalSubject(payload);
   const showResolutionButtons =
+    Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
+  const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
-    <div className="border border-border rounded-lg p-4 space-y-0">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-sm">{label}</span>
-            {requesterAgent && (
-              <span className="text-xs text-muted-foreground">
-                requested by <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
-              </span>
-            )}
+    <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border/70 bg-background/80">
+              <Icon className="h-4 w-4 text-muted-foreground" />
+            </div>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className="border-border/70 bg-background/70 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground"
+                >
+                  {kindLabel}
+                </Badge>
+                {requesterAgent && (
+                  <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    <span>Requested by</span>
+                    <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
+                  </div>
+                )}
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-semibold leading-6 text-foreground">
+                  {subject ?? kindLabel}
+                </h3>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  Approval request created {timeAgo(approval.createdAt)}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {statusIcon(approval.status)}
-          <span className="text-xs text-muted-foreground capitalize">{approval.status}</span>
-          <span className="text-xs text-muted-foreground">· {timeAgo(approval.createdAt)}</span>
+        <div className="shrink-0">
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
+            {statusIcon(approval.status)}
+            <span className="capitalize">{approval.status.replace(/_/g, " ")}</span>
+          </div>
         </div>
       </div>
 
-      {/* Payload */}
-      <ApprovalPayloadRenderer type={approval.type} payload={approval.payload} />
+      <div className="mt-4 border-t border-border/60 pt-4">
+        <ApprovalPayloadRenderer
+          type={approval.type}
+          payload={approval.payload}
+          hidePrimaryTitle={Boolean(subject)}
+        />
+      </div>
 
-      {/* Decision note */}
       {approval.decisionNote && (
-        <div className="mt-3 text-xs text-muted-foreground italic border-t border-border pt-2">
-          Note: {approval.decisionNote}
+        <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
+          <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
       )}
 
-      {/* Actions */}
-      {showResolutionButtons && (
-        <div className="flex gap-2 mt-4 pt-3 border-t border-border">
-          <Button
-            size="sm"
-            className="bg-green-700 hover:bg-green-600 text-white"
-            onClick={onApprove}
-            disabled={isPending}
-          >
-            Approve
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={onReject}
-            disabled={isPending}
-          >
-            Reject
-          </Button>
+      {hasFooter ? (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {showResolutionButtons && (
+              <>
+                <Button
+                  size="sm"
+                  className="bg-green-700 hover:bg-green-600 text-white"
+                  onClick={onApprove}
+                  disabled={isPending}
+                >
+                  {pendingAction === "approve" ? "Approving..." : "Approve"}
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={onReject}
+                  disabled={isPending}
+                >
+                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                </Button>
+              </>
+            )}
+          </div>
+          {(detailLink || onOpen) ? (
+            detailLink ? (
+              <Link
+                to={detailLink}
+                className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
+              >
+                View details
+              </Link>
+            ) : (
+              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
+                View details
+              </Button>
+            )
+          ) : null}
         </div>
-      )}
-      <div className="mt-3">
-        {detailLink ? (
-          <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
-            <Link to={detailLink}>View details</Link>
-          </Button>
-        ) : (
-          <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
-            View details
-          </Button>
-        )}
-      </div>
+      ) : null}
     </div>
   );
 }
