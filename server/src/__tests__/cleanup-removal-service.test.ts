@@ -126,6 +126,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       action: "heartbeat.completed",
       entityType: "issue",
       entityId: issueId,
+      agentId,
       runId,
       details: {},
     });
