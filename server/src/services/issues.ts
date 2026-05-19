@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -4675,6 +4675,47 @@ export function issueService(db: Db) {
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+      }
+
+      // iOS lane-cap enforcement: only one concurrent iOS issue across all agents
+      const iosLabelNames = ["ios", "iphone", "mobile", "shifts iphone app", "plantonistapro"];
+      const issueLabelRows = await db
+        .select({ name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+        .where(and(eq(issueLabels.companyId, issueCompany.companyId), eq(issueLabels.issueId, id)));
+      const isIosIssue = issueLabelRows.some((l) =>
+        iosLabelNames.includes(l.name.toLowerCase()),
+      );
+      if (isIosIssue) {
+        const activeIosIssues = await db
+          .select({ id: issues.id, identifier: issues.identifier })
+          .from(issues)
+          .innerJoin(issueLabels, eq(issues.id, issueLabels.issueId))
+          .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+          .where(
+            and(
+              eq(issues.companyId, issueCompany.companyId),
+              eq(issues.status, "in_progress"),
+              not(eq(issues.id, id)),
+              or(
+                ...iosLabelNames.map((name) =>
+                  sql`lower(${labels.name}) = ${name}`,
+                ),
+              ),
+            ),
+          );
+        if (activeIosIssues.length > 0) {
+          const blocker = activeIosIssues[0];
+          throw conflict(
+            `iOS lane cap exceeded: another iOS issue is already in progress (${blocker.identifier || blocker.id}). Only 1 concurrent iOS issue is allowed.`,
+            {
+              laneCap: 1,
+              activeIosIssueId: blocker.id,
+              activeIosIssueIdentifier: blocker.identifier,
+            },
+          );
+        }
       }
 
       const sameRunAssigneeCondition = checkoutRunId
