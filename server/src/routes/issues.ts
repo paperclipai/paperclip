@@ -617,10 +617,16 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorRunId?: string | null;
+  actorSource?: Request["actor"]["source"];
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
+  // Local implicit requests are used by adapter/runtime automation in trusted
+  // development mode; require explicit reopen/resume there too.
+  if (input.actorSource === "local_implicit") return false;
   if (input.actorType !== "user") return false;
+  if (typeof input.actorRunId === "string" && input.actorRunId.length > 0) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -3305,6 +3311,8 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorRunId: actor.runId,
+          actorSource: req.actor.source,
         }));
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
@@ -4893,6 +4901,8 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        actorRunId: actor.runId,
+        actorSource: req.actor.source,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested

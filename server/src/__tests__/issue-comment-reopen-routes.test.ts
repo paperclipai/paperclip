@@ -211,6 +211,16 @@ function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
   };
 }
 
+function sessionAdminActor() {
+  return {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "session",
+    isInstanceAdmin: true,
+  };
+}
+
 async function waitForWakeup(assertion: () => void) {
   await vi.waitFor(assertion);
 }
@@ -367,7 +377,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp()))
+    const res = await request(await installActor(createApp(), sessionAdminActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
 
@@ -391,6 +401,34 @@ describe.sequential("issue comment reopen routes", () => {
           status: "todo",
         }),
       }),
+    );
+  });
+
+  it("does not implicitly reopen closed issues via local implicit PATCH comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "adapter progress note" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.not.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
     );
   });
 
@@ -479,7 +517,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp()))
+    const res = await request(await installActor(createApp(), sessionAdminActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
@@ -497,6 +535,27 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("does not implicitly reopen closed issues via local implicit POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "adapter progress note" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {
@@ -536,7 +595,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp()))
+    const res = await request(await installActor(createApp(), sessionAdminActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "please continue" });
 
@@ -701,7 +760,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
     }));
 
-    const res = await request(await installActor(createApp()))
+    const res = await request(await installActor(createApp(), sessionAdminActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "please continue" });
 
