@@ -589,12 +589,16 @@ function getDisabledAdapterTypesFromStore(): string[] {
 export function resolveExternalAdapterRegistration(
   externalAdapter: ServerAdapterModule,
 ): ServerAdapterModule {
+  const adapterType = externalAdapter.type;
   return {
     ...externalAdapter,
     sessionManagement:
-      externalAdapter.sessionManagement
-        ?? getAdapterSessionManagement(externalAdapter.type)
-        ?? undefined,
+      adapterType
+        ? (externalAdapter.sessionManagement
+          ?? getAdapterSessionManagement(adapterType)
+          ?? undefined)
+        : externalAdapter.sessionManagement
+          ?? undefined,
   };
 }
 
@@ -608,19 +612,24 @@ const externalAdaptersReady: Promise<void> = (async () => {
   try {
     const externalAdapters = await buildExternalAdapters();
     for (const externalAdapter of externalAdapters) {
-      const overriding = BUILTIN_ADAPTER_TYPES.has(externalAdapter.type);
+      const adapterType = externalAdapter.type;
+      if (!adapterType) {
+        console.warn("[paperclip] Skipping external adapter with missing type:", externalAdapter);
+        continue;
+      }
+      const overriding = BUILTIN_ADAPTER_TYPES.has(adapterType);
       if (overriding) {
         console.log(
-          `[paperclip] External adapter "${externalAdapter.type}" overrides built-in adapter`,
+          `[paperclip] External adapter "${adapterType}" overrides built-in adapter`,
         );
         // Save the original builtin for later restoration.
-        const existing = adaptersByType.get(externalAdapter.type);
-        if (existing && !builtinFallbacks.has(externalAdapter.type)) {
-          builtinFallbacks.set(externalAdapter.type, existing);
+        const existing = adaptersByType.get(adapterType);
+        if (existing && !builtinFallbacks.has(adapterType)) {
+          builtinFallbacks.set(adapterType, existing);
         }
       }
       adaptersByType.set(
-        externalAdapter.type,
+        adapterType,
         resolveExternalAdapterRegistration(externalAdapter),
       );
     }
@@ -640,13 +649,18 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
-  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
-    const existing = adaptersByType.get(adapter.type);
+  const adapterType = adapter.type;
+  if (!adapterType) {
+    console.warn("[paperclip] registerServerAdapter called with missing type:", adapter);
+    return;
+  }
+  if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !builtinFallbacks.has(adapterType)) {
+    const existing = adaptersByType.get(adapterType);
     if (existing) {
-      builtinFallbacks.set(adapter.type, existing);
+      builtinFallbacks.set(adapterType, existing);
     }
   }
-  adaptersByType.set(adapter.type, adapter);
+  adaptersByType.set(adapterType, adapter);
 }
 
 export function unregisterServerAdapter(type: string): void {
