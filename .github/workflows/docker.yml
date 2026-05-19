@@ -2,10 +2,20 @@ name: Docker
 
 on:
   push:
-    branches:
-      - "master"
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Commit SHA, branch, or tag to publish as a Docker image
+        required: true
+        type: string
+        default: master
+      publish_latest:
+        description: Also tag the image as latest. Use only for an approved release/deploy.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -15,12 +25,25 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    environment: docker-release
     concurrency:
-      group: docker-${{ github.ref }}
+      group: docker-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: true
     steps:
+      - name: Confirm Docker publication gate
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" != refs/tags/v* ]]; then
+            echo "Docker publishing is disabled for branch pushes. Use an approved tag or workflow_dispatch release path." >&2
+            exit 1
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.publish_latest }}" == "true" ]]; then
+            echo "Manual Docker latest publication requested for approved release/deploy path."
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -38,9 +61,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.publish_latest }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
 
       - name: Build and push

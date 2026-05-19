@@ -33,9 +33,9 @@ concurrency:
 jobs:
   verify_canary:
     # Canary verification runs on every push to master so the enterprise release
-    # path keeps proving typecheck/tests/build green even when the optional npm
-    # publish below is disabled. Also runs on workflow_dispatch when an operator
-    # explicitly opts in to a canary publish.
+    # path keeps proving typecheck/tests/build green. npm canary publishing is
+    # never triggered by a routine master push; it only runs through an explicit
+    # workflow_dispatch operator gate below.
     if: |
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.publish_canary == true)
@@ -79,7 +79,7 @@ jobs:
 
   publish_canary_skipped:
     name: Canary npm publish gate skipped
-    if: github.event_name == 'push' && vars.ENABLE_NPM_CANARY_PUBLISH != 'true'
+    if: github.event_name == 'push'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -90,20 +90,14 @@ jobs:
       - name: Explain skipped canary publish
         run: |
           echo "npm canary publish is disabled for routine master pushes."
-          echo "verify_canary completed; no npm publish, tag push, deploy, or release action was attempted."
-          echo "To enable canary npm publishing later, configure the npm-canary environment/trusted publishing first, then set the non-secret repository variable ENABLE_NPM_CANARY_PUBLISH=true."
+          echo "verify_canary completed; no npm publish, tag push, deploy, Docker latest publication, or release action was attempted."
+          echo "To publish a canary later, use workflow_dispatch with publish_canary=true after the npm-canary environment/trusted publishing gate is ready and approved."
 
   publish_canary:
-    # Optional, default-off. Two ways to enable:
-    #   1. Repo-level variable `ENABLE_NPM_CANARY_PUBLISH=true` makes every push
-    #      to master attempt a canary publish.
-    #   2. workflow_dispatch input `publish_canary=true` is a one-shot operator
-    #      gate that publishes a canary for the chosen `source_ref`.
-    # When neither gate is set, `verify_canary` still proves the release path is
-    # green, and a missing or misconfigured npm trust does not red the run.
-    if: |
-      (github.event_name == 'push' && vars.ENABLE_NPM_CANARY_PUBLISH == 'true') ||
-      (github.event_name == 'workflow_dispatch' && inputs.publish_canary == true)
+    # Optional, default-off. Only a workflow_dispatch run with
+    # `publish_canary=true` may publish an npm canary. Routine master pushes run
+    # verify_canary only and cannot publish live artifacts.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_canary == true
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -157,7 +151,7 @@ jobs:
           if grep -qiE 'ENEEDAUTH|need auth|E401|401 Unauthorized|missing.*auth' "$publish_log"; then
             {
               echo "::error title=npm canary publish blocked::pnpm publish reported a missing or invalid npm credential."
-              echo "::error::This job is gated and only runs when ENABLE_NPM_CANARY_PUBLISH=true (push) or workflow_dispatch input publish_canary=true."
+              echo "::error::This job is gated and only runs on workflow_dispatch with input publish_canary=true."
               echo "::error::Trusted publishing requires the npm package owners to grant OIDC trust to this repository and workflow on registry.npmjs.org."
               echo "::error::Do NOT paste raw npm tokens into logs, comments, or this workflow. Configure trusted publishing via the npm web UI and retry."
             } >&2

@@ -4,10 +4,12 @@ Maintainer runbook for shipping Paperclip across npm, GitHub, and the website-fa
 
 The release model is now commit-driven:
 
-1. Every push to `master` publishes a canary automatically.
-2. Stable releases are manually promoted from a chosen tested commit or canary tag.
-3. Stable release notes live in `releases/vYYYY.MDD.P.md`.
-4. Only stable releases get GitHub Releases.
+1. Every push to `master` verifies the canary path, but does not publish npm or Docker artifacts.
+2. Canary publishes are manually dispatched with `publish_canary=true` after the operator release gate is satisfied.
+3. Stable releases are manually promoted from a chosen tested commit or canary tag.
+4. Stable release notes live in `releases/vYYYY.MDD.P.md`.
+5. Only stable releases get GitHub Releases.
+6. Docker images publish only from approved `v*` tags or the manual Docker workflow; `latest` requires `workflow_dispatch` with `publish_latest=true`.
 
 ## Versioning Model
 
@@ -41,31 +43,51 @@ Every stable release has four separate surfaces:
 
 A stable release is done only when all four surfaces are handled.
 
-Canaries only cover the first two surfaces plus an internal traceability tag.
+Docker image publication is a separate gated surface. It is not implied by a
+`master` push, npm stable publish, or GitHub Release; promote Docker images using
+the Docker workflow rules below.
+
+Canaries cover verification by default. npm canary publication and its internal
+traceability tag require an explicit manual dispatch gate.
 
 ## Core Invariants
 
-- canaries publish from `master`
+- pushes to `master` verify the canary path but do not publish artifacts
+- npm canaries publish only from `workflow_dispatch` with `publish_canary=true`
 - stables publish from an explicitly chosen source ref
 - tags point at the original source commit, not a generated release commit
 - stable notes are always `releases/vYYYY.MDD.P.md`
 - canaries never create GitHub Releases
 - canaries never require changelog generation
+- Docker publishes only from approved `v*` tags or the manual Docker workflow
+- Docker `latest` is never inferred from `master`; it requires manual
+  `workflow_dispatch` with `publish_latest=true` through the `docker-release`
+  environment
 
 ## TL;DR
 
 ### Canary
 
-Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+Every push to `master` runs the canary verification path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 It:
 
 - verifies the pushed commit
-- computes the canary version for the current UTC date
-- publishes under npm dist-tag `canary`
-- verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
-- fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
-- creates a git tag `canary/vYYYY.MDD.P-canary.N`
+- runs the release package manifest check, typecheck, tests, and build
+- records an explicit skipped-publish audit job
+- does not publish npm packages
+- does not push git tags
+- does not publish Docker images or `latest`
+
+To publish a canary, use [`.github/workflows/release.yml`](../.github/workflows/release.yml) from the Actions tab with:
+
+- `source_ref`: the exact approved commit, branch, or tag
+- `publish_canary`: `true`
+
+The manual canary path is gated by the `npm-canary` environment. It publishes
+under npm dist-tag `canary`, verifies that `canary` resolves to the just-published
+version, verifies published internal dependencies exist on npm, and creates a git
+tag `canary/vYYYY.MDD.P-canary.N`.
 
 Users install canaries with:
 
@@ -111,6 +133,31 @@ The workflow:
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
 - creates or updates the GitHub Release from `releases/vYYYY.MDD.P.md`
+
+### Docker
+
+Docker publishing is handled by [`.github/workflows/docker.yml`](../.github/workflows/docker.yml).
+
+Routine `master` pushes do not run this workflow and cannot publish Docker images.
+
+Approved Docker publication paths:
+
+1. Push an approved stable git tag matching `v*`. This publishes the version,
+   major/minor, and SHA tags only. It does not publish `latest`.
+2. Run the Docker workflow manually with `workflow_dispatch` after the
+   `docker-release` environment approval gate is satisfied.
+
+Manual Docker inputs:
+
+- `source_ref`
+  - exact approved commit, branch, or tag to build
+- `publish_latest`
+  - `false` by default
+  - set to `true` only when intentionally promoting the selected image to
+    `ghcr.io/<owner>/<repo>:latest`
+
+Important: promoting Docker `latest` now requires the manual workflow path with
+`publish_latest=true`; a `v*` tag push alone is not enough.
 
 ## Local Commands
 
@@ -218,8 +265,10 @@ Instead:
 
 1. fix the issue on `master`
 2. merge the fix
-3. wait for the next automatic canary
-4. rerun smoke testing
+3. wait for canary verification to pass on `master`
+4. manually dispatch the canary publish workflow with `publish_canary=true` after
+   the `npm-canary` gate is approved
+5. rerun smoke testing
 
 ### If stable npm publish succeeds but tag push or GitHub release creation fails
 
@@ -245,6 +294,8 @@ Then fix forward with a new stable release.
 
 ## Related Files
 
+- [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+- [`.github/workflows/docker.yml`](../.github/workflows/docker.yml)
 - [`scripts/release.sh`](../scripts/release.sh)
 - [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
 - [`scripts/create-github-release.sh`](../scripts/create-github-release.sh)
