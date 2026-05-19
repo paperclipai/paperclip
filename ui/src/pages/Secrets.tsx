@@ -10,6 +10,8 @@ import {
   Cloud,
   Database,
   Edit3,
+  Eye,
+  EyeOff,
   ExternalLink,
   KeyRound,
   Link2,
@@ -51,7 +53,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -200,6 +201,61 @@ function normalizeSecretKeyForPreview(input: string) {
     .replace(/[^a-z0-9_.-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
+}
+
+export const SECRET_KEY_PATTERN = /^[a-zA-Z0-9_.-]+$/;
+export const SECRET_KEY_HINT =
+  "Key must contain only letters, digits, `.`, `_`, or `-`. Slashes and other separators are not allowed. Example: `sandbox.e2b.apiKey.pilot`.";
+
+export function validateSecretKeyClient(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!SECRET_KEY_PATTERN.test(trimmed)) {
+    return "Key must contain only letters, digits, `.`, `_`, or `-`. Slashes and other separators are not allowed. Example: `sandbox.e2b.apiKey.pilot`.";
+  }
+  return null;
+}
+
+type ApiFieldErrors = Record<string, string>;
+
+interface ApiErrorBody {
+  error?: unknown;
+  details?: unknown;
+}
+
+interface ZodIssueLike {
+  path?: unknown;
+  message?: unknown;
+}
+
+function extractFieldErrors(error: unknown): ApiFieldErrors {
+  if (!(error instanceof ApiError)) return {};
+  const body = error.body as ApiErrorBody | null;
+  const details = body?.details;
+  if (!Array.isArray(details)) return {};
+  const map: ApiFieldErrors = {};
+  for (const issue of details as ZodIssueLike[]) {
+    if (!issue || typeof issue !== "object") continue;
+    const path = Array.isArray(issue.path) ? issue.path : [];
+    const fieldKey = path.length > 0 ? String(path[0]) : "_root";
+    const message = typeof issue.message === "string" ? issue.message : "Invalid value";
+    if (!map[fieldKey]) {
+      map[fieldKey] = fieldKey === "key" && /regex|pattern|invalid/i.test(message)
+        ? SECRET_KEY_HINT
+        : message;
+    }
+  }
+  return map;
+}
+
+export function redactAbsolutePathsInMessage(message: string): string {
+  return message.replace(/(^|[\s(])(\/(?:[^\s/:]+\/)+[^\s/:]+)/g, (_match, prefix: string, path: string) => {
+    const trimmed = path.replace(/[.,;:!?)\]]+$/, "");
+    const trailingPunct = path.slice(trimmed.length);
+    const segments = trimmed.split("/").filter(Boolean);
+    const basename = segments[segments.length - 1];
+    return `${prefix}${basename ? `~/…/${basename}` : "~/…"}${trailingPunct}`;
+  });
 }
 
 
@@ -364,11 +420,16 @@ export function Secrets() {
     providerConfigId: "",
   });
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createFieldErrors, setCreateFieldErrors] = useState<ApiFieldErrors>({});
+  const [showCreateValue, setShowCreateValue] = useState(false);
+  const [showProviderDetails, setShowProviderDetails] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
   const [rotateProviderConfigId, setRotateProviderConfigId] = useState("");
   const [rotateError, setRotateError] = useState<string | null>(null);
+  const [rotateFieldErrors, setRotateFieldErrors] = useState<ApiFieldErrors>({});
+  const [showRotateValue, setShowRotateValue] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<CompanySecret | null>(null);
   const [vaultDialogOpen, setVaultDialogOpen] = useState(false);
   const [editingVault, setEditingVault] = useState<CompanySecretProviderConfig | null>(null);
@@ -540,11 +601,20 @@ export function Secrets() {
         providerConfigId: getDefaultProviderConfigId(providerConfigs, createForm.provider),
       });
       setCreateError(null);
+      setCreateFieldErrors({});
+      setShowCreateValue(false);
       setSelectedSecretId(created.id);
       invalidateAll([created.id]);
     },
     onError: (error) => {
-      setCreateError(error instanceof ApiError ? error.message : (error as Error).message);
+      const fieldErrors = extractFieldErrors(error);
+      setCreateFieldErrors(fieldErrors);
+      const rootMessage = error instanceof ApiError ? error.message : (error as Error).message;
+      setCreateError(
+        Object.keys(fieldErrors).length > 0 && fieldErrors._root === undefined
+          ? null
+          : (fieldErrors._root ?? rootMessage),
+      );
     },
   });
 
@@ -569,10 +639,19 @@ export function Secrets() {
       setRotateExternalRef("");
       setRotateProviderConfigId("");
       setRotateError(null);
+      setRotateFieldErrors({});
+      setShowRotateValue(false);
       invalidateAll([updated.id]);
     },
     onError: (error) => {
-      setRotateError(error instanceof Error ? error.message : "Rotate failed");
+      const fieldErrors = extractFieldErrors(error);
+      setRotateFieldErrors(fieldErrors);
+      const rootMessage = error instanceof Error ? error.message : "Rotate failed";
+      setRotateError(
+        Object.keys(fieldErrors).length > 0 && fieldErrors._root === undefined
+          ? null
+          : (fieldErrors._root ?? rootMessage),
+      );
     },
   });
 
@@ -1112,7 +1191,15 @@ export function Secrets() {
                   }
                   placeholder="OPENAI_API_KEY"
                   autoFocus
+                  aria-invalid={Boolean(createFieldErrors.name)}
+                  aria-describedby={createFieldErrors.name ? "new-secret-name-error" : undefined}
                 />
+                {createFieldErrors.name ? (
+                  <p id="new-secret-name-error" className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                    <AlertCircle className="h-3 w-3" />
+                    {createFieldErrors.name}
+                  </p>
+                ) : null}
               </div>
               <div>
                 <label className="text-xs font-medium" htmlFor="new-secret-key">
@@ -1124,8 +1211,28 @@ export function Secrets() {
                   onChange={(event) =>
                     setCreateForm((current) => ({ ...current, key: event.target.value }))
                   }
-                  placeholder="auto from name"
+                  placeholder="sandbox.e2b.apiKey.pilot"
+                  aria-invalid={Boolean(createFieldErrors.key) || Boolean(validateSecretKeyClient(createForm.key))}
+                  aria-describedby="new-secret-key-hint"
                 />
+                {(() => {
+                  const clientError = validateSecretKeyClient(createForm.key);
+                  const serverError = createFieldErrors.key;
+                  const message = serverError ?? clientError;
+                  if (message) {
+                    return (
+                      <p id="new-secret-key-hint" className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
+                        <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>{message}</span>
+                      </p>
+                    );
+                  }
+                  return (
+                    <p id="new-secret-key-hint" className="mt-1 text-[11px] text-muted-foreground">
+                      Letters, digits, <code className="font-mono">.</code>, <code className="font-mono">_</code>, or <code className="font-mono">-</code> only. No slashes.
+                    </p>
+                  );
+                })()}
               </div>
             </div>
             <div>
@@ -1168,7 +1275,11 @@ export function Secrets() {
                   {createProviderBlockReason}
                 </p>
               ) : createProviderHealthText ? (
-                <p className="mt-1 text-[11px] text-muted-foreground">{createProviderHealthText}</p>
+                <ProviderHealthSummary
+                  message={createProviderHealthText}
+                  showDetails={showProviderDetails}
+                  onToggle={() => setShowProviderDetails((current) => !current)}
+                />
               ) : null}
             </div>
             <div>
@@ -1216,17 +1327,45 @@ export function Secrets() {
                   ) : null}
                 </div>
                 <div>
-                  <label className="text-xs font-medium" htmlFor="new-secret-value">Value</label>
-                  <Textarea
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium" htmlFor="new-secret-value">Value</label>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateValue((current) => !current)}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                      aria-pressed={showCreateValue}
+                      aria-label={showCreateValue ? "Hide secret value" : "Show secret value"}
+                      data-testid="toggle-create-secret-value"
+                    >
+                      {showCreateValue ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                      {showCreateValue ? "Hide" : "Show"}
+                    </button>
+                  </div>
+                  <Input
                     id="new-secret-value"
+                    type={showCreateValue ? "text" : "password"}
                     value={createForm.value}
                     onChange={(event) =>
                       setCreateForm((current) => ({ ...current, value: event.target.value }))
                     }
-                    rows={3}
                     className="font-mono text-xs"
                     placeholder="Stored once, never re-displayed"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={Boolean(createFieldErrors.value)}
+                    aria-describedby={createFieldErrors.value ? "new-secret-value-error" : undefined}
+                    data-testid="create-secret-value-input"
                   />
+                  {createFieldErrors.value ? (
+                    <p id="new-secret-value-error" className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                      <AlertCircle className="h-3 w-3" />
+                      {createFieldErrors.value}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Hidden by default. Toggle <span className="font-medium text-foreground">Show</span> to verify before saving.
+                    </p>
+                  )}
                 </div>
               </>
             ) : (
@@ -1240,7 +1379,15 @@ export function Secrets() {
                   }
                   placeholder="arn:aws:secretsmanager:..."
                   className="font-mono text-xs"
+                  aria-invalid={Boolean(createFieldErrors.externalRef)}
+                  aria-describedby={createFieldErrors.externalRef ? "new-secret-ref-error" : undefined}
                 />
+                {createFieldErrors.externalRef ? (
+                  <p id="new-secret-ref-error" className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                    <AlertCircle className="h-3 w-3" />
+                    {createFieldErrors.externalRef}
+                  </p>
+                ) : null}
                 <p className="text-[11px] text-muted-foreground mt-1">
                   Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,
                   then update this reference only if the path, ARN, or version changes.
@@ -1260,21 +1407,36 @@ export function Secrets() {
                 placeholder="What is this secret used for? (no values)"
               />
             </div>
-            {createError ? <p className="text-xs text-destructive">{createError}</p> : null}
+            {createError ? (
+              <p className="flex items-start gap-1 text-xs text-destructive">
+                <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                <span>{createError}</span>
+              </p>
+            ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateOpen(false);
+                setCreateError(null);
+                setCreateFieldErrors({});
+                setShowCreateValue(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
               onClick={() => {
                 setCreateError(null);
+                setCreateFieldErrors({});
                 createMutation.mutate();
               }}
               disabled={
                 createMutation.isPending ||
                 Boolean(createProviderBlockReason) ||
                 !createForm.name.trim() ||
+                Boolean(validateSecretKeyClient(createForm.key)) ||
                 (createMode === "managed" ? !createForm.value : !createForm.externalRef.trim())
               }
             >
@@ -1446,32 +1608,82 @@ export function Secrets() {
                 onChange={(event) => setRotateExternalRef(event.target.value)}
                 placeholder={selectedSecret.externalRef ?? "Updated reference"}
                 className="font-mono text-xs"
+                aria-invalid={Boolean(rotateFieldErrors.externalRef)}
+                aria-describedby={rotateFieldErrors.externalRef ? "rotate-ref-error" : undefined}
               />
+              {rotateFieldErrors.externalRef ? (
+                <p id="rotate-ref-error" className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                  <AlertCircle className="h-3 w-3" />
+                  {rotateFieldErrors.externalRef}
+                </p>
+              ) : null}
               <p className="mt-1 text-[11px] text-muted-foreground">
                 Rotate the actual value in the provider before changing this Paperclip reference.
               </p>
             </div>
           ) : (
             <div>
-              <label className="text-xs font-medium" htmlFor="rotate-value">New value</label>
-              <Textarea
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium" htmlFor="rotate-value">New value</label>
+                <button
+                  type="button"
+                  onClick={() => setShowRotateValue((current) => !current)}
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  aria-pressed={showRotateValue}
+                  aria-label={showRotateValue ? "Hide secret value" : "Show secret value"}
+                  data-testid="toggle-rotate-secret-value"
+                >
+                  {showRotateValue ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                  {showRotateValue ? "Hide" : "Show"}
+                </button>
+              </div>
+              <Input
                 id="rotate-value"
+                type={showRotateValue ? "text" : "password"}
                 value={rotateValue}
                 onChange={(event) => setRotateValue(event.target.value)}
-                rows={3}
                 className="font-mono text-xs"
                 placeholder="Paste the new value"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={Boolean(rotateFieldErrors.value)}
+                aria-describedby={rotateFieldErrors.value ? "rotate-value-error" : undefined}
+                data-testid="rotate-secret-value-input"
               />
+              {rotateFieldErrors.value ? (
+                <p id="rotate-value-error" className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                  <AlertCircle className="h-3 w-3" />
+                  {rotateFieldErrors.value}
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Hidden by default. Toggle <span className="font-medium text-foreground">Show</span> to verify before saving.
+                </p>
+              )}
             </div>
           )}
-          {rotateError ? <p className="text-xs text-destructive">{rotateError}</p> : null}
+          {rotateError ? (
+            <p className="flex items-start gap-1 text-xs text-destructive">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>{rotateError}</span>
+            </p>
+          ) : null}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRotateOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRotateOpen(false);
+                setRotateError(null);
+                setRotateFieldErrors({});
+                setShowRotateValue(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
               onClick={() => {
                 setRotateError(null);
+                setRotateFieldErrors({});
                 rotateMutation.mutate();
               }}
               disabled={
@@ -1671,7 +1883,37 @@ function providerFamilyIcon(provider: SecretProvider) {
   }
 }
 
+function ProviderHealthSummary({
+  message,
+  showDetails,
+  onToggle,
+}: {
+  message: string;
+  showDetails: boolean;
+  onToggle: () => void;
+}) {
+  const safe = redactAbsolutePathsInMessage(message);
+  const hasPath = safe !== message;
+  return (
+    <div className="mt-1 space-y-0.5">
+      <p className="text-[11px] text-muted-foreground break-words">{showDetails ? message : safe}</p>
+      {hasPath ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          aria-pressed={showDetails}
+          data-testid="toggle-provider-health-details"
+        >
+          {showDetails ? "Hide details" : "Show details"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderConfig }) {
+  const [showDetails, setShowDetails] = useState(false);
   const blockReason = getProviderConfigBlockReason(config);
   const message = blockReason ?? config.healthMessage;
   if (!message) {
@@ -1682,11 +1924,34 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
     );
   }
   const warning = config.status === "warning" || config.healthStatus === "warning";
+  const safeMessage = redactAbsolutePathsInMessage(message);
+  const hasPath = safeMessage !== message;
   return (
-    <p className={cn("mt-1 flex items-center gap-1 text-[11px]", warning ? "text-amber-600 dark:text-amber-400" : "text-destructive")}>
-      {warning ? <AlertTriangle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
-      {message}
-    </p>
+    <div className="mt-1 space-y-0.5">
+      <p
+        className={cn(
+          "flex items-start gap-1 text-[11px]",
+          warning ? "text-amber-600 dark:text-amber-400" : "text-destructive",
+        )}
+      >
+        {warning ? (
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+        ) : (
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+        )}
+        <span className="break-words">{showDetails ? message : safeMessage}</span>
+      </p>
+      {hasPath ? (
+        <button
+          type="button"
+          onClick={() => setShowDetails((current) => !current)}
+          className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          aria-pressed={showDetails}
+        >
+          {showDetails ? "Hide details" : "Show details"}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -1868,8 +2133,12 @@ function ProviderVaultCard({
   onSetDefault: () => void;
   onHealthCheck: () => void;
 }) {
+  const [showDetails, setShowDetails] = useState(false);
   const blockReason = getProviderConfigBlockReason(config);
   const details = config.healthDetails;
+  const rawMessage = blockReason ?? config.healthMessage ?? "";
+  const safeMessage = redactAbsolutePathsInMessage(rawMessage);
+  const hasPath = safeMessage !== rawMessage;
   return (
     <div className="rounded-md border border-border bg-background p-4">
       <div className="flex items-start gap-3">
@@ -1900,9 +2169,19 @@ function ProviderVaultCard({
           <Edit3 className="h-3.5 w-3.5" />
         </Button>
       </div>
-      {config.healthMessage || blockReason ? (
+      {rawMessage ? (
         <div className={cn("mt-3 rounded-md p-2 text-xs", blockReason ? "bg-destructive/5 text-destructive" : "bg-muted/40 text-muted-foreground")}>
-          {blockReason ?? config.healthMessage}
+          <p className="break-words">{showDetails ? rawMessage : safeMessage}</p>
+          {hasPath ? (
+            <button
+              type="button"
+              onClick={() => setShowDetails((current) => !current)}
+              className="mt-1 text-[11px] underline-offset-2 hover:underline"
+              aria-pressed={showDetails}
+            >
+              {showDetails ? "Hide details" : "Show details"}
+            </button>
+          ) : null}
           {details?.guidance?.length ? (
             <ul className="mt-1 list-disc space-y-0.5 pl-4">
               {details.guidance.map((item) => (
