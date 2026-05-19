@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -7,6 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { isUuidLike } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,6 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -467,7 +469,10 @@ const EnumField = React.memo(({
 EnumField.displayName = "EnumField";
 
 /**
- * Specialized field for secret-ref values, providing a toggleable password input.
+ * Specialized field for secret-ref values. Renders a picker for existing
+ * company secrets plus a raw-value fallback. A UUID-shaped value is treated
+ * as a bound secret reference; anything else is a raw value that the server
+ * converts to a stored secret on save.
  */
 const SecretField = React.memo(({
   value,
@@ -492,94 +497,168 @@ const SecretField = React.memo(({
 }) => {
   const [isVisible, setIsVisible] = useState(false);
   const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
+
+  const stringValue = typeof value === "string" ? value : "";
+  const trimmed = stringValue.trim();
+  const isBoundToSecret = trimmed.length > 0 && isUuidLike(trimmed);
+  const hasRawValue = stringValue.length > 0 && !isBoundToSecret;
+
+  const [showRawInput, setShowRawInput] = useState(hasRawValue);
+
+  // Keep the raw-input panel open when the parent loads a raw value after
+  // mount (e.g. an environment-config form rendering with empty defaults
+  // before its API response arrives). We only promote to `true` here; manual
+  // toggles off are still preserved as long as `hasRawValue` is false.
+  useEffect(() => {
+    if (hasRawValue) setShowRawInput(true);
+  }, [hasRawValue]);
+
+  const bindingValue: SecretBindingValue | null = isBoundToSecret
+    ? { secretId: trimmed }
+    : null;
+
+  const handlePickerChange = useCallback(
+    (next: SecretBindingValue | null) => {
+      if (next) {
+        onChange(next.secretId);
+        setShowRawInput(false);
+        setIsVisible(false);
+      } else {
+        onChange("");
+      }
+    },
+    [onChange],
+  );
+
+  const rawInput = isTextArea ? (
+    <div className="relative">
+      {isVisible ? (
+        <Textarea
+          value={stringValue}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-[140px] pr-10 font-mono text-xs"
+          aria-invalid={!!error}
+        />
+      ) : (
+        <Textarea
+          // Render a placeholder summary instead of the secret content while
+          // hidden. This avoids exposing multi-line secrets (e.g. SSH
+          // private keys) on screen-shares; clicking the eye toggle reveals
+          // the editable textarea above.
+          value={
+            stringValue.length === 0
+              ? ""
+              : `Sensitive — ${stringValue.length} characters hidden. Click the eye to reveal.`
+          }
+          readOnly
+          placeholder={String(defaultValue ?? "")}
+          disabled={disabled}
+          className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
+          aria-invalid={!!error}
+        />
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  ) : (
+    <div className="relative">
+      <Input
+        type={isVisible ? "text" : "password"}
+        value={stringValue}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        className="pr-10"
+        aria-invalid={!!error}
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+        onClick={() => setIsVisible(!isVisible)}
+        disabled={disabled}
+      >
+        {isVisible ? (
+          <EyeOff className="h-4 w-4 text-muted-foreground" />
+        ) : (
+          <Eye className="h-4 w-4 text-muted-foreground" />
+        )}
+        <span className="sr-only">
+          {isVisible ? "Hide secret" : "Show secret"}
+        </span>
+      </Button>
+    </div>
+  );
+
   return (
     <FieldWrapper
       label={label}
       description={
         description ||
-        "This secret is stored securely via the Paperclip secret provider."
+        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
       }
       required={isRequired}
       error={error}
       disabled={disabled}
     >
-      {isTextArea ? (
-        <div className="relative">
-          {isVisible ? (
-            <Textarea
-              value={String(value ?? "")}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder={String(defaultValue ?? "")}
-              disabled={disabled}
-              className="min-h-[140px] pr-10 font-mono text-xs"
-              aria-invalid={!!error}
-            />
+      <div className="space-y-2">
+        <SecretBindingPicker
+          value={bindingValue}
+          onChange={handlePickerChange}
+          label=""
+          placeholder="Select an existing secret"
+          allowVersionSelector={false}
+          emptyHint="No active secrets yet. Create one or paste a raw value below."
+          disabled={disabled}
+        />
+        {!isBoundToSecret ? (
+          showRawInput ? (
+            <div className="space-y-1">
+              {rawInput}
+              {!hasRawValue ? (
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setShowRawInput(false);
+                    setIsVisible(false);
+                  }}
+                  disabled={disabled}
+                >
+                  Hide raw value input
+                </button>
+              ) : null}
+            </div>
           ) : (
-            <Textarea
-              // Render a placeholder summary instead of the secret content while
-              // hidden. This avoids exposing multi-line secrets (e.g. SSH
-              // private keys) on screen-shares; clicking the eye toggle reveals
-              // the editable textarea above.
-              value={
-                String(value ?? "").length === 0
-                  ? ""
-                  : `Sensitive — ${String(value ?? "").length} characters hidden. Click the eye to reveal.`
-              }
-              readOnly
-              placeholder={String(defaultValue ?? "")}
+            <button
+              type="button"
+              className="text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => setShowRawInput(true)}
               disabled={disabled}
-              className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
-              aria-invalid={!!error}
-            />
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="absolute right-0 top-0 px-3 py-2 hover:bg-transparent"
-            onClick={() => setIsVisible(!isVisible)}
-            disabled={disabled}
-          >
-            {isVisible ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="sr-only">
-              {isVisible ? "Hide secret" : "Show secret"}
-            </span>
-          </Button>
-        </div>
-      ) : (
-        <div className="relative">
-          <Input
-            type={isVisible ? "text" : "password"}
-            value={String(value ?? "")}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={String(defaultValue ?? "")}
-            disabled={disabled}
-            className="pr-10"
-            aria-invalid={!!error}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-            onClick={() => setIsVisible(!isVisible)}
-            disabled={disabled}
-          >
-            {isVisible ? (
-              <EyeOff className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <Eye className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="sr-only">
-              {isVisible ? "Hide secret" : "Show secret"}
-            </span>
-          </Button>
-        </div>
-      )}
+            >
+              Or paste a raw value
+            </button>
+          )
+        ) : null}
+      </div>
     </FieldWrapper>
   );
 });

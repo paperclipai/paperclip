@@ -1241,7 +1241,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
         createPortal(
           <div
-            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            data-paperclip-floating-ui=""
+            className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
