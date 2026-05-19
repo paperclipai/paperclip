@@ -62,6 +62,26 @@ export function errorHandler(
   }
 
   const rootError = err instanceof Error ? err : new Error(String(err));
+
+  // Postgres FK violation (23503) — stale run_id from expired Cowork/agent JWT.
+  // Return 422 with a descriptive body instead of a bare 500.
+  const pgCode = (rootError.cause as any)?.code ?? (rootError as any).code;
+  if (pgCode === "23503") {
+    const detail = (rootError.cause as any)?.detail ?? (rootError as any).detail ?? "";
+    attachErrorContext(
+      req,
+      res,
+      { message: rootError.message, stack: rootError.stack, name: rootError.name },
+      rootError,
+    );
+    res.status(422).json({
+      error: "Write rejected: a referenced entity does not exist",
+      reason: "foreign_key_violation",
+      detail,
+    });
+    return;
+  }
+
   attachErrorContext(
     req,
     res,
