@@ -11,6 +11,7 @@ vi.hoisted(() => {
 });
 
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosShell } from "./EaosShell";
@@ -18,14 +19,33 @@ import { EaosZonePlaceholder } from "./EaosZonePlaceholder";
 import { EAOS_PRIMARY_NAV } from "./nav-zones";
 import { actSync } from "./test-helpers";
 
-// The shell now consumes the @/lib/router company-aware Link/NavLink
-// wrappers, which read from CompanyContext. Stub the context here so the
-// unprefixed renders keep their current behavior (no company prefix added).
+// The shell consumes the @/lib/router company-aware Link/NavLink wrappers,
+// which read from CompanyContext. Stub the context here so the unprefixed
+// renders keep their current behavior (no company prefix added, no scope-
+// gated read attempted).
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null }),
 }));
 
+// LET-484 — CommandCenterLanding now reads live mission/agent feeds. Mock
+// the api modules so this semantic-posture test doesn't depend on a network
+// stack and so the "no company scope" path is the exercised case (matching
+// the LET-187 strict semantic-trust contract).
+vi.mock("@/api/issues", () => ({
+  issuesApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
 let container: HTMLDivElement | null = null;
+
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+}
 
 function renderEaosPath(initialPath = "/eaos") {
   container = document.createElement("div");
@@ -33,22 +53,24 @@ function renderEaosPath(initialPath = "/eaos") {
   const root = createRoot(container);
   actSync(() => {
     root.render(
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="eaos/*" element={<EaosShell />}>
-            <Route index element={<CommandCenterLanding />} />
-            <Route
-              path="projects"
-              element={
-                <EaosZonePlaceholder
-                  title="Projects / Goals"
-                  description="Strategic outcomes, roadmaps, release candidates."
-                />
-              }
-            />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="eaos/*" element={<EaosShell />}>
+              <Route index element={<CommandCenterLanding />} />
+              <Route
+                path="projects"
+                element={
+                  <EaosZonePlaceholder
+                    title="Projects / Goals"
+                    description="Strategic outcomes, roadmaps, release candidates."
+                  />
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
   return { root };
@@ -62,24 +84,45 @@ afterEach(() => {
 });
 
 describe("EAOS semantic posture labels", () => {
-  it("labels command-center cards as Data PREVIEW and not connected, not backend-backed data", () => {
+  it("labels the command-center landing as Data PREVIEW · Not connected without a company scope", () => {
     renderEaosPath("/eaos");
 
     const landing = container?.querySelector('[data-testid="eaos-command-center-landing"]');
     expect(landing?.getAttribute("data-eaos-data-connected")).toBe("false");
-    expect(landing?.textContent ?? "").toContain("Shell · BACKEND-BACKED");
-    expect(landing?.textContent ?? "").toContain("Data · PREVIEW");
-    expect(landing?.textContent ?? "").toContain("Not connected");
+    const headerText = container?.querySelector('[data-testid="eaos-command-center-header"]')?.textContent ?? "";
+    expect(headerText).toContain("Shell · BACKEND-BACKED");
+    expect(headerText).toContain("Data · PREVIEW");
+    expect(headerText).toContain("Not connected");
+    expect(headerText).not.toContain("Data · BACKEND-BACKED");
+  });
+
+  it("never claims Data · BACKEND-BACKED on the telemetry tiles when no company scope is active", () => {
+    renderEaosPath("/eaos");
+
+    const tiles = container?.querySelector('[data-testid="eaos-command-center-telemetry"]');
+    expect(tiles?.getAttribute("data-eaos-data-connected")).toBe("false");
+    // Tile values must collapse to a non-numeric placeholder when not scoped
+    // (LET-187 rule — never fake a "0").
+    const tileValues = Array.from(
+      container?.querySelectorAll('[data-testid^="eaos-command-center-telemetry-"][data-testid$="-value"]') ?? [],
+    );
+    expect(tileValues.length).toBeGreaterThan(0);
+    for (const node of tileValues) {
+      expect(node.textContent?.trim()).not.toMatch(/^[0-9]+$/);
+    }
+  });
+
+  it("dual-labels every zone-rail card without claiming Data · BACKEND-BACKED", () => {
+    renderEaosPath("/eaos");
 
     const cards = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-landing-card-"]') ?? [],
     );
     expect(cards.length).toBe(EAOS_PRIMARY_NAV.length - 1);
     for (const card of cards) {
-      const text = card.textContent ?? "";
       expect(card.getAttribute("data-eaos-data-connected")).toBe("false");
+      const text = card.textContent ?? "";
       expect(text).toContain("Data · PREVIEW");
-      expect(text).toContain("Not connected");
       expect(text).not.toContain("Data · BACKEND-BACKED");
       expect(text).not.toContain("Posture · BACKEND-BACKED");
     }

@@ -1,3 +1,4 @@
+import { Clock4, FileSearch } from "lucide-react";
 import { EaosStateChip } from "./EaosStateChip";
 import {
   DEFAULT_BOTTOM_STRIP_LABEL,
@@ -48,8 +49,15 @@ export function EaosPostureStrip({
       )}
       {liveActive ? <EaosStateChip label="LIVE" /> : null}
       {approvalActive ? <EaosStateChip label="APPROVAL REQUIRED" /> : null}
-      <span className="ml-auto truncate" data-testid="eaos-posture-strip-audit">
-        {auditId ? `Audit · ${auditId}` : "Audit · n/a"}
+      <span
+        className="ml-auto inline-flex items-center gap-1.5 truncate"
+        data-testid="eaos-posture-strip-audit"
+      >
+        <FileSearch aria-hidden="true" className="h-3 w-3" />
+        <span className="truncate">{auditId ? `Audit · ${auditId}` : "Audit · n/a"}</span>
+        <span aria-hidden="true" className="mx-1 h-3 border-l border-border" />
+        <Clock4 aria-hidden="true" className="h-3 w-3" />
+        <span className="hidden sm:inline">{isKernel ? "Kernel session" : "Operator session"}</span>
       </span>
     </footer>
   );

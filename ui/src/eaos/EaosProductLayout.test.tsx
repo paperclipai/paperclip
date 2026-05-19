@@ -17,7 +17,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { EaosProductLayout } from "./EaosProductLayout";
 import { EaosShell } from "./EaosShell";
 import { CommandCenterLanding } from "./CommandCenterLanding";
-import { actSync } from "./test-helpers";
+import { actSync, flushReactQuery } from "./test-helpers";
 
 // LET-415 regression: /eaos must be full-screen with NO Paperclip board
 // chrome. The acceptance criteria call out the exact sidebar labels that
@@ -80,6 +80,17 @@ vi.mock("@/components/WorktreeBanner", () => ({
   WorktreeBanner: () => null,
 }));
 
+// LET-484 — CommandCenterLanding now consumes the live mission/agent feed.
+// Stub the api modules so this layout test stays focused on layout structure
+// and the queries resolve without network noise.
+vi.mock("@/api/issues", () => ({
+  issuesApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
 let container: HTMLDivElement | null = null;
 
 function makeQueryClient() {
@@ -88,7 +99,7 @@ function makeQueryClient() {
   });
 }
 
-function renderAt(initialPath: string, child: ReactNode) {
+async function renderAt(initialPath: string, child: ReactNode) {
   container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -108,6 +119,9 @@ function renderAt(initialPath: string, child: ReactNode) {
       </QueryClientProvider>,
     );
   });
+  // Drain react-query promises so the post-resolve re-renders commit inside
+  // an act() boundary instead of leaking jsdom warnings — LET-484 nit #4.
+  await flushReactQuery();
   return { root };
 }
 
@@ -119,8 +133,8 @@ afterEach(() => {
 });
 
 describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
-  it("renders the page-level <main id=\"main-content\"> landmark itself, since no outer Layout wraps it", () => {
-    renderAt(
+  it("renders the page-level <main id=\"main-content\"> landmark itself, since no outer Layout wraps it", async () => {
+    await renderAt(
       "/eaos",
       <Route element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
@@ -132,8 +146,8 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     expect(main?.getAttribute("tabindex")).toBe("-1");
   });
 
-  it("renders a skip-to-main-content link for keyboard users", () => {
-    renderAt(
+  it("renders a skip-to-main-content link for keyboard users", async () => {
+    await renderAt(
       "/eaos",
       <Route element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
@@ -147,8 +161,8 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     expect(skipLink?.textContent).toMatch(/skip to main content/i);
   });
 
-  it("mounts the EAOS shell inside the product layout when /eaos renders", () => {
-    renderAt(
+  it("mounts the EAOS shell inside the product layout when /eaos renders", async () => {
+    await renderAt(
       "/eaos",
       <Route element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
@@ -161,8 +175,8 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     expect(container?.querySelector('[data-testid="eaos-command-center-landing"]')).not.toBeNull();
   });
 
-  it("does NOT render the Paperclip board sidebar nav labels (Issues, Routines, Goals, Inbox, Projects, Agents)", () => {
-    renderAt(
+  it("does NOT render the Paperclip board sidebar nav labels (Issues, Routines, Goals, Inbox, Projects, Agents)", async () => {
+    await renderAt(
       "/eaos",
       <Route element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
@@ -188,8 +202,8 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     }
   });
 
-  it("mounts the CommandPalette so the EAOS top bar's ⌘K trigger keeps working", () => {
-    renderAt(
+  it("mounts the CommandPalette so the EAOS top bar's ⌘K trigger keeps working", async () => {
+    await renderAt(
       "/eaos",
       <Route element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
@@ -199,8 +213,8 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     expect(container?.querySelector('[data-testid="command-palette-stub"]')).not.toBeNull();
   });
 
-  it("renders /agent-os inside the same full-screen product layout (no board chrome)", () => {
-    renderAt("/agent-os", null);
+  it("renders /agent-os inside the same full-screen product layout (no board chrome)", async () => {
+    await renderAt("/agent-os", null);
 
     // The AgentOs page renders inside EaosProductLayout's <main>, with no
     // Paperclip sidebar / breadcrumb wrapper.

@@ -55,6 +55,13 @@ import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
 import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
 import { MissionDetail } from "./eaos/MissionDetail";
 import { MissionsListPage } from "./eaos/missions/MissionsListPage";
+import { AgentsRosterPage } from "./eaos/agents/AgentsRosterPage";
+import { ApprovalsQueuePage } from "./eaos/approvals/ApprovalsQueuePage";
+import { RunsTimelinePage } from "./eaos/runs/RunsTimelinePage";
+import { ProjectsRoadmapPage } from "./eaos/projects/ProjectsRoadmapPage";
+import { KnowledgePage } from "./eaos/knowledge/KnowledgePage";
+import { CapabilitiesPage } from "./eaos/capabilities/CapabilitiesPage";
+import { AdminPage } from "./eaos/admin/AdminPage";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -386,11 +393,70 @@ export function App() {
                 controls — escape hatch into Kernel/Admin remains available.
               */}
               <Route path="missions/:missionRef" element={<MissionDetail />} />
+              {/*
+                LET-484 working-product slice — `/eaos/agents` now renders a
+                read-only roster backed by `agentsApi.list`. Pause / resume /
+                approve / terminate stay inside the kernel detail page; this
+                surface only shows status, adapter, heartbeat, and budget.
+              */}
+              <Route path="agents" element={<AgentsRosterPage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/approvals` now renders
+                a read-only queue backed by `approvalsApi.list`. Decision
+                controls remain inside the kernel detail page; this surface
+                is a backend-backed briefing and routing surface only.
+              */}
+              <Route path="approvals" element={<ApprovalsQueuePage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/runs` renders a
+                read-only run timeline collapsed from the canonical activity
+                feed. Replay / transcript / tool-call deep views live inside
+                Mission detail; each row routes there.
+              */}
+              <Route path="runs" element={<RunsTimelinePage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/projects` renders a
+                read-only roadmap backed by `projectsApi.list` +
+                `goalsApi.list`. Action verbs (start workspace, archive,
+                configure) stay inside the kernel project detail page.
+              */}
+              <Route path="projects" element={<ProjectsRoadmapPage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/knowledge` renders
+                backend-backed playbook packs (companySkillsApi) and names
+                the missing cross-mission KB index endpoint as a truthful
+                temporary gap.
+              */}
+              <Route path="knowledge" element={<KnowledgePage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/capabilities` renders
+                an adapter/capability briefing backed by agentsApi.list. The
+                company-wide MCP server registry endpoint is named as a
+                truthful temporary gap; per-agent capability-apply plans live
+                inside the kernel agent detail page (LET-357 / LET-396).
+              */}
+              <Route path="capabilities" element={<CapabilitiesPage />} />
+              {/*
+                LET-484 working-product slice — `/eaos/admin` renders a
+                read-only member roster + access posture backed by
+                accessApi.listMembers. Invite / role / permission mutations
+                stay inside the Kernel/Admin access page; the audit-filter
+                view and dedicated audit-log endpoint are named as truthful
+                temporary gaps.
+              */}
+              <Route path="admin" element={<AdminPage />} />
               {EAOS_PRIMARY_NAV.filter(
                 (zone) =>
                   zone.path !== "/eaos"
                   && zone.path !== "/eaos/sandbox"
-                  && zone.path !== "/eaos/missions",
+                  && zone.path !== "/eaos/missions"
+                  && zone.path !== "/eaos/agents"
+                  && zone.path !== "/eaos/approvals"
+                  && zone.path !== "/eaos/runs"
+                  && zone.path !== "/eaos/projects"
+                  && zone.path !== "/eaos/knowledge"
+                  && zone.path !== "/eaos/capabilities"
+                  && zone.path !== "/eaos/admin",
               ).map((zone) => (
                 <Route
                   key={zone.id}

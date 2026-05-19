@@ -1,12 +1,12 @@
 import { useCallback } from "react";
 import { Link } from "@/lib/router";
 import { Bell, ClipboardList, KeyRound, MessageSquareWarning, Search, ShieldAlert, User } from "lucide-react";
+import { useCompany } from "@/context/CompanyContext";
 import { EaosStateChip } from "./EaosStateChip";
 import {
   DEFAULT_TOPBAR_POSTURE_LABEL,
   KERNEL_POSTURE_LABEL,
   NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
   NOT_CONNECTED_DATA_PREFIX,
   SCOPE_PREVIEW_LABEL,
   SHELL_POSTURE_PREFIX,
@@ -14,11 +14,12 @@ import {
   STUB_COUNT_PLACEHOLDER,
 } from "./state-labels";
 import { EAOS_KERNEL_NAV } from "./nav-zones";
+import { redactSecretLikeText } from "./secret-redact";
 
 // Top-bar slot config per LET-164 §3 (right-of-search indicator cluster).
-// Counts are not wired yet; LET-187 renders a visibly stub placeholder
-// (not a "0") plus an aria/title hint until the LET-182 read-model
-// contract delivers real counts.
+// Counts stay marked as Stub here so the shell chrome remains test-friendly
+// (no QueryClient coupling). The Command Center landing carries the real
+// backend-backed mission/approval telemetry where it belongs.
 const INDICATORS = [
   {
     id: "approvals",
@@ -55,6 +56,7 @@ export interface EaosTopBarProps {
 
 export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
   const isKernel = variant === "kernel";
+  const { selectedCompany } = useCompany();
 
   // Open the existing command palette by dispatching the shortcut its global
   // listener already handles. Keeps this slice from coupling to the dialog
@@ -100,17 +102,42 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
         <div
           className="hidden items-center gap-2 lg:flex"
           data-testid="eaos-topbar-scope"
-          data-eaos-scope-connected="false"
+          data-eaos-scope-connected={selectedCompany ? "true" : "false"}
         >
           <span className="text-xs text-muted-foreground">Scope</span>
-          <span
-            className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border bg-card px-2 py-0.5 text-xs font-medium text-muted-foreground"
-            title={`${SCOPE_PREVIEW_LABEL}. Company/project read model is not wired yet.`}
-            aria-label={SCOPE_PREVIEW_LABEL}
-          >
-            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-            {SCOPE_PREVIEW_LABEL}
-          </span>
+          {selectedCompany ? (() => {
+            // LET-484 QA gate: company name / issuePrefix originate from
+            // user-authored company records, so route every surface that
+            // could leak a credential-shaped string (visible label, title,
+            // aria-label, and the prefix chip) through `redactSecretLikeText`.
+            const safeName = redactSecretLikeText(selectedCompany.name);
+            const safePrefix = selectedCompany.issuePrefix
+              ? redactSecretLikeText(selectedCompany.issuePrefix)
+              : "—";
+            return (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-0.5 text-xs font-medium text-foreground"
+                title={`Active company scope · ${safeName}`}
+                aria-label={`Active scope ${safeName}`}
+                data-testid="eaos-topbar-scope-active"
+              >
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                <span className="font-mono uppercase tracking-wide text-[10px] text-muted-foreground">
+                  {safePrefix}
+                </span>
+                <span className="max-w-[10rem] truncate">{safeName}</span>
+              </span>
+            );
+          })() : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border bg-card px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              title={`${SCOPE_PREVIEW_LABEL}. Company/project read model is not wired yet.`}
+              aria-label={SCOPE_PREVIEW_LABEL}
+            >
+              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+              {SCOPE_PREVIEW_LABEL}
+            </span>
+          )}
         </div>
       ) : null}
 

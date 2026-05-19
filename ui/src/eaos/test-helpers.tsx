@@ -27,3 +27,28 @@ export function actSync(fn: () => void): void {
   }
   fn();
 }
+
+// Drain react-query microtasks + one macrotask inside an act() boundary so
+// promises resolved during initial render (e.g. `useQuery` settling against
+// mocked APIs) commit their re-renders before the suite asserts on the DOM.
+// Without this drain, React 19 emits "act() warnings" on jsdom for any test
+// that mounts a component using react-query reads — see the LET-484
+// reviewer feedback for the Command Center landing.
+export async function flushReactQuery(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    if (typeof reactAct === "function") {
+      await reactAct(async () => {
+        await Promise.resolve();
+      });
+    } else {
+      await Promise.resolve();
+    }
+  }
+  if (typeof reactAct === "function") {
+    await reactAct(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+  } else {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+}

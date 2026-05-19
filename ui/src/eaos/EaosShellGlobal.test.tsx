@@ -12,11 +12,23 @@ vi.hoisted(() => {
 
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EaosShell } from "./EaosShell";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosZonePlaceholder } from "./EaosZonePlaceholder";
 import { EAOS_PRIMARY_NAV } from "./nav-zones";
-import { actSync } from "./test-helpers";
+import { actSync, flushReactQuery } from "./test-helpers";
+
+// LET-484 — CommandCenterLanding reads live mission/agent feeds. Mock the
+// api modules and provide a query client so the route smoke tests stay
+// hermetic and don't accidentally hit network in jsdom.
+vi.mock("@/api/issues", () => ({
+  issuesApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
 
 // LET-415: /eaos and /agent-os are global, unprefixed product routes. The
 // shell links must NEVER be auto-prefixed with a company, even when a company
@@ -33,28 +45,39 @@ vi.mock("@/context/CompanyContext", () => ({
 
 let container: HTMLDivElement | null = null;
 
-function renderShellAt(initialPath: string) {
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+}
+
+async function renderShellAt(initialPath: string) {
   container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   actSync(() => {
     root.render(
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="eaos" element={<EaosShell variant="eaos" />}>
-            <Route index element={<CommandCenterLanding />} />
-            {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos").map((zone) => (
-              <Route
-                key={zone.id}
-                path={zone.path.replace(/^\/eaos\//, "")}
-                element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
-              />
-            ))}
-          </Route>
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="eaos" element={<EaosShell variant="eaos" />}>
+              <Route index element={<CommandCenterLanding />} />
+              {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos").map((zone) => (
+                <Route
+                  key={zone.id}
+                  path={zone.path.replace(/^\/eaos\//, "")}
+                  element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
+                />
+              ))}
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
+  // Drain react-query promises so post-resolve re-renders commit inside an
+  // act() boundary — LET-484 reviewer nit #4.
+  await flushReactQuery();
   return { root };
 }
 
@@ -66,8 +89,8 @@ afterEach(() => {
 });
 
 describe("EaosShell as global /eaos product route (LET-415)", () => {
-  it("renders zone nav hrefs unprefixed under /eaos, even with a selected company", () => {
-    renderShellAt("/eaos/sandbox");
+  it("renders zone nav hrefs unprefixed under /eaos, even with a selected company", async () => {
+    await renderShellAt("/eaos/sandbox");
 
     const navLinks = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-link-"]') ?? [],
@@ -93,8 +116,8 @@ describe("EaosShell as global /eaos product route (LET-415)", () => {
     }
   });
 
-  it("marks the active sandbox zone NavLink as aria-current on /eaos/sandbox", () => {
-    renderShellAt("/eaos/sandbox");
+  it("marks the active sandbox zone NavLink as aria-current on /eaos/sandbox", async () => {
+    await renderShellAt("/eaos/sandbox");
 
     const sandboxLink = container?.querySelector(
       '[data-testid="eaos-primary-nav-link-sandbox-runtime"]',
@@ -108,8 +131,8 @@ describe("EaosShell as global /eaos product route (LET-415)", () => {
     expect(commandCenterLink?.getAttribute("aria-current")).not.toBe("page");
   });
 
-  it("marks the Command Center NavLink as aria-current on /eaos root", () => {
-    renderShellAt("/eaos");
+  it("marks the Command Center NavLink as aria-current on /eaos root", async () => {
+    await renderShellAt("/eaos");
 
     const commandCenterLink = container?.querySelector(
       '[data-testid="eaos-primary-nav-link-command-center"]',
@@ -117,11 +140,11 @@ describe("EaosShell as global /eaos product route (LET-415)", () => {
     expect(commandCenterLink?.getAttribute("aria-current")).toBe("page");
   });
 
-  it("routes the kernel/admin escape hatch to /dashboard (legacy kernel)", () => {
+  it("routes the kernel/admin escape hatch to /dashboard (legacy kernel)", async () => {
     // /dashboard is still a board route, so the company prefix is reapplied
     // by @/lib/router. With selectedCompany=PAP this becomes /PAP/dashboard,
     // which keeps the kernel hatch pointing at the right per-company kernel.
-    renderShellAt("/eaos/sandbox");
+    await renderShellAt("/eaos/sandbox");
 
     const hatch = container?.querySelector('[data-testid="eaos-topbar-kernel-hatch"]');
     expect(hatch?.getAttribute("href")).toBe("/PAP/dashboard");
@@ -132,8 +155,8 @@ describe("EaosShell as global /eaos product route (LET-415)", () => {
     expect(sidebarKernel?.getAttribute("href")).toBe("/PAP/dashboard");
   });
 
-  it("renders Command Center landing card 'View ...' links unprefixed", () => {
-    renderShellAt("/eaos");
+  it("renders Command Center landing card 'View ...' links unprefixed", async () => {
+    await renderShellAt("/eaos");
 
     const cardLinks = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-landing-card-"] a') ?? [],
@@ -147,8 +170,8 @@ describe("EaosShell as global /eaos product route (LET-415)", () => {
     }
   });
 
-  it("renders top-bar indicator links unprefixed", () => {
-    renderShellAt("/eaos/sandbox");
+  it("renders top-bar indicator links unprefixed", async () => {
+    await renderShellAt("/eaos/sandbox");
 
     const approvalsIndicator = container?.querySelector(
       '[data-testid="eaos-topbar-indicator-approvals"]',
