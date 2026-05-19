@@ -1,26 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
-  agentWakeupRequests,
   agents,
   companies,
-  companyMemberships,
   createDb,
   executionWorkspaces,
-  heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
   issues,
-  principalPermissionGrants,
   projectWorkspaces,
   projects,
   routineRuns,
-  routines,
-  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -95,22 +89,33 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   afterEach(async () => {
-    await db.delete(activityLog);
-    await db.delete(routineRuns);
-    await db.delete(routineTriggers);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projectWorkspaces);
-    await db.delete(principalPermissionGrants);
-    await db.delete(companyMemberships);
-    await db.delete(routines);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
-    await db.delete(instanceSettings);
+    // v513-saga prong — mirror heartbeat-local-environment.test.ts post PR #86.
+    // The prior per-table delete sequence raced fire-and-forget writes from
+    // route handlers under verify_canary load: when a test timed out, the
+    // in-flight handler chain could insert issues rows between this hook's
+    // delete-issues step and delete-projects step, tripping the
+    // `issues_project_id_projects_id_fk` FK on the projects delete.
+    // Single TRUNCATE CASCADE drops every FK-related row in one shot and
+    // is immune to per-table ordering. Retry on 40P01 as defense-in-depth.
+    await db.execute(sql.raw(`
+      SELECT pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND state = 'idle in transaction'
+        AND pid <> pg_backend_pid()
+    `)).catch(() => undefined);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await db.execute(
+          sql.raw(`TRUNCATE TABLE "companies", "instance_settings" CASCADE`),
+        );
+        break;
+      } catch (err) {
+        const code = (err as { code?: string } | null)?.code;
+        if (code !== "40P01" || attempt === 2) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
   });
 
   afterAll(async () => {
@@ -325,7 +330,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
-  }, 15_000);
+  });
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
