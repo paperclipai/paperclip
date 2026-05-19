@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityEvent, IssueComment } from "@paperclipai/shared";
+import type {
+  ActivityEvent,
+  IssueComment,
+  IssueDocumentSummary,
+  IssueTreeObservability,
+  IssueValidationHistory,
+  IssueWorkProduct,
+} from "@paperclipai/shared";
 import type { RunForIssue } from "@/api/activity";
 import { buildReplayItems } from "./build-replay";
 
@@ -174,5 +181,152 @@ describe("buildReplayItems (LET-467)", () => {
 
     const fd = items.find((i) => i.id === "int:int-1");
     expect(fd?.summary ?? "").not.toContain("1234567890493");
+  });
+
+  it("redacts secret-shaped values from user-sourced titles in every replay category", () => {
+    const SECRET = "abc123def456ghi789jkl0mno1pqr2";
+    const BEARER = `Bearer ${SECRET}`;
+    const documents: IssueDocumentSummary[] = [
+      {
+        id: "d-secret",
+        companyId: "co",
+        issueId: "iss",
+        key: "plan",
+        title: BEARER,
+        format: "markdown",
+        latestRevisionId: "rev-1",
+        latestRevisionNumber: 1,
+        createdByAgentId: null,
+        createdByUserId: null,
+        updatedByAgentId: null,
+        updatedByUserId: null,
+        createdAt: new Date("2026-05-19T10:00:00Z"),
+        updatedAt: new Date("2026-05-19T11:00:00Z"),
+      },
+    ];
+    const workProducts: IssueWorkProduct[] = [
+      {
+        id: "wp-secret",
+        companyId: "co",
+        projectId: null,
+        issueId: "iss",
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "x",
+        title: BEARER,
+        url: null,
+        status: "active",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "unknown",
+        summary: null,
+        metadata: null,
+        createdByRunId: null,
+        createdAt: new Date("2026-05-19T09:30:00Z"),
+        updatedAt: new Date("2026-05-19T09:35:00Z"),
+      },
+    ];
+    const validation: IssueValidationHistory = {
+      issueId: "iss",
+      latest: null,
+      entries: [
+        {
+          id: "v-secret",
+          issueId: "iss",
+          source: "validator_report",
+          label: BEARER,
+          verdict: null,
+          completionScore: null,
+          report: null,
+          summary: null,
+          criteriaChecked: [],
+          evidence: [],
+          blockingIssues: [],
+          exactFixIfFailed: null,
+          stageId: null,
+          stageType: null,
+          decisionOutcome: null,
+          revisionNumber: null,
+          bodyPreview: null,
+          actorAgentId: null,
+          actorUserId: null,
+          createdByRunId: null,
+          createdAt: new Date("2026-05-19T10:30:00Z"),
+        },
+      ],
+    };
+    // Replay-side interaction titles are constructed from `interaction.kind`
+    // (or for final_delivery, `result.outcome`/`status`), not from the
+    // user-controlled `interaction.title` field — so they are safe by
+    // construction at the replay layer. Title-side redaction for interactions
+    // is exercised on the evidence layer instead (build-evidence.test.ts).
+    const commentWithTitleSecret: IssueComment = comment({
+      id: "c-title-secret",
+      body: "ok",
+      presentation: { title: BEARER } as IssueComment["presentation"],
+    });
+    const tree: IssueTreeObservability = {
+      issueId: "iss",
+      generatedAt: new Date("2026-05-19T12:30:00Z"),
+      summary: {
+        issueId: "iss",
+        issueCount: 0,
+        activeIssueCount: 0,
+        doneIssueCount: 0,
+        cancelledIssueCount: 0,
+        blockedIssueCount: 0,
+        runCount: 0,
+        activeRunCount: 0,
+        failedRunCount: 0,
+        errorEventCount: 0,
+        costCents: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        runtimeMs: 0,
+        lastActivityAt: null,
+      },
+      nodes: [],
+      blockerExplanations: [],
+      timeline: [
+        {
+          id: "t-secret",
+          kind: "run",
+          severity: "info",
+          issueId: "iss",
+          issueIdentifier: "LET-460",
+          issueTitle: "Mission",
+          runId: null,
+          timestamp: new Date("2026-05-19T11:10:00Z"),
+          label: BEARER,
+          message: null,
+          costCents: 0,
+        },
+      ],
+    };
+
+    const items = buildReplayItems({
+      documents,
+      workProducts,
+      validation,
+      comments: [commentWithTitleSecret],
+      treeObservability: tree,
+    });
+
+    const targetIds = [
+      "doc:d-secret",
+      "wp:wp-secret",
+      "val:v-secret",
+      "cmt:c-title-secret",
+      "tree:t-secret",
+    ];
+    for (const id of targetIds) {
+      const match = items.find((i) => i.id === id);
+      expect(match, `replay item ${id} should be present`).toBeDefined();
+      expect(match!.title).not.toContain(SECRET);
+      expect(match!.title.toLowerCase()).toContain("[redacted]");
+    }
   });
 });

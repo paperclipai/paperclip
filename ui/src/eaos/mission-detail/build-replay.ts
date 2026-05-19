@@ -17,7 +17,7 @@ import type {
 import { maskFinalDeliveryDestination } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import type { RunForIssue } from "@/api/activity";
-import { safeDisplayText } from "../secret-redact";
+import { redactSecretLikeText, safeDisplayText } from "../secret-redact";
 
 export type ReplayKind =
   | "run"
@@ -114,13 +114,14 @@ function commentReplayItem(comment: IssueComment): ReplayItem | null {
     id: `cmt:${comment.id}`,
     kind: "comment",
     timestamp: ts,
-    title:
+    title: redactSecretLikeText(
       comment.presentation?.title
-      ?? (comment.authorType === "agent"
-        ? "Agent comment"
-        : comment.authorType === "user"
-          ? "User comment"
-          : "System note"),
+        ?? (comment.authorType === "agent"
+          ? "Agent comment"
+          : comment.authorType === "user"
+            ? "User comment"
+            : "System note"),
+    ),
     summary: safeDisplayText(comment.body),
     actor: comment.authorAgentId
       ? `agent:${comment.authorAgentId}`
@@ -139,7 +140,7 @@ function documentReplayItem(doc: IssueDocumentSummary): ReplayItem | null {
     id: `doc:${doc.id}`,
     kind: "document",
     timestamp: ts,
-    title: `Document · ${doc.title ?? doc.key}`,
+    title: redactSecretLikeText(`Document · ${doc.title ?? doc.key}`),
     summary: `Revision ${doc.latestRevisionNumber}`,
     actor: null,
     state: null,
@@ -154,7 +155,7 @@ function workProductReplayItem(wp: IssueWorkProduct): ReplayItem | null {
     id: `wp:${wp.id}`,
     kind: "work_product",
     timestamp: ts,
-    title: `Work product · ${wp.title}`,
+    title: redactSecretLikeText(`Work product · ${wp.title}`),
     summary: safeDisplayText(wp.summary ?? null),
     actor: null,
     state: wp.status,
@@ -172,7 +173,7 @@ function validationReplayItems(history: IssueValidationHistory | null | undefine
       id: `val:${entry.id}`,
       kind: "validation",
       timestamp: ts,
-      title: `Validation · ${entry.verdict ?? entry.label}`,
+      title: redactSecretLikeText(`Validation · ${entry.verdict ?? entry.label}`),
       summary: safeDisplayText(entry.summary ?? entry.bodyPreview ?? null),
       actor: entry.actorAgentId
         ? `agent:${entry.actorAgentId}`
@@ -278,7 +279,7 @@ function treeReplayItems(tree: IssueTreeObservability | null | undefined): Repla
       id: `tree:${entry.id}`,
       kind: "tree_event",
       timestamp: ts,
-      title: `${entry.kind} · ${entry.label}`,
+      title: redactSecretLikeText(`${entry.kind} · ${entry.label}`),
       summary: safeDisplayText(entry.message ?? null),
       actor: null,
       state: entry.severity,

@@ -289,4 +289,165 @@ describe("buildEvidenceItems (LET-467)", () => {
     expect(found?.summary ?? "").not.toContain("abc123def456ghi789jkl0mno1");
     expect(found?.summary ?? "").toContain("[REDACTED]");
   });
+
+  it("redacts secret-shaped values from user-sourced titles in every evidence category", () => {
+    const SECRET = "abc123def456ghi789jkl0mno1pqr2";
+    const BEARER = `Bearer ${SECRET}`;
+    const docs: IssueDocumentSummary[] = [
+      {
+        id: "d-secret",
+        companyId: "co",
+        issueId: "iss",
+        key: "plan",
+        title: BEARER,
+        format: "markdown",
+        latestRevisionId: "rev-1",
+        latestRevisionNumber: 1,
+        createdByAgentId: null,
+        createdByUserId: null,
+        updatedByAgentId: null,
+        updatedByUserId: null,
+        createdAt: new Date("2026-05-19T10:00:00Z"),
+        updatedAt: new Date("2026-05-19T11:00:00Z"),
+      },
+    ];
+    const wps: IssueWorkProduct[] = [
+      {
+        id: "wp-secret",
+        companyId: "co",
+        projectId: null,
+        issueId: "iss",
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "x",
+        title: BEARER,
+        url: null,
+        status: "active",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "unknown",
+        summary: null,
+        metadata: null,
+        createdByRunId: null,
+        createdAt: new Date("2026-05-19T09:30:00Z"),
+        updatedAt: new Date("2026-05-19T09:35:00Z"),
+      },
+    ];
+    const validation: IssueValidationHistory = {
+      issueId: "iss",
+      latest: null,
+      entries: [
+        {
+          id: "v-secret",
+          issueId: "iss",
+          source: "validator_report",
+          label: BEARER,
+          verdict: "PASS",
+          completionScore: 9,
+          report: null,
+          summary: null,
+          criteriaChecked: [],
+          evidence: [],
+          blockingIssues: [],
+          exactFixIfFailed: null,
+          stageId: null,
+          stageType: null,
+          decisionOutcome: null,
+          revisionNumber: null,
+          bodyPreview: null,
+          actorAgentId: null,
+          actorUserId: null,
+          createdByRunId: null,
+          createdAt: new Date("2026-05-19T10:30:00Z"),
+        },
+      ],
+    };
+    const interactions: IssueThreadInteraction[] = [
+      {
+        id: "int-secret",
+        companyId: "co",
+        issueId: "iss",
+        kind: "user_question",
+        title: BEARER,
+        status: "open",
+        continuationPolicy: "none",
+        createdAt: new Date("2026-05-19T11:50:00Z").toISOString(),
+        updatedAt: new Date("2026-05-19T11:55:00Z").toISOString(),
+        resolvedAt: null,
+        summary: null,
+        payload: { version: 1 },
+        result: null,
+      } as unknown as IssueThreadInteraction,
+    ];
+    const commentWithTitleSecret: IssueComment = comment({
+      id: "c-title-secret",
+      body: "ok",
+      presentation: { title: BEARER } as IssueComment["presentation"],
+    });
+    const tree: IssueTreeObservability = {
+      issueId: "iss",
+      generatedAt: new Date("2026-05-19T12:30:00Z"),
+      summary: {
+        issueId: "iss",
+        issueCount: 0,
+        activeIssueCount: 0,
+        doneIssueCount: 0,
+        cancelledIssueCount: 0,
+        blockedIssueCount: 0,
+        runCount: 0,
+        activeRunCount: 0,
+        failedRunCount: 0,
+        errorEventCount: 0,
+        costCents: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        runtimeMs: 0,
+        lastActivityAt: null,
+      },
+      nodes: [],
+      blockerExplanations: [],
+      timeline: [
+        {
+          id: "t-secret",
+          kind: "run",
+          severity: "info",
+          issueId: "iss",
+          issueIdentifier: "LET-460",
+          issueTitle: "Mission",
+          runId: null,
+          timestamp: new Date("2026-05-19T11:10:00Z"),
+          label: BEARER,
+          message: null,
+          costCents: 0,
+        },
+      ],
+    };
+
+    const items = buildEvidenceItems({
+      documents: docs,
+      workProducts: wps,
+      validation,
+      interactions,
+      comments: [commentWithTitleSecret],
+      treeObservability: tree,
+    });
+
+    const targetIds = [
+      "doc:d-secret",
+      "wp:wp-secret",
+      "val:v-secret",
+      "int:int-secret",
+      "cmt:c-title-secret",
+      "tree:t-secret",
+    ];
+    for (const id of targetIds) {
+      const match = items.find((i) => i.id === id);
+      expect(match, `evidence item ${id} should be present`).toBeDefined();
+      expect(match!.title).not.toContain(SECRET);
+      expect(match!.title.toLowerCase()).toContain("[redacted]");
+    }
+  });
 });

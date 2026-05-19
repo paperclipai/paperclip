@@ -377,6 +377,107 @@ describe("MissionDetail (LET-467)", () => {
     }
   });
 
+  it("redacts secret-shaped values in the issue title and description before rendering", async () => {
+    const SECRET = "abc123def456ghi789jkl0mno1pqr2";
+    const BEARER = `Bearer ${SECRET}`;
+    issueGetMock.mockResolvedValue(
+      makeIssue({
+        title: BEARER,
+        description: `Final delivery uses Authorization: Bearer ${SECRET}`,
+      }),
+    );
+
+    await renderDetail();
+
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-mission-detail"]')).not.toBeNull();
+    });
+
+    // Header title must mask the bearer token.
+    const headerTitle = container?.querySelector(
+      '[data-testid="eaos-mission-detail-title"]',
+    );
+    expect(headerTitle?.textContent ?? "").not.toContain(SECRET);
+    expect(headerTitle?.textContent ?? "").toContain("[REDACTED]");
+
+    // Kernel/Admin escape-hatch aria-label uses identifier (no title fallback needed here),
+    // but title-as-text in the header is the most visible leak path — re-assert at the doc level.
+    expect(container?.textContent ?? "").not.toContain(SECRET);
+
+    // Overview description must also be redacted.
+    const desc = container?.querySelector(
+      '[data-testid="eaos-mission-overview-description"]',
+    );
+    expect(desc?.textContent ?? "").not.toContain(SECRET);
+    expect(desc?.textContent ?? "").toContain("[REDACTED]");
+  });
+
+  it("redacts secret-shaped values in evidence and replay item titles", async () => {
+    const SECRET = "abc123def456ghi789jkl0mno1pqr2";
+    const BEARER = `Bearer ${SECRET}`;
+    issueGetMock.mockResolvedValue(makeIssue());
+    workProductsMock.mockResolvedValue([
+      {
+        id: "wp-secret",
+        companyId: "company-1",
+        projectId: null,
+        issueId: "issue-uuid",
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "x",
+        title: BEARER,
+        url: null,
+        status: "active",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "unknown",
+        summary: null,
+        metadata: null,
+        createdByRunId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as IssueWorkProduct,
+    ]);
+    await renderDetail();
+
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-mission-detail"]')).not.toBeNull();
+    });
+
+    const evidenceTab = container?.querySelector(
+      '[data-testid="eaos-mission-detail-tab-evidence"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      evidenceTab?.click();
+    });
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-mission-evidence-item-wp:wp-secret"]')).not.toBeNull();
+    });
+
+    const evidenceItem = container?.querySelector(
+      '[data-testid="eaos-mission-evidence-item-wp:wp-secret"]',
+    );
+    expect(evidenceItem?.textContent ?? "").not.toContain(SECRET);
+    expect(evidenceItem?.textContent ?? "").toContain("[REDACTED]");
+
+    const replayTab = container?.querySelector(
+      '[data-testid="eaos-mission-detail-tab-replay"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      replayTab?.click();
+    });
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-mission-replay-item-wp:wp-secret"]')).not.toBeNull();
+    });
+    const replayItem = container?.querySelector(
+      '[data-testid="eaos-mission-replay-item-wp:wp-secret"]',
+    );
+    expect(replayItem?.textContent ?? "").not.toContain(SECRET);
+    expect(replayItem?.textContent ?? "").toContain("[REDACTED]");
+  });
+
   it("redacts secret-like text from comment bodies in the evidence panel", async () => {
     issueGetMock.mockResolvedValue(makeIssue());
     commentsMock.mockResolvedValue([

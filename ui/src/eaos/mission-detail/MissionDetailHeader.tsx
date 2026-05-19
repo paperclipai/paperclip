@@ -6,6 +6,7 @@
 import { Link } from "@/lib/router";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
+import { redactSecretLikeText } from "../secret-redact";
 import type { EaosStateLabel } from "../state-labels";
 
 interface MissionDetailHeaderProps {
@@ -78,6 +79,8 @@ export function MissionDetailHeader({
   const chip = statusChip(issue.status);
   const kernelHref = `/issues/${issue.identifier ?? issue.id}`;
   const isLive = hasActiveRun || liveRunCount > 0;
+  const safeTitle = redactSecretLikeText(issue.title);
+  const kernelAriaName = issue.identifier ?? safeTitle;
 
   return (
     <header
@@ -129,12 +132,12 @@ export function MissionDetailHeader({
             className="text-2xl font-semibold tracking-tight text-foreground"
             data-testid="eaos-mission-detail-title"
           >
-            {issue.title}
+            {safeTitle}
           </h1>
         </div>
         <Link
           to={kernelHref}
-          aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
+          aria-label={`Open Kernel/Admin view for ${kernelAriaName}`}
           data-testid="eaos-mission-detail-kernel-link"
           className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >

@@ -341,6 +341,46 @@ describe("MissionsLanding (LET-460 thin slice)", () => {
     });
   });
 
+  it("redacts secret-shaped values from row titles and aria-labels", async () => {
+    const SECRET = "abc123def456ghi789jkl0mno1pqr2";
+    const BEARER = `Bearer ${SECRET}`;
+    issuesListMock.mockResolvedValue([
+      makeIssue({
+        id: "issue-secret",
+        identifier: null,
+        title: BEARER,
+        status: "in_progress",
+      }),
+    ]);
+    agentsListMock.mockResolvedValue([]);
+    await renderMissions();
+
+    await waitForMicrotaskAssertion(() => {
+      const row = container?.querySelector('[data-testid="eaos-missions-row-issue-secret"]');
+      expect(row).not.toBeNull();
+    });
+
+    const row = container?.querySelector('[data-testid="eaos-missions-row-issue-secret"]');
+    expect(row?.textContent ?? "").not.toContain(SECRET);
+    expect(row?.textContent ?? "").toContain("[REDACTED]");
+
+    const primary = container?.querySelector(
+      '[data-testid="eaos-missions-row-detail-link-issue-secret"]',
+    );
+    expect(primary?.getAttribute("aria-label") ?? "").not.toContain(SECRET);
+    expect(primary?.getAttribute("aria-label") ?? "").toContain("[REDACTED]");
+
+    const secondary = container?.querySelector(
+      '[data-testid="eaos-missions-row-link-issue-secret"]',
+    );
+    expect(secondary?.getAttribute("aria-label") ?? "").not.toContain(SECRET);
+    expect(secondary?.getAttribute("aria-label") ?? "").toContain("[REDACTED]");
+
+    const titleParagraph = row?.querySelector('p[title]');
+    expect(titleParagraph?.getAttribute("title") ?? "").not.toContain(SECRET);
+    expect(titleParagraph?.getAttribute("title") ?? "").toContain("[REDACTED]");
+  });
+
   it("exposes accessible landmarks and a labeled filter toolbar", async () => {
     issuesListMock.mockResolvedValue([]);
     agentsListMock.mockResolvedValue([]);

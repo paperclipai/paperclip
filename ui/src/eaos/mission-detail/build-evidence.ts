@@ -20,7 +20,7 @@ import type {
 import { maskFinalDeliveryDestination } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import type { RunForIssue } from "@/api/activity";
-import { safeDisplayText } from "../secret-redact";
+import { redactSecretLikeText, safeDisplayText } from "../secret-redact";
 
 export type EvidenceTruthLabel =
   | "backend-backed"
@@ -67,7 +67,7 @@ export function buildDocumentEvidence(docs: ReadonlyArray<IssueDocumentSummary>)
   return docs.map((doc) => ({
     id: `doc:${doc.id}`,
     kind: "document",
-    title: doc.title ?? doc.key,
+    title: redactSecretLikeText(doc.title ?? doc.key),
     summary: `Revision ${doc.latestRevisionNumber} — ${doc.key}`,
     timestamp: toIsoString(doc.updatedAt) ?? toIsoString(doc.createdAt),
     actor: null,
@@ -81,7 +81,7 @@ export function buildWorkProductEvidence(items: ReadonlyArray<IssueWorkProduct>)
   return items.map((wp) => ({
     id: `wp:${wp.id}`,
     kind: "work_product",
-    title: wp.title,
+    title: redactSecretLikeText(wp.title),
     summary: safeDisplayText(wp.summary ?? null) ?? `${wp.type} · ${wp.provider}`,
     timestamp: toIsoString(wp.updatedAt) ?? toIsoString(wp.createdAt),
     actor: null,
@@ -96,7 +96,7 @@ export function buildValidationEvidence(history: IssueValidationHistory | undefi
   return history.entries.map((entry) => ({
     id: `val:${entry.id}`,
     kind: "validation",
-    title: entry.label || (entry.verdict ?? "Validator entry"),
+    title: redactSecretLikeText(entry.label || (entry.verdict ?? "Validator entry")),
     summary: safeDisplayText(entry.summary ?? entry.bodyPreview ?? null),
     timestamp: toIsoString(entry.createdAt),
     actor: entry.actorAgentId ? `agent:${entry.actorAgentId}` : entry.actorUserId ? `user:${entry.actorUserId}` : null,
@@ -135,7 +135,7 @@ export function buildInteractionEvidence(
       return {
         id: `int:${interaction.id}`,
         kind: "final_delivery",
-        title: interaction.title ?? "Final delivery",
+        title: redactSecretLikeText(interaction.title ?? "Final delivery"),
         summary: summaryParts.join(" · "),
         timestamp:
           toIsoString(interaction.resolvedAt) ?? toIsoString(interaction.updatedAt) ?? toIsoString(interaction.createdAt),
@@ -148,7 +148,7 @@ export function buildInteractionEvidence(
     return {
       id: `int:${interaction.id}`,
       kind: "interaction",
-      title: interaction.title ?? `Interaction · ${interaction.kind}`,
+      title: redactSecretLikeText(interaction.title ?? `Interaction · ${interaction.kind}`),
       summary: safeDisplayText(interaction.summary ?? null),
       timestamp:
         toIsoString(interaction.resolvedAt) ?? toIsoString(interaction.updatedAt) ?? toIsoString(interaction.createdAt),
@@ -216,13 +216,14 @@ export function buildCommentEvidence(items: ReadonlyArray<IssueComment>, limit =
   return items.slice(0, limit).map((comment) => ({
     id: `cmt:${comment.id}`,
     kind: "comment",
-    title:
+    title: redactSecretLikeText(
       comment.presentation?.title
-      ?? (comment.authorType === "agent"
-        ? "Agent comment"
-        : comment.authorType === "user"
-          ? "User comment"
-          : "System comment"),
+        ?? (comment.authorType === "agent"
+          ? "Agent comment"
+          : comment.authorType === "user"
+            ? "User comment"
+            : "System comment"),
+    ),
     summary: safeDisplayText(comment.body),
     timestamp: toIsoString(comment.createdAt),
     actor: comment.authorAgentId
@@ -241,7 +242,7 @@ export function buildTreeEventEvidence(tree: IssueTreeObservability | undefined 
   return tree.timeline.slice(0, limit).map((entry) => ({
     id: `tree:${entry.id}`,
     kind: "tree_event",
-    title: entry.label,
+    title: redactSecretLikeText(entry.label),
     summary: safeDisplayText(entry.message ?? null),
     timestamp: toIsoString(entry.timestamp),
     actor: null,

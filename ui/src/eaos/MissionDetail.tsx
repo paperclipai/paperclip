@@ -37,6 +37,7 @@ import { MissionEvidenceBoard } from "./mission-detail/MissionEvidenceBoard";
 import { MissionReplayFeed } from "./mission-detail/MissionReplayFeed";
 import { buildEvidenceItems } from "./mission-detail/build-evidence";
 import { buildReplayItems } from "./mission-detail/build-replay";
+import { safeDisplayText } from "./secret-redact";
 
 type DetailTab = "overview" | "evidence" | "replay" | "graph";
 
@@ -418,7 +419,12 @@ function MissionOverview({
       {issue.description ? (
         <details className="rounded-md border border-border bg-background p-3 text-xs">
           <summary className="cursor-pointer text-xs font-medium text-foreground">Mission description</summary>
-          <p className="mt-2 whitespace-pre-line text-xs text-foreground">{issue.description}</p>
+          <p
+            className="mt-2 whitespace-pre-line text-xs text-foreground"
+            data-testid="eaos-mission-overview-description"
+          >
+            {safeDisplayText(issue.description, 2000)}
+          </p>
         </details>
       ) : null}
     </section>

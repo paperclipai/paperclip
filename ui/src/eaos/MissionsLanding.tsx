@@ -7,6 +7,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { EaosStateChip } from "./EaosStateChip";
+import { redactSecretLikeText } from "./secret-redact";
 import {
   NOT_CONNECTED_DATA_LABEL,
   NOT_CONNECTED_DATA_NOTE,
@@ -358,6 +359,8 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
   // the company-aware wrapper by design because `/eaos` is a global product root.
   const eaosDetailHref = String(missionRef);
   const kernelDetailHref = `/issues/${missionRef}`;
+  const safeTitle = redactSecretLikeText(issue.title);
+  const linkAriaName = issue.identifier ?? safeTitle;
 
   return (
     <li
@@ -395,14 +398,14 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
               </span>
             ) : null}
           </div>
-          <p className="truncate text-sm font-medium text-foreground" title={issue.title}>
-            {issue.title}
+          <p className="truncate text-sm font-medium text-foreground" title={safeTitle}>
+            {safeTitle}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           <Link
             to={eaosDetailHref}
-            aria-label={`Open EAOS mission detail for ${issue.identifier ?? issue.title}`}
+            aria-label={`Open EAOS mission detail for ${linkAriaName}`}
             data-testid={`eaos-missions-row-detail-link-${issue.id}`}
             className="inline-flex items-center gap-1 rounded-md border border-foreground bg-foreground px-2 py-1 text-xs font-medium text-background transition-colors hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
@@ -411,7 +414,7 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
           </Link>
           <Link
             to={kernelDetailHref}
-            aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
+            aria-label={`Open Kernel/Admin view for ${linkAriaName}`}
             data-testid={`eaos-missions-row-link-${issue.id}`}
             className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
