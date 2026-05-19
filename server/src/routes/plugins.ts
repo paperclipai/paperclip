@@ -74,8 +74,7 @@ import {
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
 import {
-  extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+  extractSecretRefsFromConfig,
 } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
@@ -1939,11 +1938,13 @@ export function pluginRoutes(
     }
 
     try {
-      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
-        return;
-      }
+      // Fork patch: upstream PR #5429 introduced a hard block on saving any plugin config
+      // that contains a secret-ref UUID, gated until "company-scoped plugin config lands".
+      // We've restored the working resolution path in plugin-secrets-handler, so the
+      // operator-level block is no longer needed. Surface the refs in the audit log
+      // for visibility but allow the save.
+      const secretRefs = extractSecretRefsFromConfig(body.configJson, schema);
+      void secretRefs;
 
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,

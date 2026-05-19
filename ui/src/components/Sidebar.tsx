@@ -4,6 +4,7 @@ import {
   Target,
   LayoutDashboard,
   DollarSign,
+  FileText,
   History,
   Search,
   SquarePen,
@@ -112,6 +113,7 @@ export function Sidebar() {
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
+          <SidebarNavItem to="/documents" label="Documents" icon={FileText} />
         </SidebarSection>
 
         <SidebarProjects />

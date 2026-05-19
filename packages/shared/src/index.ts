@@ -445,6 +445,7 @@ export type {
   IssueThreadInteractionResult,
   IssueDocument,
   IssueDocumentSummary,
+  CompanyDocumentListItem,
   DocumentRevision,
   DocumentFormat,
   LegacyPlanDocument,

@@ -107,6 +107,25 @@ export interface IssueDocument extends IssueDocumentSummary {
   body: string;
 }
 
+/**
+ * A row in the company-wide Documents list. Joins document metadata with
+ * the parent issue so the UI can render a single-line entry without an
+ * extra round trip per row.
+ *
+ * Used by `GET /api/companies/:companyId/documents`.
+ */
+export interface CompanyDocumentListItem extends IssueDocumentSummary {
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: IssueStatus;
+    originKind: IssueOriginKind;
+    projectId: string | null;
+    project: IssueAncestorProject | null;
+  };
+}
+
 export interface DocumentRevision {
   id: string;
   companyId: string;
