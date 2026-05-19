@@ -483,7 +483,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
-    if (!trigger) return null;
+    if (!trigger || trigger === "long_active_duration") return null;
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);

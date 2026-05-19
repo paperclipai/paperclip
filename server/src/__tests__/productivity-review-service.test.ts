@@ -337,7 +337,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
-  it("creates a long-active review without enabling a continuation hold", async () => {
+  it("does not create review issues for long-active duration alone", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
@@ -353,10 +353,9 @@ describeEmbeddedPostgres("productivity review service", () => {
       now,
     });
 
-    expect(result.created).toBe(1);
-    const [review] = await listProductivityReviews(seeded.companyId);
-    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
-    expect(review?.priority).toBe("medium");
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
     expect(hold.held).toBe(false);
   });
 
