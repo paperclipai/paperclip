@@ -4053,6 +4053,8 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+          // Don't send mention wakes on issues that are closed and weren't reopened by this request
+          if (isClosed && !reopened) continue;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
@@ -5108,6 +5110,8 @@ export function issueRoutes(
       for (const mentionedId of mentionedIds) {
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
+        // Don't send mention wakes on issues that are closed and weren't reopened by this request
+        if (isClosed && !reopened) continue;
         wakeups.set(mentionedId, {
           source: "automation",
           triggerDetail: "system",
