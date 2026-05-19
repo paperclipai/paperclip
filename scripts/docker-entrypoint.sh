@@ -61,6 +61,17 @@ if [ -f /opt/hermes/scripts/skills_sync.py ]; then
     /opt/hermes/.venv/bin/python /opt/hermes/scripts/skills_sync.py >/dev/null 2>&1 || true
 fi
 
+# Keep Hermes provider dependencies resilient across upstream image changes.
+# Some Hermes images may omit a `pip` launcher in `.venv/bin`; install via
+# `python -m pip` on startup when `anthropic` is missing.
+if [ -x /opt/hermes/.venv/bin/python ]; then
+    if ! /opt/hermes/.venv/bin/python -c "import anthropic" >/dev/null 2>&1; then
+        echo "Installing missing Hermes dependency: anthropic>=0.39.0"
+        /opt/hermes/.venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
+        /opt/hermes/.venv/bin/python -m pip install --no-cache-dir "anthropic>=0.39.0"
+    fi
+fi
+
 chown -R node:node "$HERMES_HOME"
 
 exec gosu node "$@"
