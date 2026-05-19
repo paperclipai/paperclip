@@ -1330,9 +1330,13 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, agent.companyId);
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
+    // Non-self agent JWTs never see adapterConfig (prevents secret harvesting).
+    // Only board actors with config-read permission or the agent's own JWT may see it.
     const canReadSensitiveDetail = isSelf
       ? true
-      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
+      : req.actor.type === "board"
+        ? await actorCanReadConfigurationsForCompany(req, agent.companyId)
+        : false;
     if (!canReadSensitiveDetail) {
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
