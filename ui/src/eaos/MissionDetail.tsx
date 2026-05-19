@@ -15,7 +15,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "@/lib/router";
+import { Link, useLocation, useParams } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { agentsApi } from "@/api/agents";
@@ -47,10 +47,23 @@ const TABS: ReadonlyArray<{ id: DetailTab; label: string }> = [
   { id: "graph", label: "Graph & discussion" },
 ];
 
+function missionListHrefFromPathname(pathname: string): string {
+  const missionRoute = "/eaos/missions";
+  const routeIndex = pathname.indexOf(missionRoute);
+  if (routeIndex === -1) {
+    return missionRoute;
+  }
+
+  const prefix = pathname.slice(0, routeIndex);
+  return `${prefix}${missionRoute}`;
+}
+
 export function MissionDetail() {
   const { missionRef } = useParams<{ missionRef?: string }>();
+  const { pathname } = useLocation();
   const { selectedCompanyId } = useCompany();
   const [tab, setTab] = useState<DetailTab>("overview");
+  const missionListHref = missionListHrefFromPathname(pathname);
 
   const trimmedRef = missionRef ? missionRef.trim() : "";
   const isResolvable = trimmedRef.length > 0;
@@ -215,6 +228,7 @@ export function MissionDetail() {
   if (!selectedCompanyId) {
     return (
       <DetailEmptyShell
+        missionListHref={missionListHref}
         testId="eaos-mission-detail-no-company"
         title="No company scope selected"
         body="Select a company in the workspace switcher to load this mission."
@@ -225,6 +239,7 @@ export function MissionDetail() {
   if (!isResolvable) {
     return (
       <DetailEmptyShell
+        missionListHref={missionListHref}
         testId="eaos-mission-detail-invalid-ref"
         title="Mission reference is missing"
         body="The route did not provide an issue identifier or UUID."
@@ -239,6 +254,7 @@ export function MissionDetail() {
   if (issueQuery.isError || !issue) {
     return (
       <DetailNotFound
+        missionListHref={missionListHref}
         missionRef={trimmedRef}
         onRetry={() => issueQuery.refetch()}
       />
@@ -501,7 +517,17 @@ function DetailLoading() {
   );
 }
 
-function DetailEmptyShell({ title, body, testId }: { title: string; body: string; testId: string }) {
+function DetailEmptyShell({
+  title,
+  body,
+  testId,
+  missionListHref,
+}: {
+  title: string;
+  body: string;
+  testId: string;
+  missionListHref: string;
+}) {
   return (
     <section
       aria-labelledby="eaos-mission-detail-empty-title"
@@ -525,7 +551,7 @@ function DetailEmptyShell({ title, body, testId }: { title: string; body: string
       <p className="max-w-2xl text-sm text-muted-foreground">{body}</p>
       <p className="text-xs text-muted-foreground">
         <Link
-          to="/eaos/missions"
+          to={missionListHref}
           data-testid="eaos-mission-detail-back-to-missions"
           className="underline-offset-2 hover:underline"
         >
@@ -536,7 +562,15 @@ function DetailEmptyShell({ title, body, testId }: { title: string; body: string
   );
 }
 
-function DetailNotFound({ missionRef, onRetry }: { missionRef: string; onRetry: () => void }) {
+function DetailNotFound({
+  missionRef,
+  missionListHref,
+  onRetry,
+}: {
+  missionRef: string;
+  missionListHref: string;
+  onRetry: () => void;
+}) {
   return (
     <section
       aria-labelledby="eaos-mission-detail-not-found-title"
@@ -571,7 +605,7 @@ function DetailNotFound({ missionRef, onRetry }: { missionRef: string; onRetry: 
           Retry
         </button>
         <Link
-          to="/eaos/missions"
+          to={missionListHref}
           data-testid="eaos-mission-detail-not-found-back"
           className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >

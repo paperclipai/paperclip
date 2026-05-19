@@ -16,15 +16,27 @@ const BOARD_ROUTE_ROOTS = new Set([
   "usage",
   "activity",
   "observability",
-  "agent-os",
-  "eaos",
   "inbox",
   "u",
   "design-guide",
   "search",
 ]);
 
-const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
+// LET-415: `/eaos` and `/agent-os` are board-level/product routes, not company
+// subviews. They render the full-screen Enterprise Agent OS shell outside the
+// Paperclip board Layout chrome and must NOT be auto-prefixed with the active
+// company prefix. Keep them in GLOBAL_ROUTE_ROOTS so applyCompanyPrefix("/eaos")
+// returns "/eaos" untouched.
+const GLOBAL_ROUTE_ROOTS = new Set([
+  "auth",
+  "invite",
+  "board-claim",
+  "cli-auth",
+  "docs",
+  "instance",
+  "eaos",
+  "agent-os",
+]);
 
 export function normalizeCompanyPrefix(prefix: string): string {
   return prefix.trim().toUpperCase();

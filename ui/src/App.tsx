@@ -50,6 +50,7 @@ import { OrgChart } from "./pages/OrgChart";
 import { AgentOs } from "./pages/AgentOs";
 import { Eaos } from "./pages/Eaos";
 import { EaosShell } from "./eaos/EaosShell";
+import { EaosProductLayout } from "./eaos/EaosProductLayout";
 import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
 import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
 import { MissionsLanding } from "./eaos/MissionsLanding";
@@ -87,49 +88,16 @@ function boardRoutes() {
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
-      <Route path="agent-os" element={<AgentOs />} />
       {/*
-        LET-372 canonical /eaos shell. EaosShell owns the inner banner /
-        navigation / region / contentinfo landmarks; the existing Paperclip
-        Layout still owns the page-level <main>. Sandbox / Runtime mounts
-        the read-only LET-326 dashboard. Other primary-nav zones render the
-        LET-187 zone placeholder until their read models are wired.
+        LET-415: `/agent-os` and `/eaos` are NOT board sub-routes — they are
+        top-level full-screen product routes mounted outside the Paperclip
+        Layout (see App() Routes below). Hitting them under a company prefix
+        is a stale URL; redirect back to the canonical unprefixed shell.
       */}
-      <Route path="eaos" element={<EaosShell variant="eaos" />}>
-        <Route index element={<CommandCenterLanding />} />
-        <Route path="sandbox" element={<Eaos />} />
-        <Route path="missions" element={<MissionsLanding />} />
-        {/*
-          LET-467 — EAOS Mission detail under the canonical full-screen
-          EaosShell. `missionRef` accepts either an issue UUID or an
-          identifier (e.g. `LET-460`); resolution uses the same /issues/:id
-          endpoint as Kernel/Admin. Read-only thin slice: no approval,
-          deploy, release, runtime, spend, secret, or external write
-          controls — escape hatch into Kernel/Admin remains available.
-        */}
-        <Route path="missions/:missionRef" element={<MissionDetail />} />
-        {EAOS_PRIMARY_NAV.filter(
-          (zone) =>
-            zone.path !== "/eaos"
-            && zone.path !== "/eaos/sandbox"
-            && zone.path !== "/eaos/missions",
-        ).map((zone) => (
-          <Route
-            key={zone.id}
-            path={zone.path.replace(/^\/eaos\//, "")}
-            element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
-          />
-        ))}
-        <Route
-          path="*"
-          element={
-            <EaosZonePlaceholder
-              title="Coming soon"
-              description="This zone is referenced by the shell but not yet wired to a read model or page."
-            />
-          }
-        />
-      </Route>
+      <Route path="agent-os" element={<Navigate to="/agent-os" replace />} />
+      <Route path="agent-os/*" element={<Navigate to="/agent-os" replace />} />
+      <Route path="eaos" element={<Navigate to="/eaos" replace />} />
+      <Route path="eaos/*" element={<EaosCompanyPrefixRedirect />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -195,6 +163,20 @@ function boardRoutes() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+// LET-415: legacy `/<companyPrefix>/eaos/...` URLs collapse to the
+// unprefixed top-level shell. Preserves the sub-path so deep links such as
+// `/PAP/eaos/sandbox` still resolve to `/eaos/sandbox`.
+function EaosCompanyPrefixRedirect() {
+  const location = useLocation();
+  const suffix = location.pathname.replace(/^\/[^/]+\/eaos/, "");
+  return (
+    <Navigate
+      to={`/eaos${suffix}${location.search}${location.hash}`}
+      replace
+    />
+  );
 }
 
 function LegacySettingsRedirect() {
@@ -377,8 +359,58 @@ export function App() {
           <Route path="inbox/*" element={<UnprefixedBoardRedirect />} />
           <Route path="search" element={<UnprefixedBoardRedirect />} />
           <Route path="org" element={<UnprefixedBoardRedirect />} />
-          <Route path="agent-os/*" element={<UnprefixedBoardRedirect />} />
-          <Route path="eaos/*" element={<UnprefixedBoardRedirect />} />
+          {/*
+            LET-415: `/eaos` and `/agent-os` mount the full-screen Enterprise
+            Agent OS product shell. They sit OUTSIDE the company-prefixed
+            Layout (no Paperclip board sidebar / breadcrumb / properties
+            panel / LET frame). EaosShell owns the inner banner / nav /
+            region / contentinfo landmarks; EaosProductLayout provides the
+            page-level <main> landmark + command palette + toast viewport +
+            dev banners. Sandbox / Runtime is mounted as a child zone, not as
+            the whole product surface.
+          */}
+          <Route path="agent-os" element={<EaosProductLayout />}>
+            <Route index element={<AgentOs />} />
+          </Route>
+          <Route path="eaos" element={<EaosProductLayout />}>
+            <Route element={<EaosShell variant="eaos" />}>
+              <Route index element={<CommandCenterLanding />} />
+              <Route path="sandbox" element={<Eaos />} />
+              <Route path="missions" element={<MissionsLanding />} />
+              {/*
+                LET-467 — EAOS Mission detail under the canonical full-screen
+                EaosShell. `missionRef` accepts either an issue UUID or an
+                identifier (e.g. `LET-460`); resolution uses the same /issues/:id
+                endpoint as Kernel/Admin. Read-only thin slice: no approval,
+                deploy, release, runtime, spend, secret, or external write
+                controls — escape hatch into Kernel/Admin remains available.
+              */}
+              <Route path="missions/:missionRef" element={<MissionDetail />} />
+              {EAOS_PRIMARY_NAV.filter(
+                (zone) =>
+                  zone.path !== "/eaos"
+                  && zone.path !== "/eaos/sandbox"
+                  && zone.path !== "/eaos/missions",
+              ).map((zone) => (
+                <Route
+                  key={zone.id}
+                  path={zone.path.replace(/^\/eaos\//, "")}
+                  element={
+                    <EaosZonePlaceholder title={zone.label} description={zone.description} />
+                  }
+                />
+              ))}
+              <Route
+                path="*"
+                element={
+                  <EaosZonePlaceholder
+                    title="Coming soon"
+                    description="This zone is referenced by the shell but not yet wired to a read model or page."
+                  />
+                }
+              />
+            </Route>
+          </Route>
           <Route path="design-guide" element={<UnprefixedBoardRedirect />} />
           <Route path="observability" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>

@@ -43,32 +43,34 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/observability")).toBe("/observability");
   });
 
-  it("treats /agent-os as a board route, not as a company prefix", () => {
-    expect(isBoardPathWithoutPrefix("/agent-os")).toBe(true);
+  it("treats /agent-os as a top-level product route, not a board route or company prefix (LET-415)", () => {
+    // LET-415: /agent-os is the standalone Enterprise Agent OS surface and
+    // must render full-screen without the Paperclip board Layout chrome. The
+    // route is global — not auto-prefixed by company and not treated as a
+    // board sub-path.
+    expect(isBoardPathWithoutPrefix("/agent-os")).toBe(false);
     expect(extractCompanyPrefixFromPath("/agent-os")).toBeNull();
     expect(extractCompanyPrefixFromPath("/agent-os/goals")).toBeNull();
-    expect(applyCompanyPrefix("/agent-os", "PAP")).toBe("/PAP/agent-os");
+    expect(applyCompanyPrefix("/agent-os", "PAP")).toBe("/agent-os");
     expect(applyCompanyPrefix("/goals", "AGENT-OS")).toBe("/AGENT-OS/goals");
-    expect(toCompanyRelativePath("/PAP/agent-os")).toBe("/agent-os");
   });
 
-  it("treats /eaos as a board route, not as a company prefix", () => {
-    expect(isBoardPathWithoutPrefix("/eaos")).toBe(true);
+  it("treats /eaos as a top-level product route, not a board route or company prefix (LET-415)", () => {
+    // LET-415: /eaos is the canonical full-screen Enterprise Agent OS shell.
+    // It must NOT be auto-prefixed by company — outer chrome (sidebar,
+    // breadcrumb, LET frame) does not wrap it, and shell links such as
+    // `/eaos/approvals` must stay unprefixed regardless of the active company.
+    expect(isBoardPathWithoutPrefix("/eaos")).toBe(false);
     expect(extractCompanyPrefixFromPath("/eaos")).toBeNull();
     expect(extractCompanyPrefixFromPath("/eaos/runtime")).toBeNull();
     expect(extractCompanyPrefixFromPath("/EAOS")).toBeNull();
-    expect(applyCompanyPrefix("/eaos", "PAP")).toBe("/PAP/eaos");
-    expect(applyCompanyPrefix("/eaos?tab=leases", "PAP")).toBe("/PAP/eaos?tab=leases");
-    expect(applyCompanyPrefix("/PAP/eaos", "PAP")).toBe("/PAP/eaos");
-    expect(toCompanyRelativePath("/PAP/eaos")).toBe("/eaos");
-    expect(toCompanyRelativePath("/PAP/eaos?tab=leases")).toBe("/eaos?tab=leases");
+    expect(applyCompanyPrefix("/eaos", "PAP")).toBe("/eaos");
+    expect(applyCompanyPrefix("/eaos?tab=leases", "PAP")).toBe("/eaos?tab=leases");
   });
 
-  it("treats LET-372 /eaos shell sub-routes as board paths under the active company prefix", () => {
-    // Canonical shell zones (LET-181/LET-334 nav-zones) must keep working
-    // as board sub-paths so /<companyPrefix>/eaos/sandbox etc. resolve into
-    // the EaosShell child <Outlet/> instead of being treated as a company
-    // prefix.
+  it("keeps EAOS shell sub-paths global so the shell renders full-screen (LET-415)", () => {
+    // LET-372 nav-zones live under /eaos/* — they must inherit the same
+    // full-screen, unprefixed behavior as /eaos itself.
     for (const sub of [
       "/eaos/sandbox",
       "/eaos/projects",
@@ -80,10 +82,9 @@ describe("company routes", () => {
       "/eaos/knowledge",
       "/eaos/admin",
     ]) {
-      expect(isBoardPathWithoutPrefix(sub)).toBe(true);
+      expect(isBoardPathWithoutPrefix(sub)).toBe(false);
       expect(extractCompanyPrefixFromPath(sub)).toBeNull();
-      expect(applyCompanyPrefix(sub, "PAP")).toBe(`/PAP${sub}`);
-      expect(toCompanyRelativePath(`/PAP${sub}`)).toBe(sub);
+      expect(applyCompanyPrefix(sub, "PAP")).toBe(sub);
     }
   });
 });

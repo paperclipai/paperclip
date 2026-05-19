@@ -352,7 +352,11 @@ function MissionRow({ issue, agents }: { issue: Issue; agents: Agent[] }) {
   // LET-467 — primary action opens the EAOS Mission detail surface under the
   // canonical shell; Kernel/Admin is demoted to a secondary escape hatch.
   const missionRef = issue.identifier ?? issue.id;
-  const eaosDetailHref = `/eaos/missions/${missionRef}`;
+  // Keep the primary CTA route-relative so the same Missions surface works under
+  // both canonical global `/eaos/missions` and legacy/company-scoped
+  // `/:companyPrefix/eaos/missions` mounts. Absolute `/eaos/...` links bypass
+  // the company-aware wrapper by design because `/eaos` is a global product root.
+  const eaosDetailHref = String(missionRef);
   const kernelDetailHref = `/issues/${missionRef}`;
 
   return (
