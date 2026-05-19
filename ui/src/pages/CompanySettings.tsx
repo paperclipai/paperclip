@@ -130,7 +130,7 @@ export function CompanySettings() {
       }
       setInviteSnippet(snippet);
       try {
-        await navigator.clipboard.writeText(snippet);
+        await copyTextWithFallback(snippet);
         setSnippetCopied(true);
         setSnippetCopyDelightId((prev) => prev + 1);
         setTimeout(() => setSnippetCopied(false), 2000);
@@ -492,7 +492,7 @@ export function CompanySettings() {
                     variant="ghost"
                     onClick={async () => {
                       try {
-                        await navigator.clipboard.writeText(inviteSnippet);
+                        await copyTextWithFallback(inviteSnippet);
                         setSnippetCopied(true);
                         setSnippetCopyDelightId((prev) => prev + 1);
                         setTimeout(() => setSnippetCopied(false), 2000);

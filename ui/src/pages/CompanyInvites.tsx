@@ -64,7 +64,7 @@ export function CompanyInvites() {
   async function copyInviteUrl(url: string) {
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
+        await copyTextWithFallback(url);
         return true;
       }
     } catch {
