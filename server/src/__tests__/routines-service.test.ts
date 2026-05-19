@@ -1510,4 +1510,52 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("closes a stranded sibling (terminal execution run, non-null executionRunId) before creating a fresh issue", async () => {
+    // Use a no-op wakeup to avoid a connection-level deadlock: the stranded-sibling
+    // close (txDb.update) + nested issueSvc.create savepoint + wakeup's db.update
+    // in the same transaction chain can deadlock when using the same pg connection.
+    // We only care that the stranded issue is closed, not that the wakeup fires.
+    const { agentId, companyId, routine, svc } = await seedFixture({
+      wakeup: async (_agentId, _wakeupOpts) => ({ id: randomUUID() }),
+    });
+
+    const terminalHeartbeatRunId = randomUUID();
+
+    // First dispatch creates the issue with the correct dispatch fingerprint.
+    const firstRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(firstRun.status).toBe("issue_created");
+    const strandedIssueId = firstRun.linkedIssueId!;
+
+    // Manually wire a terminal heartbeat run so findLiveExecutionIssue won't see
+    // the issue as active, but executionRunId remains non-null — the "stranded" state.
+    await db.insert(heartbeatRuns).values({
+      id: terminalHeartbeatRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      contextSnapshot: { issueId: strandedIssueId },
+      startedAt: new Date(),
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: terminalHeartbeatRunId, executionLockedAt: new Date() })
+      .where(eq(issues.id, strandedIssueId));
+
+    // Second dispatch: should auto-close the stranded issue and create a fresh one.
+    const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(secondRun.status).toBe("issue_created");
+    expect(secondRun.linkedIssueId).not.toBe(strandedIssueId);
+
+    const [closedStranded] = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, strandedIssueId));
+
+    expect(closedStranded?.status).toBe("done");
+    expect(closedStranded?.executionRunId).toBeNull();
+  });
 });
