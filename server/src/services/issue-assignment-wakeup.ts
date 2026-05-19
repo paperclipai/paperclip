@@ -26,6 +26,10 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  /** Merged shallowly onto the default `{ issueId, mutation }` wakeup payload */
+  payloadExtras?: Record<string, unknown>;
+  /** Merged shallowly onto the default `{ issueId, source }` context snapshot */
+  contextSnapshotExtras?: Record<string, unknown>;
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -35,10 +39,10 @@ export function queueIssueAssignmentWakeup(input: {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,
-      payload: { issueId: input.issue.id, mutation: input.mutation },
+      payload: { issueId: input.issue.id, mutation: input.mutation, ...(input.payloadExtras ?? {}) },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
-      contextSnapshot: { issueId: input.issue.id, source: input.contextSource },
+      contextSnapshot: { issueId: input.issue.id, source: input.contextSource, ...(input.contextSnapshotExtras ?? {}) },
     })
     .catch((err) => {
       logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
