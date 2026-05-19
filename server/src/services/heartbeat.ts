@@ -8972,7 +8972,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // Skip dispatch when this run was cancelled. `cancelRunInternal`
+          // already calls `startNextQueuedRunForAgent` when it cancels a run,
+          // so the finally-block dispatch is a duplicate that races with the
+          // cancel-path dispatch. Lease and runtime-services cleanup above
+          // run unconditionally — those are correctness paths and must
+          // complete regardless of how the run ended.
+          //
+          // Re-read status immediately before the decision: the `latestRun`
+          // captured at the top of `finally` can be stale by hundreds of ms
+          // (lease + runtime-service release + lifecycle-hook scheduling all
+          // happen in between), and a concurrent `cancelRunInternal` may
+          // have flipped the row in that window.
+          //
+          // Fail-safe on read error: if we cannot read the status, do NOT
+          // dispatch. Under DB instability, dispatching blindly re-opens the
+          // exact duplicate-dispatch race this gate exists to prevent. The
+          // cost of skipping is a brief queue-latency increase until the
+          // next wake-cycle picks up the queued run; the cost of double
+          // dispatch is double lease release + double runtime-service
+          // cleanup, which is worse.
+          let dispatchSkipReason: "cancelled" | "read-failed" | null = null;
+          try {
+            const statusForDispatch = (await getRun(run.id))?.status;
+            if (statusForDispatch === "cancelled") {
+              dispatchSkipReason = "cancelled";
+            }
+          } catch (err) {
+            dispatchSkipReason = "read-failed";
+            logger.error(
+              { err, runId: run.id, agentId: run.agentId },
+              "executeRun finally could not read run status for dispatch decision; skipping dispatch as fail-safe",
+            );
+          }
+          if (dispatchSkipReason === null) {
+            await startNextQueuedRunForAgent(run.agentId);
+          }
         }
   }
 
@@ -10703,6 +10738,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
      */
     __test_unsafelyTrackActiveRunExecution: (runId: string) =>
       activeRunExecutions.add(runId),
+
+    /**
+     * Test-only awaitable handle on `executeRun`. Production callers fire
+     * `executeRun` as `void executeRun(runId).catch(...)` from inside
+     * `startNextQueuedRunForAgent` (heartbeat.ts ~line 7376), which means the
+     * surrounding code never observes when the run's finally block has
+     * completed. Tests that want to assert post-finalization invariants (e.g.
+     * "the next queued run wasn't dispatched because this one was cancelled")
+     * need a deterministic await point. Returning the bare promise makes that
+     * assertion possible without changing production fire-and-forget
+     * semantics. Do not call from production code.
+     */
+    __test_executeRunForTesting: (runId: string) => executeRun(runId),
 
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
