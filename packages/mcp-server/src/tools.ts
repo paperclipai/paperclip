@@ -650,9 +650,7 @@ export function createToolDefinitions(client: PaperclipApiClient, notionApiKey: 
           responseBody = rawText;
         }
         if (!response.ok) {
-          throw new Error(
-            `Notion API POST /v1/comments failed with ${response.status}: ${JSON.stringify(responseBody)}`,
-          );
+          throw new Error(`Notion API POST /v1/comments failed with ${response.status}: ${rawText}`);
         }
         return responseBody;
       },
