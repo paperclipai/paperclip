@@ -78,6 +78,25 @@ export interface RunWatchdog {
 }
 
 /**
+ * Format a millisecond duration as a compact human-readable string
+ * (e.g. 7_200_000 → "2h", 90_000 → "1m 30s"). Operator-facing timeout
+ * messages read in ms are unparseable at a glance — surface h/m/s instead.
+ */
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return `${ms}ms`;
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0) parts.push(`${seconds}s`);
+  return parts.join(" ") || "0s";
+}
+
+/**
  * Build a watchdog that races `adapter.execute`. The returned `promise` rejects
  * when either the timeout fires or `abort()` is called externally (e.g. by the
  * reaper after detecting a dead child PID). `cleanup()` clears the timer; call
@@ -100,7 +119,7 @@ export function createRunWatchdog(opts: {
     reject(Object.assign(new Error(reason), { code: "watchdog_aborted" }));
   };
   const timer = setTimeout(
-    () => abort(`adapter execute exceeded hard timeout (${opts.timeoutMs}ms)`),
+    () => abort(`adapter execute exceeded hard timeout (${formatDurationMs(opts.timeoutMs)})`),
     opts.timeoutMs,
   );
   return {
