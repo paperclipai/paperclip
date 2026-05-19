@@ -27,6 +27,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { createCodeBuddyStreamLogHandler } from "./stream-liveness.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -254,7 +255,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
-  const outputFormat = asString(config.outputFormat, "json");
+  const outputFormat = asString(config.outputFormat, "stream-json");
+  const includePartialMessages = asBoolean(config.includePartialMessages, false);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const extraArgs = asStringArray(config.extraArgs);
   const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
@@ -436,6 +438,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push("--system-prompt-file", effectiveInstructionsPath);
   }
 
+  if (includePartialMessages && outputFormat === "stream-json") {
+    args.push("--include-partial-messages");
+  }
+
   if (extraArgs.length > 0) {
     args.push(...extraArgs);
   }
@@ -472,26 +478,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // ---- Execute ----
-  // DEBUG: Log spawn details for troubleshooting STATUS_DLL_INIT_FAILED
   const fs = await import("node:fs");
-  const logPath = path.join(process.cwd(), ".paperclip-debug-spawn.log");
-  const debugLog = {
-    timestamp: new Date().toISOString(),
-    runId,
-    command,
-    args,
-    cwd,
-    envKeys: Object.keys(env).filter(k => k === 'PATH' || k === 'SystemRoot' || k === 'WINDIR' || k === 'ComSpec' || k === 'PATHEXT' || k === 'TEMP' || k === 'TMP' || k.startsWith('CODEBUDDY_') || k.startsWith('PAPERCLIP_')),
-    pathVal: env.PATH?.slice(0, 500),
-    systemRoot: env.SystemRoot,
-    windir: env.WINDIR,
-    comspec: env.ComSpec,
-    pathext: env.PATHEXT,
-    nodeOptions: env.NODE_OPTIONS,
-    nodeVersion: process.version,
-  };
-  fs.writeFileSync(logPath, JSON.stringify(debugLog, null, 2) + "\n", "utf-8");
-  // END DEBUG
 
   // Plan A: On Windows, bypass cmd.exe wrapping to avoid STATUS_DLL_INIT_FAILED
   // caused by @lydell/node-pty/conpty.node failing in a non-console process tree.
@@ -523,6 +510,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  const isStreamJson = outputFormat === "stream-json";
+  const streamLog = createCodeBuddyStreamLogHandler({ runId, onLog, graceSec });
+
   const proc = await runChildProcess(runId, spawnCommand, spawnArgs, {
     cwd,
     env,
@@ -530,11 +520,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     onSpawn,
-    onLog,
+    onLog: streamLog.onLog,
+    terminalResultCleanup: isStreamJson
+      ? {
+          graceMs: asNumber(config.terminalResultCleanupGraceMs, 5_000),
+          hasTerminalResult: ({ stdout, stderr }) =>
+            stdout.includes('"type":"result"') || stderr.includes('"type":"result"'),
+        }
+      : undefined,
   });
+  await streamLog.flush();
+
+  const fatalStop = streamLog.getFatalStop();
+  if (fatalStop) {
+    return {
+      exitCode: proc.exitCode ?? 1,
+      signal: proc.signal,
+      timedOut: proc.timedOut,
+      errorMessage: fatalStop.errorMessage,
+      errorCode: fatalStop.errorCode,
+      clearSession: true,
+      resultJson: { stdout: proc.stdout, stderr: proc.stderr, codebuddyFatalStop: true },
+    };
+  }
 
   // ---- Parse result ----
-  const isStreamJson = outputFormat === "stream-json";
   const parsed = isStreamJson
     ? parseCodeBuddyStreamJsonOutput(proc.stdout)
     : parseCodeBuddyJsonOutput(proc.stdout);

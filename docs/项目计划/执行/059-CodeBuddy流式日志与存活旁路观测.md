@@ -1,5 +1,5 @@
 ---
-status: 待办
+status: 已完成
 ---
 
 # 059 · CodeBuddy 流式日志与存活旁路观测（本轮）

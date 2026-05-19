@@ -22,7 +22,9 @@ summary: CodeBuddy CLI 本地适配器的搭建与配置
 | `bootstrapPromptTemplate` | string | 否 | **仅新会话**首段注入的模板；续会话时为空白则跳过 |
 | `maxTurnsPerRun` | number | 否 | 单次运行最大轮次，映射 `--max-turns`；`0` 表示不传该参数 |
 | `dangerouslySkipPermissions` | boolean | 否 | 为 `true`（默认）时传 `-y`，便于无头环境 |
-| `outputFormat` | string | 否 | CLI `--output-format`，默认 `json`；可选 `stream-json` 等由 CodeBuddy 支持的格式 |
+| `outputFormat` | string | 否 | CLI `--output-format`，默认 **`stream-json`**（运行中按块写入运行日志，便于旁路观测「距上次输出」）；可改回 `json` 等 CodeBuddy 支持的格式 |
+| `includePartialMessages` | boolean | 否 | 为 `true` 且 `outputFormat` 为 `stream-json` 时传 `--include-partial-messages`（更细粒度流式块，日志更大） |
+| `terminalResultCleanupGraceMs` | number | 否 | 见到流式 `type:result` 后等待子进程退出的毫秒数，默认 `5000` |
 | `command` | string | 否 | 可执行文件名，默认 `codebuddy` |
 | `extraArgs` | string[] | 否 | 附加 CLI 参数 |
 | `env` | object | 否 | 环境变量（支持密钥引用） |
@@ -67,3 +69,10 @@ pnpm paperclipai agent local-cli <agent-shortname> --company-id <company-id>
 - 版本字符串是否非空（空则记为警告）
 
 当前实现**不包含**对模型的实时探活；若需验证完整链路，可本机手动执行一次小型 `--print` 任务。
+
+## 流式日志与存活旁路（059）
+
+- 默认 **`stream-json`**：stdout/stderr 按块经 `onLog` 落盘（带 `ts`），运行详情可显示 **已运行时长** 与 **距上次输出**。
+- 原始日志模式下列出每块时间戳；不要求把 NDJSON 解析成可读助手正文。
+- **运行中致命错误快停**：流式 `type:result` 且 `is_error`，或 stderr 命中认证失败 / max-turns / 配额 / OOM / 崩溃等模式时，适配器终止子进程并返回对应 `errorCode`。
+- 见到 `type:result` 后按 `terminalResultCleanupGraceMs` 宽限等待进程退出（与 Cursor 类似），避免僵尸进程。

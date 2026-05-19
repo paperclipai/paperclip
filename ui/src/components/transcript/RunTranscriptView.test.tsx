@@ -129,4 +129,22 @@ describe("RunTranscriptView", () => {
     expect(html).not.toContain("line-250");
     expect(html).not.toContain("line-499");
   });
+
+  it("shows per-line timestamps in raw mode", () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          mode="raw"
+          entries={[
+            { kind: "stdout", ts: "2026-05-19T08:30:45.123Z", text: "chunk-a" },
+            { kind: "stderr", ts: "2026-05-19T08:30:46.456Z", text: "chunk-b" },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(html).toContain("chunk-a");
+    expect(html).toContain("chunk-b");
+    expect(html).toMatch(/\d{2}:\d{2}:\d{2}\.\d{3}/);
+  });
 });

@@ -1388,6 +1388,19 @@ function rawEntryContent(entry: TranscriptEntry): string {
   return entry.text;
 }
 
+function formatRawEntryTimestamp(ts: string): string {
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return ts;
+  const time = date.toLocaleTimeString(undefined, {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  return `${time}.${ms}`;
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -1455,9 +1468,12 @@ function RawTranscriptView({
           key={`${entry.kind}-${entry.ts}-${range.start + idx}`}
           className={cn(
             "grid gap-x-3",
-            "grid-cols-[auto_1fr]",
+            "grid-cols-[auto_auto_1fr]",
           )}
         >
+          <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground/90">
+            {formatRawEntryTimestamp(entry.ts)}
+          </span>
           <span className="text-xs font-medium tracking-normal text-muted-foreground">
             {agentDetailUi.transcriptEntryKindLabel(entry.kind)}
           </span>

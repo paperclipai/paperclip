@@ -608,10 +608,23 @@ export function HeartbeatRunDetailPanel({ run: initialRun, agentRouteId, adapter
   });
 
   const isRunning = run.status === "running" && !!run.startedAt && !run.finishedAt;
+  const { data: liveRunSnapshot } = useQuery({
+    queryKey: queryKeys.runDetail(run.id),
+    queryFn: () => heartbeatsApi.get(run.id),
+    enabled: isRunning,
+    refetchInterval: 2000,
+  });
+  const lastOutputAt = liveRunSnapshot?.lastOutputAt ?? run.lastOutputAt;
   const [elapsedSec, setElapsedSec] = useState<number>(() => {
     if (!run.startedAt) return 0;
     return Math.max(0, Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000));
   });
+  const silenceAnchorMs = useMemo(() => {
+    if (lastOutputAt) return new Date(lastOutputAt).getTime();
+    if (run.startedAt) return new Date(run.startedAt).getTime();
+    return null;
+  }, [lastOutputAt, run.startedAt]);
+  const [silenceSec, setSilenceSec] = useState(0);
 
   useEffect(() => {
     if (!isRunning || !run.startedAt) return;
@@ -622,6 +635,14 @@ export function HeartbeatRunDetailPanel({ run: initialRun, agentRouteId, adapter
     }, 1000);
     return () => clearInterval(id);
   }, [isRunning, run.startedAt]);
+
+  useEffect(() => {
+    if (!isRunning || silenceAnchorMs === null) return;
+    const tick = () => setSilenceSec(Math.max(0, Math.round((Date.now() - silenceAnchorMs) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isRunning, silenceAnchorMs]);
 
   const timeFormat: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
   const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("zh-CN", timeFormat) : null;
@@ -735,6 +756,17 @@ export function HeartbeatRunDetailPanel({ run: initialRun, agentRouteId, adapter
                 {displayDurationSec !== null && (
                   <div className="text-xs text-muted-foreground">
                     {agentDetailUi.durationLabel}{displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)} 分 ${displayDurationSec % 60} 秒` : `${displayDurationSec} 秒`}
+                  </div>
+                )}
+                {isRunning && silenceAnchorMs !== null && (
+                  <div className="text-xs text-muted-foreground">
+                    {agentDetailUi.runSilenceSinceOutputLabel}
+                    {silenceSec >= 60
+                      ? `${Math.floor(silenceSec / 60)} 分 ${silenceSec % 60} 秒`
+                      : `${silenceSec} 秒`}
+                    {!lastOutputAt ? (
+                      <span className="text-muted-foreground/80"> {agentDetailUi.runSilenceSinceStartNote}</span>
+                    ) : null}
                   </div>
                 )}
               </div>
