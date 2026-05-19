@@ -1,5 +1,22 @@
 export type HeartbeatRunOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
 
+// LET-436: terminal error codes for the process-loss family. Kept here so
+// the reaper, the outer adapter-failure catch path, and downstream
+// classifiers (stop-reason inference, run-liveness) all agree on which
+// codes mean "the child process or its tracking metadata is gone" — and
+// must not be overwritten by a generic `adapter_failed` later.
+export const PROCESS_LOST_ERROR_CODE = "process_lost";
+export const ADAPTER_PROCESS_LOST_NO_PID_ERROR_CODE = "adapter_process_lost_no_pid";
+
+const PROCESS_LOST_FAMILY_ERROR_CODES: ReadonlySet<string> = new Set([
+  PROCESS_LOST_ERROR_CODE,
+  ADAPTER_PROCESS_LOST_NO_PID_ERROR_CODE,
+]);
+
+export function isProcessLostFamilyErrorCode(errorCode: string | null | undefined): boolean {
+  return typeof errorCode === "string" && PROCESS_LOST_FAMILY_ERROR_CODES.has(errorCode);
+}
+
 export type HeartbeatRunStopReason =
   | "completed"
   | "timeout"
@@ -8,7 +25,43 @@ export type HeartbeatRunStopReason =
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "adapter_process_lost_no_pid"
   | "adapter_failed";
+
+export interface ProcessLossClassificationInput {
+  processPid: number | null | undefined;
+  processGroupId: number | null | undefined;
+}
+
+export function classifyProcessLossErrorCode(
+  run: ProcessLossClassificationInput,
+):
+  | typeof PROCESS_LOST_ERROR_CODE
+  | typeof ADAPTER_PROCESS_LOST_NO_PID_ERROR_CODE {
+  if (!run.processPid && !run.processGroupId) {
+    return ADAPTER_PROCESS_LOST_NO_PID_ERROR_CODE;
+  }
+  return PROCESS_LOST_ERROR_CODE;
+}
+
+export function buildProcessLossMessage(
+  run: ProcessLossClassificationInput,
+  options?: { descendantOnly?: boolean },
+): string {
+  if (!run.processPid && !run.processGroupId) {
+    return "Process lost -- adapter did not persist a child pid or process group; cannot verify liveness or retry (missing process metadata)";
+  }
+  if (options?.descendantOnly && run.processGroupId) {
+    return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
+  }
+  if (run.processPid) {
+    return `Process lost -- child pid ${run.processPid} is no longer running`;
+  }
+  if (run.processGroupId) {
+    return `Process lost -- process group ${run.processGroupId} is no longer running`;
+  }
+  return "Process lost -- server may have restarted";
+}
 
 export interface HeartbeatRunTimeoutPolicy {
   effectiveTimeoutSec: number | null;
@@ -86,7 +139,13 @@ export function inferHeartbeatRunStopReason(input: {
   const maxTurnStopReason = normalizeMaxTurnStopReason(input.errorCode);
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
-  if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
+  if (input.outcome === "failed" && input.errorCode === PROCESS_LOST_ERROR_CODE) return "process_lost";
+  if (
+    input.outcome === "failed" &&
+    input.errorCode === ADAPTER_PROCESS_LOST_NO_PID_ERROR_CODE
+  ) {
+    return "adapter_process_lost_no_pid";
+  }
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
     if (message.includes("budget")) return "budget_paused";
