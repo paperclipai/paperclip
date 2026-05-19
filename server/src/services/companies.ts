@@ -32,6 +32,42 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 
+const ISSUE_PREFIX_CONFLICT_CONSTRAINT = "companies_issue_prefix_idx";
+
+/**
+ * True when `error` represents a unique-constraint violation on the company
+ * issue-prefix index.
+ *
+ * drizzle-orm wraps the driver error in a DrizzleQueryError whose `.cause`
+ * is the original PostgresError, so the SQLSTATE/constraint metadata is not
+ * on the top-level error. We walk a bounded cause chain rather than checking
+ * a fixed depth so a future drizzle version that adds an intermediate
+ * wrapper doesn't silently reintroduce the swallow-as-HTTP-500 bug.
+ *
+ * node-postgres exposes the constraint as `.constraint`; postgres-js (the
+ * driver in use here) exposes it as `.constraint_name` — accept either.
+ */
+export function isIssuePrefixConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current != null; depth += 1) {
+    if (typeof current !== "object") break;
+    const e = current as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+    };
+    if (
+      e.code === "23505"
+      && (e.constraint ?? e.constraint_name) === ISSUE_PREFIX_CONFLICT_CONSTRAINT
+    ) {
+      return true;
+    }
+    current = e.cause;
+  }
+  return false;
+}
+
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
@@ -124,19 +160,11 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
-  function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
-  }
-
+  // Precondition: must run on an auto-committing connection, NOT inside a
+  // db.transaction(). On a prefix collision the failed INSERT would abort an
+  // enclosing transaction (PG 25P02); the retry's next INSERT would then fail
+  // with the abort error instead of retrying. The sole caller (the create
+  // route) runs outside a transaction.
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
