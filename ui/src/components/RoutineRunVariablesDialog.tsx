@@ -15,6 +15,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -145,6 +146,7 @@ export function RoutineRunVariablesDialog({
   defaultAssigneeAgentId,
   variables,
   isPending,
+  safetyConfirmation,
   onSubmit,
 }: {
   open: boolean;
@@ -157,9 +159,15 @@ export function RoutineRunVariablesDialog({
   defaultAssigneeAgentId?: string | null;
   variables: RoutineVariable[];
   isPending: boolean;
+  safetyConfirmation?: {
+    title: string;
+    body: string;
+    label: string;
+  } | null;
   onSubmit: (data: RoutineRunDialogSubmitData) => void;
 }) {
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const [safetyConfirmed, setSafetyConfirmed] = useState(false);
   const [selection, setSelection] = useState(() => buildInitialRunSelection({
     defaultAssigneeAgentId,
     defaultProjectId,
@@ -216,6 +224,7 @@ export function RoutineRunVariablesDialog({
     setWorkspaceConfig(buildInitialWorkspaceConfig(projects.find((project) => project.id === nextSelection.projectId) ?? null));
     setWorkspaceConfigValid(true);
     setWorkspaceBranchName(null);
+    setSafetyConfirmed(false);
   }, [defaultAssigneeAgentId, defaultProjectId, open, projects, variables]);
 
   const workspaceBranchAutoValue = workspaceSelectionEnabled && workspaceBranchName
@@ -258,7 +267,8 @@ export function RoutineRunVariablesDialog({
   const canSubmit =
     selection.assigneeAgentId.trim().length > 0 &&
     missingRequired.length === 0 &&
-    (!workspaceSelectionEnabled || workspaceConfigValid);
+    (!workspaceSelectionEnabled || workspaceConfigValid) &&
+    (!safetyConfirmation || safetyConfirmed);
 
   const handleWorkspaceUpdate = useCallback((data: Record<string, unknown>) => {
     setWorkspaceConfig((current) => applyWorkspaceDraft(current, data));
@@ -456,6 +466,21 @@ export function RoutineRunVariablesDialog({
               onUpdate={handleWorkspaceUpdate}
               onDraftChange={handleWorkspaceDraftChange}
             />
+          ) : null}
+
+          {safetyConfirmation ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-900 dark:text-amber-200" data-testid="routine-run-safety-confirmation">
+              <p className="font-medium">{safetyConfirmation.title}</p>
+              <p className="mt-1 text-xs leading-5">{safetyConfirmation.body}</p>
+              <label className="mt-3 flex items-start gap-2 text-xs leading-5">
+                <Checkbox
+                  checked={safetyConfirmed}
+                  onCheckedChange={(checked) => setSafetyConfirmed(checked === true)}
+                  className="mt-0.5"
+                />
+                <span>{safetyConfirmation.label}</span>
+              </label>
+            </div>
           ) : null}
         </div>
 

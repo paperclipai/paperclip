@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -168,11 +168,17 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const ONE_TIME_AUTHORIZATION_CONTEXT_KEY = "oneTimeAuthorization";
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
   | "fresh_session"
   | "fresh_session_safer_invocation";
+
+function isOneTimeAuthorizedWakeContext(contextSnapshot: unknown) {
+  const context = parseObject(contextSnapshot);
+  return context[ONE_TIME_AUTHORIZATION_CONTEXT_KEY] === true;
+}
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
   if (attempt <= 1) return "same_session";
@@ -1547,6 +1553,10 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  if (contextSnapshot.forceFreshSession === true) {
+    delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
+    delete contextSnapshot.paperclipContinuationSummary;
+  }
 
   return {
     contextSnapshot,
@@ -2764,6 +2774,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
+    if (isOneTimeAuthorizedWakeContext(run.contextSnapshot)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Skipped automatic liveness continuation because this run was explicitly one-time authorized",
+        payload: { oneTimeAuthorization: true },
+      });
+      return;
+    }
+
     const livenessState = run.livenessState as RunLivenessState | null;
     if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
 
@@ -3376,6 +3397,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    if (isOneTimeAuthorizedWakeContext(run.contextSnapshot)) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Skipped automatic retry because this run was explicitly one-time authorized",
+        payload: { retryReason, oneTimeAuthorization: true },
+      });
+      return {
+        outcome: "suppressed_one_time_authorization" as const,
+        attempt: (run.scheduledRetryAttempt ?? 0) + 1,
+        maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      };
+    }
+
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const baseSchedule = computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random);
     const transientRecovery =
@@ -4626,7 +4662,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
       : null;
-    const continuationSummary = issueRef
+    const continuationSummary = issueRef && !resetTaskSession
       ? await getIssueContinuationSummaryDocument(db, issueRef.id)
       : null;
     if (continuationSummary) {
@@ -5138,10 +5174,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       if (runningWithSession) run = runningWithSession;
 
+      const latestAgentBeforeStart = await getAgent(agent.id);
+      if (!latestAgentBeforeStart || latestAgentBeforeStart.status === "paused" || latestAgentBeforeStart.status === "terminated") {
+        const reason = latestAgentBeforeStart?.status === "paused"
+          ? "Cancelled because agent was paused before run start"
+          : "Cancelled because agent was unavailable before run start";
+        await appendRunEvent(run, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: reason,
+        });
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+          errorCode: "cancelled",
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+        });
+        await releaseIssueExecutionAndPromote(run).catch(() => undefined);
+        return;
+      }
+
       const runningAgent = await db
         .update(agents)
         .set({ status: "running", updatedAt: new Date() })
-        .where(eq(agents.id, agent.id))
+        .where(and(eq(agents.id, agent.id), ne(agents.status, "paused"), ne(agents.status, "terminated")))
         .returning()
         .then((rows) => rows[0] ?? null);
 
@@ -5525,7 +5585,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             exitCode: adapterResult.exitCode,
           },
         });
-        const livenessRun = finalizedRun;
+        let livenessRun = finalizedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
         if (issueId && outcome === "succeeded") {
           try {
@@ -5546,7 +5606,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
-        await finalizeIssueCommentPolicy(livenessRun, agent);
+        const issueCommentPolicy = await finalizeIssueCommentPolicy(livenessRun, agent);
+        if (issueCommentPolicy.outcome === "satisfied") {
+          livenessRun = await classifyAndPersistRunLiveness(livenessRun, parseObject(livenessRun.resultJson)) ?? livenessRun;
+        }
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
       }
@@ -6025,6 +6088,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        return { kind: "released" as const };
+      }
+
+      if (isOneTimeAuthorizedWakeContext(run.contextSnapshot)) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(issues.id, issue.id), eq(issues.executionRunId, run.id)));
         return { kind: "released" as const };
       }
 

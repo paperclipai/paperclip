@@ -2417,6 +2417,7 @@ export function agentRoutes(
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        oneTimeAuthorization: req.body.oneTimeAuthorization === true,
       },
     });
 

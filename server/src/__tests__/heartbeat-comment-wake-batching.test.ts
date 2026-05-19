@@ -1577,6 +1577,8 @@ describe("heartbeat comment wake batching", () => {
       expect(runs).toHaveLength(1);
       expect(runs[0]?.issueCommentStatus).toBe("satisfied");
       expect(runs[0]?.issueCommentSatisfiedByCommentId).not.toBeNull();
+      expect(runs[0]?.livenessState).toBe("advanced");
+      expect(runs[0]?.livenessReason).toContain("issue comment");
 
       const comments = await db
         .select()

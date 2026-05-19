@@ -16,6 +16,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { isVirtualOfficeRoutineLike } from "../lib/virtual-office-routine";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
@@ -305,7 +306,9 @@ export function Routines() {
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [appliedVirtualOfficeDraftKey, setAppliedVirtualOfficeDraftKey] = useState<string | null>(null);
   const activeTab: RoutinesTab = searchParams.get("tab") === "runs" ? "runs" : "routines";
+  const isVirtualOfficeRoutineDraft = searchParams.get("source") === "virtual-office-routine";
   const [draft, setDraft] = useState<{
     title: string;
     description: string;
@@ -368,6 +371,25 @@ export function Routines() {
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
   }, [draft.title, composerOpen]);
+
+  useEffect(() => {
+    if (!isVirtualOfficeRoutineDraft) return;
+    const draftKey = searchParams.toString();
+    if (appliedVirtualOfficeDraftKey === draftKey) return;
+
+    setDraft((current) => ({
+      ...current,
+      title: searchParams.get("title") ?? current.title,
+      description: searchParams.get("description") ?? current.description,
+      priority: "medium",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [],
+    }));
+    setComposerOpen(true);
+    setAdvancedOpen(false);
+    setAppliedVirtualOfficeDraftKey(draftKey);
+  }, [appliedVirtualOfficeDraftKey, isVirtualOfficeRoutineDraft, searchParams]);
 
   const createRoutine = useMutation({
     mutationFn: () =>
@@ -669,6 +691,14 @@ export function Routines() {
               Cancel
             </Button>
           </div>
+          {isVirtualOfficeRoutineDraft ? (
+            <div className="border-b border-amber-500/20 bg-amber-500/10 px-5 py-3 text-sm text-amber-800 dark:text-amber-200">
+              <p className="font-medium">Virtual Office routine 草稿</p>
+              <p className="mt-1 text-xs leading-5">
+                這只是預填例行工作內容。建立後仍會是 draft/paused 流程；請先不要新增或啟用 schedule trigger，也不要指派 Hermes，直到 Sandbox/Test 驗收通過。
+              </p>
+            </div>
+          ) : null}
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="px-5 pt-5 pb-3">
@@ -972,6 +1002,11 @@ export function Routines() {
         defaultAssigneeAgentId={runDialogRoutine?.assigneeAgentId ?? null}
         variables={runDialogRoutine?.variables ?? []}
         isPending={runRoutine.isPending}
+        safetyConfirmation={isVirtualOfficeRoutineLike(runDialogRoutine) ? {
+          title: "Virtual Office routine 手動執行確認",
+          body: "Run now 會立刻建立一次 routine execution。請先確認這次只用 Sandbox/Test 專案與測試員工，不指派 Hermes 或正式資料。",
+          label: "我確認這次手動執行只用於 Sandbox/Test，且不會喚醒 Hermes 或修改正式資料。",
+        } : null}
         onSubmit={(data) => {
           if (!runDialogRoutine) return;
           runRoutine.mutate({ id: runDialogRoutine.id, data });
