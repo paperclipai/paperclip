@@ -560,6 +560,88 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("marks accepted request confirmation wakes with confirmation-accepted context flags", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-accept-flags",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: "comment-accept",
+        sourceRunId: "run-accept",
+        payload: { version: 1, prompt: "Apply this plan?" },
+        result: { version: 1, outcome: "accepted" },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-accept-flags/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    const wakeArgs = mockHeartbeatService.wakeup.mock.calls[0][1];
+    expect(wakeArgs.payload).toEqual(expect.objectContaining({
+      mutation: "interaction_accepted",
+      interactionResolution: "accepted",
+      confirmationAccepted: true,
+      resolvedInteractionId: "interaction-accept-flags",
+    }));
+    expect(typeof wakeArgs.payload.interactionResolvedAt).toBe("string");
+    expect(wakeArgs.contextSnapshot).toEqual(expect.objectContaining({
+      interactionResolution: "accepted",
+      confirmationAccepted: true,
+      resolvedInteractionId: "interaction-accept-flags",
+      wakeReason: "issue_commented",
+      source: "issue.interaction.accept",
+    }));
+  });
+
+  it("marks accepted suggest-tasks wakes as non-confirmation interactions", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-st-flags",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "suggest_tasks",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-st",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+        result: { version: 1, createdTasks: [], skippedClientKeys: [] },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-st-flags/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    const wakeArgs = mockHeartbeatService.wakeup.mock.calls[0][1];
+    expect(wakeArgs.payload).toEqual(expect.objectContaining({
+      mutation: "interaction",
+      interactionResolution: "accepted",
+      confirmationAccepted: false,
+      resolvedInteractionId: "interaction-st-flags",
+    }));
+  });
+
   it("does not emit a continuation wake when request confirmations are rejected", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
       id: "interaction-3",

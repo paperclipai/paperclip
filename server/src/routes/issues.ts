@@ -643,6 +643,11 @@ function queueResolvedInteractionContinuationWakeup(input: {
   if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
 
+  const isAcceptedConfirmation =
+    input.interaction.kind === "request_confirmation"
+    && input.interaction.status === "accepted";
+  const interactionResolvedAt = new Date().toISOString();
+
   void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
     source: "automation",
     triggerDetail: "system",
@@ -654,7 +659,11 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
-      mutation: "interaction",
+      mutation: isAcceptedConfirmation ? "interaction_accepted" : "interaction",
+      interactionResolution: input.interaction.status,
+      interactionResolvedAt,
+      confirmationAccepted: isAcceptedConfirmation,
+      resolvedInteractionId: input.interaction.id,
     },
     requestedByActorType: input.actor.actorType,
     requestedByActorId: input.actor.actorId,
@@ -664,6 +673,10 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
+      interactionResolution: input.interaction.status,
+      interactionResolvedAt,
+      confirmationAccepted: isAcceptedConfirmation,
+      resolvedInteractionId: input.interaction.id,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
       wakeReason: "issue_commented",

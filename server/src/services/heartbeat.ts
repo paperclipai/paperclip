@@ -6699,6 +6699,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileIssueGraphLiveness(opts);
   }
 
+  async function reconcileStaleContinuations(opts?: {
+    now?: Date;
+    thresholdMs?: number;
+  }) {
+    return recovery.reconcileStaleContinuations(opts);
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -9942,6 +9949,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildIssueGraphLivenessAutoRecoveryPreview,
 
     reconcileIssueGraphLiveness,
+
+    reconcileStaleContinuations,
 
     scanSilentActiveRuns,
 

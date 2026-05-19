@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -54,6 +55,17 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  APPROVAL_FOLLOW_UP_REQUEUED_ACTION,
+  APPROVAL_NO_FOLLOW_UP_ESCALATED_ACTION,
+  APPROVAL_RECONCILED_ACTIONS,
+  CONFIRMATION_FOLLOW_UP_REQUEUED_ACTION,
+  CONFIRMATION_NO_FOLLOW_UP_ESCALATED_ACTION,
+  CONFIRMATION_RECONCILED_ACTIONS,
+  STALE_CONTINUATION_THRESHOLD_MS,
+  evaluateApprovalReconciliation,
+  evaluateConfirmationReconciliation,
+} from "./continuation-reconciler.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -2827,6 +2839,339 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  async function reconcileStaleContinuations(opts?: {
+    now?: Date;
+    thresholdMs?: number;
+  }) {
+    const now = opts?.now ?? new Date();
+    const thresholdMs = opts?.thresholdMs ?? STALE_CONTINUATION_THRESHOLD_MS;
+    const cutoff = new Date(now.getTime() - thresholdMs);
+
+    const result = {
+      approvalsScanned: 0,
+      approvalsRequeued: 0,
+      approvalsEscalated: 0,
+      approvalsSkipped: 0,
+      confirmationsScanned: 0,
+      confirmationsRequeued: 0,
+      confirmationsEscalated: 0,
+      confirmationsSkipped: 0,
+    };
+
+    const staleApprovals = await db
+      .select({
+        id: approvals.id,
+        companyId: approvals.companyId,
+        status: approvals.status,
+        requestedByAgentId: approvals.requestedByAgentId,
+        decidedAt: approvals.decidedAt,
+      })
+      .from(approvals)
+      .where(
+        and(
+          eq(approvals.status, "approved"),
+          lt(approvals.decidedAt, cutoff),
+        ),
+      );
+
+    for (const approval of staleApprovals) {
+      result.approvalsScanned += 1;
+
+      const linkedIssues = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issueApprovals)
+        .innerJoin(issues, eq(issueApprovals.issueId, issues.id))
+        .where(eq(issueApprovals.approvalId, approval.id));
+
+      const reconciledRows = await db
+        .select({ action: activityLog.action })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityType, "approval"),
+            eq(activityLog.entityId, approval.id),
+            inArray(activityLog.action, Array.from(APPROVAL_RECONCILED_ACTIONS)),
+          ),
+        )
+        .limit(1);
+      const alreadyReconciled = reconciledRows.length > 0;
+
+      const primaryIssueIds = linkedIssues
+        .filter((issue) => !["done", "cancelled", "blocked"].includes(issue.status ?? ""))
+        .map((issue) => issue.id);
+      const issueIdsForActiveCheck = primaryIssueIds.length > 0
+        ? primaryIssueIds
+        : linkedIssues.map((issue) => issue.id);
+
+      const hasActiveExecutionPath = issueIdsForActiveCheck.length > 0
+        ? await hasAnyActiveExecutionPath(approval.companyId, issueIdsForActiveCheck)
+        : false;
+      const hasQueuedOrDeferredWake = issueIdsForActiveCheck.length > 0
+        ? await hasAnyQueuedOrDeferredIssueWake(approval.companyId, issueIdsForActiveCheck)
+        : false;
+
+      const decision = evaluateApprovalReconciliation(
+        {
+          approvalId: approval.id,
+          requestedByAgentId: approval.requestedByAgentId,
+          decidedAt: approval.decidedAt,
+          linkedIssues: linkedIssues.map((issue) => ({ id: issue.id, status: issue.status })),
+          hasActiveExecutionPath,
+          hasQueuedOrDeferredWake,
+          alreadyReconciled,
+        },
+        now,
+        thresholdMs,
+      );
+
+      if (decision.kind === "skip") {
+        result.approvalsSkipped += 1;
+        continue;
+      }
+
+      if (decision.kind === "escalate_no_follow_up") {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "system",
+          actorId: "system",
+          action: APPROVAL_NO_FOLLOW_UP_ESCALATED_ACTION,
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            requesterAgentId: approval.requestedByAgentId,
+            reason: decision.reason,
+            linkedIssueIds: decision.linkedIssueIds,
+            blockedIssueIds: decision.blockedIssueIds,
+            decidedAt: approval.decidedAt?.toISOString() ?? null,
+            thresholdMs,
+          },
+        });
+        result.approvalsEscalated += 1;
+        continue;
+      }
+
+      if (decision.kind === "requeue_with_primary" && approval.requestedByAgentId) {
+        try {
+          const wakeRun = await deps.enqueueWakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_approved",
+            payload: withRecoveryModelProfileHint({
+              approvalId: approval.id,
+              issueId: decision.primaryIssueId,
+              issueIds: decision.linkedIssueIds,
+              actionableIssueIds: decision.actionableIssueIds,
+              blockedIssueIds: decision.blockedIssueIds,
+              mutation: "approval_continuation_reconciled",
+            }),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: withRecoveryModelProfileHint({
+              approvalId: approval.id,
+              issueId: decision.primaryIssueId,
+              taskId: decision.primaryIssueId,
+              wakeReason: "approval_approved",
+              source: "approval.continuation_reconciler",
+            }),
+          });
+
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "system",
+            actorId: "system",
+            action: APPROVAL_FOLLOW_UP_REQUEUED_ACTION,
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              primaryIssueId: decision.primaryIssueId,
+              actionableIssueIds: decision.actionableIssueIds,
+              blockedIssueIds: decision.blockedIssueIds,
+              wakeRunId: wakeRun?.id ?? null,
+              decidedAt: approval.decidedAt?.toISOString() ?? null,
+            },
+          });
+          result.approvalsRequeued += 1;
+        } catch (err) {
+          logger.warn(
+            { err, approvalId: approval.id },
+            "continuation reconciler: failed to requeue approval wake",
+          );
+          result.approvalsSkipped += 1;
+        }
+      }
+    }
+
+    const staleConfirmations = await db
+      .select({
+        id: issueThreadInteractions.id,
+        companyId: issueThreadInteractions.companyId,
+        issueId: issueThreadInteractions.issueId,
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+        issueStatus: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issueThreadInteractions)
+      .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+      .where(
+        and(
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          lt(issueThreadInteractions.resolvedAt, cutoff),
+        ),
+      );
+
+    for (const confirmation of staleConfirmations) {
+      result.confirmationsScanned += 1;
+
+      const reconciledRows = await db
+        .select({ action: activityLog.action })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityType, "issue_thread_interaction"),
+            eq(activityLog.entityId, confirmation.id),
+            inArray(
+              activityLog.action,
+              Array.from(CONFIRMATION_RECONCILED_ACTIONS),
+            ),
+          ),
+        )
+        .limit(1);
+      const alreadyReconciled = reconciledRows.length > 0;
+
+      const issueIds = [confirmation.issueId];
+      const hasActiveExecutionPath = await hasAnyActiveExecutionPath(
+        confirmation.companyId,
+        issueIds,
+      );
+      const hasQueuedOrDeferredWake = await hasAnyQueuedOrDeferredIssueWake(
+        confirmation.companyId,
+        issueIds,
+      );
+
+      const decision = evaluateConfirmationReconciliation(
+        {
+          interactionId: confirmation.id,
+          issueId: confirmation.issueId,
+          assigneeAgentId: confirmation.assigneeAgentId,
+          issueStatus: confirmation.issueStatus,
+          resolvedAt: confirmation.resolvedAt,
+          hasActiveExecutionPath,
+          hasQueuedOrDeferredWake,
+          alreadyReconciled,
+        },
+        now,
+        thresholdMs,
+      );
+
+      if (decision.kind === "skip") {
+        result.confirmationsSkipped += 1;
+        continue;
+      }
+
+      if (decision.kind === "escalate_no_follow_up") {
+        await logActivity(db, {
+          companyId: confirmation.companyId,
+          actorType: "system",
+          actorId: "system",
+          action: CONFIRMATION_NO_FOLLOW_UP_ESCALATED_ACTION,
+          entityType: "issue_thread_interaction",
+          entityId: confirmation.id,
+          details: {
+            issueId: confirmation.issueId,
+            issueStatus: confirmation.issueStatus,
+            assigneeAgentId: confirmation.assigneeAgentId,
+            reason: decision.reason,
+            blockedIssueIds: decision.blockedIssueIds,
+            resolvedAt: confirmation.resolvedAt?.toISOString() ?? null,
+            thresholdMs,
+          },
+        });
+        result.confirmationsEscalated += 1;
+        continue;
+      }
+
+      if (
+        decision.kind === "requeue_with_primary"
+        && confirmation.assigneeAgentId
+      ) {
+        try {
+          const wakeRun = await deps.enqueueWakeup(confirmation.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: withRecoveryModelProfileHint({
+              issueId: confirmation.issueId,
+              interactionId: confirmation.id,
+              interactionKind: "request_confirmation",
+              interactionStatus: "accepted",
+              mutation: "interaction_accepted",
+              confirmationAccepted: true,
+              resolvedInteractionId: confirmation.id,
+            }),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: withRecoveryModelProfileHint({
+              issueId: confirmation.issueId,
+              taskId: confirmation.issueId,
+              interactionId: confirmation.id,
+              interactionKind: "request_confirmation",
+              interactionStatus: "accepted",
+              confirmationAccepted: true,
+              resolvedInteractionId: confirmation.id,
+              wakeReason: "issue_commented",
+              source: "issue.interaction.continuation_reconciler",
+            }),
+          });
+
+          await logActivity(db, {
+            companyId: confirmation.companyId,
+            actorType: "system",
+            actorId: "system",
+            action: CONFIRMATION_FOLLOW_UP_REQUEUED_ACTION,
+            entityType: "issue_thread_interaction",
+            entityId: confirmation.id,
+            details: {
+              issueId: confirmation.issueId,
+              assigneeAgentId: confirmation.assigneeAgentId,
+              wakeRunId: wakeRun?.id ?? null,
+              resolvedAt: confirmation.resolvedAt?.toISOString() ?? null,
+            },
+          });
+          result.confirmationsRequeued += 1;
+        } catch (err) {
+          logger.warn(
+            { err, interactionId: confirmation.id },
+            "continuation reconciler: failed to requeue confirmation wake",
+          );
+          result.confirmationsSkipped += 1;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  async function hasAnyActiveExecutionPath(companyId: string, issueIds: string[]) {
+    for (const issueId of issueIds) {
+      if (await hasActiveExecutionPath(companyId, issueId)) return true;
+    }
+    return false;
+  }
+
+  async function hasAnyQueuedOrDeferredIssueWake(
+    companyId: string,
+    issueIds: string[],
+  ) {
+    for (const issueId of issueIds) {
+      if (await hasQueuedIssueWake(companyId, issueId)) return true;
+    }
+    return false;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -2836,6 +3181,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     reconcileStrandedAssignedIssues,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
+    reconcileStaleContinuations,
     readRecoveryTimerIntervalMs,
   };
 }

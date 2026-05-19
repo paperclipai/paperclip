@@ -27,6 +27,46 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
+const NON_ACTIONABLE_LINKED_ISSUE_STATUSES = new Set<string>([
+  "done",
+  "cancelled",
+  "blocked",
+]);
+
+type LinkedIssueRouting = {
+  primaryIssueId: string | null;
+  linkedIssueIds: string[];
+  actionableIssueIds: string[];
+  blockedIssueIds: string[];
+  allLinkedBlocked: boolean;
+};
+
+export function selectApprovalContinuationRouting(
+  linkedIssues: Array<{ id: string; status: string | null }>,
+): LinkedIssueRouting {
+  const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+  const actionableIssueIds: string[] = [];
+  const blockedIssueIds: string[] = [];
+  for (const issue of linkedIssues) {
+    const status = issue.status ?? "";
+    if (NON_ACTIONABLE_LINKED_ISSUE_STATUSES.has(status)) {
+      blockedIssueIds.push(issue.id);
+    } else {
+      actionableIssueIds.push(issue.id);
+    }
+  }
+  const allLinkedBlocked = linkedIssueIds.length > 0 && actionableIssueIds.length === 0;
+  const primaryIssueId =
+    actionableIssueIds[0] ?? (allLinkedBlocked ? null : linkedIssueIds[0] ?? null);
+  return {
+    primaryIssueId,
+    linkedIssueIds,
+    actionableIssueIds,
+    blockedIssueIds,
+    allLinkedBlocked,
+  };
+}
+
 export function approvalRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -145,8 +185,10 @@ export function approvalRoutes(
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
-      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
-      const primaryIssueId = linkedIssueIds[0] ?? null;
+      const routing = selectApprovalContinuationRouting(
+        linkedIssues.map((issue) => ({ id: issue.id, status: issue.status ?? null })),
+      );
+      const { primaryIssueId, linkedIssueIds, actionableIssueIds, blockedIssueIds, allLinkedBlocked } = routing;
 
       await logActivity(db, {
         companyId: approval.companyId,
@@ -159,6 +201,8 @@ export function approvalRoutes(
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
+          actionableIssueIds,
+          blockedIssueIds,
         },
       });
 
@@ -173,6 +217,9 @@ export function approvalRoutes(
               approvalStatus: approval.status,
               issueId: primaryIssueId,
               issueIds: linkedIssueIds,
+              actionableIssueIds,
+              blockedIssueIds,
+              allLinkedBlocked,
             },
             requestedByActorType: "user",
             requestedByActorId: req.actor.userId ?? "board",
@@ -182,6 +229,9 @@ export function approvalRoutes(
               approvalStatus: approval.status,
               issueId: primaryIssueId,
               issueIds: linkedIssueIds,
+              actionableIssueIds,
+              blockedIssueIds,
+              allLinkedBlocked,
               taskId: primaryIssueId,
               wakeReason: "approval_approved",
             },
@@ -198,8 +248,29 @@ export function approvalRoutes(
               requesterAgentId: approval.requestedByAgentId,
               wakeRunId: wakeRun?.id ?? null,
               linkedIssueIds,
+              actionableIssueIds,
+              blockedIssueIds,
+              primaryIssueId,
+              allLinkedBlocked,
             },
           });
+
+          if (allLinkedBlocked) {
+            await logActivity(db, {
+              companyId: approval.companyId,
+              actorType: "user",
+              actorId: req.actor.userId ?? "board",
+              action: "approval.requester_wakeup_escalated",
+              entityType: "approval",
+              entityId: approval.id,
+              details: {
+                requesterAgentId: approval.requestedByAgentId,
+                reason: "all_linked_issues_blocked",
+                linkedIssueIds,
+                blockedIssueIds,
+              },
+            });
+          }
         } catch (err) {
           logger.warn(
             {

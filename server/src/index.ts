@@ -790,6 +790,20 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })
+      .then(async () => {
+        const continuation = await heartbeat.reconcileStaleContinuations();
+        if (
+          continuation.approvalsRequeued > 0 ||
+          continuation.approvalsEscalated > 0 ||
+          continuation.confirmationsRequeued > 0 ||
+          continuation.confirmationsEscalated > 0
+        ) {
+          logger.warn(
+            { ...continuation },
+            "startup stale continuation reconciliation requeued or escalated approvals/confirmations",
+          );
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -854,6 +868,20 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const continuation = await heartbeat.reconcileStaleContinuations();
+          if (
+            continuation.approvalsRequeued > 0 ||
+            continuation.approvalsEscalated > 0 ||
+            continuation.confirmationsRequeued > 0 ||
+            continuation.confirmationsEscalated > 0
+          ) {
+            logger.warn(
+              { ...continuation },
+              "periodic stale continuation reconciliation requeued or escalated approvals/confirmations",
+            );
           }
         })
         .catch((err) => {
