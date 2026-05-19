@@ -161,6 +161,12 @@ const apiRequestSchema = z.object({
   jsonBody: z.string().optional(),
 });
 
+const notionCreateBlockCommentSchema = z.object({
+  block_id: z.string().min(1),
+  rich_text: z.array(z.record(z.unknown())).optional(),
+  markdown: z.string().optional(),
+});
+
 const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
   runtimeServiceId: z.string().uuid().optional().nullable(),
@@ -178,6 +184,13 @@ const waitForIssueWorkspaceServiceSchema = z.object({
   serviceName: z.string().min(1).optional().nullable(),
   timeoutSeconds: z.number().int().positive().max(300).optional(),
 });
+
+const NOTION_API_BASE = "https://api.notion.com/v1";
+const NOTION_API_VERSION = "2022-06-28";
+
+function wrapMarkdownAsRichText(markdown: string): Array<Record<string, unknown>> {
+  return [{ type: "text", text: { content: markdown } }];
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -221,7 +234,7 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
-export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
+export function createToolDefinitions(client: PaperclipApiClient, notionApiKey: string | null = null): ToolDefinition[] {
   return [
     makeTool(
       "paperclipMe",
@@ -603,6 +616,45 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),
         });
+      },
+    ),
+    makeTool(
+      "notionCreateBlockComment",
+      "Create a comment on a Notion block via the Notion REST API (supports block_id; the remote MCP tool does not)",
+      notionCreateBlockCommentSchema,
+      async ({ block_id, rich_text, markdown }) => {
+        if (!notionApiKey) {
+          throw new Error("NOTION_INTEGRATION_TOKEN is not configured; cannot call Notion API");
+        }
+        if (rich_text === undefined && markdown === undefined) {
+          throw new Error("At least one of rich_text or markdown must be provided");
+        }
+        const resolvedRichText = rich_text ?? wrapMarkdownAsRichText(markdown!);
+        const response = await fetch(`${NOTION_API_BASE}/comments`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${notionApiKey}`,
+            "Content-Type": "application/json",
+            "Notion-Version": NOTION_API_VERSION,
+          },
+          body: JSON.stringify({
+            parent: { block_id },
+            rich_text: resolvedRichText,
+          }),
+        });
+        const rawText = await response.text();
+        let responseBody: unknown;
+        try {
+          responseBody = rawText ? JSON.parse(rawText) : null;
+        } catch {
+          responseBody = rawText;
+        }
+        if (!response.ok) {
+          throw new Error(
+            `Notion API POST /v1/comments failed with ${response.status}: ${JSON.stringify(responseBody)}`,
+          );
+        }
+        return responseBody;
       },
     ),
   ];
