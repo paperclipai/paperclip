@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { LidarPipeline } from "../pipeline.js";
 import { buildSyntheticLasBuffer } from "../ingestion.js";
 import type { IngestionEvent, NormalizedPoint, SensorConfig } from "../types.js";
