@@ -37,7 +37,9 @@ COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY --parents packages/plugins/sandbox-providers/./*/package.json packages/plugins/sandbox-providers/
 COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugins/paperclip-plugin-fake-sandbox/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
+COPY scripts/ scripts/
 
 RUN pnpm install --frozen-lockfile
 
@@ -63,7 +65,16 @@ COPY --from=hermes_runtime /opt/hermes /opt/hermes
 RUN chmod -R a+rX /opt/hermes \
   && ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
   && ln -sf /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
-  && ln -sf /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp
+  && ln -sf /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
+  && if [ -x /opt/hermes/.venv/bin/pip ]; then \
+       /opt/hermes/.venv/bin/pip install --no-cache-dir "anthropic>=0.39.0"; \
+     elif [ -x /opt/hermes/.venv/bin/python ]; then \
+       /opt/hermes/.venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true; \
+       /opt/hermes/.venv/bin/python -m pip install --no-cache-dir "anthropic>=0.39.0"; \
+     else \
+       echo "ERROR: Hermes venv python not found at /opt/hermes/.venv/bin/python" >&2; \
+       exit 1; \
+     fi
 
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && apt-get update \
