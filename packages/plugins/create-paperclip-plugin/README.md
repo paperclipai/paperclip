@@ -17,7 +17,7 @@ npx @paperclipai/create-paperclip-plugin @acme/my-plugin \
   --author "Acme Inc"
 ```
 
-Supported templates: `default`, `connector`, `workspace`  
+Supported templates: `default`, `connector`, `workspace`
 Supported categories: `connector`, `workspace`, `automation`, `ui`
 
 Generates:

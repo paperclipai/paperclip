@@ -25,4 +25,3 @@ export const agentRuntimeState = pgTable(
     companyUpdatedIdx: index("agent_runtime_state_company_updated_idx").on(table.companyId, table.updatedAt),
   }),
 );
-

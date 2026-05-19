@@ -37,4 +37,3 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
     );
   }
 }
-

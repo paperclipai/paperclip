@@ -1,8 +1,8 @@
 # Agent Runs Subsystem Spec
 
-Status: Draft  
-Date: 2026-02-17  
-Audience: Product + Engineering  
+Status: Draft
+Date: 2026-02-17
+Audience: Product + Engineering
 Scope: Agent execution runtime, adapter protocol, wakeup orchestration, and live status delivery
 
 ## 1. Document Role

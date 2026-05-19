@@ -48,4 +48,3 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
     repairHint: "Verify credentials and endpoint in deployment environment",
   };
 }
-

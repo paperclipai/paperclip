@@ -1,7 +1,7 @@
 # Agent Management Follow-up Plan (CEO Patch + Config Rollback + Issue↔Approval Linking)
 
-Status: Proposed  
-Date: 2026-02-19  
+Status: Proposed
+Date: 2026-02-19
 Context: Follow-up from run `faeab00e-7857-4acc-b2b2-86f6d078adb4`
 
 ## 1. Investigation Findings

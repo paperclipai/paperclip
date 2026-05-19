@@ -1,7 +1,7 @@
 # Deployment/Auth Mode Consolidation Plan
 
-Status: Proposal  
-Owner: Server + CLI + UI  
+Status: Proposal
+Owner: Server + CLI + UI
 Date: 2026-02-23
 
 ## Goal

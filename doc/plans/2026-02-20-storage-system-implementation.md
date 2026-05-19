@@ -1,7 +1,7 @@
 # Storage System Implementation Plan (V1)
 
-Status: Draft  
-Owner: Backend + UI  
+Status: Draft
+Owner: Backend + UI
 Date: 2026-02-20
 
 ## Goal
@@ -203,4 +203,3 @@ If any command is skipped, document exactly what was skipped and why.
 3. Phase 4 (API)
 4. Phase 5 (UI consumer)
 5. Phase 6 (doctor/docs hardening)
-

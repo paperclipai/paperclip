@@ -1,8 +1,8 @@
 # Issue Documents Plan
 
-Status: Draft  
-Owner: Backend + UI + Agent Protocol  
-Date: 2026-03-13  
+Status: Draft
+Owner: Backend + UI + Agent Protocol
+Date: 2026-03-13
 Primary issue: `PAP-448`
 
 ## Summary

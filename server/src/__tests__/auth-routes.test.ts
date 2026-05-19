@@ -161,4 +161,54 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("rejects get-session when actor is not board", async () => {
+    const app = await createApp(
+      {
+        type: "agent",
+        userId: "agent-1",
+        source: "jwt",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/get-session");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Board authentication required" });
+  });
+
+  it("rejects get-profile when actor is not board", async () => {
+    const app = await createApp(
+      {
+        type: "agent",
+        userId: "agent-1",
+        source: "jwt",
+      },
+      baseUser,
+    );
+
+    const res = await request(app).get("/api/auth/profile");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Board authentication required" });
+  });
+
+  it("rejects patch-profile when actor is not board", async () => {
+    const app = await createApp(
+      {
+        type: "agent",
+        userId: "agent-1",
+        source: "jwt",
+      },
+      baseUser,
+    );
+
+    const res = await request(app)
+      .patch("/api/auth/profile")
+      .send({ name: "Evil Agent" });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Board authentication required" });
+  });
 });

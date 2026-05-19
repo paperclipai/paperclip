@@ -19,8 +19,8 @@ These almost always get merged quickly when they're clean.
 
 ### Path 2: Bigger or Impactful Changes
 
-- **First** talk about it in Discord → #dev channel  
-  → Describe what you're trying to solve  
+- **First** talk about it in Discord → #dev channel
+  → Describe what you're trying to solve
   → Share rough ideas / approach
 - Once there's rough agreement, build it
 - In your PR include:

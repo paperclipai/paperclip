@@ -1,12 +1,12 @@
 # Agent Runtime Guide
 
-Status: User-facing guide  
-Last updated: 2026-02-17  
+Status: User-facing guide
+Last updated: 2026-02-17
 Audience: Operators setting up and running agents in Paperclip
 
 ## 1. What this system does
 
-Agents in Paperclip do not run continuously.  
+Agents in Paperclip do not run continuously.
 They run in **heartbeats**: short execution windows triggered by a wakeup.
 
 Each heartbeat:

@@ -8,6 +8,7 @@ import {
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
+import { respond } from "../lib/respond.js";
 import { validate } from "../middleware/validate.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
@@ -43,7 +44,7 @@ export function authRoutes(db: Db) {
     }
 
     const user = await loadCurrentUserProfile(db, req.actor.userId);
-    res.json(authSessionSchema.parse({
+    respond(res, authSessionSchema.parse({
       session: {
         id: `paperclip:${req.actor.source ?? "none"}:${req.actor.userId}`,
         userId: req.actor.userId,
@@ -57,7 +58,7 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    res.json(await loadCurrentUserProfile(db, req.actor.userId));
+    respond(res, await loadCurrentUserProfile(db, req.actor.userId));
   });
 
   router.patch("/profile", validate(updateCurrentUserProfileSchema), async (req, res) => {
@@ -88,7 +89,7 @@ export function authRoutes(db: Db) {
       throw unauthorized("Signed-in user not found");
     }
 
-    res.json(currentUserProfileSchema.parse({
+    respond(res, currentUserProfileSchema.parse({
       id: updated.id,
       email: updated.email ?? null,
       name: updated.name ?? null,

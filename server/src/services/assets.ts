@@ -19,4 +19,3 @@ export function assetService(db: Db) {
         .then((rows) => rows[0] ?? null),
   };
 }
-

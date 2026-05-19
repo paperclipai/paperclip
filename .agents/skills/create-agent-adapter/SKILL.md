@@ -157,7 +157,7 @@ Guidelines:
 - Use `warn` for non-blocking but important situations.
 - Use `info` for successful checks and context.
 
-Severity policy is product-critical: warnings are not save blockers.  
+Severity policy is product-critical: warnings are not save blockers.
 Example: for `claude_local`, detected `ANTHROPIC_API_KEY` must be a `warn`, not an `error`, because Claude can still run (it just uses API-key auth instead of subscription auth).
 
 ---
