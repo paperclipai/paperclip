@@ -163,6 +163,47 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     });
   });
 
+  it("auto-opens the raw input when a raw value arrives after mount", async () => {
+    const root = createRoot(container);
+
+    const schema = {
+      type: "object" as const,
+      properties: {
+        apiKey: {
+          type: "string" as const,
+          format: "secret-ref" as const,
+        },
+      },
+    };
+
+    // First render with empty value — picker visible, no raw input.
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm schema={schema} values={{ apiKey: "" }} onChange={() => {}} />,
+      );
+    });
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+
+    // Parent fills in a previously-saved raw value (the async load case).
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ apiKey: "loaded-from-api" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+    expect(input?.value).toBe("loaded-from-api");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps the password fallback for short raw values", async () => {
     const root = createRoot(container);
 
