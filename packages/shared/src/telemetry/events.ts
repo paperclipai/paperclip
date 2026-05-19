@@ -96,3 +96,14 @@ export function trackErrorHandlerCrash(
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
+
+export function trackStaleExecutionRunIdDetected(
+  client: TelemetryClient,
+  dims: { issueId: string; staleRunId: string; ageMinutes: number },
+): void {
+  client.track("stale_execution_run_id_detected", {
+    issue_id: dims.issueId,
+    stale_run_id: dims.staleRunId,
+    age_minutes: dims.ageMinutes,
+  });
+}
