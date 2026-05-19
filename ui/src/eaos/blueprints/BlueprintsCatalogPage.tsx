@@ -356,12 +356,19 @@ function FilteredEmpty() {
 function BlueprintCard({ entry }: { entry: BlueprintCatalogEntry }) {
   const posture = summarizePermissionPosture(entry);
   const description = redactSecretLikeText(entry.description);
+  // The catalog backend declares ref/key as schema-constrained identifiers
+  // (slug + "@" + semver), so redactSecretLikeText is a no-op on legitimate
+  // values. We still pipe them through it for the visible card text and any
+  // DOM data attributes so a credential-shaped backend value can never escape
+  // through innerHTML — covered by the static and runtime sentinel tests.
+  const safeRef = redactSecretLikeText(entry.ref);
+  const safeKey = redactSecretLikeText(entry.key);
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid="eaos-blueprints-card"
-      data-blueprint-ref={entry.ref}
-      data-blueprint-key={entry.key}
+      data-blueprint-ref={safeRef}
+      data-blueprint-key={safeKey}
       data-blueprint-category={entry.category}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -389,7 +396,7 @@ function BlueprintCard({ entry }: { entry: BlueprintCatalogEntry }) {
           {redactSecretLikeText(entry.title)}
         </h2>
         <p className="text-[11px] uppercase tracking-wide text-muted-foreground" data-testid="eaos-blueprints-card-ref">
-          {entry.ref}
+          {safeRef}
         </p>
       </div>
       <p

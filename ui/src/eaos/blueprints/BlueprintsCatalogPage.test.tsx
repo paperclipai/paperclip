@@ -211,11 +211,13 @@ describe("BlueprintsCatalogPage (LET-501 C)", () => {
     expect(outreachCard?.textContent).toContain("Risk · APPROVAL REQUIRED");
   });
 
-  it("never renders raw secret-shaped strings in card content", async () => {
+  it("never renders raw secret-shaped strings in card content or DOM attributes", async () => {
     listMock.mockResolvedValue({
       enabled: true,
       versions: [
         makeEntry({
+          ref: "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH@1",
+          key: "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
           title: "Code Implementer ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
           description: "Leaks an Authorization=ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH header",
         }),
@@ -225,8 +227,32 @@ describe("BlueprintsCatalogPage (LET-501 C)", () => {
     await waitFor(() => {
       expect(container?.querySelector('[data-testid="eaos-blueprints-card"]')).not.toBeNull();
     });
+    // Visible text must never carry the raw credential-shaped string.
     const text = container?.textContent ?? "";
     expect(text).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH");
+    // Walk every element and every attribute except `href` — DOM data
+    // attributes such as data-blueprint-ref / data-blueprint-key are the
+    // attribute surfaces flagged in the QA verdict, and this catches a
+    // redaction bypass on any of them. The `href` attribute is excluded
+    // because the catalog route key (encodeURIComponent(entry.ref)) is
+    // intentionally not redacted: it is the canonical navigation key for
+    // the detail page and QA explicitly excluded the route href from the
+    // redaction blocker.
+    const allElements = Array.from(container?.querySelectorAll("*") ?? []);
+    for (const el of allElements) {
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name === "href") continue;
+        expect(attr.value).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH");
+      }
+    }
+    // Spot-check the named card data attributes flagged in the QA verdict.
+    const card = container?.querySelector('[data-testid="eaos-blueprints-card"]');
+    expect(card?.getAttribute("data-blueprint-ref")).not.toContain(
+      "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
+    );
+    expect(card?.getAttribute("data-blueprint-key")).not.toContain(
+      "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH",
+    );
   });
 
   it("filters by search and category without inventing rows", async () => {

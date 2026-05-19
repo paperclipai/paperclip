@@ -335,17 +335,32 @@ describe("BlueprintDetailPage (LET-501 C)", () => {
     const text = container?.textContent ?? "";
     expect(text).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII");
     expect(text).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
+    // Walk every element and every non-href attribute — covers data-* and
+    // class/title surfaces. The `href` attribute is excluded because the
+    // detail tab hrefs use the route key (encodeURIComponent(blueprintRef))
+    // which is intentionally not redacted; QA explicitly excluded the
+    // route href from the redaction blocker.
+    const allElements = Array.from(container?.querySelectorAll("*") ?? []);
+    for (const el of allElements) {
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name === "href") continue;
+        expect(attr.value).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII");
+        expect(attr.value).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
+      }
+    }
   });
 
-  it("redacts credential-shaped values in identifier-style backend fields (ref/key/source/policy/config)", async () => {
+  it("redacts credential-shaped values in identifier-style backend fields (ref/key/source/policy/config) — innerHTML and attributes", async () => {
     // Defensive contract: the operator-facing detail surface must never emit
     // a credential-shaped value through any user-visible backend string, even
-    // identifier-style fields. This pins the PR-body claim that all
-    // user-visible backend strings flow through redactSecretLikeText.
+    // identifier-style fields, and must not leak it through DOM data
+    // attributes either. This pins the PR-body claim that all user-visible
+    // backend strings flow through redactSecretLikeText.
     getMock.mockResolvedValue(
       makeDetail({
         ref: "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII@1",
         key: "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII",
+        version: "sk-ABCDEFGHIJKLMNOPQRSTUV",
         source: { kind: "ready_agent_pool", key: "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII" },
         permissionPolicies: [
           {
@@ -375,9 +390,52 @@ describe("BlueprintDetailPage (LET-501 C)", () => {
         container?.querySelector('[data-testid="eaos-blueprint-detail-capabilities"]'),
       ).not.toBeNull();
     });
+    // Visible text must never carry the raw sentinel.
     const text = container?.textContent ?? "";
     expect(text).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII");
     expect(text).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
+    // Walk every element and every non-href attribute — covers data-*,
+    // class, title, etc. The `href` attribute is excluded because the
+    // detail tab hrefs use the route key (encodeURIComponent(blueprintRef))
+    // which is intentionally not redacted; QA explicitly excluded the
+    // route href from the redaction blocker.
+    const allElements = Array.from(container?.querySelectorAll("*") ?? []);
+    for (const el of allElements) {
+      for (const attr of Array.from(el.attributes)) {
+        if (attr.name === "href") continue;
+        expect(attr.value).not.toContain("ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII");
+        expect(attr.value).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
+      }
+    }
+    // Spot-check the named identifier attributes flagged in the QA verdict.
+    const page = container?.querySelector('[data-testid="eaos-blueprint-detail-page"]');
+    expect(page?.getAttribute("data-blueprint-ref")).not.toContain(
+      "ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII",
+    );
+    const policyLi = container?.querySelector(
+      '[data-testid="eaos-blueprint-detail-permissions"] li',
+    );
+    expect(policyLi?.getAttribute("data-policy-key")).not.toContain(
+      "sk-ABCDEFGHIJKLMNOPQRSTUV",
+    );
+  });
+
+  it("redacts credential-shaped version in DOM attributes on the Versions tab", async () => {
+    getMock.mockResolvedValue(
+      makeDetail({ version: "sk-ABCDEFGHIJKLMNOPQRSTUV" }),
+    );
+    await renderDetail("/eaos/blueprints/code-implementer@1/versions/latest");
+    await waitFor(() => {
+      expect(
+        container?.querySelector('[data-testid="eaos-blueprint-detail-versions"]'),
+      ).not.toBeNull();
+    });
+    const row = container?.querySelector(
+      '[data-testid="eaos-blueprint-detail-version-row"]',
+    );
+    expect(row?.getAttribute("data-version")).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
+    const html = container?.innerHTML ?? "";
+    expect(html).not.toContain("sk-ABCDEFGHIJKLMNOPQRSTUV");
   });
 
   it("does not render any mutating buttons on the operator detail path", async () => {

@@ -103,7 +103,7 @@ export function BlueprintDetailPage() {
       data-testid="eaos-blueprint-detail-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
       data-active-tab={activeTab}
-      data-blueprint-ref={blueprintRef}
+      data-blueprint-ref={redactSecretLikeText(blueprintRef)}
     >
       <header className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2" data-testid="eaos-blueprint-detail-posture">
@@ -483,7 +483,7 @@ function CapabilitiesTab({ detail }: { detail: BlueprintCatalogDetail }) {
               <li
                 key={policy.key}
                 className="rounded-md border border-border bg-background p-2"
-                data-policy-key={policy.key}
+                data-policy-key={redactSecretLikeText(policy.key)}
                 data-policy-gate={policy.gate}
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -577,7 +577,7 @@ function VersionsTab({
         <li
           className="rounded-md border border-border bg-card p-3"
           data-testid="eaos-blueprint-detail-version-row"
-          data-version={detail.version}
+          data-version={redactSecretLikeText(detail.version)}
         >
           <div className="flex flex-wrap items-center gap-2">
             <EaosStateChip
