@@ -1721,7 +1721,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId))
       .orderBy(asc(heartbeatRuns.createdAt));
-    expect(runs).toHaveLength(2);
 
     const winner = runs.find((r) => r.id === olderRunId);
     const loser = runs.find((r) => r.id === newerRunId);
@@ -1730,6 +1729,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // job is to ensure exactly one row leaves the queued state per (agent,
     // issue). Where the winner's mocked-adapter run ultimately lands is
     // executeRun-setup territory covered by other tests.
+    //
+    // Don't assert `runs.length` (BLO-6119): the file-level mock-adapter
+    // response includes `summary`, which makes `isProductiveSuccessfulRun`
+    // true on the winner's completion. That fires `handleSuccessfulRunHandoff`
+    // and `finalizeIssueCommentPolicy` (wakeReason was issue_assigned with
+    // no comment posted by the mock) as fire-and-forget corrective wakes,
+    // each of which can enqueue a 3rd row before the test reads the table.
+    // Per-row assertions on (winner, loser) independently of total count is
+    // the proven pattern from 6a056f8f. Local repro is flaky (passes ~50%
+    // of runs); CI surfaces it more consistently.
+    expect(winner).toBeDefined();
+    expect(loser).toBeDefined();
     expect(winner?.status).not.toBe("queued");
     expect(winner?.status).not.toBe("cancelled");
     expect(loser?.status).toBe("cancelled");
