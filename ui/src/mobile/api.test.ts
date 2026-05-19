@@ -20,7 +20,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 describe("mobile API client", () => {
   it("fetchMobileSummary calls /api/mobile/summary with credentials include", async () => {
     const summary = {
-      health: "healthy",
+      health: "ok",
       counts: { running: 1, reviewNeeded: 2, blocked: 3, done: 4 },
       latestReport: "All green",
       telegramUrl: "https://t.me/example",
@@ -51,10 +51,13 @@ describe("mobile API client", () => {
     const calls: FetchCall[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       calls.push([input, init]);
-      return jsonResponse(message);
+      return jsonResponse({ message, messages: [message] });
     };
 
-    await expect(postMobileChatMessage("Ship it", fetchImpl)).resolves.toEqual(message);
+    await expect(postMobileChatMessage("Ship it", fetchImpl)).resolves.toEqual({
+      message,
+      messages: [message],
+    });
 
     expect(calls[0][0]).toBe("/api/mobile/chat/messages");
     expect(calls[0][1]).toMatchObject({ method: "POST", credentials: "include" });

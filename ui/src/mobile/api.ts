@@ -1,7 +1,7 @@
 const MOBILE_API_BASE = "/api/mobile";
 
 export type MobileIssueStatus = "running" | "review_needed" | "blocked" | "done" | "unknown";
-export type MobileHealth = "healthy" | "degraded" | "blocked";
+export type MobileHealth = "ok" | "degraded" | "error";
 export type MobileAgentStatus = "idle" | "running" | "error" | "blocked" | "unknown";
 
 export interface MobileIssueRow {
@@ -39,7 +39,7 @@ export interface MobileChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  status: "sent" | "delivered" | "failed";
+  status: "sent" | "failed";
   createdAt: string;
   replyToId: string | null;
   error: string | null;
