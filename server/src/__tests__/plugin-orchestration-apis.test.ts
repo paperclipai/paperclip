@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentTaskSessions);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -730,5 +732,73 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       cachedInputTokens: 3,
       outputTokens: 6,
     });
+  });
+
+  it("agentSessions.create wraps a caller-supplied taskKey in the plugin prefix so sendMessage/list/close can find it", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const session = await services.agentSessions.create({
+      agentId,
+      companyId,
+      taskKey: "discord-thread-123",
+      reason: "test custom taskKey wrapping",
+    });
+
+    // The stored taskKey must be wrapped inside the prefix
+    const [stored] = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(eq(agentTaskSessions.id, session.sessionId));
+    expect(stored?.taskKey).toBe("plugin:paperclip.missions:session:discord-thread-123");
+
+    // And it must be findable by the same LIKE filter sendMessage/list/close use
+    const findable = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(
+        and(
+          eq(agentTaskSessions.id, session.sessionId),
+          eq(agentTaskSessions.companyId, companyId),
+          like(agentTaskSessions.taskKey, "plugin:paperclip.missions:session:%"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(findable).not.toBeNull();
+  });
+
+  it("agentSessions.create does not double-prefix an already-prefixed taskKey", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const session = await services.agentSessions.create({
+      agentId,
+      companyId,
+      taskKey: "plugin:paperclip.missions:session:already-prefixed",
+      reason: "test no double-prefix",
+    });
+
+    const [stored] = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(eq(agentTaskSessions.id, session.sessionId));
+    expect(stored?.taskKey).toBe("plugin:paperclip.missions:session:already-prefixed");
+  });
+
+  it("agentSessions.create with no taskKey produces a default prefixed key (backwards compatible)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const session = await services.agentSessions.create({
+      agentId,
+      companyId,
+      reason: "test default key generation",
+    });
+
+    const [stored] = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(eq(agentTaskSessions.id, session.sessionId));
+    expect(stored?.taskKey).toMatch(/^plugin:paperclip\.missions:session:[0-9a-f-]{36}$/);
   });
 });
