@@ -2919,7 +2919,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

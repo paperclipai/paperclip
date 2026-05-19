@@ -70,7 +70,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(environmentLeases);

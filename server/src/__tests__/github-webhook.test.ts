@@ -128,7 +128,7 @@ describeEmbeddedPostgres("github-webhook route", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-webhook-test-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   beforeEach(async () => {
     if (!db) return;

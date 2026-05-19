@@ -70,7 +70,7 @@ describeEmbeddedPostgres("issues.last_activity_at materialized column", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -272,7 +272,7 @@ describeEmbeddedPostgres("inboxVisibleForUserCondition with materialized column"
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);

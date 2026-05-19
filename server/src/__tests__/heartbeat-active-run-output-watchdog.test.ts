@@ -115,7 +115,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   // scanSilentActiveRuns -> enqueueWakeup -> startNextQueuedRunForAgent
   // fires `void executeRun(...)` background work that the test never awaits
@@ -157,7 +157,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
     await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-  }, 30_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

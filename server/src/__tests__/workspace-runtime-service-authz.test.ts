@@ -34,7 +34,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-authz-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issues);

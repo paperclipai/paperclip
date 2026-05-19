@@ -43,7 +43,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;

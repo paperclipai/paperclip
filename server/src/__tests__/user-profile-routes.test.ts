@@ -39,7 +39,7 @@ describeEmbeddedPostgres("GET /companies/:companyId/users/:userSlug/profile", ()
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-user-profile-route-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   beforeEach(async () => {
     vi.resetModules();

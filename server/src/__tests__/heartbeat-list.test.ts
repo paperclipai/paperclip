@@ -23,7 +23,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-list-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(heartbeatRuns);

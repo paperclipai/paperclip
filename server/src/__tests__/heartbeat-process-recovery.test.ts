@@ -263,7 +263,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();

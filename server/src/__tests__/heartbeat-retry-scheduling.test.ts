@@ -39,7 +39,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-retry-scheduling-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);

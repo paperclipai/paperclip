@@ -189,7 +189,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
     }
-  }, 30_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

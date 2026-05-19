@@ -29,7 +29,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-service-");
     db = createDb(tempDb.connectionString);
     svc = companySkillService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(companySkills);

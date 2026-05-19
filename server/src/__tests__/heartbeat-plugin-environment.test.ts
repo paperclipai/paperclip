@@ -61,7 +61,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const started = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
     stopDb = started.stop;
     db = createDb(started.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     adapterExecute.mockClear();

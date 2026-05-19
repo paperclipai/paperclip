@@ -56,7 +56,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-orchestration-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));

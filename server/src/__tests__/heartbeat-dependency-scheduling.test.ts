@@ -116,7 +116,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     mockAdapterExecute.mockReset();

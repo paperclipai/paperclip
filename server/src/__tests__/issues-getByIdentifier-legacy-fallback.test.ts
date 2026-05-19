@@ -31,7 +31,7 @@ describeEmbeddedPostgres("issueService.getByIdentifier (legacy_identifier fallba
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-getbyident-legacy-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

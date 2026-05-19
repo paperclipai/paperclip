@@ -38,7 +38,7 @@ describeEmbeddedPostgres("allocateFromLinear (linkedLinearIssue passthrough)", (
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-allocate-linked-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

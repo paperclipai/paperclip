@@ -275,7 +275,7 @@ describe.sequential("adapter management route authorization", () => {
     mocks.buildExternalAdapters.mockResolvedValue([]);
     mocks.loadExternalAdapterPackage.mockResolvedValue(createAdapter());
     mocks.reloadExternalAdapter.mockImplementation(async (type: string) => createAdapter(type));
-  }, 20_000);
+  });
 
   afterEach(() => {
     unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);

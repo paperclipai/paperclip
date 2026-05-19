@@ -39,7 +39,7 @@ describeEmbeddedPostgres("issueService.getByLinearIssueId (linear_issue_links lo
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-getbylinear-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();
