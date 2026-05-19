@@ -32,6 +32,14 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   model: "test-model",
 })));
 
+function adapterInvocationsForRun(runId: string) {
+  return adapterExecute.mock.calls
+    .map((call) => call[0] as { runId?: string; context?: Record<string, unknown> } | undefined)
+    .filter((invocation): invocation is { runId?: string; context?: Record<string, unknown> } =>
+      invocation?.runId === runId,
+    );
+}
+
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
     type: "codex_local",
@@ -225,7 +233,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         }),
       });
     }, { timeout: 5_000 });
-    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterInvocationsForRun(run!.id)).toHaveLength(1);
   }, 15_000);
 
   it("ignores stale non-reused workspace environment config in favor of the issue selection", async () => {
@@ -400,6 +408,9 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         mode: "shared_workspace",
         environmentId: newEnvironmentId,
       },
+      // Match the non-null execution state that a real checked-out issue carries so
+      // this shared-DB suite does not introduce null-state continuation noise.
+      executionState: { testHarness: "environment-selection" },
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -482,6 +493,9 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
           },
         },
       },
+      // Match the non-null execution state that a real checked-out issue carries so
+      // this shared-DB suite does not introduce null-state continuation noise.
+      executionState: { testHarness: "runtime-governance-brief" },
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -499,9 +513,10 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       expect(latest?.status).toBe("succeeded");
     }, { timeout: 5_000 });
 
-    expect(adapterExecute).toHaveBeenCalledTimes(1);
-    const invocation = adapterExecute.mock.calls[0]?.[0] as { context?: Record<string, unknown> } | undefined;
-    const context = invocation?.context ?? {};
+    const invocations = adapterInvocationsForRun(run!.id);
+    expect(invocations).toHaveLength(1);
+    const invocation = invocations[0];
+    const context = invocation.context ?? {};
     expect(context.paperclipRuntimeGovernanceBrief).toMatchObject({
       version: 1,
       contextPriority: ["governance", "skills", "memory"],
