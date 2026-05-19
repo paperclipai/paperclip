@@ -154,6 +154,26 @@ env:
     # gets close to this ceiling under load.
     - name: NODE_OPTIONS
       value: "--max-old-space-size=3072"
+    # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
+    # Anthropic through paperclip-public-tools → ccrotate-serve using the
+    # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
+    # The claude_k8s adapter copies these valueFrom entries onto every Job
+    # pod it creates (inheritedEnvValueFrom). ANTHROPIC_AUTH_TOKEN is the
+    # Bearer-style var preferred by Claude Code / Anthropic SDK >=0.30;
+    # ANTHROPIC_API_KEY mirrors it for older SDK paths. Secret
+    # paperclip-ccrotate-board-token is pre-created out of band.
+    - name: ANTHROPIC_BASE_URL
+      value: "https://paperclip.blockcast.net/ccrotate"
+    - name: ANTHROPIC_AUTH_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-board-token
+          key: token
+    - name: ANTHROPIC_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-board-token
+          key: token
 
 persistence:
   enabled: true
@@ -169,6 +189,19 @@ persistence:
   # /paperclip. StatefulSet volumeClaimTemplates can't be reused by Job pods, so we
   # bind to a standalone PVC by name.
   existingClaim: paperclip-data
+
+# Clear the chart's default pod.securityContext.fsGroup (1000). paperclip-data
+# is a 50Gi RWX cephfs PVC with ~2M inodes; with fsGroup set, kubelet runs a
+# recursive chown over the whole volume on every pod mount (cephfs +
+# fsGroupChangePolicy=OnRootMismatch does not reliably short-circuit), so each
+# rollout grinds 30-45 min and helm `--wait` exits "context deadline exceeded"
+# (onprem-k8s #225). The seed initContainer already does targeted chowns of the
+# paths it writes, so a volume-wide fsGroup walk is pure overhead. Explicit
+# null overrides the chart default instead of merging with it.
+pod:
+  securityContext:
+    fsGroup: null
+    fsGroupChangePolicy: null
 
 # HA API/worker split (§2 — Phase 1 server + Phase 2 chart shipped via
 # Blockcast/paperclip#73, image sha-f324704). The chart splits the single-pod
