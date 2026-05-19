@@ -5,7 +5,10 @@ const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 const watch = process.argv.includes("--watch");
 
 const workerCtx = await esbuild.context(presets.esbuild.worker);
-const manifestCtx = await esbuild.context(presets.esbuild.manifest);
+const manifestCtx = await esbuild.context({
+  ...presets.esbuild.manifest,
+  entryPoints: [...(presets.esbuild.manifest.entryPoints ?? []), "src/templates.ts"],
+});
 const uiCtx = await esbuild.context(presets.esbuild.ui);
 
 if (watch) {
