@@ -274,6 +274,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
+    mockIssueFinalDeliveryService.queueForCompletedIssue.mockReset();
     mockApplyCommentDisposition.mockReset();
     mockPreflightDispositionRequest.mockReset();
     mockPreflightDispositionRequest.mockImplementation((input: { metadata?: { sourceRunId?: string } | null; actor?: { runId?: string | null } } = {}) => ({
@@ -323,6 +324,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
+    mockIssueFinalDeliveryService.queueForCompletedIssue.mockResolvedValue({ status: "skipped", reason: "not_configured" });
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -1807,6 +1809,165 @@ describe.sequential("issue comment reopen routes", () => {
     ));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_commented" }),
+    );
+  });
+
+  it("treats an approve comment from the active reviewer run as an execution decision when the request actor differs", async () => {
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      parentId: "99999999-9999-4999-8999-999999999999",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const body = "Claude Reviewer verdict: SHIP / APPROVE — ready to merge.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-review-approve",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "ceo-user",
+      authorType: "user",
+      presentation: null,
+      metadata: null,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-reviewer",
+      companyId: "company-1",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      status: "running",
+      contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
+    });
+    mockIssueFinalDeliveryService.queueForCompletedIssue.mockResolvedValue({
+      status: "queued",
+      interaction: {
+        id: "final-delivery-1",
+        idempotencyKey: "final-delivery-key",
+        status: "pending",
+      },
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "88888888-8888-4888-8888-888888888888",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        blockerIssueIds: ["11111111-1111-4111-8111-111111111111"],
+      },
+    ]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+      id: "99999999-9999-4999-8999-999999999999",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      childIssueIds: ["11111111-1111-4111-8111-111111111111"],
+      childIssueSummaries: [],
+      childIssueSummaryTruncated: false,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "ceo-user",
+        companyIds: ["company-1"],
+        source: "board_key",
+        isInstanceAdmin: true,
+        runId: "run-reviewer",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-reviewer");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "done",
+        executionState: expect.objectContaining({
+          status: "completed",
+          currentStageId: null,
+          lastDecisionId: expect.any(String),
+          lastDecisionOutcome: "approved",
+        }),
+        actorAgentId: "33333333-3333-4333-8333-333333333333",
+      }),
+      mockTx,
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+    const decisionId = updatePatch.executionState.lastDecisionId;
+    expect(mockTxInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: decisionId,
+        issueId: "11111111-1111-4111-8111-111111111111",
+        stageId: policy.stages[0].id,
+        stageType: "review",
+        actorAgentId: "33333333-3333-4333-8333-333333333333",
+        actorUserId: null,
+        outcome: "approved",
+        body,
+        createdByRunId: "run-reviewer",
+      }),
+    );
+    expect(mockIssueFinalDeliveryService.queueForCompletedIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "11111111-1111-4111-8111-111111111111",
+        status: "done",
+      }),
+      expect.objectContaining({
+        finalMessageMarkdown: body,
+        sourceRunId: "run-reviewer",
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({
+        reason: "issue_blockers_resolved",
+        payload: expect.objectContaining({
+          issueId: "88888888-8888-4888-8888-888888888888",
+          resolvedBlockerIssueId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+    ));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_children_completed",
+        payload: expect.objectContaining({
+          issueId: "99999999-9999-4999-8999-999999999999",
+          completedChildIssueId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+    ));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "33333333-3333-4333-8333-333333333333",
       expect.objectContaining({ reason: "issue_commented" }),
     );
   });

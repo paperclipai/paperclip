@@ -435,6 +435,9 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
 const COMMENT_CHANGES_REQUESTED_RE =
   /\b(?:changes[_\s-]?requested|request(?:ed|s)?\s+changes|qa\s+verdict\s*:\s*(?:fail|no[-\s]?go)|verdict\s*:\s*(?:fail|no[-\s]?go))\b|(?:^|\n)\s*(?:fail|no[-\s]?go)\b/i;
 
+const COMMENT_APPROVED_RE =
+  /\b(?:qa\s+verdict\s*:\s*(?:pass|approve(?:d)?|ship)|verdict\s*:\s*(?:pass|approve(?:d)?|ship)|(?:ship|pass|approve(?:d)?)\s*\/\s*(?:ship|pass|approve(?:d)?)|(?:^|\n)\s*(?:pass|approve(?:d)?|ship)\b)/i;
+
 type RouteActorInfo = ReturnType<typeof getActorInfo>;
 
 function executionPrincipalsEqual(
@@ -454,18 +457,27 @@ function actorMatchesExecutionParticipant(
   return actor.actorType === "user" && participant.userId === actor.actorId;
 }
 
+type CommentExecutionDecisionOutcome = "approved" | "changes_requested";
+
 function inferCommentExecutionDecision(input: {
   issue: { status: string; executionState?: unknown };
-  actor: RouteActorInfo;
   body: string;
-}) {
-  if (!COMMENT_CHANGES_REQUESTED_RE.test(input.body)) return null;
+}): { outcome: CommentExecutionDecisionOutcome; state: ParsedExecutionState } | null {
+  const outcome = COMMENT_CHANGES_REQUESTED_RE.test(input.body)
+    ? "changes_requested"
+    : COMMENT_APPROVED_RE.test(input.body) ? "approved" : null;
+  if (!outcome) return null;
   if (input.issue.status !== "in_review") return null;
   const state = parseIssueExecutionState(input.issue.executionState);
   if (!state || state.status !== "pending") return null;
-  if (!actorMatchesExecutionParticipant(state.currentParticipant, input.actor)) return null;
-  if (!state.returnAssignee) return null;
-  return "changes_requested" as const;
+  if (outcome === "changes_requested" && !state.returnAssignee) return null;
+  return { outcome, state };
+}
+
+function runContextMatchesIssue(contextSnapshot: unknown, issueId: string) {
+  if (!contextSnapshot || typeof contextSnapshot !== "object") return false;
+  const context = contextSnapshot as Record<string, unknown>;
+  return context.issueId === issueId || context.taskId === issueId;
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -4593,104 +4605,126 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
       });
 
-      const inferredExecutionDecision = inferCommentExecutionDecision({ issue: currentIssue, actor, body: req.body.body });
-      if (inferredExecutionDecision === "changes_requested") {
-        const previousExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-        const previousExecutionState = parseIssueExecutionState(currentIssue.executionState);
-        const transition = applyIssueExecutionPolicyTransition({
-          issue: currentIssue,
-          policy: previousExecutionPolicy,
-          previousPolicy: previousExecutionPolicy,
-          requestedStatus: "in_progress",
-          requestedAssigneePatch: {
-            assigneeAgentId: undefined,
-            assigneeUserId: undefined,
-          },
-          actor: {
+      const inferredExecutionDecision = inferCommentExecutionDecision({ issue: currentIssue, body: req.body.body });
+      if (inferredExecutionDecision) {
+        let decisionActor: { agentId: string | null; userId: string | null } | null = null;
+
+        if (actorMatchesExecutionParticipant(inferredExecutionDecision.state.currentParticipant, actor)) {
+          decisionActor = {
             agentId: actor.agentId ?? null,
             userId: actor.actorType === "user" ? actor.actorId : null,
-          },
-          commentBody: req.body.body,
-          monitorExplicitlyUpdated: false,
-        });
-
-        const decision = transition.decision;
-        if (decision?.outcome === "changes_requested") {
-          const decisionId = randomUUID();
-          const nextExecutionState = transition.patch.executionState;
-          if (!nextExecutionState || typeof nextExecutionState !== "object") {
-            throw new Error("Execution policy decision patch is missing executionState");
-          }
-          transition.patch.executionState = {
-            ...nextExecutionState,
-            lastDecisionId: decisionId,
           };
-
-          const updatedIssue = await db.transaction(async (tx) => {
-            const updated = await svc.update(
-              id,
-              {
-                ...transition.patch,
-                actorAgentId: actor.agentId ?? null,
-                actorUserId: actor.actorType === "user" ? actor.actorId : null,
-              },
-              tx,
-            );
-            if (!updated) return null;
-
-            await tx.insert(issueExecutionDecisions).values({
-              id: decisionId,
-              companyId: updated.companyId,
-              issueId: updated.id,
-              stageId: decision.stageId,
-              stageType: decision.stageType,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-              outcome: decision.outcome,
-              body: decision.body,
-              createdByRunId: actor.runId ?? null,
-            });
-
-            return updated;
-          });
-
-          if (!updatedIssue) {
-            res.status(404).json({ error: "Issue not found" });
-            return;
+        } else if (actor.runId && inferredExecutionDecision.state.currentParticipant?.type === "agent") {
+          const sourceRun = await heartbeat.getRun(actor.runId);
+          if (
+            sourceRun?.companyId === currentIssue.companyId &&
+            sourceRun.agentId === inferredExecutionDecision.state.currentParticipant.agentId &&
+            runContextMatchesIssue(sourceRun.contextSnapshot, currentIssue.id)
+          ) {
+            decisionActor = { agentId: sourceRun.agentId, userId: null };
           }
+        }
 
-          currentIssue = updatedIssue;
-          executionStageWakeup = buildExecutionStageWakeup({
-            issueId: currentIssue.id,
-            previousState: previousExecutionState,
-            nextState: parseIssueExecutionState(currentIssue.executionState),
-            interruptedRunId,
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
+        if (decisionActor) {
+          const previousExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
+          const previousExecutionState = parseIssueExecutionState(currentIssue.executionState);
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: currentIssue,
+            policy: previousExecutionPolicy,
+            previousPolicy: previousExecutionPolicy,
+            requestedStatus: inferredExecutionDecision.outcome === "approved" ? "done" : "in_progress",
+            requestedAssigneePatch: {
+              assigneeAgentId: undefined,
+              assigneeUserId: undefined,
+            },
+            actor: decisionActor,
+            commentBody: req.body.body,
+            monitorExplicitlyUpdated: false,
           });
 
-          await logActivity(db, {
-            companyId: currentIssue.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "issue.updated",
-            entityType: "issue",
-            entityId: currentIssue.id,
-            details: {
-              ...transition.patch,
-              identifier: currentIssue.identifier,
-              source: "comment_execution_decision",
-              commentId: comment.id,
-              executionDecision: {
+          const decision = transition.decision;
+          if (decision?.outcome === inferredExecutionDecision.outcome) {
+            if (inferredExecutionDecision.outcome === "approved" && transition.patch.status === undefined) {
+              transition.patch.status = "done";
+            }
+            const decisionId = randomUUID();
+            const nextExecutionState = transition.patch.executionState;
+            if (!nextExecutionState || typeof nextExecutionState !== "object") {
+              throw new Error("Execution policy decision patch is missing executionState");
+            }
+            transition.patch.executionState = {
+              ...nextExecutionState,
+              lastDecisionId: decisionId,
+            };
+
+            const updatedIssue = await db.transaction(async (tx) => {
+              const updated = await svc.update(
+                id,
+                {
+                  ...transition.patch,
+                  actorAgentId: decisionActor.agentId,
+                  actorUserId: decisionActor.userId,
+                },
+                tx,
+              );
+              if (!updated) return null;
+
+              await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
-                outcome: decision.outcome,
+                companyId: updated.companyId,
+                issueId: updated.id,
                 stageId: decision.stageId,
                 stageType: decision.stageType,
+                actorAgentId: decisionActor.agentId,
+                actorUserId: decisionActor.userId,
+                outcome: decision.outcome,
+                body: decision.body,
+                createdByRunId: actor.runId ?? null,
+              });
+
+              return updated;
+            });
+
+            if (!updatedIssue) {
+              res.status(404).json({ error: "Issue not found" });
+              return;
+            }
+
+            currentIssue = updatedIssue;
+            executionStageWakeup = buildExecutionStageWakeup({
+              issueId: currentIssue.id,
+              previousState: previousExecutionState,
+              nextState: parseIssueExecutionState(currentIssue.executionState),
+              interruptedRunId,
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+            });
+
+            await logActivity(db, {
+              companyId: currentIssue.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: currentIssue.id,
+              details: {
+                ...transition.patch,
+                identifier: currentIssue.identifier,
+                source: "comment_execution_decision",
+                commentId: comment.id,
+                executionDecision: {
+                  id: decisionId,
+                  outcome: decision.outcome,
+                  stageId: decision.stageId,
+                  stageType: decision.stageType,
+                  actorAgentId: decisionActor.agentId,
+                  actorUserId: decisionActor.userId,
+                },
               },
-            },
-          });
+            });
+          }
         }
       }
     }
@@ -4768,6 +4802,42 @@ export function issueRoutes(
       source: "issue.comment",
     });
 
+    const becameDoneAfterComment = issue.status !== "done" && currentIssue.status === "done";
+    if (becameDoneAfterComment) {
+      try {
+        const finalDelivery = await finalDeliverySvc.queueForCompletedIssue(currentIssue, {
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          finalMessageMarkdown: req.body.body,
+          sourceRunId: actor.runId ?? null,
+        });
+        if (finalDelivery.status === "queued" || finalDelivery.status === "already_queued") {
+          await logActivity(db, {
+            companyId: currentIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: finalDelivery.status === "queued"
+              ? "issue.final_delivery_queued"
+              : "issue.final_delivery_already_queued",
+            entityType: "issue_thread_interaction",
+            entityId: finalDelivery.interaction.id,
+            details: {
+              issueId: currentIssue.id,
+              identifier: currentIssue.identifier,
+              idempotencyKey: finalDelivery.interaction.idempotencyKey,
+              status: finalDelivery.interaction.status,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: currentIssue.id }, "failed to queue issue final delivery after issue comment");
+      }
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
@@ -4777,7 +4847,7 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
       if (assigneeId && !wakeups.has(assigneeId) && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -4860,6 +4930,64 @@ export function issueRoutes(
             source: "comment.mention",
           },
         });
+      }
+
+      const becameTerminalAfterComment =
+        !["done", "cancelled"].includes(issue.status) && ["done", "cancelled"].includes(currentIssue.status);
+      if (becameDoneAfterComment) {
+        const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
+        for (const dependent of dependents) {
+          wakeups.set(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+          });
+        }
+      }
+
+      if (becameTerminalAfterComment && currentIssue.parentId) {
+        const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
+        if (parent) {
+          wakeups.set(parent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_children_completed",
+            payload: {
+              issueId: parent.id,
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: parent.id,
+              taskId: parent.id,
+              wakeReason: "issue_children_completed",
+              source: "issue.children_completed",
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+          });
+        }
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
