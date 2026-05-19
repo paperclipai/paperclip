@@ -17,6 +17,17 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("prefers the loopback bind host over allowed hostnames for the primary runtime URL", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["192.168.1.50"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({
