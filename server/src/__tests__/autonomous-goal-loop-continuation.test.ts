@@ -146,6 +146,541 @@ describe("autonomous goal loop continuation planning", () => {
     });
   });
 
+  it("allows passive master artifact workflow merges without board escalation", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the release-manager lane can do the non-deploy merge.",
+        nextTask: {
+          title: "Merge PR #75 into master after internal QA approval",
+          description: [
+            "Squash merge the green PR into master after QA PASS, Claude Ship, and clean CI.",
+            "Push-to-master workflows are classified as passive_ci_artifacts only: verify_canary checks, docker artifact build, and refresh-lockfile internal PR maintenance.",
+            "No production deploy, npm publish, live flag, spend, secret rotation, migration, or service restart is authorized by this step.",
+            "The npm canary publish job remains default-off unless a separate explicit operator gate enables it.",
+          ].join(" "),
+          acceptanceCriteria: [
+            "PR is merged only after green CI and internal review evidence is present",
+            "Only passive CI artifact/check workflows run on master push",
+            "Any deploy, publish, restart, spend, secret, live-flag, or migration action remains board-gated",
+          ],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "Claude Reviewer Ship", "green GitHub checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "create_child",
+      reason: "next_iteration",
+      reportToUser: false,
+    });
+  });
+
+  it("blocks passive artifact merges when policy does not let the CEO approve passive artifacts", () => {
+    const issue = {
+      ...parentIssue,
+      executionPolicy: {
+        ...parentIssue.executionPolicy,
+        missionControl: {
+          ...parentIssue.executionPolicy.missionControl,
+          autonomousLoop: {
+            ...parentIssue.executionPolicy.missionControl.autonomousLoop,
+            ceoCanApprove: ["research", "specs", "local_code_changes", "tests", "paperclip_comments", "dry_runs"],
+          },
+        },
+      },
+    };
+
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the release-manager lane can do the non-deploy merge.",
+        nextTask: {
+          title: "Merge PR #75 into master after internal QA approval",
+          description: "Squash merge the green PR into master for passive_ci_artifacts after QA PASS and green CI.",
+          acceptanceCriteria: ["Only passive CI artifact/check workflows run on master push"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "Claude Reviewer Ship", "green GitHub checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks passive artifact wording when it lacks internal review and green CI evidence", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO says passive_ci_artifacts are safe.",
+        nextTask: {
+          title: "Merge PR #76 into master",
+          description: "This is not passive_ci_artifacts-approved yet; merge into master before QA signs off.",
+          acceptanceCriteria: ["Master branch receives the commit"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["green checks pending"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks actual publish commands even when a nearby clause says no production deploy", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description: "QA PASS and green CI are present. No production deploy is authorized, but publish canary to npm from master.",
+          acceptanceCriteria: ["The npm canary package is published"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "QA PASS and green CI are present. No production deploy is authorized, publish canary to npm from master.",
+    "QA PASS and green CI are present. No production deploy is authorized and publish canary to npm from master.",
+    "QA PASS and green CI are present. No production deploy is authorized and publish canary to npm is allowed.",
+    "QA PASS and green CI are present. No production deploy is authorized and set publish_canary=true is enabled.",
+    "QA PASS and green CI are present. No production deploy, publish canary to npm is allowed.",
+    "QA PASS and green CI are present. No production deploy, set publish_canary=true is enabled.",
+    "QA PASS and green CI are present. No production deploy, publish canary to npm is authorized.",
+    "QA PASS and green CI are present. No production deploy, run prod database migration is authorized.",
+    "QA PASS and green CI are present. No production deploy, set publish_canary=true is authorized.",
+    "QA PASS and green CI are present. No production deploy, set live flag ENABLE_PROD=true is authorized.",
+    "QA PASS and green CI are present. Publish canary to npm from master and production deploy remains board-gated.",
+    "QA PASS and green CI are present. Merge into master for passive_ci_artifacts and set publish_canary=true remains default-off.",
+  ])("blocks gated actions hidden behind disclaimer punctuation: %s", (description) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description,
+          acceptanceCriteria: ["The npm canary package is published"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "QA PASS and green CI are present. No production deploy, npm publish is authorized.",
+    "QA PASS and green CI are present. No production deploy, publish_canary is enabled.",
+    "QA PASS and green CI are present. No production deploy, production database migration is complete.",
+    "QA PASS and green CI are present. No production deploy, production restart is authorized.",
+    "QA PASS and green CI are present. No production deploy, live flag is enabled.",
+  ])("blocks noun-led authorized side effects hidden behind disclaimer punctuation: %s", (description) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description,
+          acceptanceCriteria: ["Only passive CI artifact/check workflows run on master push"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "The npm canary package is published",
+    "The production live flag is enabled",
+    "The production service is restarted",
+    "The prod database migration is complete",
+    "The API secret is rotated",
+    "The proxy settings are changed",
+  ])("blocks result-state side effects in acceptance criteria: %s", (acceptanceCriterion) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description: "QA PASS and green CI are present. Merge into master for passive_ci_artifacts only.",
+          acceptanceCriteria: [acceptanceCriterion],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks publish actions followed by default-off guard wording", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description: "QA PASS and green CI are present. Publish canary to npm from master and then note the canary publish job remains default-off unless a separate operator gate enables it.",
+          acceptanceCriteria: ["The npm canary package is published"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks publish flag enablement even without explicit npm publish wording", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description: "QA PASS and green CI are present. Merge into master for passive_ci_artifacts, then set publish_canary=true.",
+          acceptanceCriteria: ["The canary publish gate is enabled"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "QA PASS and green CI are present. Merge into master for passive_ci_artifacts, then enable the canary publish flag.",
+    "QA PASS and green CI are present. Merge into master for passive_ci_artifacts, then turn on npm canary publish gate.",
+  ])("blocks textual publish gate enablement: %s", (description) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description,
+          acceptanceCriteria: ["The canary publish gate is enabled"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks generic default-off internal maintenance merges without explicit passive CI artifact wording", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is internal maintenance.",
+        nextTask: {
+          title: "Merge PR #77 into master for default-off internal maintenance",
+          description: "QA PASS and green CI are present. Merge into master for default-off internal maintenance only.",
+          acceptanceCriteria: ["Master branch receives the commit"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "QA PASS and green CI are present. Merge into master for passive internal maintenance check only.",
+    "QA PASS and green CI are present. Merge into master for passive maintenance workflow only.",
+  ])("blocks generic passive check/workflow wording without explicit CI artifact wording: %s", (description) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive maintenance.",
+        nextTask: {
+          title: "Merge PR #77 into master for passive maintenance",
+          description,
+          acceptanceCriteria: ["Master branch receives the commit"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    "QA PASS and green CI are present. Merge into master for passive_ci_artifacts, then run prod database migration.",
+    "QA PASS and green CI are present. Merge into master for passive_ci_artifacts, then run the database migration in production.",
+  ])("blocks production migration side effects in passive artifact merges: %s", (description) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #77 into master as passive_ci_artifacts",
+          description,
+          acceptanceCriteria: ["The production database migration is complete"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks live production feature flags even when the merge is described as passive", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #78 into master as passive_ci_artifacts",
+          description: "QA PASS and green CI are present. Merge into master as passive_ci_artifacts, then set live flag ENABLE_PROD=true.",
+          acceptanceCriteria: ["The production live flag is enabled"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["QA PASS", "green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks passive artifact merges when green checks are still pending", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #79 into master as passive_ci_artifacts",
+          description: "Internal review complete and green checks pending; merge into master for passive_ci_artifacts only.",
+          acceptanceCriteria: ["Master branch receives the commit"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["internal review complete", "green checks pending"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it.each([
+    ["not green CI", ["QA PASS", "not green CI"]],
+    ["CI not green", ["QA PASS", "CI not green"]],
+    ["not QA PASS", ["not QA PASS", "green checks"]],
+    ["Claude did not ship", ["green checks", "Claude Reviewer did not ship"]],
+    ["internal review did not approve", ["green checks", "internal review did not approve"]],
+  ])("blocks passive artifact merges with negated evidence: %s", (_label, evidence) => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims the release branch is passive.",
+        nextTask: {
+          title: "Merge PR #79 into master as passive_ci_artifacts",
+          description: "Merge into master for passive_ci_artifacts only.",
+          acceptanceCriteria: ["Master branch receives the commit"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence,
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("blocks urgent production deploy wording instead of treating 'without' as a disclaimer", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; continue the release quickly.",
+        nextTask: {
+          title: "Without delay, deploy to production",
+          description: "Merge into master and deploy to production immediately after CI completes.",
+          acceptanceCriteria: ["Production is updated"],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
+  it("still blocks master merges that trigger live publish/deploy side effects", () => {
+    const plan = buildAutonomousGoalLoopContinuationPlan({
+      issue: parentIssue,
+      documents: missionDocsWithDecision({
+        version: 1,
+        iteration: 1,
+        decision: "next_iteration",
+        rationale: "Validation passed; the CEO claims this release merge is safe.",
+        nextTask: {
+          title: "Merge PR #82 into master and publish canary",
+          description: "Merge into master, set publish_canary=true, publish the npm canary, push the release tag, and restart production Paperclip.",
+          acceptanceCriteria: [
+            "The canary package is published to npm",
+            "The production service is restarted after the merge",
+          ],
+          safeToRunWithoutUserApproval: true,
+        },
+        evidence: ["green checks"],
+      }),
+      now: "2026-05-11T09:00:00.000Z",
+    });
+
+    expect(plan).toMatchObject({
+      action: "blocked",
+      reason: "ceo_self_attestation_conflict",
+      reportToUser: true,
+    });
+  });
+
   it("blocks direct currency spend even when no budget noun is present", () => {
     const plan = buildAutonomousGoalLoopContinuationPlan({
       issue: parentIssue,

@@ -111,6 +111,7 @@ export const MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS = [
   "tests",
   "paperclip_comments",
   "dry_runs",
+  "passive_ci_artifacts",
 ] as const;
 export type MissionControlAutonomousLoopCeoApproval =
   (typeof MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS)[number];
@@ -156,7 +157,15 @@ export const missionControlAutonomousLoopPolicySchema = z
     ceoCanApprove: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_CEO_APPROVALS))
       .optional()
-      .default(["research", "specs", "local_code_changes", "tests", "paperclip_comments", "dry_runs"]),
+      .default([
+        "research",
+        "specs",
+        "local_code_changes",
+        "tests",
+        "paperclip_comments",
+        "dry_runs",
+        "passive_ci_artifacts",
+      ]),
     userApprovalRequired: z
       .array(z.enum(MISSION_CONTROL_AUTONOMOUS_LOOP_USER_APPROVALS))
       .optional()

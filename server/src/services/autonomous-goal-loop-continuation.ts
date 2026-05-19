@@ -5,6 +5,7 @@ import {
   evaluateMissionControlAutonomousLoopGate,
   evaluateMissionControlCompletionGate,
   MISSION_CONTROL_AUTONOMOUS_LOOP_DOCUMENT_KEY,
+  type MissionControlAutonomousLoopCeoApproval,
   type MissionControlAutonomousLoopReportEvent,
   type MissionControlAutonomousLoopUserApproval,
   type MissionControlCeoLoopDecision,
@@ -240,6 +241,12 @@ const ACTION_APPROVAL_PATTERNS: Record<MissionControlAutonomousLoopUserApproval,
     /\b(post|publish|send|message|dm|email|outreach|comment|reply|follow|unfollow|like|retweet|boost)\b[\s\S]{0,80}\bOF\b/,
     /\b(live|external|public)\s+(campaign|launch|message|post|outreach|notification|announcement)\b/i,
     /\b(contact|notify|invite)\b[\s\S]{0,80}\b(customer|lead|user|audience|subscriber|creator|prospect)s?\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b(live|prod|production)[-\s]?(flag|feature\s+flag|toggle)\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b(?:feature\s+flag|flag|toggle)\b[\s\S]{0,80}\b(live|prod|production)\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b[a-z0-9_]*(?:live|prod|production)[a-z0-9_]*\s*=\s*(?:true|1|enabled|on)\b/i,
+    /\b[a-z0-9_]*(?:live|prod|production)[a-z0-9_]*\s*=\s*(?:true|1|enabled|on)\b/i,
+    /\b(?:live|prod|production)[-\s]?(?:flag|feature\s+flag|toggle)\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+(?:enabled|activated|turned\s+on|on|set)\b/i,
+    /\b(?:feature\s+flag|flag|toggle)\b[\s\S]{0,80}\b(?:live|prod|production)\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+(?:enabled|activated|turned\s+on|on|set)\b/i,
   ],
   destructive_action: [
     /\b(delete|deleting|destroy|drop|wipe|purge|truncate|erase|remove|deactivate|disable|revoke)\b[\s\S]{0,80}\b(production|prod|live|account|database|db|table|data|record|file|secret|key|credential|user|customer|proxy|profile)s?\b/i,
@@ -249,6 +256,19 @@ const ACTION_APPROVAL_PATTERNS: Record<MissionControlAutonomousLoopUserApproval,
   production_deploy: [
     /\b(deploy|release|rollout|ship|restart|migrate|promote)\b[\s\S]{0,80}\b(production|prod|live|public)\b/i,
     /\bproduction\s+(deploy|deployment|release|rollout|migration|restart)\b/i,
+    /\b(?:run|apply|execute)\b[\s\S]{0,80}\b(?:prod|production|live)\b[\s\S]{0,80}\b(?:database|db|schema)?\s*migration\b/i,
+    /\b(?:run|apply|execute)\b[\s\S]{0,80}\b(?:database|db|schema)\s+migration\b[\s\S]{0,80}\b(?:prod|production|live)\b/i,
+    /\b(?:prod|production|live)\b[\s\S]{0,80}\b(?:database|db|schema)\s+migration\b/i,
+    /\b(?:database|db|schema)\s+migration\b[\s\S]{0,80}\b(?:prod|production|live)\b/i,
+    /\b(npm\s+publish|publish(?:ing)?\b[\s\S]{0,80}\b(npm|package|canary|release|registry)|push(?:ing)?\b[\s\S]{0,80}\b(release\s+tag|tag|container\s+image|docker\s+image|ghcr))\b/i,
+    /\b(?:npm|canary|package)\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+published\b/i,
+    /\b[a-z0-9_]*(?:publish|canary|release)[a-z0-9_]*\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+(?:enabled|activated|turned\s+on|on|set)\b/i,
+    /\b(?:prod|production|live)\b[\s\S]{0,80}\b(?:service|server|app|deployment)\b[\s\S]{0,80}\b(?:is|was|be|been)\s+restarted\b/i,
+    /\b(?:service|server|app|deployment)\b[\s\S]{0,80}\b(?:is|was|be|been)\s+restarted\b[\s\S]{0,80}\b(?:prod|production|live)\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b(?:publish|canary|npm)\b[\s\S]{0,80}\b(?:flag|gate|toggle|job|workflow)\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b(?:flag|gate|toggle|job|workflow)\b[\s\S]{0,80}\b(?:publish|canary|npm)\b/i,
+    /\b(set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b[a-z0-9_]*(?:publish|canary|release)[a-z0-9_]*\s*=\s*(?:true|1|enabled|on)\b/i,
+    /\b[a-z0-9_]*(?:publish|canary|release)[a-z0-9_]*\s*=\s*(?:true|1|enabled|on)\b/i,
     /\b(kubectl\s+apply|terraform\s+apply|systemctl\s+restart|docker\s+compose\s+up)\b/i,
   ],
   protected_branch_merge: [
@@ -264,6 +284,7 @@ const ACTION_APPROVAL_PATTERNS: Record<MissionControlAutonomousLoopUserApproval,
   account_or_proxy_change: [
     /\b(change|update|rotate|replace|add|remove|switch|reset|edit|modify)\b[\s\S]{0,80}\b(account|profile|proxy|proxies|credential|password|email|totp|2fa|mfa|api\s*key|token|secret|session|cookie)s?\b/i,
     /\b(proxy|proxies|account|profile|credential|password|email|totp|2fa|api\s*key|token|secret|session|cookie)\b[\s\S]{0,80}\b(change|rotation|update|replacement|reset)\b/i,
+    /\b(proxy|proxies|account|profile|credential|password|email|totp|2fa|api\s*key|token|secret|session|cookie)s?\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+(?:changed|updated|rotated|replaced|reset|switched|added|removed|modified)\b/i,
   ],
 };
 
@@ -273,26 +294,135 @@ function nextTaskTextForActionScan(task: MissionControlCeoLoopNextTask) {
     .join("\n");
 }
 
+const PASSIVE_CI_ARTIFACT_PATTERNS = [
+  /\bpassive[_\s-]*ci[_\s-]*(artifact|check|workflow)s?\b/i,
+];
+
+const NEGATED_PASSIVE_CI_ARTIFACT_PATTERNS = [
+  /\b(?:not|no|non[-\s]?)\s+passive[_\s-]*ci[_\s-]*(?:artifact|check|workflow)s?\b/i,
+  /\bnot\s+(?:a\s+)?passive\b[\s\S]{0,80}\b(?:artifact|check|workflow)s?\b/i,
+];
+
+const PASSIVE_CI_QA_EVIDENCE_PATTERNS = [
+  /\b(?:QA\s+PASS|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer)|review\s+evidence)\b/i,
+];
+
+const PASSIVE_CI_GREEN_CHECK_EVIDENCE_PATTERNS = [
+  /\b(?:green|clean)\s+(?:CI|checks|GitHub\s+checks)\b/i,
+];
+
+const PASSIVE_CI_INCOMPLETE_EVIDENCE_PATTERNS = [
+  /\b(?:not|never|without|failed|failing|red|missing|absent|required|needed|pending|awaiting|blocked|rejected|denied)\b[\s\S]{0,80}\b(?:QA\s+PASS|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer)|green|clean)\b/i,
+  /\b(?:CI|checks|GitHub\s+checks)\s+(?:is\s+|are\s+)?not\s+(?:green|clean|passing|passed|complete|done)\b/i,
+  /\b(?:QA\s+PASS|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer))\b[\s\S]{0,80}\b(?:did\s+not|does\s+not|not)\s+(?:pass|approve|ship|grant|clear)\b/i,
+  /\b(?:QA|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer))\b[\s\S]{0,60}\bnot\s+(?:passing|passed|approved|approve|complete|done|shipped|ship|granted|clear|cleared)\b/i,
+  /\b(?:green|clean)\s+(?:CI|checks|GitHub\s+checks)\s+(?:pending|awaiting|blocked|failing|failed|red)\b/i,
+  /\b(?:CI|checks|GitHub\s+checks)\s+(?:are\s+)?(?:pending|awaiting|blocked|failing|failed|red|required|missing|absent)\b/i,
+  /\b(?:pending|awaiting|waiting\s+for|before|without|no)\b[\s\S]{0,80}\b(?:QA\s+PASS|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer)|green|clean)\b/i,
+  /\b(?:QA\s+PASS|internal\s+(?:QA|review|approval)|Claude\s+(?:Ship|Reviewer)|green|clean)\b[\s\S]{0,60}\b(?:pending|awaiting|required|needed|missing|absent|rejected|denied|failed|not\s+yet)\b/i,
+];
+
+const ACTIONABLE_DISCLAIMER_CLAUSE_PATTERNS = [
+  /(?:^|[,;]\s*)(?:then\s+)?(?:publish|deploy|release|rollout|ship|restart|migrate|promote|run|apply|execute)\b/i,
+  /(?:^|[,;]\s*)(?:then\s+)?(?:set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b(?:publish|canary|npm|live|prod|production|flag|gate|toggle|secret|credential|key)\b/i,
+  /(?:^|[,;]\s*)(?:then\s+)?(?:set|enable|turn\s+on|flip|activate|update)\b[\s\S]{0,80}\b[a-z0-9_]*(?:publish|canary|release|live|prod|production)[a-z0-9_]*\b/i,
+  /(?:^|[,;]\s*)(?:then\s+)?(?:rotate|replace)\b[\s\S]{0,80}\b(?:secret|credential|key|token)\b/i,
+  /[,;]\s*(?:then\s+)?(?:npm\s+publish|publish[_\s-]?canary|canary\s+publish|package\s+publish|release\s+tag|docker\s+(?:push|image)|container\s+image|ghcr|prod(?:uction)?\s+(?:database|db|schema)?\s*migration|(?:database|db|schema)\s+migration|prod(?:uction)?\s+(?:service|server|app|deployment)?\s*restart|(?:live|prod|production)(?:[-\s]+live)?[-\s]*(?:flag|toggle)|(?:feature\s+flag|flag|toggle)\s+(?:live|prod|production)|publish_canary|[a-z0-9_]*(?:publish|canary|release|live|prod|production)[a-z0-9_]*)\b[\s\S]{0,80}\b(?:is|are|was|were|be|been)\s+(?:authorized|allowed|enabled|activated|turned\s+on|published|deployed|released|pushed|migrated|restarted|rotated|changed|updated|set|complete|completed)\b/i,
+];
+
+const SAFETY_AUTHORIZATION_DISCLAIMER_PATTERN =
+  /\b(?:no|without|never)\b[\s\S]{0,140}?\b(?:deploy|deployment|publish|release\s+tag|live[-\s]?flag|spend|payment|secret|credential|key|restart|migration|migrate|prod(?:uction)?|external|npm|ghcr|docker\s+push)\b[\s\S]{0,80}?\b(?:is|are|be)\s+authorized\b/i;
+
+const SAFETY_AUTHORIZATION_DENY_LIST_PATTERN =
+  /\b(?:no|without|never)\b[\s\S]{0,180}?\b(?:deploy|deployment|publish|release\s+tag|live[-\s]?flag|spend|payment|secret|credential|key|restart|migration|migrate|prod(?:uction)?|external|npm|ghcr|docker\s+push)\b[\s\S]{0,180}?(?:,\s*or\b|\bor\b)[\s\S]{0,80}?\b(?:is|are|be)\s+authorized\b/i;
+
+const SAFETY_DISCLAIMER_PATTERNS = [
+  SAFETY_AUTHORIZATION_DISCLAIMER_PATTERN,
+  /^\s*(?:any|all|only|none|no)\b[\s\S]{0,180}?\b(?:deploy|deployment|publish|release\s+tag|live[-\s]?flag|spend|payment|secret|credential|key|restart|migration|migrate|prod(?:uction)?|external|npm|ghcr|docker\s+push)\b[\s\S]{0,120}?\b(?:remains?|is|are|requires?)\b[\s\S]{0,80}?\b(?:board[-\s]?gated|user[-\s]?gated|not\s+authorized|not\s+allowed|separate|explicit)\b/i,
+  /^(?!\s*(?:set|enable|turn\s+on|flip|activate|update|publish|deploy|release|restart)\b)\s*(?:the\s+)?[^.!?;]{0,80}?\b(?:job|workflow|step|gate|flag|toggle)\b[\s\S]{0,120}?\b(?:remains?|is|are)\s+(?:default[-\s]?off|disabled|board[-\s]?gated|user[-\s]?gated|not\s+authorized|not\s+allowed)\b/i,
+];
+
+function actionScanSegments(text: string) {
+  return text
+    .split(/(?<=[.!?;])\s+|\n+|\s+(?:but|however|then|and(?:\s+then)?|while)\s+/i)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+function stripSafetyDisclaimers(segment: string) {
+  const hasActionableAuthorizedClause = SAFETY_AUTHORIZATION_DISCLAIMER_PATTERN.test(segment) &&
+    !SAFETY_AUTHORIZATION_DENY_LIST_PATTERN.test(segment) &&
+    ACTIONABLE_DISCLAIMER_CLAUSE_PATTERNS.some((pattern) => pattern.test(segment));
+  if (hasActionableAuthorizedClause) return segment;
+
+  return SAFETY_DISCLAIMER_PATTERNS.reduce(
+    (stripped, pattern) => stripped.replace(pattern, " "),
+    segment,
+  );
+}
+
+function categoryDetectedInText(input: {
+  category: MissionControlAutonomousLoopUserApproval;
+  text: string;
+  ignoreSafetyDisclaimers?: boolean;
+}) {
+  return actionScanSegments(input.text).some((segment) => {
+    const scanSegment = input.ignoreSafetyDisclaimers ? stripSafetyDisclaimers(segment) : segment;
+    return ACTION_APPROVAL_PATTERNS[input.category].some((pattern) => pattern.test(scanSegment));
+  });
+}
+
+function decisionEvidenceTextForActionScan(decision: MissionControlCeoLoopDecision) {
+  return decision.evidence.join("\n");
+}
+
+function hasPassiveCiArtifactApprovalEvidence(input: { taskText: string; evidenceText: string }) {
+  const combinedText = [input.taskText, input.evidenceText].filter(Boolean).join("\n");
+  if (NEGATED_PASSIVE_CI_ARTIFACT_PATTERNS.some((pattern) => pattern.test(combinedText))) return false;
+  if (!PASSIVE_CI_ARTIFACT_PATTERNS.some((pattern) => pattern.test(input.taskText))) return false;
+  if (PASSIVE_CI_INCOMPLETE_EVIDENCE_PATTERNS.some((pattern) => pattern.test(combinedText))) return false;
+  return PASSIVE_CI_QA_EVIDENCE_PATTERNS.some((pattern) => pattern.test(input.evidenceText)) &&
+    PASSIVE_CI_GREEN_CHECK_EVIDENCE_PATTERNS.some((pattern) => pattern.test(input.evidenceText));
+}
+
+function isPassiveCiArtifactProtectedBranchTask(input: { taskText: string; evidenceText: string }) {
+  if (!hasPassiveCiArtifactApprovalEvidence(input)) return false;
+  const text = input.taskText;
+  if (!categoryDetectedInText({ category: "protected_branch_merge", text })) return false;
+
+  return !(Object.keys(ACTION_APPROVAL_PATTERNS) as MissionControlAutonomousLoopUserApproval[])
+    .filter((category) => category !== "protected_branch_merge")
+    .some((category) => categoryDetectedInText({ category, text, ignoreSafetyDisclaimers: true }));
+}
+
 function detectedUserApprovalActions(input: {
-  nextTask: MissionControlCeoLoopNextTask;
+  decision: MissionControlCeoLoopDecision;
   userApprovalRequired: MissionControlAutonomousLoopUserApproval[];
+  ceoCanApprove: MissionControlAutonomousLoopCeoApproval[];
 }) {
   const activeCategories = new Set(input.userApprovalRequired);
-  const text = nextTaskTextForActionScan(input.nextTask);
+  const ceoApprovedCategories = new Set(input.ceoCanApprove);
+  const text = nextTaskTextForActionScan(input.decision.nextTask!);
+  const evidenceText = decisionEvidenceTextForActionScan(input.decision);
+  const passiveCiArtifactProtectedBranch = ceoApprovedCategories.has("passive_ci_artifacts") &&
+    isPassiveCiArtifactProtectedBranchTask({ taskText: text, evidenceText });
   return (Object.keys(ACTION_APPROVAL_PATTERNS) as MissionControlAutonomousLoopUserApproval[]).filter((category) => {
     if (!activeCategories.has(category)) return false;
-    return ACTION_APPROVAL_PATTERNS[category].some((pattern) => pattern.test(text));
+    if (category === "protected_branch_merge" && passiveCiArtifactProtectedBranch) return false;
+    return categoryDetectedInText({ category, text, ignoreSafetyDisclaimers: true });
   });
 }
 
 function ceoSelfAttestationConflict(input: {
   decision: MissionControlCeoLoopDecision | null;
   userApprovalRequired: MissionControlAutonomousLoopUserApproval[];
+  ceoCanApprove: MissionControlAutonomousLoopCeoApproval[];
 }) {
   if (input.decision?.decision !== "next_iteration" || !input.decision.nextTask?.safeToRunWithoutUserApproval) return null;
   const detectedCategories = detectedUserApprovalActions({
-    nextTask: input.decision.nextTask,
+    decision: input.decision,
     userApprovalRequired: input.userApprovalRequired,
+    ceoCanApprove: input.ceoCanApprove,
   });
   if (detectedCategories.length === 0) return null;
   return {
@@ -455,6 +585,7 @@ export function buildAutonomousGoalLoopState(input: {
   const selfAttestationConflict = ceoSelfAttestationConflict({
     decision,
     userApprovalRequired: loopPolicy.userApprovalRequired,
+    ceoCanApprove: loopPolicy.ceoCanApprove,
   });
   const effectiveReason = selfAttestationConflict?.reason ?? gate.reason;
   const supervisor = supervisorFor({ reason: effectiveReason, decision });
@@ -546,7 +677,7 @@ function childDescription(input: {
     `Parent: ${parentLabel}`,
     `Loop iteration: ${input.decision.iteration + 1}`,
     input.goal ? `Goal: ${input.goal}` : null,
-    "Safety: safe internal autonomous-loop continuation only; live, destructive, spend, account/proxy, production deploy, or protected-branch actions still require explicit user approval.",
+    "Safety: safe internal autonomous-loop continuation only; passive_ci_artifacts protected-branch merges may proceed after internal QA + green CI, but live, destructive, spend, account/proxy, production deploy, publish, migration, restart, or non-passive protected-branch actions still require explicit user approval.",
     "",
     "## CEO Rationale",
     "",
@@ -681,6 +812,7 @@ export function buildAutonomousGoalLoopContinuationPlan(input: {
   const selfAttestationConflict = ceoSelfAttestationConflict({
     decision,
     userApprovalRequired: gate.policy.autonomousLoop.userApprovalRequired,
+    ceoCanApprove: gate.policy.autonomousLoop.ceoCanApprove,
   });
   if (selfAttestationConflict) {
     return nonCreatePlan({

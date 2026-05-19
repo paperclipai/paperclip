@@ -97,7 +97,9 @@ describe("mission-control workflow contracts", () => {
     expect(policy.maxDecisionAgeMinutes).toBe(60);
     expect(policy.userApprovalEveryNIterations).toBeNull();
     expect(policy.reportToUserOnlyOn).toEqual(expect.arrayContaining(["goal_reached", "approval_required"]));
-    expect(policy.ceoCanApprove).toEqual(expect.arrayContaining(["local_code_changes", "dry_runs"]));
+    expect(policy.ceoCanApprove).toEqual(
+      expect.arrayContaining(["local_code_changes", "dry_runs", "passive_ci_artifacts"]),
+    );
     expect(policy.userApprovalRequired).toEqual(expect.arrayContaining(["live_external_action", "production_deploy"]));
 
     const decision = missionControlCeoLoopDecisionSchema.parse({
