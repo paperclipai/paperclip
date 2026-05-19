@@ -102,6 +102,105 @@ function geminiSkillsHome(): string {
   return path.join(os.homedir(), ".gemini", "skills");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function syncGeminiMcpSettingsLocal(cwd: string): Promise<void> {
+  const mcpPath = path.join(cwd, ".mcp.json");
+  let mcpRaw: string;
+  try {
+    mcpRaw = await fs.readFile(mcpPath, "utf8");
+  } catch {
+    return;
+  }
+  let mcpParsed: unknown;
+  try {
+    mcpParsed = JSON.parse(mcpRaw);
+  } catch {
+    return;
+  }
+  const mcpServers = isRecord(mcpParsed) && isRecord(mcpParsed.mcpServers) ? mcpParsed.mcpServers : {};
+  const geminiDir = path.join(cwd, ".gemini");
+  const settingsPath = path.join(geminiDir, "settings.json");
+  await fs.mkdir(geminiDir, { recursive: true });
+
+  let settings: Record<string, unknown> = {};
+  try {
+    const raw = await fs.readFile(settingsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (isRecord(parsed)) settings = parsed;
+  } catch {
+    // keep defaults when settings are missing or invalid
+  }
+
+  const existingServers = isRecord(settings.mcpServers) ? settings.mcpServers : {};
+  const preserved = Object.fromEntries(
+    Object.entries(existingServers).filter(([, cfg]) => !(isRecord(cfg) && cfg.paperclipManaged === true)),
+  );
+  const managed = Object.fromEntries(
+    Object.entries(mcpServers).map(([name, cfg]) => {
+      const nextCfg = isRecord(cfg) ? { ...cfg } : { value: cfg };
+      return [name, { ...nextCfg, paperclipManaged: true }];
+    }),
+  );
+
+  settings.mcpServers = { ...preserved, ...managed };
+  await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+const GEMINI_REMOTE_MCP_SYNC_SCRIPT = String.raw`python3 - "$PWD/.mcp.json" "$PWD/.gemini/settings.json" <<'PY'
+import json
+import pathlib
+import sys
+
+mcp_path = pathlib.Path(sys.argv[1])
+settings_path = pathlib.Path(sys.argv[2])
+
+if not mcp_path.exists():
+    raise SystemExit(0)
+
+try:
+    mcp_data = json.loads(mcp_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+mcp_servers = mcp_data.get("mcpServers") if isinstance(mcp_data, dict) else {}
+if not isinstance(mcp_servers, dict):
+    mcp_servers = {}
+
+settings = {}
+if settings_path.exists():
+    try:
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            settings = loaded
+    except Exception:
+        settings = {}
+
+existing_servers = settings.get("mcpServers")
+if not isinstance(existing_servers, dict):
+    existing_servers = {}
+
+preserved = {
+    name: cfg
+    for name, cfg in existing_servers.items()
+    if not (isinstance(cfg, dict) and cfg.get("paperclipManaged") is True)
+}
+managed = {}
+for name, cfg in mcp_servers.items():
+    if isinstance(cfg, dict):
+        next_cfg = dict(cfg)
+    else:
+        next_cfg = {"value": cfg}
+    next_cfg["paperclipManaged"] = True
+    managed[name] = next_cfg
+
+settings["mcpServers"] = {**preserved, **managed}
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+settings_path.write_text(json.dumps(settings, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+PY`;
+
 /**
  * Inject Paperclip skills directly into `~/.gemini/skills/` via symlinks.
  * This avoids needing GEMINI_CLI_HOME overrides, so the CLI naturally finds
@@ -209,6 +308,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredGeminiSkillNames = resolvePaperclipDesiredSkillNames(config, geminiSkillEntries);
   if (!executionTargetIsRemote) {
     await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
+    try {
+      await syncGeminiMcpSettingsLocal(cwd);
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to sync .mcp.json into .gemini/settings.json: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 
   const envConfig = parseObject(config.env);
@@ -376,6 +483,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
+      await runAdapterExecutionTargetShellCommand(
+        runId,
+        overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd),
+        GEMINI_REMOTE_MCP_SYNC_SCRIPT,
+        { cwd, env, timeoutSec, graceSec, onLog },
+      );
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
