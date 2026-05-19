@@ -18,7 +18,8 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import {
   HEARTBEAT_SKIP_ON_DEMAND_BARE_WAKE,
   HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE,
-  RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING,
+  RUN_CANCEL_ISSUE_CANCELLED_WHILE_RUNNING,
+  RUN_FINALIZE_ISSUE_CLOSED_DONE,
 } from "../services/orchestration-invariants.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -135,7 +136,7 @@ describeEmbeddedPostgres("orchestration heartbeat guards (007 / 010)", () => {
     expect(skip?.reason).toBe(HEARTBEAT_SKIP_ON_DEMAND_BARE_WAKE);
   });
 
-  it("reconcileTerminalIssueRunningRuns cancels running heartbeat tied to done issue (HB-010 zombie)", async () => {
+  it("reconcileRunningRunsForClosedIssues finalizes running heartbeat tied to done issue", async () => {
     const { companyId, agentId, issuePrefix } = await seedCompanyWithAgent({
       agentRole: "engineer",
       heartbeatEnabled: false,
@@ -169,7 +170,110 @@ describeEmbeddedPostgres("orchestration heartbeat guards (007 / 010)", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const out = await heartbeat.reconcileTerminalIssueRunningRuns({ limit: 10 });
+    const out = await heartbeat.reconcileRunningRunsForClosedIssues({ limit: 10 });
+    expect(out.reconciled).toBe(1);
+
+    const row = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(row?.status).toBe("succeeded");
+    expect(row?.error).toBeNull();
+    const resultJson =
+      row?.resultJson && typeof row.resultJson === "object" && !Array.isArray(row.resultJson)
+        ? (row.resultJson as Record<string, unknown>)
+        : {};
+    expect(resultJson.issueClosedFinalizeNote).toBe(RUN_FINALIZE_ISSUE_CLOSED_DONE);
+    expect(resultJson.stopReason).toBe("completed");
+  });
+
+  it("reconcileRunningRunsForClosedIssues skips when child process is still alive", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyWithAgent({
+      agentRole: "engineer",
+      heartbeatEnabled: false,
+    });
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-05-16T12:00:00.000Z");
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed work",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: now,
+      processPid: process.pid,
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const out = await heartbeat.reconcileRunningRunsForClosedIssues({ limit: 10 });
+    expect(out.reconciled).toBe(0);
+    expect(out.skipped).toBe(1);
+
+    const row = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(row?.status).toBe("running");
+  });
+
+  it("reconcileRunningRunsForClosedIssues cancels running heartbeat tied to cancelled issue", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyWithAgent({
+      agentRole: "engineer",
+      heartbeatEnabled: false,
+    });
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-05-16T12:00:00.000Z");
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cancelled work",
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: now,
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const out = await heartbeat.reconcileRunningRunsForClosedIssues({ limit: 10 });
     expect(out.reconciled).toBe(1);
 
     const row = await db
@@ -178,6 +282,6 @@ describeEmbeddedPostgres("orchestration heartbeat guards (007 / 010)", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0]);
     expect(row?.status).toBe("cancelled");
-    expect(row?.error).toBe(RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING);
+    expect(row?.error).toBe(RUN_CANCEL_ISSUE_CANCELLED_WHILE_RUNNING);
   });
 });

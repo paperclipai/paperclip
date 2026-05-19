@@ -734,6 +734,9 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
+        await heartbeat.reconcileRunningRunsForClosedIssues({ limit: 100 });
+      })
+      .then(async () => {
         if (config.orphanRunReapEnabled) {
           await heartbeat.reapOrphanedRuns();
         }
@@ -795,6 +798,9 @@ export async function startServer(): Promise<StartedServer> {
           if (promotion.promoted > 0) {
             logger.info({ promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds }, "periodic promoted retries and resumed queued runs");
           }
+        })
+        .then(async () => {
+          await heartbeat.reconcileRunningRunsForClosedIssues({ limit: 100 });
         })
         .then(async () => {
           if (config.orphanRunReapEnabled) {

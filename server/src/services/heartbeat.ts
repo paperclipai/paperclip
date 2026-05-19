@@ -118,7 +118,8 @@ import {
   HEARTBEAT_SKIP_TIMER_NO_ASSIGNED_ISSUE,
   HEARTBEAT_SKIP_TIMER_NON_TIMER_PENDING,
   HEARTBEAT_TIMER_NON_TIMER_PENDING_DEFER_SEC,
-  RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING,
+  RUN_CANCEL_ISSUE_CANCELLED_WHILE_RUNNING,
+  RUN_FINALIZE_ISSUE_CLOSED_DONE,
 } from "./orchestration-invariants.js";
 import {
   computeDeferredTimerBaseline,
@@ -6589,6 +6590,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      const reapIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      if (reapIssueId) {
+        const reapIssue = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, reapIssueId), eq(issues.companyId, run.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (reapIssue && (reapIssue.status === "done" || reapIssue.status === "cancelled")) {
+          continue;
+        }
+      }
+
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
@@ -9657,11 +9671,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  /** HB-010: cancel runs still marked running when snapshot issue is done/cancelled. */
-  async function reconcileTerminalIssueRunningRuns(opts?: { limit?: number }) {
+  function isClosedIssueRunChildAlive(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "processGroupId">,
+    adapterType: string,
+  ) {
+    if (!isTrackedLocalChildProcessAdapter(adapterType)) return false;
+    if (run.processPid && isProcessAlive(run.processPid)) return true;
+    if (run.processGroupId && isProcessGroupAlive(run.processGroupId)) return true;
+    return false;
+  }
+
+  async function finalizeRunningRunForClosedDoneIssue(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
+  ) {
+    const now = new Date();
+    const stopMetadata = mergeRunStopMetadataForAgent(agent, "succeeded", {
+      resultJson: parseObject(run.resultJson),
+      errorCode: "issue_closed_run_finalized",
+      errorMessage: RUN_FINALIZE_ISSUE_CLOSED_DONE,
+    });
+    let finalizedRun = await setRunStatus(run.id, "succeeded", {
+      finishedAt: now,
+      error: null,
+      errorCode: null,
+      resultJson: {
+        ...stopMetadata,
+        issueClosedFinalizeNote: RUN_FINALIZE_ISSUE_CLOSED_DONE,
+      },
+    });
+    if (!finalizedRun) finalizedRun = await getRun(run.id);
+    if (!finalizedRun) return null;
+
+    finalizedRun =
+      (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ??
+      finalizedRun;
+
+    await setWakeupStatus(run.wakeupRequestId, "completed", {
+      finishedAt: now,
+      error: null,
+    });
+
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: "run finalized after issue closed",
+      payload: {
+        issueStatus: "done",
+        reason: RUN_FINALIZE_ISSUE_CLOSED_DONE,
+      },
+    });
+
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+    });
+    await releaseIssueExecutionAndPromote(finalizedRun);
+    await finalizeAgentStatus(run.agentId, "succeeded");
+    await startNextQueuedRunForAgent(run.agentId);
+    runningProcesses.delete(run.id);
+    return finalizedRun;
+  }
+
+  /** Finalize runs still marked running when snapshot issue is done/cancelled. */
+  async function reconcileRunningRunsForClosedIssues(opts?: { limit?: number }) {
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
     const rows = await db
-      .select({ runId: heartbeatRuns.id })
+      .select({
+        runId: heartbeatRuns.id,
+        issueStatus: issues.status,
+      })
       .from(heartbeatRuns)
       .innerJoin(
         issues,
@@ -9680,17 +9762,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .limit(limit);
 
     let reconciled = 0;
+    let skipped = 0;
     for (const row of rows) {
       try {
-        await cancelRunInternal(row.runId, RUN_CANCEL_ISSUE_TERMINAL_WHILE_RUNNING);
-        reconciled += 1;
+        const run = await getRun(row.runId);
+        if (!run || run.status !== "running") continue;
+
+        if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) {
+          skipped += 1;
+          continue;
+        }
+
+        const agent = await getAgent(run.agentId);
+        if (agent && isClosedIssueRunChildAlive(run, agent.adapterType)) {
+          skipped += 1;
+          continue;
+        }
+
+        if (row.issueStatus === "cancelled") {
+          const cancelled = await cancelRunInternal(run.id, RUN_CANCEL_ISSUE_CANCELLED_WHILE_RUNNING);
+          if (cancelled) reconciled += 1;
+          continue;
+        }
+
+        if (!agent) {
+          skipped += 1;
+          continue;
+        }
+
+        const finalized = await finalizeRunningRunForClosedDoneIssue(run, agent);
+        if (finalized) reconciled += 1;
       } catch (err) {
-        logger.warn({ err, runId: row.runId }, "reconcileTerminalIssueRunningRuns: cancel failed");
+        logger.warn({ err, runId: row.runId }, "reconcileRunningRunsForClosedIssues: finalize failed");
       }
     }
 
-    return { scanned: rows.length, reconciled };
+    return { scanned: rows.length, reconciled, skipped };
   }
+
+  /** @deprecated Use reconcileRunningRunsForClosedIssues */
+  const reconcileTerminalIssueRunningRuns = reconcileRunningRunsForClosedIssues;
 
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
     const agent = await getAgent(agentId);
@@ -10144,6 +10255,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     scanSilentActiveRuns,
 
+    reconcileRunningRunsForClosedIssues,
+
     reconcileTerminalIssueRunningRuns,
 
     reconcileProductivityReviews,
@@ -10151,7 +10264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      const terminalIssueRuns = await reconcileTerminalIssueRunningRuns({ limit: 100 });
+      const terminalIssueRuns = await reconcileRunningRunsForClosedIssues({ limit: 100 });
 
       const allAgents = await db.select().from(agents);
       let checked = 0;
