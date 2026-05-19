@@ -1,31 +1,58 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { EAOS_ALL_NAV_PATHS, EAOS_KERNEL_NAV, EAOS_PRIMARY_NAV } from "./nav-zones";
+import {
+  EAOS_ALL_NAV_PATHS,
+  EAOS_KERNEL_NAV,
+  EAOS_PRIMARY_NAV,
+  EAOS_PRIMARY_NAV_ZONES,
+  EAOS_SECONDARY_NAV_ZONES,
+} from "./nav-zones";
 
-// LET-164 §4 lists the ten primary zones in this exact order. The shell
-// renders them in this order via the array, so regressions in the array
-// will visibly reorder the nav.
-const EXPECTED_ORDER = [
+// LET-459 §"IA principle: two product modes" promotes Missions into the
+// operator tier and demotes Projects/Goals, Runs/Observability,
+// Capabilities/MCP, Sandbox/Runtime, and Admin/Security into a Build/Admin
+// tier so the default screen does not show ten equal links.
+const EXPECTED_PRIMARY_TIER = [
   "Command Center",
-  "Projects / Goals",
   "Missions",
   "Agents / Teams",
-  "Runs / Observability",
   "Approvals / Risk",
+  "Knowledge / Playbooks",
+];
+
+const EXPECTED_SECONDARY_TIER = [
+  "Projects / Goals",
+  "Runs / Observability",
   "Capabilities / MCP",
   "Sandbox / Runtime",
-  "Knowledge / Playbooks",
   "Admin / Security",
 ];
 
 describe("EAOS primary nav", () => {
-  it("matches the LET-164 §4 zone order", () => {
-    expect(EAOS_PRIMARY_NAV.map((zone) => zone.label)).toEqual(EXPECTED_ORDER);
+  it("matches the LET-459 operator/build-admin grouping", () => {
+    expect(EAOS_PRIMARY_NAV.map((zone) => zone.label)).toEqual([
+      ...EXPECTED_PRIMARY_TIER,
+      ...EXPECTED_SECONDARY_TIER,
+    ]);
   });
 
   it("anchors Command Center at /eaos", () => {
     expect(EAOS_PRIMARY_NAV[0]?.path).toBe("/eaos");
+  });
+
+  it("keeps Missions in the operator tier per LET-459", () => {
+    expect(EAOS_PRIMARY_NAV_ZONES.map((zone) => zone.label)).toEqual(EXPECTED_PRIMARY_TIER);
+    for (const zone of EAOS_PRIMARY_NAV_ZONES) {
+      expect(zone.tier).toBe("primary");
+    }
+  });
+
+  it("demotes build/admin zones into the secondary tier", () => {
+    expect(EAOS_SECONDARY_NAV_ZONES.map((zone) => zone.label)).toEqual(EXPECTED_SECONDARY_TIER);
+    for (const zone of EAOS_SECONDARY_NAV_ZONES) {
+      expect(zone.tier).toBe("secondary");
+    }
   });
 
   it.each(EAOS_PRIMARY_NAV)(

@@ -52,6 +52,7 @@ import { Eaos } from "./pages/Eaos";
 import { EaosShell } from "./eaos/EaosShell";
 import { CommandCenterLanding } from "./eaos/CommandCenterLanding";
 import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
+import { MissionsLanding } from "./eaos/MissionsLanding";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -96,7 +97,13 @@ function boardRoutes() {
       <Route path="eaos" element={<EaosShell variant="eaos" />}>
         <Route index element={<CommandCenterLanding />} />
         <Route path="sandbox" element={<Eaos />} />
-        {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos" && zone.path !== "/eaos/sandbox").map((zone) => (
+        <Route path="missions" element={<MissionsLanding />} />
+        {EAOS_PRIMARY_NAV.filter(
+          (zone) =>
+            zone.path !== "/eaos"
+            && zone.path !== "/eaos/sandbox"
+            && zone.path !== "/eaos/missions",
+        ).map((zone) => (
           <Route
             key={zone.id}
             path={zone.path.replace(/^\/eaos\//, "")}

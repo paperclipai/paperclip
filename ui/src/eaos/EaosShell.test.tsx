@@ -81,23 +81,48 @@ describe("EaosShell", () => {
     expect(section?.getAttribute("id")).toBe("eaos-section-content");
   });
 
-  it("renders the LET-164 §4 primary nav zones in order", () => {
+  it("renders the LET-459 operator/build/admin tiers in order", () => {
     renderAt("/eaos");
     const links = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
     ).map((node) => node.textContent?.trim());
     expect(links).toEqual([
+      // Primary operator tier — LET-459 §"IA principle"
       "Command Center",
-      "Projects / Goals",
       "Missions",
       "Agents / Teams",
-      "Runs / Observability",
       "Approvals / Risk",
+      "Knowledge / Playbooks",
+      // Demoted Build/Admin tier
+      "Projects / Goals",
+      "Runs / Observability",
       "Capabilities / MCP",
       "Sandbox / Runtime",
-      "Knowledge / Playbooks",
       "Admin / Security",
+      // Kernel escape hatch
       "Kernel / Admin",
+    ]);
+  });
+
+  it("renders the operator tier in a separate group from the Build/Admin tier", () => {
+    renderAt("/eaos");
+    const primaryGroup = container?.querySelector(
+      '[data-testid="eaos-primary-nav-group-primary"]',
+    );
+    const secondaryGroup = container?.querySelector(
+      '[data-testid="eaos-primary-nav-group-secondary"]',
+    );
+    expect(primaryGroup).not.toBeNull();
+    expect(secondaryGroup).not.toBeNull();
+    const primaryLabels = Array.from(
+      primaryGroup?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
+    ).map((node) => node.textContent?.trim());
+    expect(primaryLabels).toEqual([
+      "Command Center",
+      "Missions",
+      "Agents / Teams",
+      "Approvals / Risk",
+      "Knowledge / Playbooks",
     ]);
   });
 

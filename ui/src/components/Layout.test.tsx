@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Layout } from "./Layout";
+import { Layout, isEaosProductRoute } from "./Layout";
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -207,6 +207,25 @@ async function flushReact() {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
 }
+
+describe("isEaosProductRoute", () => {
+  it("returns true for the EAOS root and nested zones under a company prefix", () => {
+    expect(isEaosProductRoute("/LET/eaos")).toBe(true);
+    expect(isEaosProductRoute("/LET/eaos/")).toBe(true);
+    expect(isEaosProductRoute("/LET/eaos/missions")).toBe(true);
+    expect(isEaosProductRoute("/PAP/eaos/sandbox")).toBe(true);
+    expect(isEaosProductRoute("/PAP/eaos/approvals?scope=mine")).toBe(true);
+  });
+
+  it("returns false for legacy board routes and unrelated segments", () => {
+    expect(isEaosProductRoute("/LET")).toBe(false);
+    expect(isEaosProductRoute("/LET/dashboard")).toBe(false);
+    expect(isEaosProductRoute("/LET/issues")).toBe(false);
+    expect(isEaosProductRoute("/LET/agent-os")).toBe(false);
+    expect(isEaosProductRoute("/instance/settings/general")).toBe(false);
+    expect(isEaosProductRoute("/")).toBe(false);
+  });
+});
 
 describe("Layout", () => {
   let container: HTMLDivElement;
@@ -460,6 +479,72 @@ describe("Layout", () => {
       companyId: "company-1",
       companyPrefix: "PAP",
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  // LET-461 / LET-463 — EAOS product routes (`/<prefix>/eaos[/*]`) must
+  // render as a full-screen EAOS surface inside Layout. The legacy Paperclip
+  // board sidebar (Main company nav) and the kernel BreadcrumbBar must be
+  // suppressed so the EaosShell owns the entire region. This test fails if
+  // the legacy chrome leaks onto /<prefix>/eaos/missions or its index.
+  it.each([
+    "/PAP/eaos",
+    "/PAP/eaos/missions",
+    "/PAP/eaos/sandbox",
+  ])("suppresses the legacy board sidebar and breadcrumb on the EAOS route %s", async (path) => {
+    currentPathname = path;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // The EAOS shell renders inside the Outlet; the Outlet stub asserts the
+    // child route mounts. Legacy chrome (sidebar, breadcrumb) must not.
+    expect(container.textContent).toContain("Outlet content");
+    expect(container.textContent).not.toContain("Main company nav");
+    expect(container.textContent).not.toContain("Company settings sidebar");
+    expect(container.textContent).not.toContain("Instance sidebar");
+    expect(container.textContent).not.toContain("Breadcrumbs");
+    expect(container.textContent).not.toContain("Account menu");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the legacy board sidebar on non-EAOS company routes (regression guard)", async () => {
+    currentPathname = "/PAP/dashboard";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // The board chrome must continue rendering on non-EAOS company routes.
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).toContain("Breadcrumbs");
 
     await act(async () => {
       root.unmount();

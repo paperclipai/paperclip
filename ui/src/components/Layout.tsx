@@ -41,6 +41,7 @@ import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
+import { isEaosProductRoute } from "./eaos-route";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
 
@@ -51,6 +52,16 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
   if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
   return segments[1]?.toLowerCase() ?? null;
 }
+
+// LET-461 / LET-463 — EAOS product routes (`/<prefix>/eaos[/*]`) are
+// full-screen EAOS surfaces owned by EaosShell. The kernel Layout still
+// hosts these routes (for the WorktreeBanner, DevRestartBanner, command
+// palette, and dialogs) but must NOT render the legacy Paperclip board
+// sidebar or breadcrumb chrome around them — the EAOS shell owns its own
+// banner / navigation / region / contentinfo landmarks. The route gate
+// itself lives in `./eaos-route` so its test does not import the full
+// Layout dependency graph.
+export { isEaosProductRoute };
 
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
@@ -79,6 +90,7 @@ export function Layout() {
   const navigationType = useNavigationType();
   const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const isEaosRoute = isEaosProductRoute(location.pathname);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -360,7 +372,7 @@ export function Layout() {
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
-        {isMobile && sidebarOpen && (
+        {isMobile && sidebarOpen && !isEaosRoute && (
           <button
             type="button"
             className="fixed inset-0 z-40 bg-black/50"
@@ -369,7 +381,7 @@ export function Layout() {
           />
         )}
 
-        {isMobile ? (
+        {isEaosRoute ? null : isMobile ? (
           <div
             className={cn(
               "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
@@ -415,20 +427,23 @@ export function Layout() {
         )}
 
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
-          <div
-            className={cn(
-              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
-            )}
-          >
-            <BreadcrumbBar />
-          </div>
+          {isEaosRoute ? null : (
+            <div
+              className={cn(
+                isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+              )}
+            >
+              <BreadcrumbBar />
+            </div>
+          )}
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main
               id="main-content"
               ref={mainContentRef}
               tabIndex={-1}
               className={cn(
-                "flex-1 p-4 outline-none md:p-6",
+                "flex-1 outline-none",
+                isEaosRoute ? "p-0 md:p-0" : "p-4 md:p-6",
                 isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
               )}
             >
@@ -445,7 +460,7 @@ export function Layout() {
           </div>
         </div>
       </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+      {isMobile && !isEaosRoute && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
       <NewIssueDialog />
       <NewProjectDialog />

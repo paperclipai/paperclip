@@ -1,5 +1,10 @@
 import { NavLink } from "@/lib/router";
-import { EAOS_KERNEL_NAV, EAOS_PRIMARY_NAV, type EaosNavZone } from "./nav-zones";
+import {
+  EAOS_KERNEL_NAV,
+  EAOS_PRIMARY_NAV_ZONES,
+  EAOS_SECONDARY_NAV_ZONES,
+  type EaosNavZone,
+} from "./nav-zones";
 import { STUB_COUNT_NOTE, STUB_COUNT_PLACEHOLDER } from "./state-labels";
 
 export interface EaosPrimaryNavProps {
@@ -57,9 +62,27 @@ export function EaosPrimaryNav({ drawerOpen, onClose }: EaosPrimaryNavProps) {
       }
     >
       <div className="flex h-full flex-col overflow-y-auto py-3">
-        <ul className="flex flex-col gap-0.5 px-2" aria-label="Primary navigation zones">
-          {EAOS_PRIMARY_NAV.map((zone) => (
+        <ul
+          className="flex flex-col gap-0.5 px-2"
+          aria-label="Operator navigation"
+          data-testid="eaos-primary-nav-group-primary"
+        >
+          {EAOS_PRIMARY_NAV_ZONES.map((zone) => (
             <NavItem key={zone.id} zone={zone} end={zone.path === "/eaos"} />
+          ))}
+        </ul>
+        <div className="px-2 pt-3" aria-hidden="true">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Build / Admin
+          </div>
+        </div>
+        <ul
+          className="flex flex-col gap-0.5 px-2"
+          aria-label="Build and admin navigation"
+          data-testid="eaos-primary-nav-group-secondary"
+        >
+          {EAOS_SECONDARY_NAV_ZONES.map((zone) => (
+            <NavItem key={zone.id} zone={zone} />
           ))}
         </ul>
         <hr aria-hidden="true" className="my-3 border-border" />
