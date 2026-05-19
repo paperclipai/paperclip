@@ -276,7 +276,7 @@ export function NewAgentDialog() {
                     Invite an external agent
                   </Button>
                   <p className="text-xs text-muted-foreground text-center">
-                    OpenClaw, Hermes, etc.
+                    (OpenClaw, Hermes, or any agent that can call the invite API.)
                   </p>
                 </div>
               </div>
@@ -357,16 +357,13 @@ export function NewAgentDialog() {
                 Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div>
                 <Button
                   onClick={() => createAgentInviteMutation.mutate()}
                   disabled={!selectedCompanyId || createAgentInviteMutation.isPending}
                 >
                   {createAgentInviteMutation.isPending ? "Generating…" : "Generate onboarding prompt"}
                 </Button>
-                <span className="text-sm text-muted-foreground">
-                  Works for OpenClaw, Hermes, or any agent that can call the Paperclip invite API.
-                </span>
               </div>
             </div>
           ) : (
