@@ -437,3 +437,10 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  EXTERNAL_LINK_PLATFORMS,
+  createExternalLinkSchema,
+  lookupExternalLinkQuerySchema,
+  type CreateExternalLink,
+} from "./external-links.js";
