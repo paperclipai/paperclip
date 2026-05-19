@@ -3373,11 +3373,13 @@ export function IssueDetail() {
         </div>
       )}
 
-      {/* Persistent issue identifier bar — stays visible when scrolling */}
-      <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 border-b border-border">
+      {/* Persistent issue identifier bar — stays visible when scrolling. Hidden on mobile where breadcrumb bar already shows context. */}
+      <div className="hidden md:block sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 border-b border-border">
         <div className="flex items-center gap-2 min-w-0 py-2">
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-          <span className="text-sm truncate min-w-0 text-foreground/80">{issue.title}</span>
+          {issue.title ? (
+            <span className="text-sm truncate min-w-0 text-foreground/80">{issue.title}</span>
+          ) : null}
         </div>
       </div>
 
