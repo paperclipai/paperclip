@@ -613,6 +613,90 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
+  it("resolves an active recovery action by restoring the return owner with external continuation evidence", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: managerId, assigneeUserId: null })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:external-continuation",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp();
+    const sourceRunId = randomUUID();
+    const nextCheckAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "false_positive",
+        sourceIssueStatus: "in_progress",
+        resolutionNote: "External continuation is still live; do not redispatch.",
+        externalContinuation: {
+          nextCheckAt,
+          sourceRunId,
+          pid: 567525,
+          logPath: "/tmp/oneshot-1779221563371.log",
+          notes: "External oneshot continuation is still running.",
+        },
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      assigneeUserId: null,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.issue.monitorNextCheckAt).toBeTruthy();
+    expect(resolved.body.issue.monitorNotes).toBe("External oneshot continuation is still running.");
+    expect(resolved.body.issue.monitorScheduledBy).toBe("board");
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "false_positive",
+      evidence: {
+        latestRunId: "run-1",
+        externalContinuation: {
+          nextCheckAt,
+          sourceRunId,
+          pid: 567525,
+          logPath: "/tmp/oneshot-1779221563371.log",
+        },
+      },
+    });
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      assigneeUserId: null,
+      monitorNotes: "External oneshot continuation is still running.",
+      monitorScheduledBy: "board",
+    });
+    expect(sourceIssue?.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(0);
+  });
+
   it("marks a recovery action stale when a blocked source issue is manually moved to todo", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db

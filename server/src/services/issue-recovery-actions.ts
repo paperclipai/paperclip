@@ -44,6 +44,7 @@ export type ResolveIssueRecoveryActionInput = {
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
+  evidence?: Record<string, unknown>;
 };
 
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
@@ -271,15 +272,31 @@ export function issueRecoveryActionService(db: Db) {
       predicates.push(eq(issueRecoveryActions.id, input.actionId));
     }
 
+    const evidence = input.evidence === undefined
+      ? undefined
+      : await dbOrTx
+          .select({ evidence: issueRecoveryActions.evidence })
+          .from(issueRecoveryActions)
+          .where(and(...predicates))
+          .limit(1)
+          .then((rows) => ({
+            ...(rows[0]?.evidence ?? {}),
+            ...input.evidence,
+          }));
+    const updateFields: Partial<typeof issueRecoveryActions.$inferInsert> = {
+      status: input.status,
+      outcome: input.outcome,
+      resolutionNote: input.resolutionNote ?? null,
+      resolvedAt: now,
+      updatedAt: now,
+    };
+    if (evidence !== undefined) {
+      updateFields.evidence = evidence;
+    }
+
     const [updated] = await dbOrTx
       .update(issueRecoveryActions)
-      .set({
-        status: input.status,
-        outcome: input.outcome,
-        resolutionNote: input.resolutionNote ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
+      .set(updateFields)
       .where(and(...predicates))
       .returning();
 

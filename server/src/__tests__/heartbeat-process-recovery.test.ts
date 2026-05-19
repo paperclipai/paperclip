@@ -820,6 +820,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  function externalContinuationMonitorFields(input: {
+    nextCheckAt: Date;
+    attemptCount?: number;
+    timeoutAt?: Date | null;
+    maxAttempts?: number | null;
+  }) {
+    const nextCheckAt = input.nextCheckAt.toISOString();
+    const timeoutAt = input.timeoutAt?.toISOString() ?? null;
+    const attemptCount = input.attemptCount ?? 0;
+    const monitor = {
+      nextCheckAt,
+      notes: "External oneshot continuation is still running.",
+      scheduledBy: "board",
+      kind: "external_service",
+      serviceName: "external oneshot",
+      externalRef: "[redacted]",
+      timeoutAt,
+      maxAttempts: input.maxAttempts ?? null,
+      recoveryPolicy: "escalate_to_board",
+    };
+
+    return {
+      monitorNextCheckAt: input.nextCheckAt,
+      monitorWakeRequestedAt: null,
+      monitorAttemptCount: attemptCount,
+      monitorNotes: monitor.notes,
+      monitorScheduledBy: monitor.scheduledBy,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor,
+      },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          lastTriggeredAt: null,
+          attemptCount,
+          notes: monitor.notes,
+          scheduledBy: monitor.scheduledBy,
+          kind: monitor.kind,
+          serviceName: monitor.serviceName,
+          externalRef: monitor.externalRef,
+          timeoutAt,
+          maxAttempts: input.maxAttempts ?? null,
+          recoveryPolicy: monitor.recoveryPolicy,
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+    };
+  }
+
   async function seedQueuedIssueRunFixture() {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -2474,6 +2538,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.some((row) => row.reason === "run_liveness_continuation")).toBe(false);
   });
+
+  it("does not reassert stranded recovery while an external continuation monitor is active", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db
+      .update(issues)
+      .set(externalContinuationMonitorFields({
+        nextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      }))
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({
+      status: "in_progress",
+      monitorNotes: "External oneshot continuation is still running.",
+    });
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+    expect(recoveryActions).toHaveLength(0);
+  });
+
+  it("recovers stranded work when external continuation monitor evidence is stale", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db
+      .update(issues)
+      .set(externalContinuationMonitorFields({
+        nextCheckAt: new Date(Date.now() - 60 * 1000),
+      }))
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+  });
+
+  it("does not treat arbitrary comments as external continuation liveness evidence", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "system",
+      body: "External oneshot continuation is still running with PID 567525 and log /tmp/oneshot.log.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+  });
+
   it("blocks stranded in-progress work after the continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

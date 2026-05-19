@@ -92,6 +92,59 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("allows recovery resolutions to return the source issue to in_progress only with explicit external continuation evidence", () => {
+    const parsed = resolveIssueRecoveryActionSchema.parse({
+      outcome: "false_positive",
+      sourceIssueStatus: "in_progress",
+      externalContinuation: {
+        nextCheckAt: "2026-05-09T20:30:00.000Z",
+        sourceRunId: "11111111-1111-4111-8111-111111111111",
+        pid: 567525,
+        logPath: "/tmp/oneshot-1779221563371.log",
+        notes: "External oneshot continuation is still running.",
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      outcome: "false_positive",
+      sourceIssueStatus: "in_progress",
+      externalContinuation: {
+        sourceRunId: "11111111-1111-4111-8111-111111111111",
+        pid: 567525,
+        logPath: "/tmp/oneshot-1779221563371.log",
+      },
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "in_progress",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "in_progress",
+        externalContinuation: {
+          nextCheckAt: "2026-05-09T20:30:00.000Z",
+          notes: "A scheduled check without continuation evidence is not enough.",
+        },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "in_review",
+        externalContinuation: {
+          nextCheckAt: "2026-05-09T20:30:00.000Z",
+          pid: 567525,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

@@ -46,6 +46,7 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type ResolveIssueRecoveryAction,
   type IssueRelationIssueSummary,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -588,6 +589,64 @@ function summarizeIssueMonitor(
     recoveryPolicy: policy?.monitor?.recoveryPolicy ?? state?.monitor?.recoveryPolicy ?? null,
     status: state?.monitor?.status ?? (policy?.monitor ? "scheduled" : null),
     clearReason: state?.monitor?.clearReason ?? null,
+  };
+}
+
+type ExternalContinuationResolution = NonNullable<ResolveIssueRecoveryAction["externalContinuation"]>;
+
+function externalContinuationRef(continuation: ExternalContinuationResolution) {
+  if (continuation.externalRef) return continuation.externalRef;
+  return [
+    continuation.sourceRunId ? `sourceRunId:${continuation.sourceRunId}` : null,
+    continuation.pid ? `pid:${continuation.pid}` : null,
+    continuation.logPath ? `logPath:${continuation.logPath}` : null,
+  ].filter((value): value is string => Boolean(value)).join(" ");
+}
+
+function externalContinuationExecutionPolicy(
+  continuation: ExternalContinuationResolution,
+  scheduledBy: "assignee" | "board",
+) {
+  return normalizeIssueExecutionPolicy({
+    monitor: {
+      nextCheckAt: continuation.nextCheckAt,
+      notes: continuation.notes ?? null,
+      scheduledBy,
+      kind: "external_service",
+      serviceName: continuation.serviceName ?? "external oneshot",
+      externalRef: externalContinuationRef(continuation),
+      timeoutAt: continuation.timeoutAt ?? null,
+      maxAttempts: continuation.maxAttempts ?? null,
+      recoveryPolicy: continuation.recoveryPolicy ?? "escalate_to_board",
+    },
+  });
+}
+
+function externalContinuationRecoveryEvidence(
+  continuation: ExternalContinuationResolution,
+  actor: ReturnType<typeof getActorInfo>,
+  recordedAt: Date,
+) {
+  return {
+    externalContinuation: {
+      nextCheckAt: continuation.nextCheckAt,
+      sourceRunId: continuation.sourceRunId ?? null,
+      pid: continuation.pid ?? null,
+      logPath: continuation.logPath ?? null,
+      externalRef: continuation.externalRef ?? null,
+      serviceName: continuation.serviceName ?? "external oneshot",
+      notes: continuation.notes ?? null,
+      timeoutAt: continuation.timeoutAt ?? null,
+      maxAttempts: continuation.maxAttempts ?? null,
+      recoveryPolicy: continuation.recoveryPolicy ?? "escalate_to_board",
+      recordedAt: recordedAt.toISOString(),
+      recordedBy: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      },
+    },
   };
 }
 
@@ -2198,16 +2257,62 @@ export function issueRoutes(
       return;
     }
 
-    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+    const {
+      actionId,
+      outcome,
+      sourceIssueStatus,
+      externalContinuation,
+      resolutionNote,
+    } = req.body as ResolveIssueRecoveryAction;
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
 
     const actor = getActorInfo(req);
-    const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    const updateFields: Partial<typeof issueRows.$inferInsert> = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    let recoveryEvidence: Record<string, unknown> | undefined;
+    if (sourceIssueStatus === "in_progress") {
+      const nextCheckAt = new Date(externalContinuation!.nextCheckAt);
+      if (nextCheckAt.getTime() <= Date.now()) {
+        throw unprocessable("External continuation nextCheckAt must be in the future");
+      }
+
+      const returnOwnerAgentId = activeRecoveryAction?.returnOwnerAgentId ?? existing.assigneeAgentId;
+      if (!returnOwnerAgentId) {
+        throw unprocessable("External continuation recovery resolution requires a return owner agent");
+      }
+
+      const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+      const nextExecutionPolicy = externalContinuationExecutionPolicy(
+        externalContinuation!,
+        actor.actorType === "user" ? "board" : "assignee",
+      );
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: existing,
+        policy: nextExecutionPolicy,
+        previousPolicy: previousExecutionPolicy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {
+          assigneeAgentId: returnOwnerAgentId,
+          assigneeUserId: null,
+        },
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        monitorExplicitlyUpdated: true,
+      });
+      Object.assign(updateFields, transition.patch, {
+        status: "in_progress",
+        assigneeAgentId: returnOwnerAgentId,
+        assigneeUserId: null,
+        executionPolicy: nextExecutionPolicy,
+      });
+      recoveryEvidence = externalContinuationRecoveryEvidence(externalContinuation!, actor, new Date());
+    }
     await assertAgentInReviewReviewPath({
       existing,
-      updateFields,
+      updateFields: updateFields as Record<string, unknown>,
       actorType: req.actor.type,
     });
 
@@ -2237,7 +2342,7 @@ export function issueRoutes(
         const updatedIssue = await svc.update(
           id,
           {
-            status: sourceIssueStatus,
+            ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
@@ -2255,6 +2360,7 @@ export function issueRoutes(
           status: actionStatus,
           outcome,
           resolutionNote: resolutionNote ?? null,
+          evidence: recoveryEvidence,
         },
         tx,
       );

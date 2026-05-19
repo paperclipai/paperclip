@@ -312,6 +312,41 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function readMonitorDate(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function readPositiveInteger(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function hasPlausibleActiveScheduledMonitor(
+  issue: Pick<
+    typeof issues.$inferSelect,
+    "status" | "executionPolicy" | "executionState" | "monitorNextCheckAt" | "monitorAttemptCount"
+  >,
+  now: Date,
+) {
+  if (issue.status !== "in_progress") return false;
+  if (!issue.monitorNextCheckAt || issue.monitorNextCheckAt.getTime() <= now.getTime()) return false;
+
+  const policyMonitor = parseObject(parseObject(issue.executionPolicy).monitor);
+  const stateMonitor = parseObject(parseObject(issue.executionState).monitor);
+  if (readNonEmptyString(stateMonitor.status) === "cleared") return false;
+
+  const timeoutAt = readMonitorDate(policyMonitor.timeoutAt) ?? readMonitorDate(stateMonitor.timeoutAt);
+  if (timeoutAt && timeoutAt.getTime() <= now.getTime()) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor.maxAttempts) ?? readPositiveInteger(stateMonitor.maxAttempts);
+  const attemptCount = issue.monitorAttemptCount ?? asNumber(stateMonitor.attemptCount, 0);
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -2382,6 +2417,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (hasPlausibleActiveScheduledMonitor(issue, new Date())) {
         result.skipped += 1;
         continue;
       }

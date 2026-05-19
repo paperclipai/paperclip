@@ -272,21 +272,62 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "cancelled",
 ] as const;
 
+const recoveryExternalContinuationSchema = z.object({
+  nextCheckAt: z.string().datetime(),
+  sourceRunId: z.string().uuid().optional().nullable(),
+  pid: z.number().int().positive().max(2_147_483_647).optional().nullable(),
+  logPath: z.string().trim().min(1).max(500).optional().nullable(),
+  externalRef: z.string().trim().min(1).max(500).optional().nullable(),
+  serviceName: z.string().trim().min(1).max(120).optional().nullable(),
+  notes: multilineTextSchema.pipe(z.string().trim().max(500)).optional().nullable(),
+  timeoutAt: z.string().datetime().optional().nullable(),
+  maxAttempts: z.number().int().positive().max(100).optional().nullable(),
+  recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.sourceRunId && !value.pid && !value.logPath && !value.externalRef) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "External continuation evidence requires sourceRunId, pid, logPath, or externalRef",
+      path: ["externalRef"],
+    });
+  }
+});
+
 export const resolveIssueRecoveryActionSchema = z.object({
   actionId: z.string().uuid().optional(),
   outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-  sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
+  sourceIssueStatus: z.enum(["todo", "in_progress", "done", "in_review", "blocked"]),
+  externalContinuation: recoveryExternalContinuationSchema.optional().nullable(),
   resolutionNote: multilineTextSchema.optional().nullable(),
 }).strict().superRefine((value, ctx) => {
+  if (value.sourceIssueStatus === "in_progress" && !value.externalContinuation) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Returning a recovery source issue to in_progress requires explicit externalContinuation evidence",
+      path: ["externalContinuation"],
+    });
+    return;
+  }
+
+  if (value.sourceIssueStatus !== "in_progress" && value.externalContinuation) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "External continuation evidence is only valid when sourceIssueStatus is in_progress",
+      path: ["externalContinuation"],
+    });
+    return;
+  }
+
   if (value.outcome === "restored") {
     if (
       value.sourceIssueStatus !== "todo" &&
+      value.sourceIssueStatus !== "in_progress" &&
       value.sourceIssueStatus !== "done" &&
       value.sourceIssueStatus !== "in_review"
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Restored recovery actions must move the source issue to todo, done, or in_review",
+        message: "Restored recovery actions must move the source issue to todo, in_progress, done, or in_review",
         path: ["sourceIssueStatus"],
       });
     }
@@ -306,12 +347,13 @@ export const resolveIssueRecoveryActionSchema = z.object({
 
   if (value.outcome === "false_positive" || value.outcome === "cancelled") {
     if (
+      value.sourceIssueStatus !== "in_progress" &&
       value.sourceIssueStatus !== "done" &&
       value.sourceIssueStatus !== "in_review"
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "This recovery outcome requires sourceIssueStatus to be done or in_review",
+        message: "This recovery outcome requires sourceIssueStatus to be in_progress, done, or in_review",
         path: ["sourceIssueStatus"],
       });
     }
