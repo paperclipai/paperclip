@@ -70,6 +70,7 @@ COPY packages/plugins/paperclip-plugin-slack/package.json packages/plugins/paper
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
+COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 # pnpm store mount: re-uses the content-addressable cache of downloaded
 # tarballs between builds so we only fetch packages whose hashes
