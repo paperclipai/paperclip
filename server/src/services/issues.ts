@@ -101,10 +101,17 @@ function assertTransition(from: string, to: string) {
 function applyStatusSideEffects(
   status: string | undefined,
   patch: Partial<typeof issues.$inferInsert>,
+  previousStatus?: string,
 ): Partial<typeof issues.$inferInsert> {
   if (!status) return patch;
 
-  if (status === "in_progress" && !patch.startedAt) {
+  // Entering in_progress starts a fresh active episode, so startedAt is reset to
+  // the transition time. This is the MAT-623 held-resume guardrail: a
+  // blocked/in_review -> in_progress transition must reset startedAt so the
+  // productivity detector measures the new episode, not the stale pre-park
+  // clock. A no-op in_progress -> in_progress patch must NOT reset it — that is
+  // not a new episode and resetting would mask a genuinely long-running issue.
+  if (status === "in_progress" && previousStatus !== "in_progress" && !patch.startedAt) {
     patch.startedAt = new Date();
   }
   if (status === "done") {
@@ -4332,7 +4339,7 @@ export function issueService(db: Db) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
       }
 
-      applyStatusSideEffects(issueData.status, patch);
+      applyStatusSideEffects(issueData.status, patch, existing.status);
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }

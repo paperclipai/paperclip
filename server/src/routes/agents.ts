@@ -44,6 +44,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueService,
+  issueThreadInteractionService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -1743,6 +1744,7 @@ export function agentRoutes(
 
     const issuesSvc = issueService(db);
     const recoveryActionsSvc = issueRecoveryActionService(db);
+    const interactionsSvc = issueThreadInteractionService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
       status: "todo,in_progress,blocked",
@@ -1750,28 +1752,42 @@ export function agentRoutes(
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
     const issueIds = rows.map((issue) => issue.id);
-    const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
+    const [dependencyReadiness, recoveryActionByIssue, pendingInteractions] = await Promise.all([
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
+      interactionsSvc.listPendingForIssues(req.actor.companyId, issueIds),
     ]);
 
     res.json(
-      rows.map((issue) => ({
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        status: issue.status,
-        priority: issue.priority,
-        projectId: issue.projectId,
-        goalId: issue.goalId,
-        parentId: issue.parentId,
-        updatedAt: issue.updatedAt,
-        activeRun: issue.activeRun,
-        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-        dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
-        unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
-      })),
+      rows.map((issue) => {
+        const pending = pendingInteractions.get(issue.id) ?? [];
+        return {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+          projectId: issue.projectId,
+          goalId: issue.goalId,
+          parentId: issue.parentId,
+          updatedAt: issue.updatedAt,
+          activeRun: issue.activeRun,
+          activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+          dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
+          unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
+          unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+          pendingInteractionCount: pending.length,
+          pendingInteractions: pending.map((interaction) => ({
+            id: interaction.id,
+            kind: interaction.kind,
+            title: interaction.title,
+            summary: interaction.summary,
+            createdAt: interaction.createdAt,
+            createdByAgentId: interaction.createdByAgentId,
+            createdByUserId: interaction.createdByUserId,
+          })),
+        };
+      }),
     );
   });
 
@@ -3021,9 +3037,11 @@ export function agentRoutes(
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
     }
+    const ALLOWED_TRIGGER_DETAILS = ["manual", "system", "ping", "callback"] as const;
+    type AllowedTriggerDetail = typeof ALLOWED_TRIGGER_DETAILS[number];
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
-      triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
+      triggerDetail: (ALLOWED_TRIGGER_DETAILS as readonly string[]).includes(body.triggerDetail as string) ? body.triggerDetail as AllowedTriggerDetail : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot,

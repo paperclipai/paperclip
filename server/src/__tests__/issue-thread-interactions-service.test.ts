@@ -972,4 +972,160 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
   });
+
+  it("listPendingForIssues groups pending interactions per issue and excludes resolved ones", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueAId = randomUUID();
+    const issueBId = randomUUID();
+    const issueCId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Pending interactions",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Manager",
+      role: "cto",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueAId,
+        companyId,
+        goalId,
+        title: "Issue A — has a pending confirmation",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: issueBId,
+        companyId,
+        goalId,
+        title: "Issue B — has two pending interactions",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: issueCId,
+        companyId,
+        goalId,
+        title: "Issue C — has only a resolved interaction",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const pendingA = await interactionsSvc.create({
+      id: issueAId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      title: "Approve A?",
+      summary: "Manager approval needed for A",
+      payload: {
+        version: 1,
+        prompt: "Approve A?",
+      },
+    }, {
+      agentId,
+    });
+
+    const pendingB1 = await interactionsSvc.create({
+      id: issueBId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      title: "Pick variant",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "q1",
+          prompt: "Which variant?",
+          selectionMode: "single",
+          options: [
+            { id: "o1", label: "A" },
+            { id: "o2", label: "B" },
+          ],
+        }],
+      },
+    }, {
+      agentId,
+    });
+
+    const pendingB2 = await interactionsSvc.create({
+      id: issueBId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      title: "Decompose",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "t1", title: "Task 1" }],
+      },
+    }, {
+      agentId,
+    });
+
+    const resolvedC = await interactionsSvc.create({
+      id: issueCId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve C?",
+      },
+    }, {
+      agentId,
+    });
+    await interactionsSvc.rejectInteraction({
+      id: issueCId,
+      companyId,
+    }, resolvedC.id, { reason: "no" }, { userId: "local-board" });
+
+    const map = await interactionsSvc.listPendingForIssues(companyId, [
+      issueAId,
+      issueBId,
+      issueCId,
+    ]);
+
+    expect(map.get(issueAId)).toEqual([
+      expect.objectContaining({
+        id: pendingA.id,
+        kind: "request_confirmation",
+        title: "Approve A?",
+        summary: "Manager approval needed for A",
+        createdByAgentId: agentId,
+      }),
+    ]);
+    const issueBList = map.get(issueBId) ?? [];
+    expect(issueBList.map((entry) => entry.id)).toEqual([pendingB2.id, pendingB1.id]);
+    expect(map.has(issueCId)).toBe(false);
+    expect(await interactionsSvc.listPendingForIssues(companyId, [])).toEqual(new Map());
+  });
 });

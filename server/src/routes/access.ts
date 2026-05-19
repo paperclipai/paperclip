@@ -2660,6 +2660,10 @@ export function accessRoutes(
     res.json({ revoked: true, keyId: key.id });
   });
 
+  // Permissions that agents are never allowed to hold, regardless of grants.
+  // Prevents an agent from managing human members even if erroneously granted.
+  const AGENT_BLOCKED_PERMISSION_PREFIXES = ["users:"] as const;
+
   async function assertCompanyPermission(
     req: Request,
     companyId: string,
@@ -2668,6 +2672,14 @@ export function accessRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
+      if (
+        typeof permissionKey === "string" &&
+        AGENT_BLOCKED_PERMISSION_PREFIXES.some((prefix) =>
+          permissionKey.startsWith(prefix)
+        )
+      ) {
+        throw forbidden("Agents cannot hold user-management permissions");
+      }
       const allowed = await access.hasPermission(
         companyId,
         "agent",
@@ -3238,13 +3250,13 @@ export function accessRoutes(
         }
         if (
           req.actor.type !== "board" ||
-          (!req.actor.userId && !isLocalImplicit(req))
+          !req.actor.userId
         ) {
           throw unauthorized(
             "Authenticated user required for bootstrap acceptance"
           );
         }
-        const userId = req.actor.userId ?? "local-board";
+        const userId = req.actor.userId;
         const existingAdmin = await access.isInstanceAdmin(userId);
         if (!existingAdmin) {
           await access.promoteInstanceAdmin(userId);
