@@ -45,7 +45,7 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -1090,7 +1090,15 @@ async function getProtectedMemberReason(
     operation?: "archive" | "update";
   },
 ): Promise<string | null> {
-  if (member.principalType !== "user") return "Only human company members can be removed.";
+  const operation = opts?.operation ?? "update";
+  if (member.principalType !== "user") {
+    // Non-human (e.g. agent) memberships: allow grant/permission updates so
+    // callers with users:manage_permissions can adjust scoped grants on agents
+    // through the API. Destructive operations (archive/remove) still go through
+    // human-only flows today and remain blocked here.
+    if (operation === "archive") return "Only human company members can be removed.";
+    return null;
+  }
   if (req.actor.type !== "board") return "Board access is required to remove members.";
   if (member.principalId === req.actor.userId) return "You cannot remove yourself.";
   const isTargetInstanceAdmin = opts?.instanceAdminUserIds
@@ -4293,9 +4301,22 @@ export function accessRoutes(
         entityType: "company_membership",
         entityId: memberId,
         details: {
+          principalType: updated.principalType,
           grantCount: req.body.grants?.length ?? 0,
         },
       });
+      if (updated.principalType !== "user") {
+        const grants = await access.listPrincipalGrants(
+          companyId,
+          updated.principalType as PrincipalType,
+          updated.principalId,
+        );
+        res.json({
+          ...updated,
+          grants,
+        });
+        return;
+      }
       const member = (await loadCompanyMemberRecords(db, companyId)).find(
         (entry) => entry.id === memberId,
       );
