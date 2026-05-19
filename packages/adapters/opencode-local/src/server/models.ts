@@ -21,6 +21,7 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+const pendingDiscoveries = new Map<string, Promise<AdapterModel[]>>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -170,9 +171,17 @@ export async function discoverOpenCodeModelsCached(input: {
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  const pending = pendingDiscoveries.get(key);
+  if (pending) return pending;
+
+  const promise = discoverOpenCodeModels({ command, cwd, env }).then((models) => {
+    discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+    return models;
+  }).finally(() => {
+    pendingDiscoveries.delete(key);
+  });
+  pendingDiscoveries.set(key, promise);
+  return promise;
 }
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
@@ -213,4 +222,5 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  pendingDiscoveries.clear();
 }
