@@ -87,6 +87,7 @@ describe("GET /health", () => {
         deploymentMode: "authenticated",
         deploymentExposure: "public",
         authReady: true,
+        authDisableSignUp: true,
         companyDeletionEnabled: false,
       }),
     );
@@ -99,6 +100,9 @@ describe("GET /health", () => {
       deploymentMode: "authenticated",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: true,
+      },
     });
   });
 
@@ -121,6 +125,7 @@ describe("GET /health", () => {
         deploymentMode: "authenticated",
         deploymentExposure: "public",
         authReady: true,
+        authDisableSignUp: false,
         companyDeletionEnabled: false,
       }),
     );
@@ -133,6 +138,9 @@ describe("GET /health", () => {
       deploymentMode: "authenticated",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
     });
   });
 
@@ -159,6 +167,7 @@ describe("GET /health", () => {
         deploymentMode: "authenticated",
         deploymentExposure: "public",
         authReady: true,
+        authDisableSignUp: true,
         companyDeletionEnabled: false,
       }),
     );
@@ -175,6 +184,7 @@ describe("GET /health", () => {
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       features: {
+        authDisableSignUp: true,
         companyDeletionEnabled: false,
       },
     });

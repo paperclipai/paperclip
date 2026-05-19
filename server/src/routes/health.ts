@@ -34,11 +34,13 @@ export function healthRoutes(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
+    authDisableSignUp: boolean;
     companyDeletionEnabled: boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
     authReady: true,
+    authDisableSignUp: false,
     companyDeletionEnabled: true,
   },
 ) {
@@ -125,6 +127,9 @@ export function healthRoutes(
         deploymentMode: opts.deploymentMode,
         bootstrapStatus,
         bootstrapInviteActive,
+        features: {
+          authDisableSignUp: opts.authDisableSignUp,
+        },
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -139,6 +144,7 @@ export function healthRoutes(
       bootstrapStatus,
       bootstrapInviteActive,
       features: {
+        authDisableSignUp: opts.authDisableSignUp,
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       ...(devServer ? { devServer } : {}),
