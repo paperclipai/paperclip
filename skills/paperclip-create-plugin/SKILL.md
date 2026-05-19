@@ -6,6 +6,8 @@ description: >
   Paperclip instance, or updating plugin authoring docs. Covers `paperclipai
   plugin init`, the local install loop via `paperclipai plugin install <path>`,
   worker/UI rebuild and reload semantics, and the required success checklist.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Create and develop a Paperclip plugin

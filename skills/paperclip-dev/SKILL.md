@@ -6,6 +6,8 @@ description: >
   pull updates from master, run builds and tests, manage worktrees, back up
   databases, and diagnose problems. Use whenever you need to work on the
   Paperclip codebase itself or keep a running instance healthy.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Paperclip Dev

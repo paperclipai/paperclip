@@ -8,6 +8,8 @@ description: >
   executor can pick up the work — it does not prescribe a plan format. Pair
   with the `paperclip` skill, which covers the mechanics of writing the plan
   document and reassigning the issue.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Paperclip — Converting Plans to Tasks

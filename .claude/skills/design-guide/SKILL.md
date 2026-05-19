@@ -9,6 +9,8 @@ description: >
   patterns, and the /design-guide showcase page. Always use this skill
   alongside the frontend-design skill (for visual quality) and the
   web-design-guidelines skill (for web best practices).
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Paperclip Design Guide

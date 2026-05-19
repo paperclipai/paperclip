@@ -6,6 +6,8 @@ description: >
   CLI agent, API-based agent, or custom process), or when modifying the adapter
   system. Covers the required interfaces, module structure, registration points,
   and conventions derived from the existing claude-local and codex-local adapters.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Creating a Paperclip Agent Adapter

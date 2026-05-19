@@ -4,6 +4,8 @@ description: >
   Coordinate a full Paperclip release across engineering verification, npm,
   GitHub, smoke testing, and announcement follow-up. Use when leadership asks
   to ship a release, not merely to discuss versioning.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Release Coordination Skill

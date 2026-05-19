@@ -7,6 +7,8 @@ description: >
   actionable code or test issues, pushes, and repeats. Escalates with a precise
   blocker when failures are external, flaky, or not safely fixable. Use when a
   PR still has unsuccessful checks after review fixes, including after greploop.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # PRCheckloop

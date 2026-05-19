@@ -5,6 +5,8 @@ description: >
   confidential fix development in a temporary private fork, human coordination
   on advisory-thread comments, CVE request, synchronized advisory publication,
   and immediate security release steps.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Security Vulnerability Response Instructions

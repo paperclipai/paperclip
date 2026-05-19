@@ -6,6 +6,8 @@ description: >
   listed as upcoming that already landed. Proposes minimal edits, creates
   a branch, and opens a PR. Use when asked to review docs for accuracy,
   after major feature merges, or on a periodic schedule.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Doc Maintenance Skill

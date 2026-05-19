@@ -7,6 +7,8 @@ description: >
   routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
   use for the actual domain work itself (writing code, research, etc.) — only for
   Paperclip coordination.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Paperclip Skill

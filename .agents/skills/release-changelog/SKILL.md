@@ -3,6 +3,8 @@ name: release-changelog
 description: >
   Generate the stable Paperclip release changelog at releases/vYYYY.MDD.P.md by
   reading commits, changesets, and merged PR context since the last stable tag.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Release Changelog Skill

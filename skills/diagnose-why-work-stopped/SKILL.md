@@ -8,6 +8,8 @@ description: >
   deliver a plan — no code changes — gated by board/CTO approval before
   child issues are created. Use whenever the issue title or body asks for
   forensics on a stalled, looping, or "went too deep" tree.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Diagnose Why Work Stopped

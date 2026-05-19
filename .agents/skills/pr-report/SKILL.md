@@ -5,6 +5,8 @@ description: >
   maintainer, and produce a polished report artifact such as HTML or Markdown.
   Use when asked to analyze a PR, explain a contributor's design decisions,
   compare it with similar systems, or prepare a merge recommendation.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # PR Report Skill

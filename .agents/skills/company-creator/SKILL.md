@@ -10,6 +10,8 @@ description: >
   asked to turn it into a company. Do NOT use for importing an existing company
   package (use the CLI import command instead) or for modifying a company that
   is already running in Paperclip.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Company Creator

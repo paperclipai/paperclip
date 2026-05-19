@@ -12,6 +12,8 @@ description: >
   loop", "drive Terminal-Bench until it passes", "loop fix-git through
   Paperclip", or otherwise points at a Terminal-Bench task and asks for
   bounded iteration with diagnosis.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Terminal-Bench Loop
