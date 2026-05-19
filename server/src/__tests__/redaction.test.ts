@@ -46,7 +46,7 @@ describe("redaction", () => {
 
   it("redacts jwt-looking values even when key name is not sensitive", () => {
     const input = {
-      session: "aaa.bbb.ccc",
+      session: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
       normal: "plain",
     };
 
@@ -54,6 +54,22 @@ describe("redaction", () => {
 
     expect(result.session).toBe(REDACTED_EVENT_VALUE);
     expect(result.normal).toBe("plain");
+  });
+
+  it("preserves semver strings in structured payloads", () => {
+    const result = redactEventPayload({
+      target_version: "v0.0.0",
+      version: "1.2.3",
+      prerelease: "v2.0.0-beta.1+build.5",
+      token: "v0.0.0",
+    });
+
+    expect(result).toEqual({
+      target_version: "v0.0.0",
+      version: "1.2.3",
+      prerelease: "v2.0.0-beta.1+build.5",
+      token: REDACTED_EVENT_VALUE,
+    });
   });
 
   it("redacts payload objects while preserving null", () => {
