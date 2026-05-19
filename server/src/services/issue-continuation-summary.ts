@@ -269,7 +269,7 @@ export async function refreshIssueContinuationSummary(input: {
   const result = await documentService(db).upsertIssueDocument({
     issueId,
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-    title: ISSUE_CONTINUATION_SUMMARY_TITLE,
+    title: issue.title,
     format: "markdown",
     body,
     baseRevisionId: existing?.latestRevisionId ?? null,

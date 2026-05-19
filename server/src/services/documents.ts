@@ -1,8 +1,17 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
+import { documentRevisions, documents, issueDocuments, issues, projects } from "@paperclipai/db";
+import type { CompanyDocumentListItem, IssueOriginKind, IssueStatus } from "@paperclipai/shared";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+
+/**
+ * Default page size for the company-wide Documents list.
+ * Mirrors the Issues list which has no enforced default but typically uses 50.
+ */
+export const DEFAULT_COMPANY_DOCUMENTS_LIMIT = 50;
+/** Hard upper bound on a single page to protect the server from runaway queries. */
+export const MAX_COMPANY_DOCUMENTS_LIMIT = 200;
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -189,6 +198,128 @@ export function documentService(db: Db) {
         .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
         .orderBy(desc(documentRevisions.revisionNumber));
+    },
+
+    /**
+     * List every document attached to any issue in the company, joined with
+     * the parent issue (and its project, when set) so a list view can render
+     * each row without an N+1 follow-up.
+     *
+     * Filters are AND-combined and all optional. Default sort is most-recently-
+     * updated first, which is backed by the
+     * `issue_documents_company_issue_updated_idx` and
+     * `documents_company_updated_idx` indexes.
+     */
+    listCompanyDocuments: async (
+      companyId: string,
+      filters: {
+        projectId?: string;
+        q?: string;
+        updatedAfter?: Date;
+        limit?: number;
+        includeRoutineExecutions?: boolean;
+      } = {},
+    ): Promise<CompanyDocumentListItem[]> => {
+      const limit = Math.min(
+        MAX_COMPANY_DOCUMENTS_LIMIT,
+        Math.max(1, Math.floor(filters.limit ?? DEFAULT_COMPANY_DOCUMENTS_LIMIT)),
+      );
+
+      const conditions = [eq(issueDocuments.companyId, companyId)];
+      if (!filters.includeRoutineExecutions) {
+        conditions.push(ne(issues.originKind, "routine_execution"));
+      }
+      if (filters.projectId) {
+        conditions.push(eq(issues.projectId, filters.projectId));
+      }
+      if (filters.updatedAfter) {
+        conditions.push(gt(documents.updatedAt, filters.updatedAfter));
+      }
+      if (filters.q && filters.q.trim().length > 0) {
+        const pattern = `%${filters.q.trim()}%`;
+        const titleMatch = ilike(documents.title, pattern);
+        const issueTitleMatch = ilike(issues.title, pattern);
+        const identifierMatch = sql<boolean>`${issues.identifier} ILIKE ${pattern}`;
+        const keyMatch = ilike(issueDocuments.key, pattern);
+        const search = or(titleMatch, issueTitleMatch, identifierMatch, keyMatch);
+        if (search) conditions.push(search);
+      }
+
+      const rows = await db
+        .select({
+          id: documents.id,
+          companyId: documents.companyId,
+          issueId: issueDocuments.issueId,
+          key: issueDocuments.key,
+          title: documents.title,
+          format: documents.format,
+          latestRevisionId: documents.latestRevisionId,
+          latestRevisionNumber: documents.latestRevisionNumber,
+          createdByAgentId: documents.createdByAgentId,
+          createdByUserId: documents.createdByUserId,
+          updatedByAgentId: documents.updatedByAgentId,
+          updatedByUserId: documents.updatedByUserId,
+          lockedAt: documents.lockedAt,
+          lockedByAgentId: documents.lockedByAgentId,
+          lockedByUserId: documents.lockedByUserId,
+          createdAt: documents.createdAt,
+          updatedAt: documents.updatedAt,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+          issueOriginKind: issues.originKind,
+          issueProjectId: issues.projectId,
+          projectName: projects.name,
+          projectStatus: projects.status,
+          projectGoalId: projects.goalId,
+          projectDescription: projects.description,
+        })
+        .from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+        .leftJoin(projects, eq(issues.projectId, projects.id))
+        .where(and(...conditions))
+        .orderBy(desc(documents.updatedAt), asc(issueDocuments.key))
+        .limit(limit);
+
+      return rows.map((row) => ({
+        id: row.id,
+        companyId: row.companyId,
+        issueId: row.issueId,
+        key: row.key,
+        title: row.title,
+        format: row.format as "markdown",
+        latestRevisionId: row.latestRevisionId ?? null,
+        latestRevisionNumber: row.latestRevisionNumber,
+        createdByAgentId: row.createdByAgentId,
+        createdByUserId: row.createdByUserId,
+        updatedByAgentId: row.updatedByAgentId,
+        updatedByUserId: row.updatedByUserId,
+        lockedAt: row.lockedAt,
+        lockedByAgentId: row.lockedByAgentId,
+        lockedByUserId: row.lockedByUserId,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        issue: {
+          id: row.issueId,
+          identifier: row.issueIdentifier,
+          title: row.issueTitle,
+          status: row.issueStatus as IssueStatus,
+          originKind: row.issueOriginKind as IssueOriginKind,
+          projectId: row.issueProjectId,
+          project: row.issueProjectId && row.projectName !== null
+            ? {
+                id: row.issueProjectId,
+                name: row.projectName,
+                description: row.projectDescription,
+                status: row.projectStatus ?? "active",
+                goalId: row.projectGoalId,
+                workspaces: [],
+                primaryWorkspace: null,
+              }
+            : null,
+        },
+      }));
     },
 
     upsertIssueDocument: async (input: {

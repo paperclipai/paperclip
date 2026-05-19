@@ -734,6 +734,15 @@ function runCli() {
   console.log(`Created plugin scaffold at ${out}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only auto-invoke when this file is run directly as `create-paperclip-plugin`.
+// The Paperclip CLI bundle imports named exports from this module; under esbuild
+// the import.meta.url === argv[1] check produces a false positive (both point at
+// the bundle), causing the scaffolder to fire on every Paperclip CLI invocation.
+// Guard explicitly on the bin name so bundle inclusion is harmless.
+if (
+  import.meta.url === `file://${process.argv[1]}` &&
+  typeof process.argv[1] === "string" &&
+  /create-paperclip-plugin\b/.test(process.argv[1])
+) {
   runCli();
 }
