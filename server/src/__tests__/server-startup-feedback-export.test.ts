@@ -17,11 +17,16 @@ const {
   fakeServer,
   loadConfigMock,
 } = vi.hoisted(() => {
-  const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const createAppMock = vi.fn(
+    async (_db: unknown, _opts: unknown) => ((_: unknown, __: unknown) => {}) as never,
+  );
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
-  const deriveAuthTrustedOriginsMock = vi.fn(() => []);
+  const deriveAuthTrustedOriginsMock = vi.fn(
+    (_config: { port: number; authPublicBaseUrl?: string }, _opts?: { listenPort?: number }) =>
+      [] as string[],
+  );
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -125,7 +130,7 @@ vi.mock("../config.js", () => ({
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
-    child: vi.fn(function child() {
+    child: vi.fn(function child(this: unknown) {
       return this;
     }),
     info: vi.fn(),

@@ -48,9 +48,6 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { plugins } from "@paperclipai/db";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
-import { pluginRegistryService } from "./services/plugin-registry.js";
-import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import {
   autoConfigureAlertmanagerFromEnv,
   autoConfigureLinearFromEnv,
