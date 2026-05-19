@@ -185,6 +185,72 @@ describeEmbeddedPostgres("direct-exec routes", () => {
     expect(list.body[0].id).toBe(create.body.id);
   });
 
+  it("returns concrete wakeup receipts for issue comments that wake agents", async () => {
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "executive",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: { issueId, taskId: issueId, source: "test.active-run" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comment wake receipt",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "ceo",
+      issueNumber: 1,
+      identifier: "DEX-1",
+    });
+
+    const comment = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please answer this @CEO" });
+
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+    expect(comment.body.wakeups).toHaveLength(1);
+    expect(comment.body.wakeups[0]).toMatchObject({
+      agentId,
+      runId: null,
+      reason: "issue_execution_deferred",
+      source: "automation",
+      triggerDetail: "system",
+      status: "deferred_issue_execution",
+    });
+    expect(comment.body.wakeups[0].id).not.toBe(runId);
+
+    const receiptRows = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, comment.body.wakeups[0].id));
+    expect(receiptRows).toHaveLength(1);
+    expect(receiptRows[0]?.runId).toBeNull();
+    expect(receiptRows[0]?.payload).toMatchObject({
+      issueId,
+      commentId: comment.body.id,
+      mutation: "comment",
+    });
+  });
+
   it("creates, reads, lists, and deduplicates direct-exec threads without description lookup", async () => {
     const first = await request(app)
       .post(`/api/companies/${companyId}/direct-exec/threads`)
