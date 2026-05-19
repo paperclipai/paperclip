@@ -171,6 +171,7 @@ describe("onboard", () => {
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PAPERCLIP_DISABLE_TAILNET_DETECT = "1";
 
     await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
 
@@ -179,6 +180,7 @@ describe("onboard", () => {
     expect(raw.server.exposure).toBe("private");
     expect(raw.server.bind).toBe("tailnet");
     expect(raw.server.host).toBe("127.0.0.1");
+    delete process.env.PAPERCLIP_DISABLE_TAILNET_DETECT;
   });
 
   it("ignores deployment env overrides during --yes quickstart", async () => {

@@ -25,6 +25,10 @@ export function inferConfiguredBind(server?: Partial<ServerConfig>): BindMode {
 }
 
 export function detectTailnetBindHost(): string | undefined {
+  if (process.env.PAPERCLIP_DISABLE_TAILNET_DETECT === "1") {
+    return undefined;
+  }
+
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
 
