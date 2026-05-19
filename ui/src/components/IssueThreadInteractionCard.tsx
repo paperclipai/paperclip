@@ -977,24 +977,47 @@ function RequestConfirmationResolution({
   }
 
   if (interaction.status === "expired") {
-    const expiredByComment = outcome === "superseded_by_comment";
-    const expiredByTargetChange = outcome === "stale_target";
+    let title: string;
+    let message: string;
+    let showCommentLink = false;
+    let showTargetChange = false;
+
+    switch (outcome) {
+      case "superseded_by_comment":
+        title = "Expired by comment";
+        message = "A board comment superseded this confirmation before it was resolved.";
+        showCommentLink = true;
+        break;
+      case "stale_target":
+        title = "Expired by target change";
+        message = "The requested target changed before this confirmation was resolved.";
+        showTargetChange = true;
+        break;
+      case "superseded":
+        title = "Superseded";
+        message = "A newer confirmation replaced this one before it was resolved.";
+        break;
+      case "issue_closed":
+        title = "Expired by issue closure";
+        message = "The issue was closed before this confirmation was resolved.";
+        break;
+      default:
+        title = "Expired";
+        message = "This confirmation expired before it was resolved.";
+    }
+
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {title}
         </div>
-        <p className="leading-6">
-          {expiredByComment
-            ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
-        </p>
-        {expiredByComment && interaction.result?.commentId ? (
+        <p className="leading-6">{message}</p>
+        {showCommentLink && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
             <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
           </Button>
         ) : null}
-        {expiredByTargetChange ? (
+        {showTargetChange ? (
           <div className="flex flex-wrap items-center gap-2">
             <RequestConfirmationTargetChip
               interaction={interaction}
