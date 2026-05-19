@@ -476,6 +476,29 @@ export {
 } from "./ready-agent-pool.js";
 
 export {
+  BLUEPRINT_LIFECYCLE_STATUSES,
+  BLUEPRINT_INSTANCE_STATUSES,
+  buildBlueprintApprovalEvidence,
+  readyAgentBlueprintToVersion,
+  summarizeMissing,
+  validateBlueprintInstantiateInput,
+  type BlueprintApprovalEvidence,
+  type BlueprintConfigField,
+  type BlueprintConfigFieldType,
+  type BlueprintConfigSchema,
+  type BlueprintInstanceStatus,
+  type BlueprintInstantiateContext,
+  type BlueprintInstantiateInput,
+  type BlueprintInstantiatePreview,
+  type BlueprintInstantiateValidation,
+  type BlueprintInstantiateValidationError,
+  type BlueprintLifecycleStatus,
+  type BlueprintResolvedSecretBinding,
+  type BlueprintSecretRefBinding,
+  type BlueprintVersion,
+} from "./blueprint.js";
+
+export {
   ALL_INTERFACES_BIND_HOST,
   LOOPBACK_BIND_HOST,
   inferBindModeFromHost,

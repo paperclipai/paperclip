@@ -60,6 +60,13 @@ export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { agentOsApprovalApplyService, isAgentOsApplyApproval } from "./agent-os-apply.js";
+export {
+  blueprintCatalogService,
+  isBlueprintCatalogEnabled,
+  resolveProviderKeys,
+  type BlueprintCatalogOptions,
+  type BlueprintCatalogService,
+} from "./blueprint-catalog.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
