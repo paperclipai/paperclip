@@ -1429,6 +1429,7 @@ function shouldAutoCheckoutIssueForWake(input: {
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
 
   return true;
@@ -3867,7 +3868,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
-    if (claimedIssueId) {
+    const claimedWakeReason = readNonEmptyString(parseObject(claimed.contextSnapshot).wakeReason);
+    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
@@ -4484,6 +4486,84 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  /**
+   * Resets agents stuck in status=running with no active heartbeat runs after a threshold.
+   *
+   * Root cause: LLM provider timeouts can suppress heartbeat output so the run record is
+   * cleaned up but finalizeAgentStatus never fires, leaving agents.status="running" with
+   * no live run backing it. After the threshold we reset to "idle" and emit a structured
+   * log event so the health regression is observable.
+   */
+  async function reconcileStuckRunningAgents(opts?: { thresholdMs?: number }) {
+    const thresholdMs = opts?.thresholdMs ?? 30 * 60 * 1000;
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - thresholdMs);
+
+    const candidateAgents = await db
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.status, "running"),
+          lte(agents.updatedAt, cutoff),
+        ),
+      );
+
+    const reset: string[] = [];
+
+    for (const agent of candidateAgents) {
+      const runningCount = await countRunningRunsForAgent(agent.id);
+      if (runningCount > 0) continue;
+
+      const stuckMs = now.getTime() - new Date(agent.updatedAt).getTime();
+
+      const updated = await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: now })
+        .where(
+          and(
+            eq(agents.id, agent.id),
+            eq(agents.status, "running"),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) continue;
+
+      logger.warn(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          stuckMs,
+          thresholdMs,
+        },
+        "stuck-running-agent reset: status=running with no active runs; reset to idle",
+      );
+
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          lastHeartbeatAt: updated.lastHeartbeatAt
+            ? new Date(updated.lastHeartbeatAt).toISOString()
+            : null,
+          outcome: "stuck_running_reset",
+        },
+      });
+
+      await startNextQueuedRunForAgent(agent.id);
+      reset.push(agent.id);
+    }
+
+    if (reset.length > 0) {
+      logger.warn({ resetCount: reset.length, agentIds: reset }, "reconciled stuck running agents");
+    }
+    return { reset: reset.length, agentIds: reset };
   }
 
   async function resumeQueuedRuns() {

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -50,6 +50,8 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+// How far back we look for closed evaluation issues when deciding whether to re-file.
+const STALE_RUN_DISMISSED_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -597,6 +599,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function hasDismissedFalsePositiveDecision(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
     const [row] = await db
       .select({
@@ -619,6 +636,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1);
     return row ?? null;
+  }
+
+  async function hasRecentlyClosedStaleRunEvaluation(companyId: string, runId: string, now = new Date()) {
+    const lookbackCutoff = new Date(now.getTime() - STALE_RUN_DISMISSED_LOOKBACK_MS);
+    const [row] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, lookbackCutoff),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
+  async function terminateDetachedGhostRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (run.errorCode !== "process_detached") return false;
+    if (runningProcesses.has(run.id)) return false;
+    const now = new Date();
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", finishedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, "running"),
+          eq(heartbeatRuns.errorCode, "process_detached"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!updated) return false;
+    logger.info({ runId: run.id, agentId: run.agentId }, "Watchdog scan: terminated detached ghost run");
+    return true;
   }
 
   async function buildRunOutputSilence(
@@ -1524,7 +1580,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ? [...new Set([...blockerIds, recoveryIssue.id])]
       : blockerIds;
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      ...(nextBlockerIds.length > 0 ? { status: "blocked" } : {}),
       blockedByIssueIds: nextBlockerIds,
     });
     if (!updated) return null;
@@ -1555,7 +1611,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: nextBlockerIds.length > 0 ? "blocked" : input.previousStatus,
         previousStatus: input.previousStatus,
         source: "recovery.reconcile_stranded_assigned_issue",
         latestRunId: input.latestRun?.id ?? null,
