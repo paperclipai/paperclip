@@ -636,6 +636,7 @@ export interface AskUserQuestionsQuestionOption {
   id: string;
   label: string;
   description?: string | null;
+  allowFreeText?: boolean;
 }
 
 export interface AskUserQuestionsQuestion {
@@ -657,6 +658,7 @@ export interface AskUserQuestionsPayload {
 export interface AskUserQuestionsAnswer {
   questionId: string;
   optionIds: string[];
+  freeText?: string | null;
 }
 
 export interface AskUserQuestionsResult {

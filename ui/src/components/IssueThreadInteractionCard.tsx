@@ -662,6 +662,14 @@ function AskUserQuestionsCard({
       ]),
     ),
   );
+  const [draftFreeTextByQuestionId, setDraftFreeTextByQuestionId] = useState<Record<string, string>>(
+    () => Object.fromEntries(
+      (interaction.result?.answers ?? []).map((answer) => [
+        answer.questionId,
+        answer.freeText ?? "",
+      ]),
+    ),
+  );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -671,6 +679,14 @@ function AskUserQuestionsCard({
         (interaction.result?.answers ?? []).map((answer) => [
           answer.questionId,
           [...answer.optionIds],
+        ]),
+      ),
+    );
+    setDraftFreeTextByQuestionId(
+      Object.fromEntries(
+        (interaction.result?.answers ?? []).map((answer) => [
+          answer.questionId,
+          answer.freeText ?? "",
         ]),
       ),
     );
@@ -701,10 +717,21 @@ function AskUserQuestionsCard({
     try {
       await onSubmitInteractionAnswers(
         interaction,
-        questions.map((question) => ({
-          questionId: question.id,
-          optionIds: draftAnswers[question.id] ?? [],
-        })),
+        questions.map((question) => {
+          const optionIds = draftAnswers[question.id] ?? [];
+          const trimmedFreeText = (draftFreeTextByQuestionId[question.id] ?? "").trim();
+          const hasSelectedFreeTextOption = optionIds.some((optionId) => {
+            const option = question.options.find((item) => item.id === optionId);
+            return option?.allowFreeText === true;
+          });
+          return {
+            questionId: question.id,
+            optionIds,
+            ...(hasSelectedFreeTextOption && trimmedFreeText.length > 0
+              ? { freeText: trimmedFreeText }
+              : {}),
+          };
+        }),
       );
     } finally {
       setWorking(false);
@@ -784,6 +811,30 @@ function AskUserQuestionsCard({
                   />
                 ))}
               </div>
+              {(draftAnswers[question.id] ?? []).some((optionId) => {
+                const option = question.options.find((item) => item.id === optionId);
+                return option?.allowFreeText === true;
+              }) ? (
+                <div className="mt-3">
+                  <label
+                    htmlFor={`${interaction.id}-${question.id}-free-text`}
+                    className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground"
+                  >
+                    Free response
+                  </label>
+                  <Textarea
+                    id={`${interaction.id}-${question.id}-free-text`}
+                    className="mt-1"
+                    value={draftFreeTextByQuestionId[question.id] ?? ""}
+                    onChange={(event) =>
+                      setDraftFreeTextByQuestionId((current) => ({
+                        ...current,
+                        [question.id]: event.target.value,
+                      }))}
+                    placeholder="Enter an optional response"
+                  />
+                </div>
+              ) : null}
             </div>
           ))}
 
