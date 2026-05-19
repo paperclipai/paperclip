@@ -77,6 +77,22 @@ jobs:
       - name: Build
         run: pnpm build
 
+  publish_canary_skipped:
+    name: Canary npm publish gate skipped
+    if: github.event_name == 'push' && vars.ENABLE_NPM_CANARY_PUBLISH != 'true'
+    needs: verify_canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Explain skipped canary publish
+        run: |
+          echo "npm canary publish is disabled for routine master pushes."
+          echo "verify_canary completed; no npm publish, tag push, deploy, or release action was attempted."
+          echo "To enable canary npm publishing later, configure the npm-canary environment/trusted publishing first, then set the non-secret repository variable ENABLE_NPM_CANARY_PUBLISH=true."
+
   publish_canary:
     # Optional, default-off. Two ways to enable:
     #   1. Repo-level variable `ENABLE_NPM_CANARY_PUBLISH=true` makes every push
