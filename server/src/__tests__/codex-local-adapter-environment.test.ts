@@ -38,6 +38,17 @@ describe("codex_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
+  it("fails fast when command is missing or not absolute", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {},
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks.some((check) => check.code === "codex_command_not_absolute")).toBe(true);
+  });
+
   it("emits codex_native_auth_present when ~/.codex/auth.json exists and OPENAI_API_KEY is unset", async () => {
     const root = path.join(
       os.tmpdir(),
@@ -124,11 +135,10 @@ describe("codex_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "codex_local",
         config: {
-          command: "codex",
+          command: fakeCodex,
           cwd,
           env: {
             OPENAI_API_KEY: "test-key",
-            PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
           },
         },
       });
