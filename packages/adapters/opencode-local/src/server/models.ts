@@ -109,35 +109,27 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
-export async function discoverOpenCodeModels(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
-  const command = resolveOpenCodeCommand(input.command);
-  const cwd = asString(input.cwd, process.cwd());
-  const env = normalizeEnv(input.env);
-  // Ensure HOME points to the actual running user's home directory.
-  // When the server is started via `runuser -u <user>`, HOME may still
-  // reflect the parent process (e.g. /root), causing OpenCode to miss
-  // provider auth credentials stored under the target user's home.
-  let resolvedHome: string | undefined;
-  try {
-    resolvedHome = os.userInfo().homedir || undefined;
-  } catch {
-    // os.userInfo() throws a SystemError when the current UID has no
-    // /etc/passwd entry (e.g. `docker run --user 1234` with a minimal
-    // image). Fall back to process.env.HOME.
-  }
-  // Prevent OpenCode from writing an opencode.json into the working directory.
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
+const MODELS_DISCOVERY_RETRY_DELAYS_MS = [1_000, 4_000];
+
+async function discoverOpenCodeModelsOnce(params: {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+}): Promise<AdapterModel[]> {
+  const runtimeEnv = normalizeEnv(
+    ensurePathInEnv({
+      ...process.env,
+      ...params.env,
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+    }),
+  );
 
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
+    params.command,
     ["models"],
     {
-      cwd,
+      cwd: params.cwd,
       env: runtimeEnv,
       timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
       graceSec: 3,
@@ -154,6 +146,38 @@ export async function discoverOpenCodeModels(input: {
   }
 
   return sortModels(parseOpenCodeModelsOutput(result.stdout));
+}
+
+export async function discoverOpenCodeModels(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+} = {}): Promise<AdapterModel[]> {
+  const command = resolveOpenCodeCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  let resolvedHome: string | undefined;
+  try {
+    resolvedHome = os.userInfo().homedir || undefined;
+  } catch {
+  }
+
+  const runtimeEnv = { ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}) };
+  const baseParams = { command, cwd, env: runtimeEnv };
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= MODELS_DISCOVERY_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delay = MODELS_DISCOVERY_RETRY_DELAYS_MS[attempt - 1];
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    try {
+      return await discoverOpenCodeModelsOnce(baseParams);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 export async function discoverOpenCodeModelsCached(input: {

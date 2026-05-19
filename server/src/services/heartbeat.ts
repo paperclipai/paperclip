@@ -6585,6 +6585,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  const AGENT_STARTUP_STAGGER_MS = 5_000;
+
   async function resumeQueuedRuns() {
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -6592,7 +6594,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.status, "queued"));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
-    for (const agentId of agentIds) {
+    for (const [index, agentId] of agentIds.entries()) {
+      if (index > 0) {
+        await new Promise((resolve) => setTimeout(resolve, AGENT_STARTUP_STAGGER_MS));
+      }
       await startNextQueuedRunForAgent(agentId);
     }
   }
