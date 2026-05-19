@@ -1,147 +1,122 @@
-// Primary nav zones for the `/eaos` shell. Order tracks LET-164
-// `command-center-shell-ia` rev 1 §4 and the LET-459 IA grouping rule —
-// operator-visible path is the small "primary" tier (Command Center,
-// Missions, Agents/Teams, Approvals/Risk, Knowledge/Playbooks); admin
-// /build zones (Projects/Goals, Runs/Observability, Capabilities/MCP,
-// Sandbox/Runtime, Admin/Security) remain accessible but demoted into a
-// secondary tier so the default screen is not 10 equal links plus the
-// Kernel escape hatch.
+// Primary nav zones for the `/eaos` shell.
+//
+// LET-503 design correction (LET-502 contract §2): single-noun labels only,
+// no slash labels, `Org` is a first-class route, and `Kernel / Admin` is
+// demoted out of the primary rail (it now lives under Admin → Legacy
+// kernel link). The two-tier system from LET-459 is collapsed into one
+// list so the default left rail looks single-level per contract §2.
 
-export type EaosNavTier = "primary" | "secondary";
+export type EaosNavTier = "primary";
 
 export interface EaosNavZone {
   readonly id: string;
   readonly label: string;
   readonly path: string;
   readonly description: string;
-  readonly stubCount: number;
   readonly tier: EaosNavTier;
 }
 
-// Primary operator path — LET-459 §"IA principle: two product modes".
+// Single, calm operator path. Order matches contract §2 "Required labels".
 const PRIMARY_ZONES: readonly EaosNavZone[] = [
   {
     id: "command-center",
-    label: "Command Center",
+    label: "Dashboard",
     path: "/eaos",
-    description: "Role-aware landing dashboard for the current scope.",
-    stubCount: 0,
+    description: "Operational summary for the current company scope.",
     tier: "primary",
   },
   {
     id: "missions",
     label: "Missions",
     path: "/eaos/missions",
-    description: "Mission list, saved views, and active mission detail.",
-    stubCount: 0,
+    description: "Mission board and list across the current scope.",
     tier: "primary",
   },
   {
-    id: "agents-teams",
-    label: "Agents / Teams",
+    id: "agents",
+    label: "Agents",
     path: "/eaos/agents",
-    description: "Org chart, roster, agent detail, capability summary.",
-    stubCount: 0,
+    description: "Agent roster with status, runtime, and recent activity.",
+    tier: "primary",
+  },
+  {
+    id: "org",
+    label: "Org",
+    path: "/eaos/org",
+    description: "Company, teams, and agent structure.",
+    tier: "primary",
+  },
+  {
+    id: "projects",
+    label: "Projects",
+    path: "/eaos/projects",
+    description: "Strategic work, projects, and goals.",
+    tier: "primary",
+  },
+  {
+    id: "runs",
+    label: "Runs",
+    path: "/eaos/runs",
+    description: "Execution history and failure triage.",
+    tier: "primary",
+  },
+  {
+    id: "approvals",
+    label: "Approvals",
+    path: "/eaos/approvals",
+    description: "Decisions and risk queue.",
+    tier: "primary",
+  },
+  {
+    id: "knowledge",
+    label: "Knowledge",
+    path: "/eaos/knowledge",
+    description: "Playbooks, docs, citations, and evidence.",
     tier: "primary",
   },
   {
     id: "blueprints",
-    label: "Blueprints",
+    label: "Agent Builder",
     path: "/eaos/blueprints",
-    description: "Blueprint catalog, detail workbench, versions, instances.",
-    stubCount: 0,
+    description: "Blueprints catalog and detail workbench.",
     tier: "primary",
   },
   {
-    id: "approvals-risk",
-    label: "Approvals / Risk",
-    path: "/eaos/approvals",
-    description: "Pending approvals, risk queue, decision history.",
-    stubCount: 0,
-    tier: "primary",
-  },
-  {
-    id: "knowledge-playbooks",
-    label: "Knowledge / Playbooks",
-    path: "/eaos/knowledge",
-    description: "Design docs, validation contracts, playbooks.",
-    stubCount: 0,
-    tier: "primary",
-  },
-] as const;
-
-// Build / admin tier — kept inside the shell so admins/builders can still
-// reach Projects/Goals, Runs/Observability, Capabilities/MCP, Sandbox/
-// Runtime, and Admin/Security without a routing detour, but rendered
-// below a divider so the operator path stays calm.
-const SECONDARY_ZONES: readonly EaosNavZone[] = [
-  {
-    id: "projects-goals",
-    label: "Projects / Goals",
-    path: "/eaos/projects",
-    description: "Strategic outcomes, roadmaps, release candidates.",
-    stubCount: 0,
-    tier: "secondary",
-  },
-  {
-    id: "runs-observability",
-    label: "Runs / Observability",
-    path: "/eaos/runs",
-    description: "Runs, transcripts, tool calls, replay timelines.",
-    stubCount: 0,
-    tier: "secondary",
-  },
-  {
-    id: "capabilities-mcp",
-    label: "Capabilities / MCP",
-    path: "/eaos/capabilities",
-    description: "Capability packages, desired/effective config.",
-    stubCount: 0,
-    tier: "secondary",
-  },
-  {
-    id: "sandbox-runtime",
-    label: "Sandbox / Runtime",
-    path: "/eaos/sandbox",
-    description: "Runtime leases, environments, logs, artifacts.",
-    stubCount: 0,
-    tier: "secondary",
-  },
-  {
-    id: "admin-security",
-    label: "Admin / Security",
+    id: "admin",
+    label: "Admin",
     path: "/eaos/admin",
-    description: "Users, roles, audit, policies, integrations.",
-    stubCount: 0,
-    tier: "secondary",
+    description: "Users, roles, integrations, audit, and legacy kernel link.",
+    tier: "primary",
   },
 ] as const;
 
 export const EAOS_PRIMARY_NAV_ZONES: readonly EaosNavZone[] = PRIMARY_ZONES;
-export const EAOS_SECONDARY_NAV_ZONES: readonly EaosNavZone[] = SECONDARY_ZONES;
 
-// Combined zone list. Order is operator-first, builder/admin second — used
-// by the router (App.tsx) and the shell tests as the canonical iteration
-// source. Existing consumers can keep importing `EAOS_PRIMARY_NAV`; the
-// rendering tier is encoded on each entry via `tier`.
-export const EAOS_PRIMARY_NAV: readonly EaosNavZone[] = [
-  ...PRIMARY_ZONES,
-  ...SECONDARY_ZONES,
-];
+// Combined zone list used by the router (App.tsx) and shell tests as the
+// canonical iteration source. Kept for downstream import compatibility.
+export const EAOS_PRIMARY_NAV: readonly EaosNavZone[] = PRIMARY_ZONES;
 
-// Below-divider link to the kernel/admin/debug console (legacy Paperclip
-// pages). LET-164 §4 keeps this visible to operator/engineer/admin roles
-// with a chip indicating the surface posture.
+// Legacy nav entry kept so secret-sweep tests and the `Admin → Legacy kernel`
+// link can still reach the kernel/admin console. NOT rendered in the primary
+// rail anymore — Admin owns the link per LET-502 §2.
 export const EAOS_KERNEL_NAV = {
   id: "kernel-admin",
-  label: "Kernel / Admin",
+  label: "Legacy kernel",
   path: "/dashboard",
   description: "Legacy Paperclip kernel/admin/debug console (current company scope).",
-  stubCount: 0,
-  tier: "secondary",
+  tier: "primary",
 } as const satisfies EaosNavZone;
 
 export const EAOS_ALL_NAV_PATHS: readonly string[] = [
   ...EAOS_PRIMARY_NAV.map((zone) => zone.path),
   EAOS_KERNEL_NAV.path,
 ];
+
+// Capabilities / Sandbox previously had primary-rail entries. They remain
+// reachable surfaces (capabilities/MCP wiring, sandbox/runtime config) but
+// are now accessed from Admin or Agent Builder rather than the primary rail
+// per LET-502 §2 (single-level nav, no marketing-style zone duplication).
+export const EAOS_LEGACY_SECONDARY_PATHS = [
+  "/eaos/capabilities",
+  "/eaos/sandbox",
+] as const;

@@ -8,8 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // causes React to load the production bundle and the shell tests to render
 // nothing (silent commit-phase errors in jsdom). Force a non-production
 // NODE_ENV before any React import is evaluated using `vi.hoisted`, which
-// runs ahead of the hoisted ESM imports below. Pattern copied from the
-// LET-352 Eaos.test.tsx fix.
+// runs ahead of the hoisted ESM imports below.
 vi.hoisted(() => {
   if (process.env.NODE_ENV === "production") {
     process.env.NODE_ENV = "test";
@@ -62,8 +61,6 @@ afterEach(() => {
 describe("EaosShell", () => {
   it("renders the required ARIA landmarks for the EAOS variant nested inside Layout", () => {
     renderAt("/eaos");
-    // Layout owns the page-level <main>; the inner shell exposes its own
-    // banner, navigation, region, and contentinfo landmarks instead.
     expect(container?.querySelector('header[role="banner"]')).not.toBeNull();
     expect(container?.querySelector('nav[role="navigation"]')).not.toBeNull();
     expect(container?.querySelector('section[role="region"]')).not.toBeNull();
@@ -81,31 +78,26 @@ describe("EaosShell", () => {
     expect(section?.getAttribute("id")).toBe("eaos-section-content");
   });
 
-  it("renders the LET-459 operator/build/admin tiers in order", () => {
+  it("renders the LET-503 single-noun primary rail in contract order", () => {
     renderAt("/eaos");
     const links = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
     ).map((node) => node.textContent?.trim());
     expect(links).toEqual([
-      // Primary operator tier — LET-459 §"IA principle" + LET-501 §1
-      "Command Center",
+      "Dashboard",
       "Missions",
-      "Agents / Teams",
-      "Blueprints",
-      "Approvals / Risk",
-      "Knowledge / Playbooks",
-      // Demoted Build/Admin tier
-      "Projects / Goals",
-      "Runs / Observability",
-      "Capabilities / MCP",
-      "Sandbox / Runtime",
-      "Admin / Security",
-      // Kernel escape hatch
-      "Kernel / Admin",
+      "Agents",
+      "Org",
+      "Projects",
+      "Runs",
+      "Approvals",
+      "Knowledge",
+      "Agent Builder",
+      "Admin",
     ]);
   });
 
-  it("renders the operator tier in a separate group from the Build/Admin tier", () => {
+  it("renders the rail as a single group (no Operator/Build-Admin headers)", () => {
     renderAt("/eaos");
     const primaryGroup = container?.querySelector(
       '[data-testid="eaos-primary-nav-group-primary"]',
@@ -114,18 +106,21 @@ describe("EaosShell", () => {
       '[data-testid="eaos-primary-nav-group-secondary"]',
     );
     expect(primaryGroup).not.toBeNull();
-    expect(secondaryGroup).not.toBeNull();
-    const primaryLabels = Array.from(
-      primaryGroup?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
-    ).map((node) => node.textContent?.trim());
-    expect(primaryLabels).toEqual([
-      "Command Center",
-      "Missions",
-      "Agents / Teams",
-      "Blueprints",
-      "Approvals / Risk",
-      "Knowledge / Playbooks",
-    ]);
+    expect(secondaryGroup).toBeNull();
+  });
+
+  it("does not render dashed Stub count pills in the rail", () => {
+    renderAt("/eaos");
+    const stubBadges = container?.querySelectorAll('[data-eaos-nav-count-stub="true"]');
+    expect(stubBadges?.length ?? 0).toBe(0);
+  });
+
+  it("does not render the kernel-admin entry inside the primary rail", () => {
+    renderAt("/eaos");
+    const kernelLink = container?.querySelector(
+      '[data-testid="eaos-primary-nav-link-kernel-admin"]',
+    );
+    expect(kernelLink).toBeNull();
   });
 
   it("renders the child Outlet for the index route", () => {
@@ -134,13 +129,8 @@ describe("EaosShell", () => {
     expect(child).not.toBeNull();
   });
 
-  it("renders the kernel chip when mounted with variant=kernel", () => {
+  it("renders the kernel top-bar label when mounted with variant=kernel", () => {
     renderAt("/k/", "kernel");
-    const labels = Array.from(
-      container?.querySelectorAll('[data-eaos-state]') ?? [],
-    ).map((node) => node.textContent ?? "");
-    const hasKernelChip = labels.some((text) => text.includes("Kernel/Admin"));
-    expect(hasKernelChip).toBe(true);
     const banner = container?.querySelector('header[role="banner"]');
     expect(banner?.getAttribute("aria-label")).toBe("Kernel/Admin top bar");
   });
@@ -154,11 +144,11 @@ describe("EaosShell", () => {
     expect(trigger?.getAttribute("aria-label")).toContain("command palette");
   });
 
-  it("exposes a visible kernel escape hatch in the top bar", () => {
+  it("exposes a visible kernel escape hatch button in the top bar", () => {
     renderAt("/eaos");
     const hatch = container?.querySelector('[data-testid="eaos-topbar-kernel-hatch"]');
     expect(hatch).not.toBeNull();
-    expect(hatch?.getAttribute("aria-label")).toContain("kernel");
+    expect((hatch?.getAttribute("aria-label") ?? "").toLowerCase()).toContain("kernel");
   });
 
   it("renders the bottom posture strip with the audit pin", () => {

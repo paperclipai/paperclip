@@ -1,51 +1,15 @@
 import { useCallback } from "react";
 import { Link } from "@/lib/router";
-import { Bell, ClipboardList, KeyRound, MessageSquareWarning, Search, ShieldAlert, User } from "lucide-react";
+import { KeyRound, Search, User } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
-import { EaosStateChip } from "./EaosStateChip";
-import {
-  DEFAULT_TOPBAR_POSTURE_LABEL,
-  KERNEL_POSTURE_LABEL,
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_PREFIX,
-  SCOPE_PREVIEW_LABEL,
-  SHELL_POSTURE_PREFIX,
-  STUB_COUNT_NOTE,
-  STUB_COUNT_PLACEHOLDER,
-} from "./state-labels";
 import { EAOS_KERNEL_NAV } from "./nav-zones";
 import { redactSecretLikeText } from "./secret-redact";
 
-// Top-bar slot config per LET-164 §3 (right-of-search indicator cluster).
-// Counts stay marked as Stub here so the shell chrome remains test-friendly
-// (no QueryClient coupling). The Command Center landing carries the real
-// backend-backed mission/approval telemetry where it belongs.
-const INDICATORS = [
-  {
-    id: "approvals",
-    label: "Approvals waiting on me",
-    path: "/eaos/approvals?scope=mine",
-    icon: ClipboardList,
-  },
-  {
-    id: "risk",
-    label: "High/critical risk items",
-    path: "/eaos/approvals?tab=risk",
-    icon: ShieldAlert,
-  },
-  {
-    id: "loop",
-    label: "Autonomous loop state",
-    path: "/eaos/loops",
-    icon: MessageSquareWarning,
-  },
-  {
-    id: "notifications",
-    label: "Notifications",
-    path: "/eaos/inbox",
-    icon: Bell,
-  },
-] as const;
+// LET-503 (LET-502 contract §3) — calm top bar. No posture/stub chips, no
+// dashed indicator badges. Scope chip stays compact; command palette
+// trigger and user menu align right. The kernel escape hatch keeps its
+// dedicated button so admins/operators can still drop into the legacy
+// console without searching for it.
 
 export interface EaosTopBarProps {
   // When the shell is mounted under `/k/*` we re-skin the env chip and label
@@ -104,12 +68,11 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
           data-testid="eaos-topbar-scope"
           data-eaos-scope-connected={selectedCompany ? "true" : "false"}
         >
-          <span className="text-xs text-muted-foreground">Scope</span>
           {selectedCompany ? (() => {
-            // LET-484 QA gate: company name / issuePrefix originate from
-            // user-authored company records, so route every surface that
-            // could leak a credential-shaped string (visible label, title,
-            // aria-label, and the prefix chip) through `redactSecretLikeText`.
+            // Company name / issuePrefix originate from user-authored company
+            // records, so route every surface that could leak a credential-
+            // shaped string (visible label, title, aria-label) through
+            // `redactSecretLikeText`.
             const safeName = redactSecretLikeText(selectedCompany.name);
             const safePrefix = selectedCompany.issuePrefix
               ? redactSecretLikeText(selectedCompany.issuePrefix)
@@ -131,32 +94,17 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
           })() : (
             <span
               className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-border bg-card px-2 py-0.5 text-xs font-medium text-muted-foreground"
-              title={`${SCOPE_PREVIEW_LABEL}. Company/project read model is not wired yet.`}
-              aria-label={SCOPE_PREVIEW_LABEL}
+              title="No company scope selected"
+              aria-label="No company scope selected"
             >
               <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-              {SCOPE_PREVIEW_LABEL}
+              No scope
             </span>
           )}
         </div>
       ) : null}
 
       <div className="ml-auto flex items-center gap-2">
-        <div
-          className="hidden items-center gap-2 md:flex"
-          data-testid="eaos-topbar-posture"
-          data-eaos-data-connected="false"
-        >
-          {isKernel ? (
-            <EaosStateChip label="BACKEND-BACKED" prefix="Kernel/Admin" title={KERNEL_POSTURE_LABEL} />
-          ) : (
-            <>
-              <EaosStateChip label={DEFAULT_TOPBAR_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-              <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-            </>
-          )}
-        </div>
-
         <button
           type="button"
           onClick={openCommandPalette}
@@ -169,33 +117,10 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
           <kbd aria-hidden="true" className="ml-1 rounded border border-border px-1 text-[10px]">⌘K</kbd>
         </button>
 
-        <ul className="flex items-center gap-1" data-testid="eaos-topbar-indicators">
-          {INDICATORS.map(({ id, label, path, icon: Icon }) => (
-            <li key={id}>
-              <Link
-                to={path}
-                aria-label={`${label} (${STUB_COUNT_NOTE})`}
-                title={`${label} — ${STUB_COUNT_NOTE}`}
-                className="relative inline-flex h-9 w-9 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                data-testid={`eaos-topbar-indicator-${id}`}
-                data-eaos-indicator-stub="true"
-              >
-                <Icon aria-hidden="true" className="h-4 w-4" />
-                <span
-                  aria-hidden="true"
-                  className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-dashed border-border bg-card px-1 text-[10px] font-medium text-muted-foreground"
-                >
-                  {STUB_COUNT_PLACEHOLDER}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-
         <button
           type="button"
-          aria-label="Role and user menu"
-          title="Role / user (stub)"
+          aria-label="User menu"
+          title="User menu"
           className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-topbar-user-menu"
         >
@@ -204,13 +129,12 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
 
         <Link
           to={isKernel ? "/eaos" : EAOS_KERNEL_NAV.path}
-          aria-label={isKernel ? "Return to Enterprise Agent OS shell" : "Open kernel/admin escape hatch"}
-          title={isKernel ? "Return to Enterprise Agent OS" : "Kernel / Admin (legacy Paperclip)"}
+          aria-label={isKernel ? "Return to Enterprise Agent OS shell" : "Open kernel/admin console"}
+          title={isKernel ? "Return to Enterprise Agent OS" : "Legacy kernel / admin"}
           className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-topbar-kernel-hatch"
         >
           <KeyRound aria-hidden="true" className="h-3.5 w-3.5" />
-          <span aria-hidden="true">⎈</span>
           <span className="hidden sm:inline">{isKernel ? "EAOS" : "Kernel"}</span>
         </Link>
       </div>

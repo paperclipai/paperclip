@@ -121,7 +121,7 @@ async function renderRoster(initialPath = "/eaos/agents") {
   return root;
 }
 
-describe("AgentsRosterPage (LET-484 working-product slice)", () => {
+describe("AgentsRosterPage (LET-503 cleanup)", () => {
   it("renders the roster surface, not the EaosZonePlaceholder", async () => {
     agentsListMock.mockResolvedValue([]);
     await renderRoster();
@@ -131,18 +131,21 @@ describe("AgentsRosterPage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels the data layer as backend-backed once the live read succeeds", async () => {
+  it("renders a single-noun 'Agents' title with no read-only caveat paragraph", async () => {
     agentsListMock.mockResolvedValue([makeAgent()]);
     await renderRoster();
     await waitForMicrotaskAssertion(() => {
-      const posture = container?.querySelector('[data-testid="eaos-agents-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Data · BACKEND-BACKED");
+      const title = container?.querySelector('[data-testid="eaos-agents-title"]');
+      expect(title?.textContent?.trim()).toBe("Agents");
     });
+    const pageText = container?.querySelector('[data-testid="eaos-agents-page"]')?.textContent ?? "";
+    expect(pageText).not.toContain("Agents / Teams");
+    expect(pageText).not.toContain("Pause / resume / approve / terminate");
+    expect(pageText).not.toContain("Shell · BACKEND-BACKED");
+    expect(pageText).not.toContain("Data · BACKEND-BACKED");
   });
 
-  it("renders agent rows grouped by role with backend-derived counts", async () => {
+  it("renders agent rows in the table with backend-derived counts", async () => {
     agentsListMock.mockResolvedValue([
       makeAgent({ id: "ceo-1", name: "Andrii", role: "ceo", status: "active" }),
       makeAgent({ id: "eng-1", name: "Alex", role: "engineer", status: "running" }),
@@ -157,26 +160,12 @@ describe("AgentsRosterPage (LET-484 working-product slice)", () => {
       expect(runningCell?.textContent).toContain("1");
       expect(pausedCell?.textContent).toContain("1");
 
-      // Engineer group renders after CEO group.
-      const ceoGroup = container?.querySelector('[data-testid="eaos-agents-group-ceo"]');
-      const engineerGroup = container?.querySelector('[data-testid="eaos-agents-group-engineer"]');
-      expect(ceoGroup).not.toBeNull();
-      expect(engineerGroup).not.toBeNull();
-      const ceoIndex = Array.from(container!.querySelectorAll('[data-testid^="eaos-agents-group-"]')).indexOf(
-        ceoGroup!,
-      );
-      const engineerIndex = Array.from(
-        container!.querySelectorAll('[data-testid^="eaos-agents-group-"]'),
-      ).indexOf(engineerGroup!);
-      expect(ceoIndex).toBeLessThan(engineerIndex);
-
-      // Running row gets the LIVE chip; paused row gets PREVIEW.
       const rows = container?.querySelectorAll('[data-testid="eaos-agents-row"]');
       expect(rows?.length).toBe(3);
       const runningRow = container?.querySelector('[data-agent-status="running"]');
-      expect(runningRow?.textContent).toContain("Agent · LIVE");
+      expect((runningRow?.textContent ?? "").toLowerCase()).toContain("running");
       const pausedRow = container?.querySelector('[data-agent-status="paused"]');
-      expect(pausedRow?.textContent).toContain("Agent · PREVIEW");
+      expect((pausedRow?.textContent ?? "").toLowerCase()).toContain("paused");
     });
   });
 

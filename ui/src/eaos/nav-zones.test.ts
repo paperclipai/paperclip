@@ -4,75 +4,80 @@ import { describe, expect, it } from "vitest";
 import {
   EAOS_ALL_NAV_PATHS,
   EAOS_KERNEL_NAV,
+  EAOS_LEGACY_SECONDARY_PATHS,
   EAOS_PRIMARY_NAV,
   EAOS_PRIMARY_NAV_ZONES,
-  EAOS_SECONDARY_NAV_ZONES,
 } from "./nav-zones";
 
-// LET-459 §"IA principle: two product modes" promotes Missions into the
-// operator tier and demotes Projects/Goals, Runs/Observability,
-// Capabilities/MCP, Sandbox/Runtime, and Admin/Security into a Build/Admin
-// tier so the default screen does not show ten equal links.
-const EXPECTED_PRIMARY_TIER = [
-  "Command Center",
+// LET-503 — LET-502 contract §2 collapses the rail to single-noun labels
+// with no slashes and lists `Org` as a first-class route. Kernel/Admin is
+// no longer a primary-rail entry; it lives under Admin → Legacy kernel.
+const EXPECTED_PRIMARY_LABELS = [
+  "Dashboard",
   "Missions",
-  "Agents / Teams",
-  "Blueprints",
-  "Approvals / Risk",
-  "Knowledge / Playbooks",
+  "Agents",
+  "Org",
+  "Projects",
+  "Runs",
+  "Approvals",
+  "Knowledge",
+  "Agent Builder",
+  "Admin",
 ];
 
-const EXPECTED_SECONDARY_TIER = [
-  "Projects / Goals",
-  "Runs / Observability",
-  "Capabilities / MCP",
-  "Sandbox / Runtime",
-  "Admin / Security",
-];
-
-describe("EAOS primary nav", () => {
-  it("matches the LET-459 operator/build-admin grouping", () => {
-    expect(EAOS_PRIMARY_NAV.map((zone) => zone.label)).toEqual([
-      ...EXPECTED_PRIMARY_TIER,
-      ...EXPECTED_SECONDARY_TIER,
-    ]);
+describe("EAOS primary nav (LET-503)", () => {
+  it("renders single-noun labels with no slash compounds", () => {
+    expect(EAOS_PRIMARY_NAV.map((zone) => zone.label)).toEqual(EXPECTED_PRIMARY_LABELS);
+    for (const zone of EAOS_PRIMARY_NAV) {
+      expect(zone.label).not.toMatch(/\s\/\s/);
+    }
   });
 
-  it("anchors Command Center at /eaos", () => {
+  it("matches the combined PRIMARY_NAV iteration source", () => {
+    expect(EAOS_PRIMARY_NAV_ZONES.map((zone) => zone.label)).toEqual(EXPECTED_PRIMARY_LABELS);
+  });
+
+  it("anchors Dashboard at /eaos and Org as a first-class route", () => {
     expect(EAOS_PRIMARY_NAV[0]?.path).toBe("/eaos");
+    expect(EAOS_PRIMARY_NAV.find((zone) => zone.id === "org")?.path).toBe("/eaos/org");
   });
 
-  it("keeps Missions in the operator tier per LET-459", () => {
-    expect(EAOS_PRIMARY_NAV_ZONES.map((zone) => zone.label)).toEqual(EXPECTED_PRIMARY_TIER);
-    for (const zone of EAOS_PRIMARY_NAV_ZONES) {
-      expect(zone.tier).toBe("primary");
-    }
-  });
-
-  it("demotes build/admin zones into the secondary tier", () => {
-    expect(EAOS_SECONDARY_NAV_ZONES.map((zone) => zone.label)).toEqual(EXPECTED_SECONDARY_TIER);
-    for (const zone of EAOS_SECONDARY_NAV_ZONES) {
-      expect(zone.tier).toBe("secondary");
-    }
-  });
-
-  it.each(EAOS_PRIMARY_NAV)(
-    "ensures zone '%s' is rooted under /eaos and has a stub count",
-    (zone) => {
+  it("roots every primary zone under /eaos", () => {
+    for (const zone of EAOS_PRIMARY_NAV) {
       expect(zone.path.startsWith("/eaos")).toBe(true);
-      expect(zone.stubCount).toBe(0);
-    },
-  );
+    }
+  });
+
+  it("does NOT include kernel/admin in the primary rail", () => {
+    expect(EAOS_PRIMARY_NAV.find((zone) => zone.id === "kernel-admin")).toBeUndefined();
+  });
 });
 
-describe("EAOS kernel/admin nav", () => {
-  it("points the kernel escape hatch at the legacy /dashboard board route", () => {
+describe("EAOS kernel/admin legacy link", () => {
+  it("still points at the legacy /dashboard board route", () => {
     expect(EAOS_KERNEL_NAV.path).toBe("/dashboard");
+  });
+
+  it("labels the link as Legacy kernel for Admin reuse", () => {
+    expect(EAOS_KERNEL_NAV.label).toBe("Legacy kernel");
   });
 });
 
 describe("EAOS_ALL_NAV_PATHS", () => {
-  it("includes the kernel path so secret sweeps cover it", () => {
+  it("includes the kernel path so secret-sweep tests cover it", () => {
     expect(EAOS_ALL_NAV_PATHS).toContain(EAOS_KERNEL_NAV.path);
+  });
+
+  it("includes every primary-rail path", () => {
+    for (const zone of EAOS_PRIMARY_NAV) {
+      expect(EAOS_ALL_NAV_PATHS).toContain(zone.path);
+    }
+  });
+});
+
+describe("Legacy secondary surfaces", () => {
+  it("keeps capabilities + sandbox routes reachable from outside the primary rail", () => {
+    expect(EAOS_LEGACY_SECONDARY_PATHS).toContain("/eaos/capabilities");
+    expect(EAOS_LEGACY_SECONDARY_PATHS).toContain("/eaos/sandbox");
   });
 });

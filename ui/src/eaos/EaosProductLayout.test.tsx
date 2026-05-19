@@ -191,7 +191,14 @@ describe("EaosProductLayout — full-screen product shell (LET-415)", () => {
     expect(sidebarAside, "EaosProductLayout must not render the Paperclip board <aside> sidebar")
       .toBeNull();
 
-    const navLinks = Array.from(container?.querySelectorAll("a") ?? []);
+    // LET-503: the EAOS primary rail intentionally includes single-noun
+    // labels like "Projects" and "Agents" (LET-502 contract §2). The check
+    // here must only catch *board chrome* leakage — anchors that originate
+    // OUTSIDE the EAOS shell. Filter on `data-testid="eaos-*"` so the
+    // primary nav anchors are excluded from the forbidden-label scan.
+    const navLinks = Array.from(container?.querySelectorAll("a") ?? []).filter(
+      (a) => !(a.getAttribute("data-testid") ?? "").startsWith("eaos-"),
+    );
     const textContents = navLinks.map((a) => (a.textContent ?? "").trim());
     for (const forbidden of PAPERCLIP_BOARD_NAV_LABELS) {
       const exactMatch = textContents.find((text) => text === forbidden);

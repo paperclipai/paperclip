@@ -101,8 +101,6 @@ function makeQueryClient() {
 let container: HTMLDivElement | null = null;
 
 async function flushQueries() {
-  // Drain microtasks + one macrotask so react-query's mocked promises resolve
-  // and the resulting render commits before we assert on values.
   for (let i = 0; i < 5; i += 1) {
     await act(async () => {
       await Promise.resolve();
@@ -142,8 +140,8 @@ afterEach(() => {
   companyState = SCOPED_COMPANY;
 });
 
-describe("CommandCenterLanding — backend-backed telemetry", () => {
-  it("renders backend-backed mission counts from the live issues feed", async () => {
+describe("CommandCenterLanding (LET-503 dashboard)", () => {
+  it("renders backend-backed mission and agent counts on the posture tiles", async () => {
     issuesListMock.mockResolvedValue([
       makeIssue({ id: "a", status: "in_progress", priority: "high" }),
       makeIssue({ id: "b", status: "in_progress", priority: "medium" }),
@@ -162,26 +160,47 @@ describe("CommandCenterLanding — backend-backed telemetry", () => {
     const active = container?.querySelector('[data-testid="eaos-command-center-telemetry-active-value"]');
     const attention = container?.querySelector('[data-testid="eaos-command-center-telemetry-attention-value"]');
     const inReview = container?.querySelector('[data-testid="eaos-command-center-telemetry-in-review-value"]');
-    const high = container?.querySelector('[data-testid="eaos-command-center-telemetry-high-priority-value"]');
+    const agentsActive = container?.querySelector('[data-testid="eaos-command-center-telemetry-agents-active-value"]');
     const done = container?.querySelector('[data-testid="eaos-command-center-telemetry-done-value"]');
 
     expect(active?.textContent).toBe("2");
     // blocked + in_review
     expect(attention?.textContent).toBe("2");
     expect(inReview?.textContent).toBe("1");
-    // high/critical open work: a, c, d
-    expect(high?.textContent).toBe("3");
+    // active + running agents
+    expect(agentsActive?.textContent).toBe("2");
     expect(done?.textContent).toBe("1");
   });
 
-  it("claims Data · BACKEND-BACKED in the header when company scope is active", async () => {
+  it("renders a single h1 'Dashboard' with no marketing paragraph or posture chip cluster", async () => {
     issuesListMock.mockResolvedValue([]);
     agentsListMock.mockResolvedValue([]);
 
     await renderLanding();
-    const headerText = container?.querySelector('[data-testid="eaos-command-center-header"]')?.textContent ?? "";
-    expect(headerText).toContain("Data · BACKEND-BACKED");
-    expect(headerText).toContain("Shell · BACKEND-BACKED");
+
+    const header = container?.querySelector('[data-testid="eaos-command-center-header"]');
+    expect(header).not.toBeNull();
+    const headerText = header?.textContent ?? "";
+    expect(headerText).toContain("Dashboard");
+    // LET-503 — the operator-briefing paragraph and posture chip cluster
+    // are removed from the primary surface.
+    expect(headerText).not.toContain("Operator briefing");
+    expect(headerText).not.toContain("Shell · BACKEND-BACKED");
+    expect(headerText).not.toContain("Data · BACKEND-BACKED");
+    expect(headerText).not.toContain("Data · PREVIEW");
+    expect(headerText).not.toContain("Loop state preview");
+  });
+
+  it("does not render the in-page Zone Rail (left nav is the only nav surface)", async () => {
+    issuesListMock.mockResolvedValue([]);
+    agentsListMock.mockResolvedValue([]);
+
+    await renderLanding();
+
+    const zoneRail = container?.querySelector('[data-testid="eaos-command-center-zones"]');
+    expect(zoneRail).toBeNull();
+    const landingCards = container?.querySelectorAll('[data-testid^="eaos-landing-card-"]');
+    expect(landingCards?.length ?? 0).toBe(0);
   });
 
   it("redacts secret-looking strings in recent activity titles", async () => {
@@ -202,8 +221,6 @@ describe("CommandCenterLanding — backend-backed telemetry", () => {
 
   it("falls back to a non-numeric placeholder when there is no company scope", async () => {
     companyState = NO_SCOPE_COMPANY;
-    // The api mocks must still resolve to keep react-query happy even though
-    // the queries are gated `enabled: !!selectedCompanyId` and won't fire.
     issuesListMock.mockResolvedValue([]);
     agentsListMock.mockResolvedValue([]);
 
@@ -221,10 +238,5 @@ describe("CommandCenterLanding — backend-backed telemetry", () => {
       // collapse to the `·` placeholder so operators can tell `0` from `n/a`.
       expect(node.textContent?.trim()).toBe("·");
     }
-
-    const headerText = container?.querySelector('[data-testid="eaos-command-center-header"]')?.textContent ?? "";
-    expect(headerText).toContain("Data · PREVIEW");
-    expect(headerText).toContain("Not connected");
-    expect(headerText).not.toContain("Data · BACKEND-BACKED");
   });
 });

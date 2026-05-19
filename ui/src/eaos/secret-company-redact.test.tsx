@@ -162,13 +162,18 @@ describe("LET-484 — selected company name redaction across EAOS surfaces", () 
     expect(html).toContain("sk-[REDACTED]");
   });
 
-  it("AgentsRosterPage redacts company name in the live-read posture note", async () => {
+  it("AgentsRosterPage does not leak the credential-shaped company name anywhere on the page", async () => {
+    // LET-503 (LET-502 contract §5) — the read-only caveat paragraph and
+    // posture note that previously printed the active company name were
+    // removed from the primary Agents surface. The redaction primitive is
+    // still applied to row-level fields (agent name + title) via
+    // `redactSecretLikeText` in AgentsRosterPage. This test enforces the
+    // page-wide invariant that no raw credential-shaped substring leaks,
+    // even if the read returns an empty roster.
     await renderWith(<AgentsRosterPage now={new Date("2026-05-19T16:00:00Z")} />);
-    const note = container!.querySelector('[data-testid="eaos-agents-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container?.innerHTML ?? "";
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
   it("ApprovalsQueuePage redacts company name in the live-read posture note", async () => {

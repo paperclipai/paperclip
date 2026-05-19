@@ -1,35 +1,19 @@
-// LET-484 working-product slice — read-only `/eaos/agents` roster.
-//
-// Source of truth: `agentsApi.list(companyId)` (`GET
-// /api/companies/:companyId/agents`). The roster mirrors canonical Agent
-// records and renders truthful posture chips per LET-187:
-//   - Shell · BACKEND-BACKED is constant for any `/eaos` render.
-//   - Data · BACKEND-BACKED only once a non-empty company-scoped read
-//     succeeds; otherwise Data · PREVIEW · Not connected.
-//
-// No live actions are rendered here. Pause/resume/approve/terminate stay
-// inside the kernel agent detail page (`/agents/:id`) which links out from
-// each row. Budget figures show backend snapshots and are not actionable.
+// LET-503 (LET-502 contract §5) — `/eaos/agents` is the first-class agent
+// roster. Compact table, single-noun title ("Agents"), no header caveat
+// paragraph. Source of truth stays `agentsApi.list(companyId)`. Pause /
+// resume / approve / terminate remain in the kernel agent detail page;
+// each row links there.
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cpu, ShieldAlert } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
-import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   buildAgentRosterRow,
-  groupRosterByRole,
   summarizeAgents,
   type AgentRosterCounts,
   type AgentRosterRow,
@@ -42,7 +26,7 @@ interface AgentsRosterPageProps {
 }
 
 export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -58,7 +42,6 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
   }, [agentsQuery.data]);
 
   const counts = useMemo(() => summarizeAgents(agentsQuery.data ?? []), [agentsQuery.data]);
-  const groups = useMemo(() => groupRosterByRole(rows), [rows]);
 
   const isLoading = Boolean(selectedCompanyId) && agentsQuery.isLoading;
   const isError = Boolean(selectedCompanyId) && agentsQuery.isError;
@@ -70,47 +53,18 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-agents-title"
-      className="flex flex-col gap-5"
+      className="flex min-h-0 flex-1 flex-col gap-4"
       data-testid="eaos-agents-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-agents-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Data"
-              title="Roster sourced from canonical Agent records via /api/companies/:companyId/agents"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-agents-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-agents-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-agents-title"
-            >
-              Agents / Teams
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Operator roster derived read-only from canonical Agent records. Pause / resume /
-              approve / terminate stay inside the kernel detail page; this surface only renders
-              status, adapter, heartbeat freshness, and budget snapshots.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-agents-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-agents-title"
+        >
+          Agents
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -124,14 +78,7 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
       ) : (
         <>
           <SummaryStrip counts={counts} />
-          {groups.map((group) => (
-            <RosterGroup
-              key={group.role}
-              roleLabel={group.roleLabel}
-              rows={group.rows}
-              referenceNow={referenceNow}
-            />
-          ))}
+          <AgentTable rows={rows} referenceNow={referenceNow} />
         </>
       )}
     </section>
@@ -145,27 +92,26 @@ function readErrorMessage(error: unknown): string {
 
 function NoCompanyState() {
   return (
-    <div
+    <p
       role="status"
-      className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-agents-no-company"
     >
-      Select a company scope from the top bar to load the agent roster. This surface reads agents
-      for the currently selected company only.
-    </div>
+      Select a company scope in the top bar to load agents.
+    </p>
   );
 }
 
 function LoadingState() {
   return (
-    <div
+    <p
       role="status"
       aria-live="polite"
-      className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-agents-loading"
     >
-      Loading agent roster from canonical records…
-    </div>
+      Loading agents…
+    </p>
   );
 }
 
@@ -173,29 +119,24 @@ function ErrorState({ message }: { message: string }) {
   return (
     <div
       role="alert"
-      className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
+      className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
       data-testid="eaos-agents-error"
     >
       <p className="font-medium">Could not load agents.</p>
-      <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
-      <p className="mt-1 text-xs">
-        Counts and rows are hidden because no backend-backed roster is available. Retry by
-        refreshing or use the Kernel/Admin agent list.
-      </p>
+      <p className="mt-1">{redactSecretLikeText(message)}</p>
     </div>
   );
 }
 
 function EmptyState() {
   return (
-    <div
+    <p
       role="status"
-      className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-agents-empty"
     >
-      No agents are visible in the current company scope yet. When the company onboards an agent it
-      will appear here.
-    </div>
+      No agents in this scope yet.
+    </p>
   );
 }
 
@@ -222,121 +163,132 @@ function SummaryStrip({ counts }: { counts: AgentRosterCounts }) {
           className="flex flex-col gap-0.5"
         >
           <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{item.label}</dt>
-          <dd className="text-lg font-semibold text-foreground tabular-nums">{item.value}</dd>
+          <dd className="text-base font-semibold text-foreground tabular-nums">{item.value}</dd>
         </div>
       ))}
     </dl>
   );
 }
 
-function RosterGroup({
-  roleLabel,
+function AgentTable({
   rows,
   referenceNow,
 }: {
-  roleLabel: string;
   rows: readonly AgentRosterRow[];
   referenceNow: Date;
 }) {
   return (
-    <section
-      aria-label={`${roleLabel} agents`}
-      className="flex flex-col gap-2"
-      data-testid={`eaos-agents-group-${slug(roleLabel)}`}
-    >
-      <header className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-foreground">
-          {roleLabel}{" "}
-          <span className="text-xs font-normal text-muted-foreground">({rows.length})</span>
-        </h2>
-      </header>
-      <ul
-        className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
-        data-testid={`eaos-agents-group-${slug(roleLabel)}-rows`}
-      >
-        {rows.map((row) => (
-          <AgentRow key={row.id} row={row} referenceNow={referenceNow} />
-        ))}
-      </ul>
-    </section>
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card">
+      <table className="w-full border-collapse text-left text-[13px]" data-testid="eaos-agents-table">
+        <thead className="sticky top-0 z-10 border-b border-border bg-card text-[11px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            <th scope="col" className="px-3 py-2 font-medium">Agent</th>
+            <th scope="col" className="px-3 py-2 font-medium">Role</th>
+            <th scope="col" className="px-3 py-2 font-medium">Status</th>
+            <th scope="col" className="px-3 py-2 font-medium">Adapter</th>
+            <th scope="col" className="px-3 py-2 font-medium">Last heartbeat</th>
+            <th scope="col" className="px-3 py-2 font-medium">Budget</th>
+            <th scope="col" className="px-3 py-2 font-medium text-right"><span className="sr-only">Open</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <AgentRow key={row.id} row={row} referenceNow={referenceNow} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Date }) {
   return (
-    <li
-      className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
+    <tr
+      className="border-b border-border last:border-b-0 hover:bg-accent/40"
       data-testid="eaos-agents-row"
       data-agent-id={row.id}
       data-agent-status={row.status}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <EaosStateChip
-          label={row.statusChipLabel}
-          prefix="Agent"
-          title={statusTitle(row)}
-        />
-        <span className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          {row.adapterType}
+      <td className="px-3 py-2">
+        <span
+          className="block truncate font-medium text-foreground"
+          data-testid="eaos-agents-row-name"
+        >
+          {redactSecretLikeText(row.name)}
         </span>
-        {row.status === "paused" && row.pauseReason ? (
-          <span
-            data-testid="eaos-agents-row-pause-reason"
-            className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground"
-          >
-            <ShieldAlert aria-hidden="true" className="h-3 w-3" />
-            {row.pauseReason.replace(/_/g, " ")}
+        {row.title ? (
+          <span className="block truncate text-[11px] text-muted-foreground">
+            {redactSecretLikeText(row.title)}
           </span>
         ) : null}
-      </div>
-      <div className="flex items-start gap-2">
-        <Cpu aria-hidden="true" className="mt-0.5 h-4 w-4 text-foreground" />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <p className="truncate text-sm font-medium text-foreground" data-testid="eaos-agents-row-name">
-            {redactSecretLikeText(row.name)}
-          </p>
-          <p className="text-xs text-muted-foreground" data-testid="eaos-agents-row-role">
-            {row.roleLabel}
-            {row.title ? <> · <span>{redactSecretLikeText(row.title)}</span></> : null}
-          </p>
-        </div>
-      </div>
-      <dl className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-        <div className="flex flex-col" data-testid="eaos-agents-row-heartbeat">
-          <dt className="uppercase tracking-wide">Last heartbeat</dt>
-          <dd className="text-foreground">{relativeOrNever(row.lastHeartbeatAt, referenceNow)}</dd>
-        </div>
-        <div className="flex flex-col" data-testid="eaos-agents-row-budget">
-          <dt className="uppercase tracking-wide">Budget · spent / cap</dt>
-          <dd className="text-foreground tabular-nums">
-            {formatUsdCents(row.spentMonthlyCents)} / {formatUsdCents(row.budgetMonthlyCents)}
-          </dd>
-        </div>
-      </dl>
-      <div className="flex flex-wrap items-center gap-3 text-xs">
+      </td>
+      <td className="px-3 py-2 text-muted-foreground" data-testid="eaos-agents-row-role">
+        {row.roleLabel}
+      </td>
+      <td className="px-3 py-2">
+        <StatusBadge row={row} />
+      </td>
+      <td className="px-3 py-2">
+        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
+          {row.adapterType}
+        </span>
+      </td>
+      <td className="px-3 py-2 text-muted-foreground tabular-nums" data-testid="eaos-agents-row-heartbeat">
+        {relativeOrNever(row.lastHeartbeatAt, referenceNow)}
+      </td>
+      <td className="px-3 py-2 text-muted-foreground tabular-nums" data-testid="eaos-agents-row-budget">
+        {formatUsdCents(row.spentMonthlyCents)} / {formatUsdCents(row.budgetMonthlyCents)}
+      </td>
+      <td className="px-3 py-2 text-right">
         <Link
           to={row.kernelRoute}
-          className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-agents-row-kernel-link"
         >
-          Open in Kernel/Admin →
+          Open →
         </Link>
-        <span className="text-muted-foreground">No live action on this surface.</span>
-      </div>
-    </li>
+      </td>
+    </tr>
+  );
+}
+
+function StatusBadge({ row }: { row: AgentRosterRow }) {
+  const tone =
+    row.status === "running"
+      ? "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-600 dark:bg-blue-950 dark:text-blue-100"
+      : row.status === "active" || row.status === "idle"
+        ? "border-green-300 bg-green-50 text-green-800 dark:border-green-600 dark:bg-green-950 dark:text-green-100"
+        : row.status === "paused"
+          ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-100"
+          : row.status === "error"
+            ? "border-red-300 bg-red-50 text-red-800 dark:border-red-600 dark:bg-red-950 dark:text-red-100"
+            : "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200";
+  return (
+    <span
+      className={
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize " +
+        tone
+      }
+      title={statusTitle(row)}
+    >
+      {row.status.replace(/_/g, " ")}
+      {row.status === "paused" && row.pauseReason ? (
+        <ShieldAlert
+          aria-hidden="true"
+          className="h-3 w-3"
+          data-testid="eaos-agents-row-pause-reason"
+        />
+      ) : null}
+    </span>
   );
 }
 
 function statusTitle(row: AgentRosterRow): string {
-  const base = `Agent status from backend: ${row.status}.`;
+  const base = `Backend status: ${row.status}.`;
   if (row.status === "paused" && row.pauseReason) {
     return `${base} Pause reason: ${row.pauseReason}.`;
   }
   return base;
-}
-
-function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 }
 
 function relativeOrNever(when: Date | null, now: Date): string {

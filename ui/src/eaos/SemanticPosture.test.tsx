@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
+//
+// LET-503 (LET-502 contract §3/§5) — the LET-187 dual-chip semantic-trust
+// noise (`Shell · BACKEND-BACKED` + `Data · PREVIEW · Not connected` on
+// every surface) was removed from the primary chrome. This test now locks
+// the post-cleanup invariants:
+//   1. Chrome (top bar, posture strip, primary rail) does not advertise
+//      the dual chips.
+//   2. The Dashboard tiles still show truthful `·` placeholders when no
+//      company scope is active (so operators can tell `0` from `n/a`).
+//   3. The landing surface still flips `data-eaos-data-connected="false"`
+//      when not connected — programmatic truth without visible noise.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// React 19 production-bundle workaround — see EaosShell.test.tsx for full
-// context. Must run before any React import is evaluated.
 vi.hoisted(() => {
   if (process.env.NODE_ENV === "production") {
     process.env.NODE_ENV = "test";
@@ -15,22 +24,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosShell } from "./EaosShell";
-import { EaosZonePlaceholder } from "./EaosZonePlaceholder";
-import { EAOS_PRIMARY_NAV } from "./nav-zones";
 import { actSync } from "./test-helpers";
 
-// The shell consumes the @/lib/router company-aware Link/NavLink wrappers,
-// which read from CompanyContext. Stub the context here so the unprefixed
-// renders keep their current behavior (no company prefix added, no scope-
-// gated read attempted).
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null }),
 }));
 
-// LET-484 — CommandCenterLanding now reads live mission/agent feeds. Mock
-// the api modules so this semantic-posture test doesn't depend on a network
-// stack and so the "no company scope" path is the exercised case (matching
-// the LET-187 strict semantic-trust contract).
 vi.mock("@/api/issues", () => ({
   issuesApi: { list: vi.fn().mockResolvedValue([]) },
 }));
@@ -58,15 +57,6 @@ function renderEaosPath(initialPath = "/eaos") {
           <Routes>
             <Route path="eaos/*" element={<EaosShell />}>
               <Route index element={<CommandCenterLanding />} />
-              <Route
-                path="projects"
-                element={
-                  <EaosZonePlaceholder
-                    title="Projects / Goals"
-                    description="Strategic outcomes, roadmaps, release candidates."
-                  />
-                }
-              />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -83,96 +73,51 @@ afterEach(() => {
   }
 });
 
-describe("EAOS semantic posture labels", () => {
-  it("labels the command-center landing as Data PREVIEW · Not connected without a company scope", () => {
+describe("EAOS shell chrome (LET-503 cleanup)", () => {
+  it("does NOT advertise Shell/Data dual chips on the top bar", () => {
+    renderEaosPath("/eaos");
+    const banner = container?.querySelector('header[role="banner"]');
+    const text = banner?.textContent ?? "";
+    expect(text).not.toContain("Shell · BACKEND-BACKED");
+    expect(text).not.toContain("Data · PREVIEW");
+    expect(text).not.toContain("Data · BACKEND-BACKED");
+  });
+
+  it("does NOT advertise Shell/Data dual chips on the bottom posture strip", () => {
+    renderEaosPath("/eaos");
+    const strip = container?.querySelector('[data-testid="eaos-posture-strip"]');
+    const text = strip?.textContent ?? "";
+    expect(text).not.toContain("Shell · BACKEND-BACKED");
+    expect(text).not.toContain("Data · PREVIEW");
+    expect(text).not.toContain("Data · BACKEND-BACKED");
+    // Audit pin is the only persistent breadcrumb.
+    expect(text).toContain("Audit");
+  });
+
+  it("does NOT render dashed Stub count pills in the primary rail", () => {
+    renderEaosPath("/eaos");
+    const stubBadges = container?.querySelectorAll('[data-eaos-nav-count-stub="true"]');
+    expect(stubBadges?.length ?? 0).toBe(0);
+  });
+
+  it("does NOT render dashed Stub indicator badges in the top bar", () => {
+    renderEaosPath("/eaos");
+    const stubIndicators = container?.querySelectorAll('[data-eaos-indicator-stub="true"]');
+    expect(stubIndicators?.length ?? 0).toBe(0);
+  });
+
+  it("collapses tile values to a `·` placeholder when no company scope is active", () => {
     renderEaosPath("/eaos");
 
     const landing = container?.querySelector('[data-testid="eaos-command-center-landing"]');
     expect(landing?.getAttribute("data-eaos-data-connected")).toBe("false");
-    const headerText = container?.querySelector('[data-testid="eaos-command-center-header"]')?.textContent ?? "";
-    expect(headerText).toContain("Shell · BACKEND-BACKED");
-    expect(headerText).toContain("Data · PREVIEW");
-    expect(headerText).toContain("Not connected");
-    expect(headerText).not.toContain("Data · BACKEND-BACKED");
-  });
 
-  it("never claims Data · BACKEND-BACKED on the telemetry tiles when no company scope is active", () => {
-    renderEaosPath("/eaos");
-
-    const tiles = container?.querySelector('[data-testid="eaos-command-center-telemetry"]');
-    expect(tiles?.getAttribute("data-eaos-data-connected")).toBe("false");
-    // Tile values must collapse to a non-numeric placeholder when not scoped
-    // (LET-187 rule — never fake a "0").
     const tileValues = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-command-center-telemetry-"][data-testid$="-value"]') ?? [],
     );
     expect(tileValues.length).toBeGreaterThan(0);
     for (const node of tileValues) {
-      expect(node.textContent?.trim()).not.toMatch(/^[0-9]+$/);
+      expect(node.textContent?.trim()).toBe("·");
     }
-  });
-
-  it("dual-labels every zone-rail card without claiming Data · BACKEND-BACKED", () => {
-    renderEaosPath("/eaos");
-
-    const cards = Array.from(
-      container?.querySelectorAll('[data-testid^="eaos-landing-card-"]') ?? [],
-    );
-    expect(cards.length).toBe(EAOS_PRIMARY_NAV.length - 1);
-    for (const card of cards) {
-      expect(card.getAttribute("data-eaos-data-connected")).toBe("false");
-      const text = card.textContent ?? "";
-      expect(text).toContain("Data · PREVIEW");
-      expect(text).not.toContain("Data · BACKEND-BACKED");
-      expect(text).not.toContain("Posture · BACKEND-BACKED");
-    }
-  });
-
-  it("dual-labels zone placeholders without claiming backend-backed data", () => {
-    renderEaosPath("/eaos/projects");
-
-    const placeholder = container?.querySelector('[data-testid="eaos-zone-placeholder"]');
-    expect(placeholder?.getAttribute("data-eaos-data-connected")).toBe("false");
-    const text = placeholder?.textContent ?? "";
-    expect(text).toContain("Shell · BACKEND-BACKED");
-    expect(text).toContain("Data · PREVIEW");
-    expect(text).toContain("Not connected");
-    expect(text).not.toContain("Data · BACKEND-BACKED");
-    expect(text).not.toContain("Posture · BACKEND-BACKED");
-  });
-
-  it("makes scope and stub counts visibly non-real until read models are wired", () => {
-    renderEaosPath("/eaos");
-
-    const scope = container?.querySelector('[data-testid="eaos-topbar-scope"]');
-    expect(scope?.textContent ?? "").toContain("Scope preview · Not connected");
-    expect(scope?.textContent ?? "").not.toContain("Company · Project");
-
-    const indicatorBadges = Array.from(
-      container?.querySelectorAll('[data-eaos-indicator-stub="true"] span:last-child') ?? [],
-    );
-    expect(indicatorBadges.length).toBeGreaterThan(0);
-    for (const badge of indicatorBadges) {
-      expect(badge.textContent?.trim()).toBe("Stub");
-    }
-
-    const navBadges = Array.from(container?.querySelectorAll('[data-eaos-nav-count-stub="true"]') ?? []);
-    expect(navBadges.length).toBeGreaterThan(0);
-    for (const badge of navBadges) {
-      expect(badge.textContent?.trim()).toBe("Stub");
-      expect(badge.getAttribute("aria-label") ?? "").toContain("preview count · not connected");
-    }
-  });
-
-  it("pairs the bottom shell posture with an explicit Data PREVIEW not-connected chip", () => {
-    renderEaosPath("/eaos");
-
-    const strip = container?.querySelector('[data-testid="eaos-posture-strip"]');
-    expect(strip?.getAttribute("data-eaos-data-connected")).toBe("false");
-    const text = strip?.textContent ?? "";
-    expect(text).toContain("Shell · BACKEND-BACKED");
-    expect(text).toContain("Data · PREVIEW");
-    expect(text).toContain("Not connected");
-    expect(text).not.toContain("Posture · BACKEND-BACKED");
   });
 });

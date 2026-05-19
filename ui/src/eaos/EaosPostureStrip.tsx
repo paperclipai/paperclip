@@ -1,22 +1,21 @@
 import { Clock4, FileSearch } from "lucide-react";
 import { EaosStateChip } from "./EaosStateChip";
-import {
-  DEFAULT_BOTTOM_STRIP_LABEL,
-  KERNEL_POSTURE_LABEL,
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_PREFIX,
-} from "./state-labels";
+
+// LET-503 (LET-502 contract §3/§4) — calm footer strip. The default
+// `Shell · BACKEND-BACKED` + `Data · PREVIEW · Not connected` dual chip
+// pattern was visual noise on every page; it now appears only when a
+// `LIVE` or `APPROVAL REQUIRED` context applies. Audit/session breadcrumb
+// stays on the right so operators can correlate the session without
+// hunting through a kernel page.
 
 export interface EaosPostureStripProps {
   variant: "eaos" | "kernel";
-  // When a LIVE or APPROVAL REQUIRED context applies, this prop pins those
-  // labels alongside the default posture. LET-164 §3 forbids hiding them.
+  // Pinned only when an actually-LIVE or actually-pending-approval context
+  // applies. The shell does not assert these on every render anymore.
   liveActive?: boolean;
   approvalActive?: boolean;
-  // Audit/correlation hint shown on the right of the strip. Free-form
-  // identifier produced by the shell (never a raw secret).
+  // Free-form correlation identifier produced by the shell (never a raw
+  // secret). When omitted, the strip shows `Audit · n/a`.
   auditId?: string;
 }
 
@@ -31,22 +30,12 @@ export function EaosPostureStrip({
   return (
     <footer
       role="contentinfo"
-      aria-label="Posture and live state"
+      aria-label="Session and live state"
       data-testid="eaos-posture-strip"
-      data-eaos-data-connected={isKernel ? "true" : "false"}
       data-eaos-live-active={liveActive ? "true" : "false"}
       data-eaos-approval-active={approvalActive ? "true" : "false"}
-      className="flex h-9 w-full items-center gap-2 border-t border-border bg-background/95 px-3 text-[11px] text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-background/80"
+      className="flex h-8 w-full items-center gap-2 border-t border-border bg-background/95 px-3 text-[11px] text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-background/80"
     >
-      {isKernel ? (
-        <EaosStateChip label="BACKEND-BACKED" prefix="Kernel/Admin" title={KERNEL_POSTURE_LABEL} />
-      ) : (
-        <>
-          <EaosStateChip label={DEFAULT_BOTTOM_STRIP_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          <span className="uppercase tracking-wide">{NOT_CONNECTED_DATA_NOTE}</span>
-        </>
-      )}
       {liveActive ? <EaosStateChip label="LIVE" /> : null}
       {approvalActive ? <EaosStateChip label="APPROVAL REQUIRED" /> : null}
       <span

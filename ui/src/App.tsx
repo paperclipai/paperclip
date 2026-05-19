@@ -64,6 +64,7 @@ import { CapabilitiesPage } from "./eaos/capabilities/CapabilitiesPage";
 import { AdminPage } from "./eaos/admin/AdminPage";
 import { BlueprintsCatalogPage } from "./eaos/blueprints/BlueprintsCatalogPage";
 import { BlueprintDetailPage } from "./eaos/blueprints/BlueprintDetailPage";
+import { OrgPage } from "./eaos/org/OrgPage";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
@@ -403,6 +404,14 @@ export function App() {
               */}
               <Route path="agents" element={<AgentsRosterPage />} />
               {/*
+                LET-503 (LET-502 contract §5) — `/eaos/org` is a first-class
+                route showing company/team/agent structure. Until the team
+                graph backend lands, the page derives a role-grouped table
+                from the canonical agent roster and names the missing graph
+                as a truthful gap.
+              */}
+              <Route path="org" element={<OrgPage />} />
+              {/*
                 LET-484 working-product slice — `/eaos/approvals` now renders
                 a read-only queue backed by `approvalsApi.list`. Decision
                 controls remain inside the kernel detail page; this surface
@@ -474,6 +483,7 @@ export function App() {
                   && zone.path !== "/eaos/sandbox"
                   && zone.path !== "/eaos/missions"
                   && zone.path !== "/eaos/agents"
+                  && zone.path !== "/eaos/org"
                   && zone.path !== "/eaos/approvals"
                   && zone.path !== "/eaos/runs"
                   && zone.path !== "/eaos/projects"
