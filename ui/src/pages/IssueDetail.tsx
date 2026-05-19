@@ -61,6 +61,7 @@ import {
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { timeAgo } from "../lib/timeAgo";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
@@ -119,6 +120,7 @@ import {
   ArrowLeft,
   Check,
   ChevronRight,
+  ClipboardList,
   Copy,
   Eye,
   EyeOff,
@@ -520,6 +522,7 @@ interface InboxMobileToolbarProps {
   onArchive: () => void;
   archivePending: boolean;
   onCopy: () => void;
+  onCopyThread: () => void;
   onProperties: () => void;
   onHide: () => void;
 }
@@ -531,6 +534,7 @@ function InboxMobileToolbar({
   onArchive,
   archivePending,
   onCopy,
+  onCopyThread,
   onProperties,
   onHide,
 }: InboxMobileToolbarProps) {
@@ -583,6 +587,13 @@ function InboxMobileToolbar({
             >
               <Copy className="h-3 w-3" />
               Copy as markdown
+            </button>
+            <button
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+              onClick={() => { onCopyThread(); setMenuOpen(false); }}
+            >
+              <ClipboardList className="h-3 w-3" />
+              Copy thread
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -1233,6 +1244,7 @@ export function IssueDetail() {
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [threadCopied, setThreadCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
   const [handoffFocusSignal, setHandoffFocusSignal] = useState(0);
@@ -2848,6 +2860,42 @@ export function IssueDetail() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const copyThreadToClipboard = async () => {
+    if (!issue) return;
+    const decodeEntities = (text: string) => {
+      const el = document.createElement("textarea");
+      el.innerHTML = text;
+      return el.value;
+    };
+    const title = decodeEntities(issue.title);
+    const body = decodeEntities(issue.description ?? "");
+    const md = `# ${issue.identifier}: ${title}\n\n${body}`.trimEnd();
+
+    const parts: string[] = [md];
+
+    for (const comment of comments) {
+      const authorName = comment.authorType === "user"
+        ? (userLabelMap?.get(comment.authorUserId ?? "") ?? "User")
+        : comment.authorType === "agent"
+          ? (agentMap.get(comment.authorAgentId ?? "")?.name ?? "Agent")
+          : "System";
+      const timestamp = comment.createdAt ? timeAgo(comment.createdAt) : "";
+      const commentBody = decodeEntities(comment.body).trim();
+      if (!commentBody) continue;
+      parts.push("");
+      parts.push("---");
+      parts.push("");
+      parts.push(`**${authorName}** · ${timestamp}`);
+      parts.push("");
+      parts.push(commentBody);
+    }
+
+    await navigator.clipboard.writeText(parts.join("\n"));
+    setThreadCopied(true);
+    pushToast({ title: "Thread copied to clipboard", tone: "success" });
+    setTimeout(() => setThreadCopied(false), 2000);
+  };
+
   // Gmail-style mobile toolbar when viewing an issue from inbox.
   // Callbacks are stored in a ref so the effect deps stay stable and
   // don't trigger an infinite render loop (useMutation results and
@@ -2857,6 +2905,7 @@ export function IssueDetail() {
       if (!archiveFromInbox.isPending && issue?.id) archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
+    onCopyThread: () => copyThreadToClipboard(),
     onProperties: () => setMobilePropsOpen(true),
     onHide: () => {
       updateIssue.mutate(
@@ -2870,6 +2919,7 @@ export function IssueDetail() {
       if (!archiveFromInbox.isPending && issue?.id) archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
+    onCopyThread: () => copyThreadToClipboard(),
     onProperties: () => setMobilePropsOpen(true),
     onHide: () => {
       updateIssue.mutate(
@@ -2899,6 +2949,7 @@ export function IssueDetail() {
         archivePending={archivePending}
         onArchive={() => inboxToolbarCallbacksRef.current.onArchive()}
         onCopy={() => inboxToolbarCallbacksRef.current.onCopy()}
+        onCopyThread={() => inboxToolbarCallbacksRef.current.onCopyThread()}
         onProperties={() => inboxToolbarCallbacksRef.current.onProperties()}
         onHide={() => inboxToolbarCallbacksRef.current.onHide()}
       />,
@@ -3322,6 +3373,14 @@ export function IssueDetail() {
         </div>
       )}
 
+      {/* Persistent issue identifier bar — stays visible when scrolling */}
+      <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 border-b border-border">
+        <div className="flex items-center gap-2 min-w-0 py-2">
+          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <span className="text-sm truncate min-w-0 text-foreground/80">{issue.title}</span>
+        </div>
+      </div>
+
       <div className="space-y-3">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
@@ -3438,6 +3497,14 @@ export function IssueDetail() {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                onClick={copyThreadToClipboard}
+                title="Copy issue thread to clipboard"
+              >
+                {threadCopied ? <Check className="h-4 w-4 text-green-500" /> : <ClipboardList className="h-4 w-4" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 onClick={() => setMobilePropsOpen(true)}
                 title="Properties"
               >
@@ -3468,6 +3535,14 @@ export function IssueDetail() {
               title="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={copyThreadToClipboard}
+              title="Copy issue thread to clipboard"
+            >
+              {threadCopied ? <Check className="h-4 w-4 text-green-500" /> : <ClipboardList className="h-4 w-4" />}
             </Button>
             <Button
               variant="ghost"
