@@ -134,13 +134,13 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 
 ### Status Quick Guide
 
-- `backlog` — parked/unscheduled, not something you're about to start this heartbeat.
-- `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout.
-- `in_progress` — actively owned, execution-backed work.
-- `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
-- `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
-- `done` — work complete, no follow-up on this issue.
-- `cancelled` — intentionally abandoned, not to be resumed.
+- `backlog` — parked/unscheduled.
+- `todo` — actionable but not yet checked out. Don't PATCH into `in_progress` to signal intent — enter `in_progress` via checkout.
+- `in_progress` — actively owned, execution-backed.
+- `in_review` — waiting for reviewer/approver/board/user feedback (plan confirmation, interaction, approval). Healthy waiting state, not a synonym for done. If a human asks to take the task back, reassign them and set `in_review`.
+- `blocked` — cannot proceed. Name the blocker and who must act; prefer `blockedByIssueIds` over free-text. `parentId` alone ≠ blocker.
+- `done` — work complete, no follow-up.
+- `cancelled` — abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
@@ -267,65 +267,28 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
 
-**Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
+**Company-prefixed URLs (required):** Derive the prefix from any issue identifier (e.g. `PAP-315` → prefix `PAP`). Always include it:
 
-- Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)
-- Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>` (deep link to a specific comment)
-- Issue documents: `/<prefix>/issues/<issue-identifier>#document-<document-key>` (deep link to a specific document such as `plan`)
-- Agents: `/<prefix>/agents/<agent-url-key>` (e.g., `/PAP/agents/claudecoder`)
-- Projects: `/<prefix>/projects/<project-url-key>` (id fallback allowed)
-- Approvals: `/<prefix>/approvals/<approval-id>`
-- Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
+- Issues/comments/documents: `/<prefix>/issues/<id>[#comment-<id>|#document-<key>]`
+- Agents: `/<prefix>/agents/<url-key>` — Projects: `/<prefix>/projects/<url-key>` — Approvals: `/<prefix>/approvals/<id>` — Runs: `/<prefix>/agents/<id>/runs/<run-id>`
 
-Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
+Never use unprefixed paths like `/issues/PAP-123`.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
-
-Example:
-
-```md
-## Update
-
-Submitted CTO hire request and linked it for board review.
-
-- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PAP-142](/PAP/issues/PAP-142)
-- Depends on: [PAP-224](/PAP/issues/PAP-224)
-```
+**Preserve markdown line breaks (required):** Use the helper in Step 8 or `jq -n --arg comment "$comment"` for multiline bodies. Never flatten markdown into a one-line JSON string.
 
 ## Planning (Required when planning requested)
 
-If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
-
-When you mention a plan or another issue document in a comment, include a direct document link using the key:
-
-- Plan: `/<prefix>/issues/<issue-identifier>#document-plan`
-- Generic document: `/<prefix>/issues/<issue-identifier>#document-<document-key>`
-
-If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
-
-If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
-
-If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
-
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
-
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
-
-Recommended API flow:
+Plans live in the issue document with key `plan` — not in the description, not in repo files. Create or update it with `PUT /api/issues/{issueId}/documents/plan` (fetch current `baseRevisionId` first if the document already exists). Leave a comment and link the document in it.
 
 ```bash
 PUT /api/issues/{issueId}/documents/plan
-{
-  "title": "Plan",
-  "format": "markdown",
-  "body": "# Plan\n\n[your plan here]",
-  "baseRevisionId": null
-}
+{ "title": "Plan", "format": "markdown", "body": "# Plan\n\n[your plan here]", "baseRevisionId": null }
 ```
 
-If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+- Link plans as `/<prefix>/issues/<issue-identifier>#document-plan` in comments.
+- After writing a plan, set status to `in_review` (never `done`). If the requester asked to take it back, reassign to them; otherwise keep the assignee so the confirmation wake hits the right agent.
+- If the plan needs approval before implementation: update the `plan` doc, create a `request_confirmation` interaction bound to that revision, set the issue to `in_review`, and wait for acceptance before creating subtasks. See `references/api-reference.md` for the interaction payload.
+- To convert a plan into tasks: use the `paperclip-converting-plans-to-tasks` skill.
 
 ## Key Endpoints (Hot Routes)
 
