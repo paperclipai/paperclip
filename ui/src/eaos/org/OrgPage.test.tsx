@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
+import type { OrgNode } from "@/api/agents";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -22,10 +23,12 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 const agentsListMock = vi.fn<(companyId: string) => Promise<Agent[]>>();
+const agentsOrgMock = vi.fn<(companyId: string) => Promise<OrgNode[]>>();
 
 vi.mock("@/api/agents", () => ({
   agentsApi: {
     list: (companyId: string) => agentsListMock(companyId),
+    org: (companyId: string) => agentsOrgMock(companyId),
   },
 }));
 
@@ -64,6 +67,8 @@ let queryClient: QueryClient;
 
 beforeEach(() => {
   agentsListMock.mockReset();
+  agentsOrgMock.mockReset();
+  agentsOrgMock.mockResolvedValue([]);
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
@@ -129,7 +134,7 @@ describe("OrgPage (LET-503)", () => {
     });
   });
 
-  it("renders a role-grouped table from the live agent roster", async () => {
+  it("renders the org graph canvas with a node per agent when org backend is empty", async () => {
     agentsListMock.mockResolvedValue([
       makeAgent({ id: "ceo-1", name: "Andrii", role: "ceo", status: "active" }),
       makeAgent({ id: "eng-1", name: "Alex", role: "engineer", status: "running" }),
@@ -137,15 +142,95 @@ describe("OrgPage (LET-503)", () => {
     ]);
     await renderOrg();
     await waitForAssertion(() => {
-      expect(container?.querySelector('[data-testid="eaos-org-row-ceo"]')).not.toBeNull();
-      expect(container?.querySelector('[data-testid="eaos-org-row-engineer"]')).not.toBeNull();
-      expect(container?.querySelector('[data-testid="eaos-org-member-ceo-1"]')).not.toBeNull();
-      expect(container?.querySelector('[data-testid="eaos-org-member-eng-1"]')).not.toBeNull();
-      expect(container?.querySelector('[data-testid="eaos-org-member-eng-2"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="eaos-org-graph"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="eaos-org-node-ceo-1"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="eaos-org-node-eng-1"]')).not.toBeNull();
+      expect(container?.querySelector('[data-testid="eaos-org-node-eng-2"]')).not.toBeNull();
+      const pageSource = container?.querySelector('[data-testid="eaos-org-page"]')?.getAttribute(
+        "data-eaos-org-source",
+      );
+      expect(pageSource).toBe("derived");
     });
   });
 
-  it("names the missing reporting-graph backend as a truthful gap", async () => {
+  it("uses the backend org tree when reporting relationships are present", async () => {
+    agentsListMock.mockResolvedValue([
+      makeAgent({ id: "ceo-1", name: "Andrii", role: "ceo", status: "active" }),
+      makeAgent({ id: "eng-1", name: "Alex", role: "engineer", status: "running" }),
+    ]);
+    agentsOrgMock.mockResolvedValue([
+      {
+        id: "ceo-1",
+        name: "Andrii",
+        role: "ceo",
+        status: "active",
+        reports: [
+          { id: "eng-1", name: "Alex", role: "engineer", status: "running", reports: [] },
+        ],
+      },
+    ]);
+    await renderOrg();
+    await waitForAssertion(() => {
+      const pageSource = container?.querySelector('[data-testid="eaos-org-page"]')?.getAttribute(
+        "data-eaos-org-source",
+      );
+      expect(pageSource).toBe("backend");
+      const ceoWorkload = container
+        ?.querySelector('[data-testid="eaos-org-node-ceo-1-workload"]')
+        ?.textContent?.trim();
+      expect(ceoWorkload).toMatch(/1 report/);
+    });
+  });
+
+  it("opens and closes the details sidebar when a node is selected", async () => {
+    agentsListMock.mockResolvedValue([
+      makeAgent({
+        id: "eng-1",
+        name: "Alex",
+        urlKey: "alex",
+        role: "engineer",
+        status: "running",
+        title: "Senior engineer",
+        capabilities: "Frontend / React",
+      }),
+    ]);
+    await renderOrg();
+    await waitForAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-org-node-eng-1"]')).not.toBeNull();
+    });
+
+    const node = container!.querySelector(
+      '[data-testid="eaos-org-node-eng-1"]',
+    ) as HTMLElement;
+    await act(async () => {
+      node.click();
+    });
+
+    await waitForAssertion(() => {
+      const details = container?.querySelector('[data-testid="eaos-org-details"]');
+      expect(details).not.toBeNull();
+      expect(details?.textContent ?? "").toMatch(/Alex/);
+      expect(details?.textContent ?? "").toMatch(/Senior engineer/);
+    });
+
+    const link = container!.querySelector(
+      '[data-testid="eaos-org-details-link"]',
+    ) as HTMLAnchorElement | null;
+    expect(link?.getAttribute("href")).toMatch(/\/agents\/alex$/);
+
+    const closeButton = container!.querySelector(
+      '[data-testid="eaos-org-details-close"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      closeButton.click();
+    });
+
+    await waitForAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-org-details"]')).toBeNull();
+    });
+  });
+
+  it("names the missing reporting-graph backend as a truthful gap (derived source)", async () => {
     agentsListMock.mockResolvedValue([makeAgent({ id: "eng-1", role: "engineer" })]);
     await renderOrg();
     await waitForAssertion(() => {

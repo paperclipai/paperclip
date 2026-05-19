@@ -1,26 +1,29 @@
-// LET-503 (LET-502 contract §5) — first-class `/eaos/org` route. Until the
-// dedicated team/graph backend lands, the Org page is a calm role-grouped
-// table derived from `agentsApi.list`. The visual is operational (role,
-// active count, running count, total count) rather than decorative
-// avatars-only. Missing graph relationships are named at the bottom as a
-// truthful gap, per contract §5.
+// LET-503 (LET-502 contract §5 + CEO comment 420a4229) — first-class
+// `/eaos/org` route. The page now renders a real graph canvas backed by
+// `agentsApi.org`, with a right details sidebar on selection and pan /
+// zoom / fit controls on the canvas itself. When the org backend returns
+// no reporting relationships we synthesise a truthful flat fallback tree
+// from `agentsApi.list` (CEO-like roles as roots, the rest under an
+// implicit root) so the surface is always populated when agents exist —
+// and the gap note still explains that the reporting-graph endpoint is
+// not wired.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { agentsApi } from "@/api/agents";
+import { ExternalLink, X } from "lucide-react";
+import { agentsApi, type OrgNode } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { AGENT_ROLE_LABELS, type AgentRole, type Agent } from "@paperclipai/shared";
 import { redactSecretLikeText } from "../secret-redact";
-import {
-  buildAgentRosterRow,
-  groupRosterByRole,
-  type AgentRosterGroup,
-  type AgentRosterRow,
-} from "../agents/agent-roster";
+import { EaosOrgGraph, type EaosOrgGraphNodeDecoration } from "./EaosOrgGraph";
+
+const LEADERSHIP_ROLES: ReadonlySet<AgentRole> = new Set(["ceo", "cto", "cmo", "cfo"]);
 
 export function OrgPage() {
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -30,22 +33,67 @@ export function OrgPage() {
     enabled: Boolean(selectedCompanyId),
   });
 
-  const rows = useMemo<AgentRosterRow[]>(
-    () => (agentsQuery.data ?? []).map(buildAgentRosterRow),
-    [agentsQuery.data],
-  );
-  const groups = useMemo(() => groupRosterByRole(rows), [rows]);
+  const orgQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? [...queryKeys.org(selectedCompanyId), "eaos-org-graph"]
+      : ["org", "__no-company__", "eaos-org-graph"],
+    queryFn: () => agentsApi.org(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
 
-  const isLoading = Boolean(selectedCompanyId) && agentsQuery.isLoading;
-  const isError = Boolean(selectedCompanyId) && agentsQuery.isError;
-  const dataConnected = !isLoading && !isError && agentsQuery.isSuccess;
+  const agents = agentsQuery.data ?? [];
+  const orgTree = orgQuery.data ?? [];
+
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const agent of agents) map.set(agent.id, agent);
+    return map;
+  }, [agents]);
+
+  const tree = useMemo<OrgNode[]>(() => {
+    if (orgTree.length > 0 && hasReports(orgTree)) return orgTree;
+    return synthesizeTree(agents);
+  }, [orgTree, agents]);
+
+  const treeBackendSource = useMemo<"backend" | "derived" | "empty">(() => {
+    if (orgTree.length > 0 && hasReports(orgTree)) return "backend";
+    if (agents.length > 0) return "derived";
+    return "empty";
+  }, [orgTree, agents]);
+
+  const decorate = useMemo(() => {
+    return (node: OrgNode): EaosOrgGraphNodeDecoration => {
+      const agent = agentMap.get(node.id);
+      const role = (agent?.role ?? (node.role as AgentRole)) as AgentRole;
+      const roleLabel = AGENT_ROLE_LABELS[role] ?? node.role ?? "—";
+      const reportsCount = node.reports.length;
+      const workloadLabel =
+        reportsCount > 0
+          ? `${reportsCount} ${reportsCount === 1 ? "report" : "reports"}`
+          : null;
+      return { roleLabel, workloadLabel };
+    };
+  }, [agentMap]);
+
+  const selectedAgent = selectedId ? agentMap.get(selectedId) ?? null : null;
+
+  const isLoading =
+    Boolean(selectedCompanyId) && (agentsQuery.isLoading || orgQuery.isLoading);
+  const isError = Boolean(selectedCompanyId) && (agentsQuery.isError || orgQuery.isError);
+  const dataConnected =
+    !isLoading &&
+    !isError &&
+    agentsQuery.isSuccess &&
+    orgQuery.isSuccess &&
+    treeBackendSource !== "empty";
 
   return (
     <section
       aria-labelledby="eaos-org-title"
       data-testid="eaos-org-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
-      className="flex min-h-0 flex-1 flex-col gap-4"
+      data-eaos-org-source={treeBackendSource}
+      className="flex min-h-0 flex-1 flex-col gap-3"
     >
       <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
         <h1
@@ -75,82 +123,163 @@ export function OrgPage() {
           tone="error"
           body="Could not load the org. Try refreshing."
         />
-      ) : groups.length === 0 ? (
+      ) : tree.length === 0 ? (
         <ContextNote
           testId="eaos-org-empty"
-          body="No agents in this scope yet. The org will appear here once agents are onboarded."
+          body="No agents in this scope yet. The org graph will appear here once agents are onboarded."
         />
       ) : (
-        <OrgTable groups={groups} />
+        <div
+          data-testid="eaos-org-layout"
+          className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_320px]"
+        >
+          <div className="relative flex min-h-[420px] min-w-0 flex-col lg:min-h-0">
+            <EaosOrgGraph
+              tree={tree}
+              decorate={decorate}
+              selectedId={selectedId}
+              onSelect={(id) => setSelectedId(id)}
+              ariaLabel="Org graph canvas"
+            />
+          </div>
+          <OrgDetailsPanel
+            selectedId={selectedId}
+            selectedAgent={selectedAgent}
+            onClose={() => setSelectedId(null)}
+          />
+        </div>
       )}
 
-      <GapNote />
+      <GapNote source={treeBackendSource} />
     </section>
   );
 }
 
-function OrgTable({ groups }: { groups: readonly AgentRosterGroup[] }) {
+function OrgDetailsPanel({
+  selectedId,
+  selectedAgent,
+  onClose,
+}: {
+  selectedId: string | null;
+  selectedAgent: Agent | null;
+  onClose: () => void;
+}) {
+  if (!selectedId) {
+    return (
+      <aside
+        aria-label="Org details"
+        data-testid="eaos-org-details-empty"
+        className="hidden min-h-0 flex-col rounded-md border border-dashed border-border bg-card p-3 text-xs text-muted-foreground lg:flex"
+      >
+        Select a node in the graph to view details.
+      </aside>
+    );
+  }
+
+  const name = selectedAgent?.name ?? "Unknown agent";
+  const role = (selectedAgent?.role ?? null) as AgentRole | null;
+  const roleLabel = role ? AGENT_ROLE_LABELS[role] ?? role : "—";
+  const status = selectedAgent?.status ?? "unknown";
+  const adapterType = selectedAgent?.adapterType ?? "—";
+  const title = selectedAgent?.title ?? null;
+  const capabilities = selectedAgent?.capabilities ?? null;
+  const detailHref = selectedAgent
+    ? `/agents/${encodeURIComponent(selectedAgent.urlKey || selectedAgent.id)}`
+    : `/agents/${encodeURIComponent(selectedId)}`;
+
   return (
-    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card">
-      <table className="w-full border-collapse text-left text-[13px]" data-testid="eaos-org-table">
-        <thead className="sticky top-0 z-10 border-b border-border bg-card text-[11px] uppercase tracking-wide text-muted-foreground">
-          <tr>
-            <th scope="col" className="px-3 py-2 font-medium">Team / role</th>
-            <th scope="col" className="px-3 py-2 font-medium">Agents</th>
-            <th scope="col" className="px-3 py-2 font-medium">Active</th>
-            <th scope="col" className="px-3 py-2 font-medium">Running</th>
-            <th scope="col" className="px-3 py-2 font-medium">Members</th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((group) => {
-            const active = group.rows.filter((row) =>
-              row.status === "active" || row.status === "idle" || row.status === "running",
-            ).length;
-            const running = group.rows.filter((row) => row.status === "running").length;
-            return (
-              <tr
-                key={group.role}
-                className="border-b border-border last:border-b-0 align-top hover:bg-accent/40"
-                data-testid={`eaos-org-row-${group.role}`}
-              >
-                <td className="px-3 py-2 font-medium text-foreground">{group.roleLabel}</td>
-                <td className="px-3 py-2 tabular-nums text-foreground">{group.rows.length}</td>
-                <td className="px-3 py-2 tabular-nums text-foreground">{active}</td>
-                <td className="px-3 py-2 tabular-nums text-foreground">{running}</td>
-                <td className="px-3 py-2">
-                  <ul className="flex flex-wrap gap-1">
-                    {group.rows.map((row) => (
-                      <li key={row.id}>
-                        <Link
-                          to={row.kernelRoute}
-                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 text-[11px] text-foreground underline-offset-2 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                          title={row.title ? redactSecretLikeText(row.title) : row.roleLabel}
-                          data-testid={`eaos-org-member-${row.id}`}
-                        >
-                          {redactSecretLikeText(row.name)}
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <aside
+      aria-label="Org details"
+      data-testid="eaos-org-details"
+      className="flex min-h-0 flex-col rounded-md border border-border bg-card"
+    >
+      <header className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold text-foreground">
+            {redactSecretLikeText(name)}
+          </div>
+          <div className="truncate text-[11px] text-muted-foreground">{roleLabel}</div>
+        </div>
+        <button
+          type="button"
+          aria-label="Close details"
+          onClick={onClose}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          data-testid="eaos-org-details-close"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </header>
+      <dl className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-3 py-2 text-[12px]">
+        {title ? (
+          <DetailRow label="Title" value={redactSecretLikeText(title)} />
+        ) : null}
+        <DetailRow label="Status" value={status} />
+        <DetailRow label="Adapter" value={adapterType} mono />
+        {capabilities ? (
+          <DetailRow label="Capabilities" value={redactSecretLikeText(capabilities)} />
+        ) : null}
+        {!selectedAgent ? (
+          <p className="rounded-md border border-dashed border-border bg-background px-2 py-1 text-[11px] text-muted-foreground">
+            Agent record not found in this scope. The graph node references an
+            agent ID that the agents API did not return.
+          </p>
+        ) : null}
+      </dl>
+      <footer className="border-t border-border px-3 py-2">
+        <Link
+          to={detailHref}
+          className="inline-flex items-center gap-1 text-[12px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          data-testid="eaos-org-details-link"
+        >
+          Open agent profile <ExternalLink className="h-3 w-3" />
+        </Link>
+      </footer>
+    </aside>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd
+        className={
+          "text-[12px] text-foreground " + (mono ? "font-mono uppercase tracking-wide" : "")
+        }
+      >
+        {value}
+      </dd>
     </div>
   );
 }
 
-function GapNote() {
+function GapNote({ source }: { source: "backend" | "derived" | "empty" }) {
+  let body: string;
+  if (source === "backend") {
+    body =
+      "Reporting lines are read from the backend org tree. Workload and runtime relationships beyond direct reports are not wired yet.";
+  } else if (source === "derived") {
+    body =
+      "Reporting lines are derived from agent roles because the dedicated team / reporting-graph endpoint is not wired yet.";
+  } else {
+    body =
+      "A dedicated team / reporting-graph endpoint is not wired yet, so this surface depends entirely on the agents list.";
+  }
   return (
     <p
       data-testid="eaos-org-gap-note"
       className="text-[11px] text-muted-foreground"
     >
-      Team hierarchy and reporting lines are derived from agent roles. A dedicated
-      team / reporting-graph endpoint is not wired yet.
+      {body}
     </p>
   );
 }
@@ -178,4 +307,46 @@ function ContextNote({
       {body}
     </p>
   );
+}
+
+function hasReports(tree: readonly OrgNode[]): boolean {
+  for (const node of tree) {
+    if (node.reports.length > 0) return true;
+    if (hasReports(node.reports)) return true;
+  }
+  return false;
+}
+
+function synthesizeTree(agents: readonly Agent[]): OrgNode[] {
+  if (agents.length === 0) return [];
+
+  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const source = liveAgents.length > 0 ? liveAgents : agents;
+
+  const leaders = source.filter((agent) => LEADERSHIP_ROLES.has(agent.role));
+  const followers = source.filter((agent) => !LEADERSHIP_ROLES.has(agent.role));
+
+  const compareByName = (a: Agent, b: Agent) => a.name.localeCompare(b.name);
+  leaders.sort(compareByName);
+  followers.sort(compareByName);
+
+  const followerNodes: OrgNode[] = followers.map((agent) => agentToNode(agent));
+
+  if (leaders.length === 0) {
+    return followerNodes;
+  }
+
+  const [primaryLeader, ...otherLeaders] = leaders;
+  const primaryNode = agentToNode(primaryLeader, followerNodes);
+  return [primaryNode, ...otherLeaders.map((agent) => agentToNode(agent))];
+}
+
+function agentToNode(agent: Agent, reports: OrgNode[] = []): OrgNode {
+  return {
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    status: agent.status,
+    reports,
+  };
 }
