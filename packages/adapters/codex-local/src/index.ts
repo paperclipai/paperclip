@@ -51,9 +51,10 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
-      modelReasoningEffort: "high",
+      // Local ops lane: avoid Spark because this user's Codex account has previously rejected it.
+      // Keep the cheap profile on the verified default Codex model unless an agent runtime override says otherwise.
+      model: DEFAULT_CODEX_LOCAL_MODEL,
+      modelReasoningEffort: "low",
     },
     source: "adapter_default",
   },
