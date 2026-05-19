@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  Globe,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -123,9 +124,9 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   http: {
     label: "HTTP",
-    description: "Internal HTTP adapter",
-    icon: Cpu,
-    comingSoon: true,
+    description: "Send heartbeats to any HTTP endpoint",
+    icon: Globe,
+    comingSoon: false,
   },
 };
 
