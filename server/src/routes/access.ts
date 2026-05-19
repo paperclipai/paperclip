@@ -3489,6 +3489,49 @@ export function accessRoutes(
         throw conflict("Join request not found");
       }
 
+      // Auto-approve human invite acceptances — the invite itself is the
+      // authorization (an admin explicitly invited this person).  This mirrors
+      // the manual approval flow in POST /join-requests/:id/approve but skips
+      // the extra round-trip so the user lands in the company immediately.
+      if (requestType === "human" && created.status === "pending_approval") {
+        const userId = created.requestingUserId ?? req.actor.userId ?? "local-board";
+        const membershipRole = resolveHumanInviteRole(
+          invite.defaultsPayload as Record<string, unknown> | null,
+        );
+        await access.ensureMembership(
+          companyId,
+          "user",
+          userId,
+          membershipRole,
+          "active"
+        );
+        const grants = humanJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          membershipRole
+        );
+        await access.setPrincipalGrants(
+          companyId,
+          "user",
+          userId,
+          grants,
+          req.actor.userId ?? null
+        );
+        const approved = await db
+          .update(joinRequests)
+          .set({
+            status: "approved",
+            approvedByUserId: "invite-auto",
+            approvedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(joinRequests.id, created.id))
+          .returning()
+          .then((rows) => rows[0]);
+        if (approved) {
+          Object.assign(created, approved);
+        }
+      }
+
       if (
         inviteAlreadyAccepted &&
         requestType === "agent" &&
