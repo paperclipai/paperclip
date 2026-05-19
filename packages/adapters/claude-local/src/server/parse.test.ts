@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  isClaudeUnknownSessionError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -119,5 +120,51 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+
+describe("isClaudeUnknownSessionError", () => {
+  it("matches the classic CLI message", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Error: no conversation found with session id abc-123",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Unknown session: abc-123",
+      }),
+    ).toBe(true);
+  });
+
+  it("matches the Anthropic Agent SDK 400 on previous_message_id", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result:
+          "API Error: 400 diagnostics.previous_message_id: must be the `id` from a prior assistant message",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeUnknownSessionError({
+        is_error: true,
+        errors: [
+          {
+            type: "invalid_request_error",
+            message:
+              "diagnostics.previous_message_id: must be from a prior assistant message in this conversation",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated errors", () => {
+    expect(
+      isClaudeUnknownSessionError({ result: "Overloaded. Try again later." }),
+    ).toBe(false);
+    expect(
+      isClaudeUnknownSessionError({ result: "" }),
+    ).toBe(false);
   });
 });
