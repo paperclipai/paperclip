@@ -610,6 +610,13 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779062400000,
+      "tag": "0087_drop_run_id_fk_soft_refs",
+      "breakpoints": true
     }
   ]
 }

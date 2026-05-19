@@ -70,17 +70,38 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
-  await db.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: input.actorType,
-    actorId: input.actorId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
-    details: redactedDetails,
-  });
+  try {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      agentId: input.agentId ?? null,
+      runId: input.runId ?? null,
+      details: redactedDetails,
+    });
+  } catch (e) {
+    // If a stale run_id causes a FK violation, retry without run attribution so the log entry
+    // is still recorded. This can happen when a Cowork-session JWT references a pruned run.
+    const pgCode = (e as any)?.cause?.code ?? (e as any)?.code;
+    if (pgCode === "23503" && input.runId) {
+      await db.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        agentId: input.agentId ?? null,
+        runId: null,
+        details: redactedDetails,
+      });
+    } else {
+      throw e;
+    }
+  }
 
   publishLiveEvent({
     companyId: input.companyId,

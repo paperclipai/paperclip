@@ -3,7 +3,6 @@ import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-cor
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
 
 export const issueComments = pgTable(
   "issue_comments",
@@ -14,7 +13,7 @@ export const issueComments = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id),
     authorUserId: text("author_user_id"),
     authorType: text("author_type").$type<IssueCommentAuthorType>(),
-    createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    createdByRunId: uuid("created_by_run_id"),
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
