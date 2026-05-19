@@ -966,14 +966,28 @@ describe("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.companyId, companyId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              eq(agentWakeupRequests.status, "failed"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return Boolean(deferred);
       }, 90_000);
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, companyId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.status).toBe("succeeded");
 
       const issueAfterPromotion = await db
         .select({
@@ -988,23 +1002,6 @@ describe("heartbeat comment wake batching", () => {
         status: "done",
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
-
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
-        wake: {
-          reason: "issue_comment_mentioned",
-          commentIds: [comment.id],
-          latestCommentId: comment.id,
-          issue: {
-            id: issueId,
-            identifier: `${issuePrefix}-1`,
-            title: "Do not reopen from agent mention",
-            status: "done",
-            priority: "medium",
-          },
-        },
-      });
-      expect(String(secondPayload.message ?? "")).toContain("please review after I finish");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -1512,6 +1509,169 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 120_000);
+
+  it("drops deferred mention wakes when the issue is closed before promotion", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const mentionedAgentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values([
+        {
+          id: primaryAgentId,
+          companyId,
+          name: "Primary Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: mentionedAgentId,
+          companyId,
+          name: "Mentioned Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Deferred mention drop on close",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: primaryAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      // Wake the primary agent so it holds the execution lock
+      const primaryRun = await heartbeat.wakeup(primaryAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+      expect(primaryRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      // Mention the second agent while primary is running — gets deferred
+      const mentionComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "@Mentioned Agent check this out.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const mentionRun = await heartbeat.wakeup(mentionedAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_comment_mentioned",
+        payload: { issueId, commentId: mentionComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: mentionComment.id,
+          wakeCommentId: mentionComment.id,
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(mentionRun).toBeNull();
+
+      // Verify it's deferred
+      const deferred = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, mentionedAgentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(deferred).not.toBeNull();
+
+      // Close the issue (primary agent finishes and marks done)
+      await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, issueId));
+
+      // Release primary agent — this triggers deferred-wake promotion
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const run = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, primaryRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 30_000);
+
+      // Deferred mention wake must be dropped (failed), not promoted
+      await waitFor(async () => {
+        const req = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, deferred!.id))
+          .then((rows) => rows[0] ?? null);
+        return req?.status === "failed";
+      }, 30_000);
+
+      // Issue must remain closed
+      const finalIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(finalIssue?.status).toBe("done");
+
+      // Mentioned agent must not have been woken
+      const mentionedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, mentionedAgentId));
+      expect(mentionedRuns).toHaveLength(0);
+
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
