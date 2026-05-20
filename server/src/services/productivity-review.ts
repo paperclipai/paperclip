@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { instanceSettingsService } from "./instance-settings.js";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -203,6 +204,7 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
+  const instanceSettings = instanceSettingsService(db);
 
   async function getCompanyIssuePrefix(companyId: string) {
     return db
@@ -763,6 +765,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     companyId?: string;
     thresholds?: Partial<ProductivityReviewThresholds>;
   }) {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableIssueProductivityReview) {
+      return {
+        scanned: 0,
+        created: 0,
+        updated: 0,
+        existing: 0,
+        snoozed: 0,
+        creationCapped: 0,
+        skipped: 0,
+        failed: 0,
+        reviewIssueIds: [] as string[],
+        failedIssueIds: [] as string[],
+      };
+    }
+
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
     const candidates = await db
