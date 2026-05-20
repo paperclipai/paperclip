@@ -205,7 +205,7 @@ export async function createApp(
   api.use(secretRoutes(db));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
-  api.use(dashboardRoutes(db));
+  api.use("/companies", dashboardRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
