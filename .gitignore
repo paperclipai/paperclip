@@ -64,3 +64,5 @@ tests/release-smoke/playwright-report/
 
 # CrewBrief runtime analytics artifact
 server/crewbrief-analytics-events.jsonl
+# Agent runtime home directory artifact
+\$AGENT_HOME/

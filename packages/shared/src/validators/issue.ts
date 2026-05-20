@@ -424,6 +424,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  productivityReviewSnoozedUntil: z.string().datetime().nullable().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

@@ -1,6 +1,8 @@
 ---
 name: index-refresh
 description: Use when an operation issue is an index refresh — typically the hourly index-refresh routine. Rebuild `wiki/index.md` so each entry has a tight, scannable one-line summary and the catalog tracks the actual contents of `wiki/`. Resolve drift between the index and recent log activity, but do not edit page content.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Index Refresh
