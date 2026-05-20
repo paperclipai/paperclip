@@ -55,6 +55,10 @@ tests/e2e/test-results/
 tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
+tests/visual-regression/test-results/
+tests/visual-regression/playwright-report/
+# Visual regression snapshots (generated on first run, committed thereafter)
+!tests/visual-regression/**/__snapshots__/
 .superset/
 .claude/worktrees/
 .release-monitor-state.json
