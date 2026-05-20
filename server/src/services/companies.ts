@@ -32,6 +32,37 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 
+/**
+ * Returns true if `error` is the unique-constraint violation that fires when
+ * two companies would end up with the same `issue_prefix`.
+ *
+ * Walks the `error.cause` chain so we recognise the conflict both when the
+ * postgres driver throws directly (older code paths) and when drizzle-orm wraps
+ * the postgres error in a `DrizzleQueryError` (current postgres-js driver
+ * surface). Exported for unit testing.
+ */
+export function isIssuePrefixConflict(error: unknown): boolean {
+  // Bounded depth so a pathological (circular or pathologically deep) error
+  // graph cannot spin the loop. Real Postgres / Drizzle errors nest at most
+  // 1–2 levels; 10 leaves comfortable headroom without becoming a foot-gun.
+  const MAX_DEPTH = 10;
+  let cursor: unknown = error;
+  for (let depth = 0; cursor && typeof cursor === "object" && depth < MAX_DEPTH; depth += 1) {
+    const node = cursor as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+    };
+    const constraint = node.constraint ?? node.constraint_name;
+    if (node.code === "23505" && constraint === "companies_issue_prefix_idx") {
+      return true;
+    }
+    cursor = node.cause;
+  }
+  return false;
+}
+
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
@@ -122,19 +153,6 @@ export function companyService(db: Db) {
   function suffixForAttempt(attempt: number) {
     if (attempt <= 1) return "";
     return "A".repeat(attempt - 1);
-  }
-
-  function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
