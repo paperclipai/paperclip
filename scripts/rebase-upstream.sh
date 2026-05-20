@@ -36,6 +36,16 @@
 # clean cherry-pick against upstream/master. Step 2b refuses to run if any
 # branch in this list is the head of an open upstream PR.
 #
+# Upstream PRs to watch (drop our fork patch once any of these merge):
+#   - paperclipai/paperclip#4599  codex_local: always pass --skip-git-repo-check
+#       Matches fork commit shape: 1-line unconditional `args.push("--skip-git-repo-check")`
+#       in packages/adapters/codex-local/src/server/codex-args.ts. When merged,
+#       our patch becomes "previously applied" via cherry-pick equivalence and
+#       the rebase will report it under SECURITY_PATCH_ALREADY_UPSTREAM (extend
+#       that detection if/when this lands).
+#   - paperclipai/paperclip#6463  fix: unwrap DrizzleQueryError cause chain
+#       Our PR. Same equivalence story — drops out cleanly on merge.
+#
 set -euo pipefail
 
 FEATURE_BRANCHES=(
