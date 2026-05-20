@@ -1,5 +1,11 @@
 -- Supabase security advisor remediation: keep extensions outside exposed public schema.
 CREATE SCHEMA IF NOT EXISTS "extensions";--> statement-breakpoint
+-- Keep extension functions/opclasses resolvable for existing unqualified Paperclip search SQL.
+SET search_path TO "$user", public, extensions;--> statement-breakpoint
+DO $$
+BEGIN
+  EXECUTE format('ALTER DATABASE %I SET search_path TO "$user", public, extensions', current_database());
+END $$;--> statement-breakpoint
 DO $$
 BEGIN
   IF EXISTS (

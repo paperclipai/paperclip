@@ -653,6 +653,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
         );
       }
+      if (extensionSchemas.length > 0) {
+        const searchPathSchemas = ["\"$user\"", "public", ...extensionSchemas.map((schemaName) => quoteIdentifier(schemaName))];
+        emitStatement(`SET search_path TO ${searchPathSchemas.join(", ")};`);
+      }
       emit("");
     }
 
