@@ -664,11 +664,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY e.extname
     `;
     if (extensions.length > 0) {
+      const extensionSchemas = [...new Set(extensions.map((extension) => extension.schema_name))]
+        .filter((schemaName) => schemaName !== "public");
+      if (extensionSchemas.length > 0) {
+        emit("-- Extension schemas");
+        for (const schemaName of extensionSchemas) {
+          emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+        }
+        emit("");
+      }
+
       emit("-- Extensions");
       for (const extension of extensions) {
         emitStatement(
           `CREATE EXTENSION IF NOT EXISTS ${quoteIdentifier(extension.extension_name)} WITH SCHEMA ${quoteIdentifier(extension.schema_name)};`,
         );
+      }
+      if (extensionSchemas.length > 0) {
+        const searchPathSchemas = ["\"$user\"", "public", ...extensionSchemas.map((schemaName) => quoteIdentifier(schemaName))];
+        emitStatement(`SET search_path TO ${searchPathSchemas.join(", ")};`);
       }
       emit("");
     }

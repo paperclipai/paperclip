@@ -119,9 +119,17 @@ If your hosted database requires transaction-pooling-only connections, use a dir
 
 ```sh
 # Use the direct connection (port 5432) for schema changes
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
+DATABASE_URL=postgres://postgres.[PROJECT-REF]:***@...5432/postgres \
   pnpm db:migrate
 ```
+
+### Supabase API/RLS posture
+
+Paperclip's application server talks to PostgreSQL directly; the browser UI should not use the Supabase PostgREST API with `anon` or `authenticated` keys. Public application tables therefore enable row-level security with a deny-by-default policy. Add explicit, company/user-scoped allow policies only if you intentionally introduce client-side Supabase API access for a specific table.
+
+Trigram/fuzzy search extensions are installed under the `extensions` schema where supported so Supabase does not expose extension objects from `public`.
+
+After hosted Supabase migrations, verify the advisor at **Project > Advisors > Security**. If `account`, `session`, `agent_runtime_state`, `agent_api_keys`, `board_api_keys`, or secret tables were accessible before this RLS hardening migration, rotate any exposed session, API-key, or secret material.
 
 ### Free tier limits
 
