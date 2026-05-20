@@ -58,6 +58,8 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { buildRoutingOverrideEnv } from "../routing/build-routing-override-env.js";
+import { escalateOneTier } from "../routing/escalate-tier.js";
+import { resolveModel } from "../routing/model-menu.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -7452,8 +7454,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Routing layer (Phase E1): resolved per call from issue.complexity +
     // agent.tier_preference. Hoisted out of the inner try so the failure
     // catch can also persist what was attempted onto heartbeat_runs.
+    // resolvedRoutingTier / resolvedRoutingModel reflect what the
+    // adapter ACTUALLY ran with — they get rewritten to the escalated
+    // values if Phase E2's backstop fires.
     let resolvedRoutingTier: RoutingTier | null = null;
     let resolvedRoutingModel: string | null = null;
+    // Phase E2 escalation backstop: incremented to 1 after a single
+    // retry at the next tier up; persisted onto heartbeat_runs.
+    // escalation_count. Capped at 1 per task per the routing-layer
+    // design (one escalation max).
+    let escalationCount = 0;
     let outputSeq = Number(run.lastOutputSeq ?? 0);
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
     const outputProgressState: {
@@ -7707,7 +7717,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       };
 
-      const adapterResult = await adapter.execute({
+      let adapterResult = await adapter.execute({
         runId: run.id,
         agent: wrappedAgent,
         runtime: runtimeForAdapter,
@@ -7732,6 +7742,99 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
         authToken: authToken ?? undefined,
       });
+
+      // Phase E2: escalation backstop. If the first call failed AND we
+      // resolved a non-heavy tier, retry once with the next tier up.
+      // Constraints (locked in routing-layer design):
+      //   - max 1 escalation per task (so capped via escalationCount)
+      //   - timed-out runs are NOT escalated (timeout != tier-related)
+      //   - cancelled runs are NOT escalated (operator stopped them)
+      //   - tier=heavy cannot escalate further (no next tier)
+      //   - adapter failures with `errorFamily` (e.g. transient_upstream)
+      //     or `retryNotBefore` are owned by the existing bounded-retry
+      //     mechanism (which creates a new heartbeat_run with
+      //     status=scheduled_retry). Phase E2 must not pre-empt that
+      //     path — the two retry layers serve different failure modes:
+      //     bounded-retry handles transient provider noise; Phase E2
+      //     handles cases where the resolved tier itself was wrong for
+      //     the task (model unavailable, context exceeded, etc.).
+      // The retry forcibly takes over the override (operator-pin
+      // precedence from buildRoutingOverrideEnv is inverted here —
+      // escalation is the recovery layer and operator pin is what
+      // failed). All existing env keys are preserved.
+      const firstCallFailed = (adapterResult.exitCode ?? 0) !== 0 || Boolean(adapterResult.errorMessage);
+      const adapterOwnsRetry =
+        Boolean(adapterResult.errorFamily) || Boolean(adapterResult.retryNotBefore);
+      const escalateCandidate = resolvedRoutingTier ? escalateOneTier(resolvedRoutingTier) : null;
+      if (
+        firstCallFailed &&
+        !adapterResult.timedOut &&
+        !adapterOwnsRetry &&
+        escalationCount === 0 &&
+        escalateCandidate !== null
+      ) {
+        const fromTier = resolvedRoutingTier;
+        const fromModel = resolvedRoutingModel;
+        const escalatedEntry = resolveModel(escalateCandidate);
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "routing.escalation",
+          stream: "system",
+          level: "info",
+          message: `escalating from ${fromTier} to ${escalateCandidate} after first attempt failed`,
+          payload: {
+            fromTier,
+            fromModel,
+            toTier: escalateCandidate,
+            toModel: escalatedEntry.model,
+            toProvider: escalatedEntry.provider,
+            reason: adapterResult.errorMessage ?? `exit code ${adapterResult.exitCode ?? "?"}`,
+            errorCode: adapterResult.errorCode ?? null,
+            errorFamily: adapterResult.errorFamily ?? null,
+          },
+        });
+        // Re-wrap the agent with escalated values. Operator pin is
+        // INTENTIONALLY overridden here (recovery > pin).
+        const escalatedAgent = {
+          ...agent,
+          adapterConfig: {
+            ...persistedAgentAdapterConfig,
+            env: {
+              ...parseObject(persistedAgentAdapterConfig.env),
+              HERMES_MODEL_OVERRIDE: { type: "plain", value: escalatedEntry.model },
+              HERMES_PROVIDER_OVERRIDE: { type: "plain", value: escalatedEntry.provider },
+            },
+          },
+        };
+        resolvedRoutingTier = escalateCandidate;
+        resolvedRoutingModel = escalatedEntry.model;
+        escalationCount = 1;
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent: escalatedAgent,
+          runtime: runtimeForAdapter,
+          config: runtimeConfig,
+          context,
+          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+          executionTarget,
+          executionTransport: remoteExecution
+            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+            : undefined,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, {
+              pid: meta.pid,
+              processGroupId:
+                "processGroupId" in meta && typeof meta.processGroupId === "number"
+                  ? meta.processGroupId
+                  : null,
+              startedAt: meta.startedAt,
+            });
+          },
+          authToken: authToken ?? undefined,
+        });
+      }
+
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -7911,6 +8014,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         tierChosen: resolvedRoutingTier,
         modelUsed: adapterReportedModel ?? resolvedRoutingModel,
         totalCostUsd: adapterResult.costUsd ?? null,
+        escalationCount,
       });
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
@@ -8053,9 +8157,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logCompressed: logSummary?.compressed ?? false,
         // Phase E1: persist what was attempted even on failure so the
         // routing decision is traceable when an adapter call throws
-        // before reporting a model.
+        // before reporting a model. Phase E2: persist escalationCount
+        // too — if dispatch threw mid-escalation, the count reflects
+        // whether the backstop already fired.
         tierChosen: resolvedRoutingTier,
         modelUsed: resolvedRoutingModel,
+        escalationCount,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
