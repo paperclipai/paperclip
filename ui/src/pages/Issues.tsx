@@ -175,17 +175,24 @@ export function Issues() {
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
   }
-
-  if (!isLoading && issues.length === 0) {
-    return (
-      <EmptyState
-        icon={CircleDot}
-        title="No issues yet"
-        description="Create your first issue to start tracking work."
-      />
-    );
-  }
-
+if (!issues || issues.length === 0) {
+  return (
+    <EmptyState
+      icon={CircleDot}
+      title="No issues yet"
+      description="Create your first issue to start tracking work."
+    />
+  );
+}
+if (!issues || issues.length === 0) {
+  return (
+    <EmptyState
+      icon={CircleDot}
+      title="No issues yet"
+      description="Create your first issue to start tracking work."
+    />
+  );
+}
   return (
     <IssuesList
       issues={issues ?? []}
