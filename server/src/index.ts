@@ -46,7 +46,7 @@ import { createApiTierPluginWorkerManagerStub } from "./services/plugin-worker-m
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
-import { logShutdownSignal } from "./shutdown-log.js";
+import { logShutdownSignal, writeShutdownBreadcrumb } from "./shutdown-log.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { plugins } from "@paperclipai/db";
 import {
@@ -1202,6 +1202,10 @@ export async function startServer(): Promise<StartedServer> {
         const { sseRegistry } = await import("./services/sse-registry.js");
         await sseRegistry.drain({ timeoutMs: 25_000, reason: `shutdown:${signal}` });
       } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // Mirror to stderr — see writeShutdownBreadcrumb for why pino alone
+        // can lose late-shutdown lines on process.exit.
+        writeShutdownBreadcrumb(`sseRegistry.drain failed: ${errMsg}`);
         logger.warn({ err }, "sseRegistry.drain failed");
       }
 
@@ -1241,14 +1245,18 @@ export async function startServer(): Promise<StartedServer> {
       } catch { /* best effort */ }
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        writeShutdownBreadcrumb(`stopping embedded PostgreSQL (signal=${signal})`);
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
           await embeddedPostgres?.stop();
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          writeShutdownBreadcrumb(`embedded PostgreSQL stop failed: ${errMsg}`);
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
 
+      writeShutdownBreadcrumb(`handler complete; exiting (signal=${signal})`);
       logger.info({ signal }, "Shutdown handler complete; exiting");
 
       // Flush pino's async buffer before process.exit. Otherwise the trailing

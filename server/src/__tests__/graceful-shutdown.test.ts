@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import type { Response } from "express";
 
 import { sseRegistry } from "../services/sse-registry.js";
-import { logShutdownSignal } from "../shutdown-log.js";
+import { logShutdownSignal, writeShutdownBreadcrumb } from "../shutdown-log.js";
 
 interface FakeRes extends EventEmitter {
   _written: string[];
@@ -300,5 +300,76 @@ describe("logShutdownSignal", () => {
     // later, the kubectl logs grep `Shutdown signal received | grep SIGTERM`
     // recipe in BLO-4137 stops matching.
     expect(captured[0]).toMatch(/(^|[\s\W])SIGTERM([\s\W]|$)/);
+  });
+});
+
+describe("writeShutdownBreadcrumb", () => {
+  // Same capture pattern as logShutdownSignal — these helpers share the same
+  // synchronous-stderr load-bearing guarantee. See that describe block above
+  // for the rationale.
+  let captured: string[];
+  let originalWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    captured = [];
+    originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+      const s = typeof chunk === "string" ? chunk : (chunk as Buffer).toString();
+      captured.push(s);
+      const cb = rest.find((arg) => typeof arg === "function") as
+        | ((err?: Error) => void)
+        | undefined;
+      if (cb) cb();
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = originalWrite;
+  });
+
+  it("prefixes every line with [shutdown] and a trailing newline", () => {
+    writeShutdownBreadcrumb("stopping embedded PostgreSQL (signal=SIGTERM)");
+    expect(captured.length).toBe(1);
+    const line = captured[0];
+    expect(line.startsWith("[shutdown] ")).toBe(true);
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line).toContain("stopping embedded PostgreSQL");
+    expect(line).toContain("SIGTERM");
+  });
+
+  it("writes synchronously — captured BEFORE the function returns", () => {
+    // The load-bearing guarantee: each call must produce a stderr entry
+    // before the next synchronous statement runs. The trailing shutdown log
+    // lines exist precisely because pino's async transport drops late lines
+    // on process.exit; if this helper acquired async semantics it would
+    // re-introduce the gap.
+    expect(captured).toHaveLength(0);
+    writeShutdownBreadcrumb("step one");
+    expect(captured).toHaveLength(1);
+    writeShutdownBreadcrumb("step two");
+    expect(captured).toHaveLength(2);
+    expect(captured[0]).toContain("step one");
+    expect(captured[1]).toContain("step two");
+  });
+
+  it("logShutdownSignal shares the [shutdown] prefix so one grep recipe captures both", () => {
+    // The BLO-4137 verification flow greps `kubectl logs … | grep '^\[shutdown\]'`
+    // to enumerate the breadcrumbs the handler emitted. Keep both helpers
+    // funneling through the same prefix so that recipe doesn't grow special
+    // cases over time.
+    logShutdownSignal("SIGTERM");
+    writeShutdownBreadcrumb("handler complete; exiting (signal=SIGTERM)");
+    expect(captured.length).toBe(2);
+    expect(captured.every((line) => line.startsWith("[shutdown] "))).toBe(true);
+  });
+
+  it("does not escape — message payload appears verbatim for kubectl grep", () => {
+    // If someone wraps in JSON.stringify later, recipes like
+    //   `grep -F 'sseRegistry.drain failed'`
+    // stop matching. Pin verbatim semantics.
+    writeShutdownBreadcrumb("sseRegistry.drain failed: ECONNRESET");
+    expect(captured[0]).toContain("sseRegistry.drain failed: ECONNRESET");
+    expect(captured[0]).not.toContain('"');
   });
 });
