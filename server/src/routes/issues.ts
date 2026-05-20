@@ -2953,6 +2953,51 @@ export function issueRoutes(
       }
     }
 
+    // Phantom-done prevention (STAA-5202). Agent-only — board/user closes are
+    // legitimate without an execution record. Also skipped for execution-policy
+    // decisions (approval/review stage outcomes are governance-gated).
+    if (
+      updateFields.status === "done" &&
+      existing.status !== "done" &&
+      actor.actorType === "agent" &&
+      !transition.decision &&
+      (!existing.executionRunId || !existing.executionAgentNameKey)
+    ) {
+      logger.warn(
+        {
+          issueId: existing.id,
+          identifier: existing.identifier ?? null,
+          attemptedStatus: "done",
+          requesterId: actor.actorId,
+          requesterAgentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          executionRunId: existing.executionRunId ?? null,
+          executionAgentNameKey: existing.executionAgentNameKey ?? null,
+          rejectedAt: new Date().toISOString(),
+        },
+        "phantom-done rejected: missing executionRunId or executionAgentNameKey on issue",
+      );
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        action: "issue.done_rejected_no_execution",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          identifier: existing.identifier ?? null,
+          attemptedStatus: "done",
+          rejectedAt: new Date().toISOString(),
+          executionRunId: existing.executionRunId ?? null,
+          executionAgentNameKey: existing.executionAgentNameKey ?? null,
+        },
+      });
+      res.status(400).json({ error: "Cannot mark done without agent execution record" });
+      return;
+    }
+
     // Write-time done gate (STAA-4122). Agent-only — board/user closes are not
     // subject to close-block doctrine. Also skipped for execution-policy decisions
     // (approval/review stage outcomes are already governance-gated).
