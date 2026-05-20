@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, lstatSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, lstatSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +20,10 @@ mkdirSync(scopeDir, { recursive: true });
 try {
   const stat = lstatSync(linkTarget);
   if (stat.isSymbolicLink()) {
-    rmSync(linkTarget, { force: true });
+    // Use unlinkSync, not rmSync — rmSync follows the symlink to its target
+    // (a directory) and fails on macOS Node with "Path is a directory" because
+    // we don't pass `recursive: true`. unlinkSync removes the link entry itself.
+    unlinkSync(linkTarget);
   } else {
     console.log("  i Keeping existing installed @paperclipai/plugin-sdk directory in place");
     process.exit(0);
