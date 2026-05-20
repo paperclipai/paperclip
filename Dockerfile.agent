@@ -102,6 +102,21 @@ RUN curl -fsSL "https://github.com/int128/kubelogin/releases/download/${KUBELOGI
   && chmod +x /usr/local/bin/kubectl-oidc_login \
   && rm -f /tmp/kubelogin.zip /tmp/LICENSE
 
+# ---------------------------------------------------------------------------
+# Designer + browser automation CLIs (ccrotate-designer-lease)
+# ---------------------------------------------------------------------------
+
+# Bake designer + agent-browser globally at pinned versions. Drops the
+# 'npx -y' supply-chain dependency from the designer-loop skill (codex F6).
+# When CCROTATE_DESIGNER_LEASE_HOST is set, agents in this image use the
+# baked CLIs against a remote Chrome via CDP — no Chrome bundling required.
+ARG DESIGNER_VERSION=0.3.6
+ARG AGENT_BROWSER_VERSION=0.27.0
+RUN npm i -g \
+    @pro-vi/designer@${DESIGNER_VERSION} \
+    agent-browser@${AGENT_BROWSER_VERSION} \
+  && which designer && which agent-browser
+
 # Hand back to the non-root `node` user — paperclip's docker-entrypoint.sh
 # runs as that uid (matches the host user mapping established in the base
 # image's USER_UID/USER_GID args).
