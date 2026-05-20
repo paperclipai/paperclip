@@ -46,8 +46,9 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -313,7 +314,19 @@ export function agentRoutes(
     const actorAgent = await svc.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== companyId) return false;
     const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    return allowedByGrant || canCreateAgents(actorAgent);
+    const admitted = allowedByGrant || canCreateAgents(actorAgent);
+    if (admitted) {
+      logger.info(
+        {
+          companyId,
+          agentId: actorAgent.id,
+          routePath: req.path,
+          tsISO: new Date().toISOString(),
+        },
+        "agent admitted to read agent configurations",
+      );
+    }
+    return admitted;
   }
 
   async function buildSkippedWakeupResponse(
@@ -733,6 +746,24 @@ export function agentRoutes(
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
   }
 
+  const CREDENTIAL_KEY_RE = /(token|password|secret|api[_-]?key|smtp)/i;
+
+  function assertNoCredentialInPlainEnv(adapterConfig: Record<string, unknown>) {
+    const env = adapterConfig.env;
+    if (!env || typeof env !== "object" || Array.isArray(env)) return;
+    for (const [key, binding] of Object.entries(env as Record<string, unknown>)) {
+      if (
+        binding
+        && typeof binding === "object"
+        && !Array.isArray(binding)
+        && (binding as Record<string, unknown>).type === "plain"
+        && CREDENTIAL_KEY_RE.test(key)
+      ) {
+        throw badRequest("credential_in_plain_env", { offendingKey: key });
+      }
+    }
+  }
+
   function assertNoNewAgentLegacyPromptTemplate(adapterType: string, adapterConfig: Record<string, unknown>) {
     if (!adapterSupportsInstructionsBundle(adapterType)) return;
     if (
@@ -745,11 +776,19 @@ export function agentRoutes(
     }
   }
 
+  async function isCeoAgent(agentId: string, companyId: string): Promise<boolean> {
+    const agent = await svc.getById(agentId);
+    return Boolean(agent && agent.companyId === companyId && agent.role === "ceo");
+  }
+
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      if (await isCeoAgent(req.actor.agentId, targetAgent.companyId)) return;
+    }
     if (req.actor.type !== "board") {
       throw forbidden(
-        "Only board-authenticated callers can manage instructions path or bundle configuration",
+        "Only board-authenticated callers or CEO agents can manage instructions path or bundle configuration",
       );
     }
     await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
@@ -1143,12 +1182,23 @@ export function agentRoutes(
       return;
     }
     const result = await svc.list(companyId);
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
+    // Board actors with config-read permission see all rows unredacted.
+    // Agent JWTs (including CEO roles) only see their own row unredacted; all others are redacted.
+    // This mirrors the singular GET /agents/:id fix from DRA-1433.
+    const isBoardWithConfigRead =
+      req.actor.type === "board" &&
+      (await actorCanReadConfigurationsForCompany(req, companyId));
+    if (isBoardWithConfigRead) {
       res.json(result);
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(
+      result.map((agent) =>
+        req.actor.type === "agent" && req.actor.agentId === agent.id
+          ? agent
+          : redactForRestrictedAgentView(agent),
+      ),
+    );
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -1686,6 +1736,7 @@ export function agentRoutes(
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    assertNoCredentialInPlainEnv((createInput.adapterConfig ?? {}) as Record<string, unknown>);
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       (createInput.adapterConfig ?? {}) as Record<string, unknown>,
@@ -1838,10 +1889,6 @@ export function agentRoutes(
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
-    if (req.actor.type !== "board") {
-      throw forbidden("Only board-authenticated callers can manage instructions path or bundle configuration");
-    }
-
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -2102,6 +2149,7 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
+      assertNoCredentialInPlainEnv(adapterConfig);
       assertNoAgentInstructionsConfigMutation(req, adapterConfig);
       assertNoAgentHostWorkspaceCommandMutation(
         req,

@@ -519,7 +519,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   }, 15_000);
 
-  it("blocks agent-authenticated instructions-path updates", async () => {
+  it("blocks non-CEO agent-authenticated instructions-path updates", async () => {
     const app = await createApp({
       type: "agent",
       agentId,
@@ -535,6 +535,31 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("instructions path or bundle configuration");
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("allows CEO agent to update instructions-path", async () => {
+    const ceoAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const targetAgent = { ...baseAgent, adapterType: "claude_local", adapterConfig: { cwd: "/tmp" } };
+    const ceoAgent = { ...baseAgent, id: ceoAgentId, role: "ceo" };
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === ceoAgentId ? ceoAgent : targetAgent,
+    );
+    mockAgentService.update.mockResolvedValue({ ...targetAgent, adapterConfig: { cwd: "/tmp", instructionsFilePath: "/tmp/AGENTS.md" } });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation((_type: string, config: unknown) => config);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-ceo",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/instructions-path`)
+      .send({ path: "/tmp/AGENTS.md" }));
+
+    expect(res.status).toBe(200);
   });
 
   it("blocks agent-authenticated hires that set instructions bundle config", async () => {
