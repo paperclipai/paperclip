@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment node
 
 // LET-461 / LET-463 — Route-level regression test for the legacy Paperclip
 // board sidebar leaking onto the EAOS Missions surface.
