@@ -277,4 +277,60 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
   });
+
+  it("skips liveness escalation and status rewrite for protected PRO issues", async () => {
+    const { companyId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const blockedIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Protected PRO issue",
+        status: "blocked",
+        priority: "high",
+        issueNumber: 36,
+        identifier: "PRO-36",
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Unassigned blocker for PRO",
+        status: "todo",
+        priority: "high",
+        issueNumber: 37,
+        identifier: "PRO-37",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+    expect(result.escalationsCreated).toBe(0);
+
+    const protectedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(protectedIssue?.status).toBe("blocked");
+
+    const proEscalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+          eq(issues.parentId, blockedIssueId),
+        ),
+      );
+    expect(proEscalations).toHaveLength(0);
+  });
 });

@@ -61,6 +61,7 @@ export interface IssueLabel {
 export interface IssueAssigneeAdapterOverrides {
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
+  modelProfile?: string | null;
 }
 
 export type DocumentFormat = "markdown";

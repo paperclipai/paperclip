@@ -44,6 +44,7 @@ export const issueAssigneeAdapterOverridesSchema = z
   .object({
     adapterConfig: z.record(z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
+    modelProfile: z.string().trim().min(1).max(64).optional().nullable(),
   })
   .strict();
 

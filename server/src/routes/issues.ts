@@ -180,12 +180,21 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+const PROTECTED_ISSUE_IDENTIFIER_RE = /^PRO-\d+$/i;
+
+function isProtectedIssueIdentifier(identifier: string | null | undefined) {
+  if (typeof identifier !== "string") return false;
+  return PROTECTED_ISSUE_IDENTIFIER_RE.test(identifier.trim());
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodoForAgent(input: {
   issueStatus: string | null | undefined;
+  issueIdentifier: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
 }) {
+  if (isProtectedIssueIdentifier(input.issueIdentifier)) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   if (input.actorType === "agent" && input.actorId === input.assigneeAgentId) return false;
@@ -1796,10 +1805,11 @@ export function issueRoutes(
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const effectiveMoveToTodoRequested =
-      reopenRequested ||
+      (reopenRequested && !isProtectedIssueIdentifier(existing.identifier)) ||
       (!!commentBody &&
         shouldImplicitlyMoveCommentedIssueToTodoForAgent({
           issueStatus: existing.status,
+          issueIdentifier: existing.identifier,
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
@@ -1873,21 +1883,27 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      commentBody,
-    });
+    const bypassExecutionPolicyAutomation =
+      isProtectedIssueIdentifier(existing.identifier) &&
+      req.body.executionPolicy === undefined &&
+      req.body.executionState === undefined;
+    const transition = bypassExecutionPolicyAutomation
+      ? { patch: {}, workflowControlledAssignment: false as const, decision: undefined }
+      : applyIssueExecutionPolicyTransition({
+          issue: existing,
+          policy: nextExecutionPolicy,
+          requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+          requestedAssigneePatch: {
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody,
+        });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
@@ -3119,9 +3135,10 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const effectiveMoveToTodoRequested =
-      reopenRequested ||
+      (reopenRequested && !isProtectedIssueIdentifier(issue.identifier)) ||
       shouldImplicitlyMoveCommentedIssueToTodoForAgent({
         issueStatus: issue.status,
+        issueIdentifier: issue.identifier,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,

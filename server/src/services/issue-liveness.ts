@@ -17,6 +17,7 @@ export interface IssueLivenessIssueInput {
   parentId?: string | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  blockedByIssueIds?: string[] | null;
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
   executionState?: Record<string, unknown> | null;
@@ -141,13 +142,17 @@ function agentChainCandidates(
 }
 
 function fallbackExecutiveCandidates(agents: IssueLivenessAgentInput[], companyId: string) {
+  // Executives and roots only — never the full active-agent list. Returning
+  // every active agent caused liveness escalations for one team's blocked
+  // issue to be assigned to an unrelated team's worker (e.g., a content-QA
+  // Judge being asked to fix a product-DB scrape task).
   const active = agents.filter((agent) => agent.companyId === companyId && isInvokableAgent(agent));
   const executive = active.filter((agent) => {
     const haystack = `${agent.role} ${agent.title ?? ""} ${agent.name}`.toLowerCase();
     return /\b(cto|chief technology|ceo|chief executive)\b/.test(haystack);
   });
   const roots = active.filter((agent) => !agent.reportsTo);
-  return [...executive, ...roots, ...active].map((agent) => agent.id);
+  return [...new Set([...executive, ...roots].map((agent) => agent.id))];
 }
 
 function ownerCandidatesForIssue(
@@ -232,6 +237,14 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       const relations = blockersByBlockedIssueId.get(issue.id) ?? [];
       for (const relation of relations) {
         if (relation.companyId !== issue.companyId) continue;
+        if (
+          Array.isArray(issue.blockedByIssueIds) &&
+          !issue.blockedByIssueIds.includes(relation.blockerIssueId)
+        ) {
+          // Source-of-truth guard: if the issue's explicit blocker list no
+          // longer contains this relation, treat it as stale and ignore it.
+          continue;
+        }
         const blocker = issuesById.get(relation.blockerIssueId);
         if (!blocker || blocker.companyId !== issue.companyId || blocker.status === "done") continue;
 

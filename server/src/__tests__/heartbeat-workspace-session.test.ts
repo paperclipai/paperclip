@@ -3,6 +3,7 @@ import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applyAdapterModelProfile,
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
@@ -154,6 +155,66 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
 
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("applyAdapterModelProfile", () => {
+  it("applies requested profiles from agent runtime config", () => {
+    const result = applyAdapterModelProfile({
+      config: {
+        model: "openai/gpt-5.1-codex-mini",
+        timeoutSec: 600,
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              model: "minimax/MiniMax-M2.7",
+              variant: "",
+            },
+          },
+        },
+      },
+      requestedProfile: "cheap",
+      requestedBy: "wake_context",
+    });
+
+    expect(result.config).toMatchObject({
+      model: "minimax/MiniMax-M2.7",
+      variant: "",
+      timeoutSec: 600,
+    });
+    expect(result.metadata).toEqual({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: "cheap",
+      configSource: "agent_runtime",
+      fallbackReason: null,
+    });
+  });
+
+  it("keeps the current agent config when the requested profile is missing", () => {
+    const result = applyAdapterModelProfile({
+      config: {
+        model: "minimax/MiniMax-M2.7",
+      },
+      runtimeConfig: {
+        modelProfiles: {},
+      },
+      requestedProfile: "cheap",
+      requestedBy: "issue_override",
+    });
+
+    expect(result.config).toEqual({
+      model: "minimax/MiniMax-M2.7",
+    });
+    expect(result.metadata).toEqual({
+      requested: "cheap",
+      requestedBy: "issue_override",
+      applied: null,
+      configSource: "base_config",
+      fallbackReason: "profile_not_found",
     });
   });
 });
