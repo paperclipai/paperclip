@@ -1706,6 +1706,7 @@ export function IssuesList({
                     <button
                       key={firstVisibleBlockerChip.blockerId}
                       type="button"
+                      data-slot="icon-button"
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1781,7 +1782,7 @@ export function IssuesList({
                         className={isMutedIssue ? "opacity-70" : undefined}
                         mobileLeading={
                           hasChildren ? (
-                            <button type="button" onClick={toggleCollapse}>
+                            <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                             </button>
                           ) : (
@@ -1795,6 +1796,7 @@ export function IssuesList({
                             {hasChildren ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden shrink-0 items-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >

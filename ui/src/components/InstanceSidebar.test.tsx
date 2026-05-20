@@ -72,6 +72,15 @@ async function flushReact() {
   });
 }
 
+async function findPluginLinks(container: HTMLElement, expectedCount: number) {
+  await act(async () => {
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('a[href^="/instance/settings/plugins/"]')).toHaveLength(expectedCount);
+    });
+  });
+  return Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/plugins/"]'));
+}
+
 function renderSidebar(container: HTMLElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -151,11 +160,7 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
-    await vi.waitFor(() => {
-      expect(container.querySelectorAll('a[href^="/instance/settings/plugins/"]')).toHaveLength(1);
-    });
-    const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
-    expect(pluginLinks).toHaveLength(1);
+    const pluginLinks = await findPluginLinks(container, 1);
     expect(pluginLinks[0]?.getAttribute("href")).toBe("/instance/settings/plugins/linear");
     expect(pluginLinks[0]?.textContent).toBe("Linear");
   });
@@ -193,11 +198,7 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
-    await vi.waitFor(() => {
-      expect(container.querySelectorAll('a[href^="/instance/settings/plugins/"]')).toHaveLength(1);
-    });
-    const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
-    expect(pluginLinks).toHaveLength(1);
+    const pluginLinks = await findPluginLinks(container, 1);
     expect(pluginLinks[0]?.getAttribute("href")).toBe("/instance/settings/plugins/hybrid");
   });
 
@@ -220,6 +221,7 @@ describe("InstanceSidebar", () => {
     root = rendered.root;
     queryClient = rendered.queryClient;
     await flushReact();
+    await findPluginLinks(container, 1);
 
     await vi.waitFor(() => {
       const links = Array.from(

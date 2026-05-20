@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
 import { workspaceDiffQuerySchema } from "./contracts.js";
 import { workspaceDiffService } from "./workspace-diff.js";
 
@@ -21,6 +21,25 @@ export function resolveDefaultBaseRef(input: {
   return readOptionalString(input.workspaceBaseRef)
     ?? readOptionalString(input.projectWorkspaceDefaultRef)
     ?? readOptionalString(input.projectWorkspaceRepoRef);
+}
+
+async function resolveProjectWorkspaceDefaultBaseRef(input: {
+  ctx: PluginContext;
+  projectId: string;
+  companyId: string;
+  projectWorkspaceId?: string | null;
+}): Promise<string | null> {
+  if (!input.projectId) return null;
+  const workspaces = await input.ctx.projects.listWorkspaces(input.projectId, input.companyId);
+  const projectWorkspace = input.projectWorkspaceId
+    ? workspaces.find((candidate) => candidate.id === input.projectWorkspaceId)
+    : workspaces.find((candidate) => candidate.isPrimary) ?? workspaces[0] ?? null;
+  return projectWorkspace
+    ? resolveDefaultBaseRef({
+      projectWorkspaceDefaultRef: projectWorkspace.defaultRef,
+      projectWorkspaceRepoRef: projectWorkspace.repoRef,
+    })
+    : null;
 }
 
 const plugin = definePlugin({
@@ -61,15 +80,13 @@ const plugin = definePlugin({
         throw new Error("Workspace not found");
       }
       let projectWorkspaceDefaultBaseRef: string | null = null;
-      if (!readOptionalString(workspace.baseRef) && workspace.projectWorkspaceId) {
-        const workspaces = await ctx.projects.listWorkspaces(workspace.projectId, companyId);
-        const projectWorkspace = workspaces.find((candidate) => candidate.id === workspace.projectWorkspaceId);
-        projectWorkspaceDefaultBaseRef = projectWorkspace
-          ? resolveDefaultBaseRef({
-            projectWorkspaceDefaultRef: projectWorkspace.defaultRef,
-            projectWorkspaceRepoRef: projectWorkspace.repoRef,
-          })
-          : null;
+      if (!readOptionalString(workspace.baseRef)) {
+        projectWorkspaceDefaultBaseRef = await resolveProjectWorkspaceDefaultBaseRef({
+          ctx,
+          projectId: workspace.projectId || readString(params.projectId),
+          companyId,
+          projectWorkspaceId: workspace.projectWorkspaceId,
+        });
       }
 
       return workspaceDiff.getDiff({
