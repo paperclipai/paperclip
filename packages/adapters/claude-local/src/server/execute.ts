@@ -34,6 +34,7 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
+import { materializeAgentMcpConfig } from "./claude-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -371,6 +372,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const effectiveInstructionsFilePath = promptBundle.instructionsFilePath ?? undefined;
 
+  const mcpServers = parseObject(config.mcpServers);
+  const mcpConfigPath = await materializeAgentMcpConfig({ agentId: agent.id, mcpServers });
+
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
@@ -433,6 +437,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
+    mcpConfigPath: string | null,
   ) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
@@ -452,6 +457,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
+    if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     args.push("--add-dir", promptBundle.addDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
@@ -475,7 +481,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath, mcpConfigPath);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);

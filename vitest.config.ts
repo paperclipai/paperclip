@@ -5,6 +5,7 @@ export default defineConfig({
     projects: [
       "packages/db",
       "packages/adapter-utils",
+      "packages/adapters/claude-local",
       "packages/adapters/codex-local",
       "packages/adapters/opencode-local",
       "server",
