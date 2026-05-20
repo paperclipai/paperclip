@@ -1,3 +1,8 @@
+import type {
+  AdapterEnvironmentTestContext,
+  AdapterEnvironmentTestResult,
+  AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   execute as hermesExecute,
   sessionCodec as hermesSessionCodec,
@@ -58,13 +63,13 @@ export const MCP_FIRST_PROMPT = [
   "Do not poll for issues unless PAPERCLIP_WAKE_REASON=heartbeat.",
 ].join("\n");
 
-export interface HermesWrapperConfig {
+export type HermesWrapperConfig = Record<string, unknown> & {
   hermesCommand?: string;
   promptTemplate?: string;
   paperclipApiUrl?: string;
   mcpServerPath?: string;
   hermesHome?: string;
-}
+};
 
 export interface HermesWrapperContext {
   authToken?: string;
@@ -83,7 +88,7 @@ export interface HermesWrapperContext {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
 
-export async function executeHermesWrapper(ctx: HermesWrapperContext) {
+export async function executeHermesWrapper(ctx: HermesWrapperContext): Promise<AdapterExecutionResult> {
   const existingConfig = (ctx.agent?.adapterConfig ?? {}) as HermesWrapperConfig;
   const configSource = (ctx.config ?? {}) as HermesWrapperConfig;
 
@@ -153,11 +158,13 @@ export async function executeHermesWrapper(ctx: HermesWrapperContext) {
   return hermesExecute(hermesCtx as Parameters<typeof hermesExecute>[0]);
 }
 
-export async function testEnvironmentHermesWrapper(ctx: HermesWrapperContext) {
+export async function testEnvironmentHermesWrapper(
+  ctx: AdapterEnvironmentTestContext,
+): Promise<AdapterEnvironmentTestResult> {
   const { testEnvironment } = await import("./hermes-test.js");
   return testEnvironment({
     adapterType: "hermes_local",
-    config: ctx.config ?? {},
+    config: ctx.config,
     executionTarget: null,
     environmentName: null,
   });

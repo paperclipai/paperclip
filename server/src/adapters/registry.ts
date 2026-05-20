@@ -618,7 +618,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
 
     return executeHermesWrapper(patchedCtx as HermesWrapperContext);
   },
-  testEnvironment: (ctx) => testEnvironmentHermesWrapper(ctx as HermesWrapperContext),
+  testEnvironment: testEnvironmentHermesWrapper,
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,
