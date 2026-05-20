@@ -574,9 +574,12 @@ export interface IssueCommentMetadataSection {
 }
 
 export interface IssueCommentMetadata {
-  version: 1;
+  version?: 1;
   sourceRunId?: string | null;
-  sections: IssueCommentMetadataSection[];
+  sections?: IssueCommentMetadataSection[];
+  systemGenerated?: boolean;
+  source?: string;
+  kind?: string;
 }
 
 export interface IssueCommentPresentation {

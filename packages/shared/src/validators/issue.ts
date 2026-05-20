@@ -514,9 +514,12 @@ export const issueCommentMetadataSectionSchema = z.object({
 }).strict();
 
 export const issueCommentMetadataSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(1).optional(),
   sourceRunId: z.string().uuid().nullable().optional(),
-  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20).optional(),
+  systemGenerated: z.boolean().optional(),
+  source: z.string().trim().min(1).max(120).optional(),
+  kind: z.string().trim().min(1).max(64).optional(),
 }).strict();
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;

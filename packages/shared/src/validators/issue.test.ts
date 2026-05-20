@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
+  issueCommentMetadataSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
@@ -147,7 +148,7 @@ describe("issue validators", () => {
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
-    expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+    expect(parsed.metadata?.sections?.[0]?.rows).toHaveLength(3);
   });
 
   it("rejects arbitrary issue comment metadata", () => {
@@ -361,5 +362,98 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+
+  describe("comment metadata system-generated fields", () => {
+    it("accepts a notifier-shaped metadata with only system flags", () => {
+      const parsed = issueCommentMetadataSchema.parse({
+        systemGenerated: true,
+        source: "ceo-chat.notifier",
+        kind: "auto_revoke_status",
+      });
+
+      expect(parsed).toEqual({
+        systemGenerated: true,
+        source: "ceo-chat.notifier",
+        kind: "auto_revoke_status",
+      });
+    });
+
+    it("accepts the existing structured-sections envelope unchanged", () => {
+      const parsed = issueCommentMetadataSchema.parse({
+        version: 1,
+        sections: [
+          {
+            title: "Result",
+            rows: [{ type: "text", label: "Outcome", text: "Done" }],
+          },
+        ],
+      });
+
+      expect(parsed.version).toBe(1);
+      expect(parsed.sections).toHaveLength(1);
+    });
+
+    it("accepts the structured envelope alongside system flags", () => {
+      const parsed = issueCommentMetadataSchema.parse({
+        version: 1,
+        systemGenerated: true,
+        source: "ceo-chat.notifier",
+        kind: "auto_revoke_status",
+        sections: [
+          {
+            rows: [{ type: "text", text: "Revoked push access" }],
+          },
+        ],
+      });
+
+      expect(parsed.systemGenerated).toBe(true);
+      expect(parsed.source).toBe("ceo-chat.notifier");
+      expect(parsed.kind).toBe("auto_revoke_status");
+      expect(parsed.sections).toHaveLength(1);
+    });
+
+    it("still rejects unknown metadata keys", () => {
+      const parsed = issueCommentMetadataSchema.safeParse({
+        systemGenerated: true,
+        foo: "bar",
+      });
+
+      expect(parsed.success).toBe(false);
+    });
+
+    it("rejects non-boolean systemGenerated", () => {
+      const parsed = issueCommentMetadataSchema.safeParse({
+        systemGenerated: "yes",
+      });
+
+      expect(parsed.success).toBe(false);
+    });
+
+    it("rejects source longer than 120 chars", () => {
+      const parsed = issueCommentMetadataSchema.safeParse({
+        systemGenerated: true,
+        source: "a".repeat(121),
+      });
+
+      expect(parsed.success).toBe(false);
+    });
+
+    it("round-trips through addIssueCommentSchema", () => {
+      const parsed = addIssueCommentSchema.parse({
+        body: "Push access for ROC-22 revoked.",
+        metadata: {
+          systemGenerated: true,
+          source: "ceo-chat.notifier",
+          kind: "auto_revoke_status",
+        },
+      });
+
+      expect(parsed.metadata).toEqual({
+        systemGenerated: true,
+        source: "ceo-chat.notifier",
+        kind: "auto_revoke_status",
+      });
+    });
   });
 });
