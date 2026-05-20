@@ -1,7 +1,7 @@
 {
-  "base": "http://localhost:5173",
+  "base": "http://localhost:5174",
   "companyId": "00000000-0000-0000-0000-000000000eaa",
-  "generatedAt": "2026-05-20T07:20:29.742Z",
+  "generatedAt": "2026-05-20T10:39:30.294Z",
   "viewer": "customer-member",
   "mode": "populated",
   "forbidden": [
@@ -45,57 +45,57 @@
     {
       "route": "eaos-dashboard",
       "ok": true,
-      "bytes": 450119
+      "bytes": 458187
     },
     {
       "route": "eaos-missions",
       "ok": true,
-      "bytes": 477119
+      "bytes": 487307
     },
     {
       "route": "eaos-agents",
       "ok": true,
-      "bytes": 451944
+      "bytes": 463966
     },
     {
       "route": "eaos-agents-new",
       "ok": true,
-      "bytes": 452793
+      "bytes": 460006
     },
     {
       "route": "eaos-org",
       "ok": true,
-      "bytes": 452228
+      "bytes": 460233
     },
     {
       "route": "eaos-projects",
       "ok": true,
-      "bytes": 437816
+      "bytes": 445931
     },
     {
       "route": "eaos-runs",
       "ok": true,
-      "bytes": 452136
+      "bytes": 460233
     },
     {
       "route": "eaos-approvals",
       "ok": true,
-      "bytes": 442799
+      "bytes": 450918
     },
     {
       "route": "eaos-knowledge",
       "ok": true,
-      "bytes": 436669
+      "bytes": 444788
     },
     {
       "route": "eaos-blueprints",
       "ok": true,
-      "bytes": 434028
+      "bytes": 442160
     },
     {
       "route": "eaos-mission-detail",
       "ok": true,
-      "bytes": 444177
+      "bytes": 451390
     }
   ],
   "findings": [],
