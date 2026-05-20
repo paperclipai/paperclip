@@ -17,7 +17,12 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
 
   const config = parseObject(ctx.config);
-  const hermesCommand = typeof config.command === "string" && config.command.trim() ? config.command.trim() : "hermes";
+  const hermesCommand =
+    (typeof config.hermesCommand === "string" && config.hermesCommand.trim()
+      ? config.hermesCommand.trim()
+      : typeof config.command === "string" && config.command.trim()
+        ? config.command.trim()
+        : "hermes");
   const hermesHome = typeof config.hermesHome === "string" && config.hermesHome.trim()
     ? config.hermesHome.trim()
     : process.env.HERMES_HOME ?? "/paperclip/hermes";

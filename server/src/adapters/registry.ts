@@ -131,8 +131,6 @@ import {
   hermesListSkills,
   hermesSyncSkills,
   detectModelFromHermes,
-  MCP_FIRST_PROMPT,
-  type HermesWrapperContext,
 } from "./hermes-wrapper.js";
 import { resolveHermesRuntimeConfig } from "./hermes-runtime-config.js";
 import {
@@ -609,14 +607,14 @@ const hermesLocalAdapter: ServerAdapterModule = {
 
     const patchedCtx = {
       ...normalizedCtx,
-      config: configSource,
+      config: patchedConfig,
       agent: {
         ...normalizedCtx.agent,
         adapterConfig: patchedConfig,
       },
     };
 
-    return executeHermesWrapper(patchedCtx as HermesWrapperContext);
+    return executeHermesWrapper(patchedCtx);
   },
   testEnvironment: testEnvironmentHermesWrapper,
   sessionCodec: hermesSessionCodec,
