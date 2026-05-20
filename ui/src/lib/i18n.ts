@@ -4344,6 +4344,23 @@ export const pluginSettingsPage = {
   saving: "保存中…",
   testConfiguration: "测试配置",
   testing: "测试中…",
+
+  // Additional PluginConfigForm / PluginLocalFolderRow strings
+  noDescriptionFallback: "暂无描述。",
+  lifecycleLabel: "生命周期",
+  errorLoadingLocalFolders: "加载本地文件夹设置失败。",
+  localFolderSaved: "本地文件夹已保存。",
+  localFolderSavedWithWarning: "本地文件夹已保存，但验证仍需关注。",
+  failedToSaveLocalFolder: "保存本地文件夹失败。",
+  localFolderPlaceholder: "/文件夹的绝对路径",
+  validationProblemsTitle: "验证问题",
+  notInspectedBadge: "未检查",
+  missingBadge: (n: number) => `缺少 ${n} 个`,
+  presentBadge: "存在",
+  rootNotInspected: "已配置根目录未经检查。",
+  loadingConfiguration: "正在加载配置…",
+  failedToSaveConfig: "保存配置失败。",
+  configurationTestFailed: "配置测试失败。",
 } as const;
 
 // ——— Adapter Manager page ———

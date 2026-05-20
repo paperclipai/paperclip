@@ -144,7 +144,7 @@ export function PluginSettings() {
       : plugin.status === "error"
         ? "destructive"
         : "secondary";
-  const pluginDescription = plugin.manifestJson.description || "No description provided.";
+  const pluginDescription = plugin.manifestJson.description || pluginSettingsPage.noDescriptionFallback;
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
   const environmentDrivers = plugin.manifestJson.environmentDrivers ?? [];
   const localFolderDeclarations = plugin.manifestJson.localFolders ?? [];
@@ -501,7 +501,7 @@ export function PluginSettings() {
                   ) : (
                     <div className="space-y-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
-                        <span>Lifecycle</span>
+                        <span>{pluginSettingsPage.lifecycleLabel}</span>
                         <Badge variant={statusVariant}>{displayStatus}</Badge>
                       </div>
                       <p>{pluginSettingsPage.healthChecksReady}</p>
@@ -607,7 +607,7 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
       </div>
       {error ? (
         <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {(error as Error).message || "Failed to load local folder settings."}
+          {(error as Error).message || pluginSettingsPage.errorLoadingLocalFolders}
         </div>
       ) : null}
       {isLoading ? (
@@ -662,13 +662,13 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       setMessage({
         type: nextStatus.healthy ? "success" : "error",
         text: nextStatus.healthy
-          ? "Local folder saved."
-          : "Local folder saved, but validation still needs attention.",
+          ? pluginSettingsPage.localFolderSaved
+          : pluginSettingsPage.localFolderSavedWithWarning,
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders(pluginId, companyId) });
     },
     onError: (err: Error) => {
-      setMessage({ type: "error", text: err.message || "Failed to save local folder." });
+      setMessage({ type: "error", text: err.message || pluginSettingsPage.failedToSaveLocalFolder });
     },
   });
 
@@ -745,7 +745,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
               setPathValue(event.target.value);
               setMessage(null);
             }}
-            placeholder="/absolute/path/to/folder"
+            placeholder={pluginSettingsPage.localFolderPlaceholder}
           />
           <ChoosePathButton className="h-8" />
           <Button
@@ -767,7 +767,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
 
       {status?.problems?.length ? (
         <div className="space-y-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <div className="font-medium">Validation problems</div>
+          <div className="font-medium">{pluginSettingsPage.validationProblems}</div>
           <ul className="space-y-1">
             {status.problems.map((problem, index) => (
               <li key={`${problem.code}:${problem.path ?? ""}:${index}`}>
@@ -864,14 +864,14 @@ function RequirementList({
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
         {inspectionUnavailable ? (
           <Badge variant="secondary" className="text-[10px]">
-            Not inspected
+            {pluginSettingsPage.notInspectedBadge}
           </Badge>
         ) : missingItems.length > 0 ? (
           <Badge variant="destructive" className="text-[10px]">
-            {missingItems.length} missing
+            {pluginSettingsPage.missingBadge(missingItems.length)}
           </Badge>
         ) : (
-          <Badge variant="outline" className="text-[10px]">Present</Badge>
+          <Badge variant="outline" className="text-[10px]">{pluginSettingsPage.presentBadge}</Badge>
         )}
       </div>
       {items.length > 0 ? (
@@ -895,10 +895,10 @@ function RequirementList({
           })}
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">None declared.</p>
+        <p className="text-xs text-muted-foreground">{pluginSettingsPage.noneDeclared}</p>
       )}
       {inspectionUnavailable ? (
-        <p className="text-xs text-amber-700 dark:text-amber-300">Configured root was not inspected.</p>
+        <p className="text-xs text-amber-700 dark:text-amber-300">{pluginSettingsPage.rootNotInspected}</p>
       ) : missingItems.length > 0 ? (
         <p className="text-xs text-destructive">{missingLabel}: {missingItems.join(", ")}</p>
       ) : null}
@@ -974,14 +974,14 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
     mutationFn: (configJson: Record<string, unknown>) =>
       pluginsApi.saveConfig(pluginId, configJson),
     onSuccess: () => {
-      setSaveMessage({ type: "success", text: "Configuration saved." });
+      setSaveMessage({ type: "success", text: pluginSettingsPage.configSaved });
       setTestResult(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
-      setSaveMessage({ type: "error", text: err.message || "Failed to save configuration." });
+      setSaveMessage({ type: "error", text: err.message || pluginSettingsPage.failedToSaveConfig });
     },
   });
 
@@ -991,13 +991,13 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
       pluginsApi.testConfig(pluginId, configJson),
     onSuccess: (result) => {
       if (result.valid) {
-        setTestResult({ type: "success", text: "Configuration test passed." });
+        setTestResult({ type: "success", text: pluginSettingsPage.testPassed });
       } else {
-        setTestResult({ type: "error", text: result.message || "Configuration test failed." });
+        setTestResult({ type: "error", text: result.message || pluginSettingsPage.configurationTestFailed });
       }
     },
     onError: (err: Error) => {
-      setTestResult({ type: "error", text: err.message || "Configuration test failed." });
+      setTestResult({ type: "error", text: err.message || pluginSettingsPage.configurationTestFailed });
     },
   });
 
@@ -1035,7 +1035,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading configuration...
+        {pluginSettingsPage.loadingConfiguration}
       </div>
     );
   }
@@ -1085,10 +1085,10 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
           {saveMutation.isPending ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Saving...
+              {pluginSettingsPage.saving}
             </>
           ) : (
-            "Save Configuration"
+            pluginSettingsPage.saveConfiguration
           )}
         </Button>
         {pluginStatus === "ready" && supportsConfigTest && (
@@ -1101,10 +1101,10 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
             {testMutation.isPending ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Testing...
+                {pluginSettingsPage.testing}
               </>
             ) : (
-              "Test Configuration"
+              pluginSettingsPage.testConfiguration
             )}
           </Button>
         )}
