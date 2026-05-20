@@ -734,8 +734,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
+  // BLO-6256: an empty stored promptBundleKey is NOT a license to resume blindly.
+  // Sessions written before promptBundleKey was reliably persisted carry no key.
+  // Resuming them silently inherits a stale system prompt (the AGENTS.md that
+  // was in effect when the session was first created), so any subsequent change
+  // to the agent's instructions is invisible to the running session. We treat
+  // a missing key as "no proof the session matches the current prompt bundle"
+  // and fall through to a fresh session, which re-injects agent-instructions.md
+  // via --append-system-prompt-file on the next claude invocation.
   const hasMatchingPromptBundle =
-    runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+    runtimePromptBundleKey.length > 0 && runtimePromptBundleKey === promptBundle.bundleKey;
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
@@ -770,10 +778,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
     );
   }
-  if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
+  if (runtimeSessionId && !hasMatchingPromptBundle) {
+    const storedKeyDescription = runtimePromptBundleKey.length > 0
+      ? `"${runtimePromptBundleKey}"`
+      : "(none stored)";
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle ${storedKeyDescription} and will not be resumed with "${promptBundle.bundleKey}".\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
