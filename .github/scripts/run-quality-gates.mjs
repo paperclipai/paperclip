@@ -56,9 +56,7 @@ async function findExistingComment(token, repo, prNumber) {
   );
 }
 
-async function upsertComment(token, repo, prNumber, body) {
-  const existing = await findExistingComment(token, repo, prNumber);
-
+async function upsertComment(token, repo, prNumber, body, existing) {
   if (existing) {
     await ghFetch(`/repos/${repo}/issues/comments/${existing.id}`, token, {
       method: 'PATCH',
@@ -116,7 +114,7 @@ async function main() {
   // Post comment if there are failures/informational, or update existing comment
   const existing = await findExistingComment(GH_TOKEN, GH_REPO, PR_NUMBER);
   if (allFailures.length > 0 || informational.length > 0 || existing) {
-    await upsertComment(GH_TOKEN, GH_REPO, PR_NUMBER, commentBody);
+    await upsertComment(GH_TOKEN, GH_REPO, PR_NUMBER, commentBody, existing);
   }
 
   console.log(JSON.stringify({ passed: allPassed, failures: allFailures, informational }));
