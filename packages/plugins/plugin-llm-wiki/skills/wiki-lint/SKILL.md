@@ -1,6 +1,8 @@
 ---
 name: wiki-lint
 description: Use when an operation issue is a lint or health-check (`operationType: "lint"`) — typically the nightly lint routine or a manual "Run lint" from the UI. Audit the wiki for contradictions, orphans, weak provenance, broken links, and missing concept pages, and return a triage list — do not auto-fix.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Wiki Lint

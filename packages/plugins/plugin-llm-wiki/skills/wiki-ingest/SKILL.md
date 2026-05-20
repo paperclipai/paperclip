@@ -1,6 +1,8 @@
 ---
 name: wiki-ingest
 description: Use when an operation issue asks you to ingest a captured source from `raw/` into the LLM Wiki, or when the user explicitly says "ingest <slug>". The issue body will name a file under `raw/` (e.g. `raw/karpathy-llm-wiki.md`) and ask for durable wiki pages. Do not invoke this skill for Paperclip activity bundles — those use `paperclip-distill` instead.
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # Wiki Ingest

@@ -804,6 +804,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
+      const [snoozeResult] = await db.execute(
+        sql`SELECT 1 FROM issues WHERE id = ${candidate.id} AND productivity_review_snoozed_until IS NOT NULL AND productivity_review_snoozed_until > ${now} LIMIT 1`,
+      );
+      if (snoozeResult) {
+        result.snoozed += 1;
+        continue;
+      }
       if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
         result.snoozed += 1;
         continue;

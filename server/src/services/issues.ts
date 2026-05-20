@@ -3263,11 +3263,17 @@ export function issueService(db: Db) {
     if (!stale) return null;
 
     const now = new Date();
-    const adopted = await db
+    const result = await adoptStaleCheckoutRunInner(input, now);
+    if (result) return result;
+
+    // If the full adoption failed (e.g. unique constraint on
+    // issues_open_routine_execution_uq for duplicate routine_execution
+    // fingerprints), try adopting with checkoutRunId only — leave the
+    // executionRunId untouched so the partial index doesn't reject the update.
+    const readopted = await db
       .update(issues)
       .set({
         checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
         executionLockedAt: now,
         updatedAt: now,
       })
@@ -3287,8 +3293,58 @@ export function issueService(db: Db) {
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+    return readopted;
+  }
 
-    return adopted;
+  async function adoptStaleCheckoutRunInner(
+    input: {
+      issueId: string;
+      actorAgentId: string;
+      actorRunId: string;
+      expectedCheckoutRunId: string;
+    },
+    now: Date,
+  ) {
+    try {
+      return await db
+        .update(issues)
+        .set({
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, input.actorAgentId),
+            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+          ),
+        )
+        .returning({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .then((rows) => rows[0] ?? null);
+    } catch (err) {
+      if (
+        !(
+          err &&
+          typeof err === "object" &&
+          "code" in err &&
+          (err as { code?: string }).code === "23505" &&
+          "constraint" in err &&
+          (err as { constraint?: string }).constraint === "issues_open_routine_execution_uq"
+        )
+      ) {
+        throw err;
+      }
+      return null;
+    }
   }
 
   async function adoptUnownedCheckoutRun(input: {

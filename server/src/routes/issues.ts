@@ -1725,6 +1725,7 @@ export function issueRoutes(
         assigneeUserId: issue.assigneeUserId,
         originKind: issue.originKind,
         originId: issue.originId,
+        productivityReviewSnoozedUntil: issue.productivityReviewSnoozedUntil,
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
@@ -2944,6 +2945,11 @@ export function issueRoutes(
 
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (req.body.productivityReviewSnoozedUntil !== undefined) {
+      updateFields.productivityReviewSnoozedUntil = req.body.productivityReviewSnoozedUntil
+        ? new Date(req.body.productivityReviewSnoozedUntil)
+        : null;
     }
     if (
       commentBody &&

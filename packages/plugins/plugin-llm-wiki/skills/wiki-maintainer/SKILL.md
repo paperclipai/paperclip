@@ -1,6 +1,8 @@
 ---
 name: "LLM Wiki Maintainer"
 description: "Use the LLM Wiki plugin tools to maintain a cited local company wiki."
+version: 1.0.0
+last-reviewed: 2026-05-18
 ---
 
 # LLM Wiki Maintainer
