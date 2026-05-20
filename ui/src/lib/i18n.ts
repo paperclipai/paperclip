@@ -1228,6 +1228,76 @@ export const issueDetailUi = {
   detailTabRelatedWork: "相关工作",
 } as const;
 
+/** Issue detail · 相关工作标签（IssueRelatedWorkPanel） */
+export const issueDetailRelatedWorkPanel = {
+  referencesTitle: "引用",
+  referencesDescription: "本事务在标题、描述、评论或文档中指向的其他事务。",
+  referencesEmpty: "本事务尚未引用其他事务。",
+  referencedByTitle: "被引用",
+  referencedByDescription: "当前指向本事务的其他事务。",
+  referencedByEmpty: "尚无其他事务引用本事务。",
+  sourceLabelDisplay: (label: string) => {
+    const map: Record<string, string> = {
+      title: "标题",
+      description: "描述",
+      comment: "评论",
+      document: "文档",
+    };
+    return map[label] ?? label;
+  },
+} as const;
+
+/** Issue detail · 动态标签 · 监控卡片（IssueMonitorActivityCard） */
+export const issueDetailMonitorCard = {
+  title: "已安排监控",
+  nextCheck: (absolute: string, relative: string) => `下次检查 ${absolute}（${relative}）`,
+  attempt: (n: number) => `第 ${n} 次检查`,
+  checkNow: "立即检查",
+  checking: "正在检查…",
+} as const;
+
+/** Issue detail · 动态标签 · 接续交接文档（IssueContinuationHandoff） */
+export const issueDetailContinuationHandoff = {
+  defaultTitle: "接续交接摘要",
+  handoffBadge: "交接",
+  updatedAt: (relative: string) => `更新于 ${relative}`,
+  revisionSuffix: (n: number) => ` · 修订 ${n}`,
+  expandAria: "展开接续交接",
+  collapseAria: "收起接续交接",
+  copy: "复制",
+  copied: "已复制",
+} as const;
+
+/** Issue detail · 动态标签 · 排期重试/接续卡片（IssueScheduledRetryCard） */
+export const issueDetailScheduledRetryCard = {
+  badgeRetry: "已排期重试",
+  badgeContinuation: "已排期接续",
+  attempt: (n: number) => `第 ${n} 次`,
+  automaticRetryTitle: (relative: string | null) => {
+    if (!relative) return "自动重试 · 等待排期";
+    if (relative === "现在") return "自动重试 · 已到期";
+    return `自动重试 · ${relative}`;
+  },
+  automaticContinuationTitle: (relative: string | null) => {
+    if (!relative) return "自动接续 · 等待排期";
+    if (relative === "现在") return "自动接续 · 已到期";
+    return `自动接续 · ${relative}`;
+  },
+  replacesRunPrefix: "接替运行",
+  lastAttemptFailed: (error: string) => `上次尝试失败：${error}。系统将自动重试。`,
+  retryNow: "立即重试",
+  retrying: "正在重试…",
+  alreadyPromoted: "已在队列中",
+  promoted: "已提升",
+  promotingScheduled: "正在提升排期重试",
+  promotedRunStarting: "已提升 · 运行即将开始",
+  alreadyPromotedRunStarting: "已在队列中 · 运行即将开始",
+  helperPullRetryForward: "立即提前执行重试",
+  helperPullContinuationForward: "立即提前执行接续",
+  couldNotRetryNow: "无法立即重试",
+  tryAgain: "重试",
+} as const;
+
 export const sidebarAccountMenu = {
   boardFallback: "董事会",
   signedIn: "已登录",

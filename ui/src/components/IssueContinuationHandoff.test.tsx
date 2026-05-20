@@ -71,11 +71,11 @@ describe("IssueContinuationHandoff", () => {
     });
 
     expect(container.textContent).toContain("Continuation Summary");
-    expect(container.textContent).toContain("handoff");
+    expect(container.textContent).toContain("交接");
     expect(container.textContent).not.toContain("Resume from the activity tab.");
 
     const copyButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Copy"));
+      .find((button) => button.textContent?.includes("复制"));
     expect(copyButton).toBeTruthy();
 
     await act(async () => {
@@ -83,7 +83,7 @@ describe("IssueContinuationHandoff", () => {
     });
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(handoff.body);
-    expect(container.textContent).toContain("Copied");
+    expect(container.textContent).toContain("已复制");
 
     await act(async () => {
       root.unmount();

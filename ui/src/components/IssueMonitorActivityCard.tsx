@@ -1,5 +1,6 @@
 import type { Issue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { issueDetailMonitorCard } from "@/lib/i18n";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatDateTime } from "@/lib/utils";
 
@@ -33,24 +34,27 @@ export function IssueMonitorActivityCard({
   const monitor = resolveScheduledMonitor(issue);
   if (!monitor) return null;
 
+  const relative = formatMonitorOffset(monitor.nextCheckAt);
+  const absolute = formatDateTime(monitor.nextCheckAt);
+
   return (
     <div className="mb-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Monitor scheduled</div>
+          <div className="text-sm font-medium text-foreground">{issueDetailMonitorCard.title}</div>
           <div className="text-xs text-muted-foreground">
-            Next check {formatDateTime(monitor.nextCheckAt)} ({formatMonitorOffset(monitor.nextCheckAt)})
+            {issueDetailMonitorCard.nextCheck(absolute, relative)}
           </div>
           {monitor.notes ? (
             <div className="mt-1 text-xs text-muted-foreground">{monitor.notes}</div>
           ) : null}
           {monitor.serviceName ? (
-            <div className="mt-1 text-xs text-muted-foreground">
-              {monitor.serviceName}
-            </div>
+            <div className="mt-1 text-xs text-muted-foreground">{monitor.serviceName}</div>
           ) : null}
           {monitor.attemptCount > 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground">Attempt {monitor.attemptCount}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {issueDetailMonitorCard.attempt(monitor.attemptCount)}
+            </div>
           ) : null}
         </div>
         {onCheckNow ? (
@@ -62,7 +66,7 @@ export function IssueMonitorActivityCard({
             onClick={onCheckNow}
             disabled={checkingNow}
           >
-            {checkingNow ? "Checking..." : "Check now"}
+            {checkingNow ? issueDetailMonitorCard.checking : issueDetailMonitorCard.checkNow}
           </Button>
         ) : null}
       </div>

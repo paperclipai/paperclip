@@ -143,10 +143,10 @@ describe("IssueScheduledRetryCard", () => {
     const card = getCard();
     expect(card).not.toBeNull();
     const text = card!.textContent ?? "";
-    expect(text).toContain("Retry scheduled");
-    expect(text).toContain("Attempt 4");
+    expect(text).toContain("已排期重试");
+    expect(text).toContain("第 4 次");
     expect(text).toContain("瞬时故障");
-    expect(text).toContain("Automatic retry 15分钟后");
+    expect(text).toContain("自动重试 · 15分钟后");
     expect(text).toContain("run-prev");
   });
 
@@ -158,9 +158,9 @@ describe("IssueScheduledRetryCard", () => {
       />,
     );
     const text = getCard()?.textContent ?? "";
-    expect(text).toContain("Continuation scheduled");
-    expect(text).toContain("Automatic continuation");
-    expect(text).toContain("Pulls continuation forward immediately");
+    expect(text).toContain("已排期接续");
+    expect(text).toContain("自动接续");
+    expect(text).toContain("立即提前执行接续");
   });
 
   it("uses 'due now' label when scheduledRetryAt is at the current time", () => {
@@ -171,7 +171,7 @@ describe("IssueScheduledRetryCard", () => {
       />,
     );
     const text = getCard()?.textContent ?? "";
-    expect(text).toContain("Automatic retry 现在");
+    expect(text).toContain("自动重试 · 已到期");
   });
 
   it("invokes retry-now and shows promoted state on success", async () => {
@@ -185,10 +185,10 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       button!.click();
     });
-    await waitForRetryButtonText("Promoted");
+    await waitForRetryButtonText("已提升");
     expect(retryNowMock).toHaveBeenCalledWith("issue-1");
     const finalButton = getRetryNowButton();
-    expect(finalButton!.textContent ?? "").toContain("Promoted");
+    expect(finalButton!.textContent ?? "").toContain("已提升");
     expect(finalButton!.disabled).toBe(true);
   });
 
@@ -200,8 +200,8 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
-    await waitForRetryButtonText("Already promoted");
-    expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+    await waitForRetryButtonText("已在队列中");
+    expect(getRetryNowButton()!.textContent ?? "").toContain("已在队列中");
     expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
   });
 

@@ -1,5 +1,6 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
 import { IssueReferencePill } from "./IssueReferencePill";
+import { issueDetailRelatedWorkPanel } from "../lib/i18n";
 
 type GroupedSource = {
   label: string;
@@ -67,7 +68,7 @@ function Section({
                       className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
                       title={group.sampleMatchedText ?? undefined}
                     >
-                      <span>{group.label}</span>
+                      <span>{issueDetailRelatedWorkPanel.sourceLabelDisplay(group.label)}</span>
                       {group.count > 1 ? (
                         <span className="tabular-nums text-[10px] font-medium opacity-80">×{group.count}</span>
                       ) : null}
@@ -94,16 +95,16 @@ export function IssueRelatedWorkPanel({
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this issue currently points at in its title, description, comments, or documents."
+        title={issueDetailRelatedWorkPanel.referencesTitle}
+        description={issueDetailRelatedWorkPanel.referencesDescription}
         items={outbound}
-        emptyLabel="This issue does not reference any other tasks yet."
+        emptyLabel={issueDetailRelatedWorkPanel.referencesEmpty}
       />
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this issue."
+        title={issueDetailRelatedWorkPanel.referencedByTitle}
+        description={issueDetailRelatedWorkPanel.referencedByDescription}
         items={inbound}
-        emptyLabel="No other tasks reference this issue yet."
+        emptyLabel={issueDetailRelatedWorkPanel.referencedByEmpty}
       />
     </div>
   );

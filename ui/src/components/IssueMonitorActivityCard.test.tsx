@@ -108,13 +108,13 @@ describe("IssueMonitorActivityCard", () => {
       root.render(<IssueMonitorActivityCard issue={createIssue()} onCheckNow={onCheckNow} />);
     });
 
-    expect(container.textContent).toContain("Monitor scheduled");
-    expect(container.textContent).toContain("Next check");
+    expect(container.textContent).toContain("已安排监控");
+    expect(container.textContent).toContain("下次检查");
     expect(container.textContent).toContain("30分钟后");
     expect(container.textContent).toContain("Check deployment health");
 
     const button = Array.from(container.querySelectorAll("button")).find((candidate) =>
-      candidate.textContent?.includes("Check now"),
+      candidate.textContent?.includes("立即检查"),
     );
     expect(button).toBeTruthy();
 
@@ -189,8 +189,8 @@ describe("IssueMonitorActivityCard", () => {
       );
     });
 
-    expect(container.textContent).toContain("Monitor scheduled");
-    expect(container.textContent).toContain("Next check");
+    expect(container.textContent).toContain("已安排监控");
+    expect(container.textContent).toContain("下次检查");
     expect(container.textContent).toContain("30分钟后");
 
     act(() => root.unmount());
