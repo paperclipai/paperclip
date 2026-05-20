@@ -126,9 +126,9 @@ Users can still override isolation by explicitly setting:
 - `adapterConfig.env.HOME` — custom subprocess home
 - `adapterConfig.cwd` — custom working directory
 
-### 7. OpenCode Agents
+### 7. OpenCode Agents (Implemented)
 
-For `opencode_local` agents, similar isolation should be configured:
+For `opencode_local` agents, similar isolation is configured:
 
 ```
 ~/.paperclip/instances/default/workspaces/opencode/<agent-id>/
@@ -136,13 +136,14 @@ For `opencode_local` agents, similar isolation should be configured:
   └── cache/
 ```
 
-Set via `adapterConfig.env.OPENCODE_HOME` and `adapterConfig.cwd`.
+Set via `adapterConfig.env.OPENCODE_HOME` and `adapterConfig.cwd` in the registry wrapper at `server/src/adapters/registry.ts`.
 
 ## Acceptance Criteria
 
-- [ ] New `hermes_local` agents automatically get isolated `HERMES_HOME`
-- [ ] New `hermes_local` agents automatically get isolated `cwd`
-- [ ] Existing agents migrate on first heartbeat
-- [ ] User can override isolation via `adapterConfig.env`
+- [x] New `hermes_local` agents automatically get isolated `HERMES_HOME`
+- [x] New `hermes_local` agents automatically get isolated `cwd`
+- [x] Existing agents migrate on first heartbeat
+- [x] User can override isolation via `adapterConfig.env`
 - [ ] Activity log records isolation setup
-- [ ] Works with both local and Docker deployments
+- [x] OpenCode agents get isolated `OPENCODE_HOME` and `cwd`
+- [x] Works with both local and Docker deployments
