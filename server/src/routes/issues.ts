@@ -84,6 +84,23 @@ import {
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+// QG-6: detect closing report in comment — require all 6 answer sections present
+const QG6_MARKERS = [
+  /degistir(dim|ilen|dik)|changed files?|pr diff/i,        // Q1: files changed
+  /calistir(dim|ilan|dik)|ran tests?|ci run|pytest|jest/i, // Q2: tests run
+  /dogruladim|dogrulanan|verified|test server|playwright|curl/i, // Q3: pages/APIs verified
+  /kanit|screenshot|log nerede|evidence link/i,            // Q4: evidence links
+  /riskl[iy]|risk alan|no risk|risk yok/i,                 // Q5: risky areas
+  /rollback/i,                                             // Q6: rollback plan
+];
+
+function hasQG6ClosingReport(comment: string | undefined): boolean {
+  if (!comment) return false;
+  const matched = QG6_MARKERS.filter((pattern) => pattern.test(comment));
+  return matched.length >= 5;
+}
+
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -1926,6 +1943,21 @@ export function issueRoutes(
         res.status(422).json({
           error: "QG-4: doneEvidence required to mark issue done",
           details: `Missing or invalid fields: ${missing}. Set status to 'verification_missing' if evidence is incomplete.`,
+        });
+        return;
+      }
+    }
+
+    // QG-6: enforce 6-Q closing report in comment when an agent sets status='done'
+    if (updateFields.status === "done" && req.actor.type === "agent") {
+      if (!hasQG6ClosingReport(commentBody)) {
+        res.status(422).json({
+          error: "QG-6: 6-soruluk kapanış raporu (closing report) gerekli",
+          details:
+            "Comment must include the QG-6 closing report template with all 6 answers: " +
+            "(1) degistirilen dosyalar, (2) calistirilan testler, (3) dogrulanan sayfalar/API, " +
+            "(4) kanit linkleri, (5) riskli alanlar, (6) rollback plani. " +
+            "Use status 'verification_missing' if evidence is incomplete.",
         });
         return;
       }

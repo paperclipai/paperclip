@@ -28,3 +28,25 @@ An issue is **done** only when ALL 8 criteria are satisfied. Missing any criteri
 8. **Evidence posted** — PR link + deploy run ID + health status + smoke report + timestamp in issue/PR comment
 
 **CEO approval flow:** If any criterion is missing, the agent MUST set status to `verification_missing` and tag the CEO with the missing items before requesting done status.
+
+## Closing Report — 6-Q Template (QG-6, mandatory)
+
+Before setting status to `done` or `in_review`, you MUST include the 6-Q closing report in your final comment. **The API will reject `done` status (HTTP 422) if this report is missing.**
+
+Copy and fill in this template:
+
+```
+## Kapanış Raporu (QG-6)
+
+1. **Değiştirilen dosyalar:** <PR diff link veya dosya listesi>
+2. **Çalıştırılan testler:** <CI run link / pytest veya jest çıktısı>
+3. **Doğrulanan sayfalar/API'ler:** <Playwright/curl çıktısı veya test-server URL'leri>
+4. **Kanıt linkleri:** <screenshot / log / issue veya PR yorum linkleri>
+5. **Riskli alanlar:** <varsa hangi alanlar etkilendi; yoksa "Risk yok">
+6. **Rollback planı:** <somut geri alma adımları>
+```
+
+Rules:
+- All 6 items must be answered — "N/A" or "Risk yok" is acceptable where genuinely applicable.
+- Submit this in the `comment` field of the PATCH request that sets status to `done`.
+- If you cannot fill any item, set status to `verification_missing` instead of `done`.
