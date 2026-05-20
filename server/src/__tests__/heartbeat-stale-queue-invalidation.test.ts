@@ -75,6 +75,17 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
+async function waitForHeartbeatIdle(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns);
+    if (!runs.some((run) => run.status === "queued" || run.status === "running")) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -135,34 +146,11 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await ensureIssueRelationsTable(db);
   });
 
-  // Layered cleanup for the v513-saga TRUNCATE deadlock.
-  //
-  // PR #72 (single-confirm idle + `state = 'idle in transaction'` kill +
-  // 3-retry) was insufficient — saw 40P01 on PR #91's verify.
-  // First attempt of PR #92 (watchdog-style 3-confirm + 50ms settle, no
-  // kill, no retry) was ALSO insufficient — saw 40P01 again. The watchdog
-  // pattern works for watchdog only because watchdog uses
-  // `skipQueuedRunDispatch: true` on every test (dispatcher dead). This
-  // file deliberately keeps the dispatcher alive (it's the SUT for
-  // queued→succeeded transitions), so postRun lifecycle hooks
-  // (heartbeat.ts:6568, ~7304) can invoke startNextQueuedRunForAgent
-  // fire-and-forget AFTER cancelActiveRunsForCleanup runs. The
-  // dispatcher's `SELECT ... FOR UPDATE` then holds RowShareLock that
-  // deadlocks with TRUNCATE's AccessExclusiveLock chain.
-  //
-  // Four layers:
-  //   1. cancelActiveRunsForCleanup     — drop queued/running rows so
-  //      future dispatcher polls find nothing to claim.
-  //   2. 3-consecutive idle (3×50ms) + 50ms settle — let in-flight
-  //      lifecycle-hook chains drain naturally (PR #92 v1).
-  //   3. pg_cancel_backend on 'active' non-self backends — cancel any
-  //      straggler dispatcher poll mid-`SELECT FOR UPDATE` WITHOUT
-  //      terminating the connection (pg_terminate_backend broke
-  //      postgres-js's pool init query — 57P01 cascade on next test).
-  //      PR #72's `idle in transaction` filter for pg_terminate stays
-  //      for stuck-in-tx remnants.
-  //   4. TRUNCATE with 3-retry on 40P01 — if a fresh dispatcher poll
-  //      opens in the race window after cancel, retry covers it.
+  // Mirrors heartbeat-active-run-output-watchdog.test.ts (PR #55). The naive
+  // idle-poll variant still races fire-and-forget executeRun work scheduled by
+  // postRun lifecycle hooks (heartbeat.ts:6568); cancelling active runs first
+  // forces those callbacks to observe the terminal state and exit before
+  // TRUNCATE takes its AccessExclusiveLock on "companies".
   afterEach(async () => {
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
@@ -177,28 +165,13 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     }));
     runningProcesses.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.execute(sql.raw(`
-      SELECT pg_cancel_backend(pid)
-      FROM pg_stat_activity
-      WHERE datname = current_database()
-        AND state = 'active'
-        AND pid <> pg_backend_pid()
-    `)).catch(() => undefined);
+    await waitForHeartbeatIdle(db, 5_000);
+    // The stale-queue tests need the dispatcher (verify queued → succeeded
+    // transitions), so we can't use skipQueuedRunDispatch. Terminate any
+    // backends in 'idle in transaction' before TRUNCATE — these are the
+    // fire-and-forget postRun lifecycle hook connections the row-status
+    // idle poll is blind to. Embedded postgres is per-suite, contained.
+    // Retry on 40P01 (deadlock) as defense-in-depth.
     await db.execute(sql.raw(`
       SELECT pg_terminate_backend(pid)
       FROM pg_stat_activity
