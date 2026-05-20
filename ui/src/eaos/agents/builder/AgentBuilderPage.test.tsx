@@ -154,7 +154,10 @@ describe("AgentBuilderPage stepper navigation", () => {
       expect(next?.disabled).toBe(true);
     });
 
-    // Typing a name then clearing it surfaces the inline validation.
+    // Typing a name then clearing it surfaces the inline validation
+    // on the Identity panel. The footer disabled-reason is intentionally
+    // suppressed on Identity so reviewers don't see the same sentence
+    // twice on step 1; the inline error is the single source of truth.
     await act(async () => typeInto("eaos-agent-builder-name", "Temp"));
     await act(async () => typeInto("eaos-agent-builder-name", ""));
     await waitForAssertion(() => {
@@ -165,7 +168,7 @@ describe("AgentBuilderPage stepper navigation", () => {
       const reason = container?.querySelector(
         '[data-testid="eaos-agent-builder-disabled-reason"]',
       );
-      expect(reason?.textContent).toContain("Name is required");
+      expect(reason).toBeNull();
     });
 
     // Typing a valid name re-enables Next and clears the disabled reason.
@@ -193,6 +196,59 @@ describe("AgentBuilderPage stepper navigation", () => {
         '[data-testid="eaos-agent-builder-disabled-reason"]',
       );
       expect(reason?.textContent).toContain("Identity");
+    });
+  });
+
+  it("offers a Go-to-Identity recovery action on the final step when Name is missing", async () => {
+    await renderBuilder();
+    await act(async () => click("eaos-agent-builder-step-knowledge"));
+    await waitForAssertion(() => {
+      const recovery = container?.querySelector(
+        '[data-testid="eaos-agent-builder-go-identity"]',
+      ) as HTMLButtonElement | null;
+      expect(recovery).not.toBeNull();
+    });
+    await act(async () =>
+      click("eaos-agent-builder-go-identity"),
+    );
+    await waitForAssertion(() => {
+      const root = container?.querySelector('[data-testid="eaos-agent-builder-page"]');
+      expect(root?.getAttribute("data-step")).toBe("identity");
+      // After jumping back, the inline name error is shown and the
+      // stepper marks Identity invalid.
+      const err = container?.querySelector(
+        '[data-testid="eaos-agent-builder-name-error"]',
+      );
+      expect(err).not.toBeNull();
+      const identityBtn = container?.querySelector(
+        '[data-testid="eaos-agent-builder-step-identity"]',
+      );
+      expect(identityBtn?.getAttribute("data-invalid")).toBe("true");
+    });
+  });
+
+  it("surfaces Name-missing state in the summary card with its own jump action", async () => {
+    await renderBuilder();
+    await waitForAssertion(() => {
+      const card = container?.querySelector(
+        '[data-testid="eaos-agent-builder-summary-card"]',
+      );
+      expect(card?.getAttribute("data-summary-invalid")).toBe("true");
+      const summaryRecovery = container?.querySelector(
+        '[data-testid="eaos-agent-builder-summary-go-identity"]',
+      );
+      expect(summaryRecovery).not.toBeNull();
+    });
+    await act(async () => typeInto("eaos-agent-builder-name", "Research Analyst"));
+    await waitForAssertion(() => {
+      const card = container?.querySelector(
+        '[data-testid="eaos-agent-builder-summary-card"]',
+      );
+      expect(card?.getAttribute("data-summary-invalid")).toBe("false");
+      const summaryRecovery = container?.querySelector(
+        '[data-testid="eaos-agent-builder-summary-go-identity"]',
+      );
+      expect(summaryRecovery).toBeNull();
     });
   });
 

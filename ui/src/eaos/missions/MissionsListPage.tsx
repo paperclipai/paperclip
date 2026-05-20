@@ -339,19 +339,32 @@ function MissionRowCard({ row, isOperator }: { row: MissionRow; isOperator: bool
           truth={row.evidenceSummary.truth}
           showTruth={isOperator}
         />
-        <Field
-          label="Next step"
-          value={row.nextGateSummary.label}
-          truth={row.nextGateSummary.truth}
-          reason={row.nextGateSummary.requiresHuman ? "Needs a human" : undefined}
-          showTruth={isOperator}
-        />
-        <Field
-          label="Dependencies"
-          value={`Blocks ${row.treeSummary.blocksCount} · Blocked by ${row.treeSummary.blockedByCount}`}
-          truth={row.treeSummary.truth}
-          showTruth={isOperator}
-        />
+        {/* Next step is filler in the default "active / continue work" case;
+            only show it when the resolver surfaces an actionable next move. */}
+        {row.nextGateSummary.label && row.nextGateSummary.label !== "Continue active work" ? (
+          <Field
+            label="Next step"
+            value={row.nextGateSummary.label}
+            truth={row.nextGateSummary.truth}
+            reason={row.nextGateSummary.requiresHuman ? "Needs a human" : undefined}
+            showTruth={isOperator}
+          />
+        ) : null}
+        {/* Dependencies counts add no signal when both are zero — hide. */}
+        {row.treeSummary.blocksCount > 0 || row.treeSummary.blockedByCount > 0 ? (
+          <Field
+            label="Dependencies"
+            value={
+              row.treeSummary.blockedByCount === 0
+                ? `Blocks ${row.treeSummary.blocksCount}`
+                : row.treeSummary.blocksCount === 0
+                  ? `Blocked by ${row.treeSummary.blockedByCount}`
+                  : `Blocks ${row.treeSummary.blocksCount} · Blocked by ${row.treeSummary.blockedByCount}`
+            }
+            truth={row.treeSummary.truth}
+            showTruth={isOperator}
+          />
+        ) : null}
       </dl>
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <Link

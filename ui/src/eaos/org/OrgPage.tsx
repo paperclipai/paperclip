@@ -7,6 +7,12 @@
 // implicit root) so the surface is always populated when agents exist —
 // and the gap note still explains that the reporting-graph endpoint is
 // not wired.
+//
+// LET-503 review round 2: prepend an explicit company-root node so the
+// graph has a single visual root even when the canonical org returns
+// multiple top-level leaders. The company node is non-agent (no agent
+// record), styled the same as other cards but with a "Company" role
+// label and the leader nodes as its reports.
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,6 +26,11 @@ import { redactSecretLikeText } from "../secret-redact";
 import { EaosOrgGraph, type EaosOrgGraphNodeDecoration } from "./EaosOrgGraph";
 
 const LEADERSHIP_ROLES: ReadonlySet<AgentRole> = new Set(["ceo", "cto", "cmo", "cfo"]);
+
+// Synthetic root id for the company node; we filter it out of agent lookups
+// so the details sidebar treats it as "company context" rather than a missing
+// agent record.
+const COMPANY_ROOT_ID = "__eaos-org-company-root";
 
 export function OrgPage() {
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -50,10 +61,28 @@ export function OrgPage() {
     return map;
   }, [agents]);
 
-  const tree = useMemo<OrgNode[]>(() => {
+  const baseTree = useMemo<OrgNode[]>(() => {
     if (orgTree.length > 0 && hasReports(orgTree)) return orgTree;
     return synthesizeTree(agents);
   }, [orgTree, agents]);
+
+  // Wrap the discovered roots under a single synthetic company root so the
+  // graph always shows the company context as the visible root node. When
+  // there are no agents at all, baseTree is empty and we let the empty
+  // state handle the surface.
+  const companyName = selectedCompany?.name ?? "Company";
+  const tree = useMemo<OrgNode[]>(() => {
+    if (baseTree.length === 0) return [];
+    return [
+      {
+        id: COMPANY_ROOT_ID,
+        name: companyName,
+        role: "company-root",
+        status: "active",
+        reports: baseTree,
+      },
+    ];
+  }, [baseTree, companyName]);
 
   const treeBackendSource = useMemo<"backend" | "derived" | "empty">(() => {
     if (orgTree.length > 0 && hasReports(orgTree)) return "backend";
@@ -61,8 +90,20 @@ export function OrgPage() {
     return "empty";
   }, [orgTree, agents]);
 
+  // Custom decoration also covers the synthetic company root node.
+
   const decorate = useMemo(() => {
     return (node: OrgNode): EaosOrgGraphNodeDecoration => {
+      if (node.id === COMPANY_ROOT_ID) {
+        const reportsCount = node.reports.length;
+        return {
+          roleLabel: "Company",
+          workloadLabel:
+            reportsCount > 0
+              ? `${reportsCount} ${reportsCount === 1 ? "leader" : "leaders"}`
+              : null,
+        };
+      }
       const agent = agentMap.get(node.id);
       const role = (agent?.role ?? (node.role as AgentRole)) as AgentRole;
       const roleLabel = AGENT_ROLE_LABELS[role] ?? node.role ?? "—";
@@ -76,6 +117,7 @@ export function OrgPage() {
   }, [agentMap]);
 
   const selectedAgent = selectedId ? agentMap.get(selectedId) ?? null : null;
+  const selectedIsCompanyRoot = selectedId === COMPANY_ROOT_ID;
 
   const isLoading =
     Boolean(selectedCompanyId) && (agentsQuery.isLoading || orgQuery.isLoading);
@@ -145,6 +187,9 @@ export function OrgPage() {
           <OrgDetailsPanel
             selectedId={selectedId}
             selectedAgent={selectedAgent}
+            companyRootSelected={selectedIsCompanyRoot}
+            companyName={companyName}
+            leaderCount={baseTree.length}
             onClose={() => setSelectedId(null)}
           />
         </div>
@@ -158,10 +203,16 @@ export function OrgPage() {
 function OrgDetailsPanel({
   selectedId,
   selectedAgent,
+  companyRootSelected,
+  companyName,
+  leaderCount,
   onClose,
 }: {
   selectedId: string | null;
   selectedAgent: Agent | null;
+  companyRootSelected: boolean;
+  companyName: string;
+  leaderCount: number;
   onClose: () => void;
 }) {
   if (!selectedId) {
@@ -172,6 +223,45 @@ function OrgDetailsPanel({
         className="hidden min-h-0 flex-col rounded-md border border-dashed border-border bg-card p-3 text-xs text-muted-foreground lg:flex"
       >
         Select a node in the graph to view details.
+      </aside>
+    );
+  }
+
+  if (companyRootSelected) {
+    return (
+      <aside
+        aria-label="Org details"
+        data-testid="eaos-org-details"
+        data-eaos-org-details-kind="company"
+        className="flex min-h-0 flex-col rounded-md border border-border bg-card"
+      >
+        <header className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-foreground">
+              {redactSecretLikeText(companyName)}
+            </div>
+            <div className="truncate text-[11px] text-muted-foreground">Company</div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close details"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-org-details-close"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </header>
+        <dl className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-3 py-2 text-[12px]">
+          <DetailRow
+            label="Leaders"
+            value={`${leaderCount} ${leaderCount === 1 ? "leader" : "leaders"}`}
+          />
+          <p className="rounded-md border border-dashed border-border bg-background px-2 py-1 text-[11px] text-muted-foreground">
+            Company is the root of the org graph. Leadership roles report up
+            to the company node; everyone else reports to a leader.
+          </p>
+        </dl>
       </aside>
     );
   }

@@ -1,6 +1,6 @@
 # LET-503 — No-fake-data audit
 
-Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → this resubmission's customer-friendly copy + role-gated provenance cleanup commit.
+Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → `3f810b52` → this round-2 commit (customer-member Admin nav gating + broadened audit + builder recovery + missions polish + dashboard reasons + org root).
 
 Each row walks the on-screen counts/cards/rows for a route and classifies the source. Verdict legend:
 
@@ -22,6 +22,7 @@ Each row walks the on-screen counts/cards/rows for a route and classifies the so
 | Placeholder while loading | `—` literal placeholder; no count rendered | PASS — truthful gap |
 | Placeholder on error | `!` literal placeholder; no count rendered | PASS — truthful gap |
 | `Needs attention` list rows | `MissionTelemetry.recent` from `issuesApi.list` | PASS — real |
+| `Needs attention` per-row reason line | Derived via `attentionReason(issue)` on backend `status` + `blockedBy` count: `Awaiting review` / `Blocked by N dependency` / `Queued`. No reason rendered when the status is already self-explanatory (e.g. in_progress) so the row stays compact. | PASS — derived |
 | `Recently completed` list rows | `MissionTelemetry.recentlyCompleted` from `issuesApi.list` | PASS — real |
 
 ## `/eaos/agents` — Agents (`AgentsRosterPage`)
@@ -56,6 +57,7 @@ Each row walks the on-screen counts/cards/rows for a route and classifies the so
 | Element | Source | Verdict |
 | --- | --- | --- |
 | Graph canvas nodes | `agentsApi.org(companyId)` primary; falls back to a synthesised tree from `agentsApi.list` when org endpoint returns no edges | PASS — real / derived |
+| Synthetic `Company` root node | Wraps the discovered roots under a single visible root using the selected `companies/:id` `name` field; node id is the literal `__eaos-org-company-root` constant so downstream agent lookups can ignore it. Reports count = `baseTree.length`. | PASS — derived |
 | `data-eaos-org-source` (`backend` / `derived` / `empty`) | Explicit string label per source | PASS — truthful gap surfaced via attribute |
 | Per-node Workload (`N reports`) | Strictly `node.reports.length`; never inflated | PASS — derived |
 | Per-node Status dot tone | `agent.status` field directly | PASS — real |
@@ -68,7 +70,8 @@ Each row walks the on-screen counts/cards/rows for a route and classifies the so
 | Element | Source | Verdict |
 | --- | --- | --- |
 | Summary strip (Total/Active/Blocked/InReview/DoneWithEvidence/Stale) | `summarizeMissionList(rows)` over canonical Issue records | PASS — derived |
-| Mission row cards | `resolveMissionRow(issue)` (LET-424 resolver) — primary state reasons now render as customer-friendly copy (`In progress`, `Awaiting reviewer or approval`, `No owner assigned yet`) instead of `Backend status is …`; owner reasons no longer surface raw field names like `issue.assigneeAgentId`. | PASS — derived |
+| Mission row cards | `resolveMissionRow(issue)` (LET-424 resolver) — primary state reasons render as customer-friendly copy (`In progress`, `Awaiting reviewer or approval`, `No owner assigned yet`) instead of `Backend status is …`; owner reasons no longer surface raw field names like `issue.assigneeAgentId`. Round-2 polish: owner labels are now noun phrases (`Agent`, `Human teammate`, `Role-based agent`, `Unassigned`) rather than enum-style `Agent assignee` / `User assignee`. | PASS — derived |
+| Filler suppression | The `Next step` field is hidden when the resolver returns `Continue active work` (the default for non-actionable active state); the `Dependencies` field is hidden when both `blocksCount` and `blockedByCount` are zero. Both fields still render when they carry signal, e.g. on a `blocked` row or one with actual blockers. | PASS — derived |
 | Per-row `Live data` / `Derived` provenance chip | Operator-gated via `useEaosViewerRole().isOperator`; never rendered to customer-class viewers. Tone is muted (border-only) instead of full BACKEND-BACKED colour. | PASS — truthful labelling (operator-only) |
 | Per-row Freshness chip | Operator-gated; for customers the chip only appears when `freshness === "Stale"`. Label is plain English (`Fresh` / `Aging` / `Stale` / `Unknown activity`) — no `Freshness · UNKNOWN` jargon. | PASS — truthful labelling (operator + stale-customer) |
 | Per-row field labels (`Owner` / `Evidence` / `Next step` / `Dependencies`) | Static strings; the inline `Backed`/`Derived` corner marks are operator-gated by `showTruth`. | PASS — truthful labelling |

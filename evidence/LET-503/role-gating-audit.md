@@ -1,6 +1,6 @@
 # LET-503 — Role-gating audit (ordinary user surfaces)
 
-Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → this resubmission's customer-path cleanup commit (kernel-link gating on `/eaos/runs`, friendly action labels, adapter humanization, missions provenance gating).
+Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → `3f810b52` → this round-2 commit (customer-member Admin nav gating + broadened audit + builder recovery + missions polish + dashboard reasons + org root).
 
 Scope: every primary `/eaos/*` route the ordinary user can reach via the left rail or in-page CTAs. For each surface, this audit walks the rendered controls and confirms that no operator-/admin-only control is exposed.
 
@@ -94,7 +94,7 @@ PASS. The catalog and detail surfaces are read-only with redaction (LET-501 fix 
 
 ## `/eaos/admin` (`AdminPage`)
 
-PASS — escape hatch only. Reads `accessApi.listMembers`; surfaces members + a link to the legacy kernel admin console (the operator/admin surface itself).
+PASS — operator-only surface. Reads `accessApi.listMembers`; surfaces members + a link to the legacy kernel admin console (the operator/admin surface itself). **The primary-rail link to `/eaos/admin` is now gated by `useEaosViewerRole().isOperator` (`EaosPrimaryNav.tsx`): customer-member viewers do not see the entry in the rail at all.** The route itself remains reachable by URL so operators can hand-link it; the customer-string audit asserts the link is missing from the DOM (`adminNav.present: false` in `customer-string-audit.json`).
 
 ## `/eaos/capabilities` (`CapabilitiesPage`)
 
@@ -102,7 +102,7 @@ PASS. Adapter mix is derived from `agentsApi.list`. No raw MCP/capability toggle
 
 ## Shell-level guards
 
-- `EaosPrimaryNav` only renders `EAOS_PRIMARY_NAV_ZONES`, which does **not** include the legacy `Kernel / Admin` rail any more (`EAOS_KERNEL_NAV` is kept exported for secret-sweep tests but is not rendered in the primary rail).
+- `EaosPrimaryNav` only renders `EAOS_PRIMARY_NAV_ZONES`, which does **not** include the legacy `Kernel / Admin` rail any more (`EAOS_KERNEL_NAV` is kept exported for secret-sweep tests but is not rendered in the primary rail). **Round-2 change**: the rail now filters out `OPERATOR_ONLY_ZONE_IDS = {"admin"}` for non-operator viewers, so the `Admin` entry is invisible to customer-member viewers.
 - The top bar's `Kernel` escape hatch is rendered **only for operator-class viewers**: instance admins and company members whose role is `owner`, `admin`, or `operator`. Customer-class viewers (member / viewer / no membership) do not see the hatch — confirmed by the parallel `populated-customer/` screenshot bucket which captures the same routes with `--viewer customer-member`.
 - The bottom posture strip's audit pin (`Audit · n/a`) and `Operator session` label are gated by the same `useEaosViewerRole` hook. Customer viewers see an empty `<footer role="contentinfo">` landmark (preserved for assistive tech) with no visible chrome; the live/approval state chips still appear for any viewer when the context actually applies.
 - The kernel/`/agent-os` and `/dashboard` routes remain reachable (preserved per LET-503 requirement #8), so operators retain their normal entry points.

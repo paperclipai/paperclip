@@ -174,11 +174,21 @@ describe("MissionsListPage", () => {
     viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
     listMock.mockResolvedValueOnce([
       makeIssue({
-        id: "active-pop",
-        identifier: "LET-A",
-        status: "in_progress",
-        title: "Active populated mission",
+        id: "blocked-pop",
+        identifier: "LET-B",
+        status: "blocked",
+        title: "Blocked populated mission",
         assigneeAgentId: "agent-1",
+        // Force a non-empty blockedBy so the Dependencies field surfaces
+        // (it is now hidden when both blocks/blockedBy are zero).
+        blockedBy: [
+          {
+            id: "dep-1",
+            identifier: "LET-DEP",
+            title: "Dependency issue",
+            status: "in_progress",
+          },
+        ] as never,
       }),
     ]);
     await render();
@@ -193,9 +203,31 @@ describe("MissionsListPage", () => {
     expect(html).not.toContain("issue.assigneeUserId");
     expect(html).not.toContain("issue.executionAgentNameKey");
     expect(html).not.toContain("NEXT GATE");
-    // Customer-friendly labels are present.
+    // Customer-friendly labels are present for the surfaces that have
+    // signal — Next step on a blocked row points at unblock; Dependencies
+    // surfaces because blockedBy has at least one item.
     expect(html).toContain("Next step");
     expect(html).toContain("Dependencies");
+  });
+
+  it("hides filler 'Continue active work' and zero-zero Dependencies for an active row with no blockers", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    listMock.mockResolvedValueOnce([
+      makeIssue({
+        id: "active-quiet",
+        identifier: "LET-Q",
+        status: "in_progress",
+        title: "Active quiet mission",
+        assigneeAgentId: "agent-1",
+      }),
+    ]);
+    await render();
+    const html = container?.innerHTML ?? "";
+    expect(html).not.toContain("Continue active work");
+    expect(html).not.toContain("Blocks 0 · Blocked by 0");
+    // Owner and Evidence are still shown (always relevant).
+    expect(html).toContain("Owner");
+    expect(html).toContain("Evidence");
   });
 
   it("surfaces operator provenance chips when viewer is operator-class", async () => {

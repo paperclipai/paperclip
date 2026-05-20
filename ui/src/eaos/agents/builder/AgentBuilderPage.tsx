@@ -102,16 +102,19 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
   const finalStep = isFinalStep(currentStep);
   const firstStep = isFirstStep(currentStep);
 
-  // Per-step validation reason for the Next/Create button. The user
-  // must finish each step's required fields before advancing — empty
-  // Name on Identity should not silently let them walk to the end and
-  // then encounter a disabled Create button with no explanation.
-  // The footer reason waits for `nameTouched` so a pristine pageload
-  // does not start out shouting "Name is required" at the user.
+  // Per-step validation reason for the Next/Create button. The footer
+  // owns the disabled-reason copy; the in-panel inline error is the
+  // single source of truth for the Identity-step Name field, so we keep
+  // them mutually exclusive: the Identity panel surfaces its own inline
+  // red error, and the footer only narrates blockers on *other* steps
+  // (i.e. when the user has already navigated past Identity without
+  // filling Name) so reviewers don't see the same sentence twice on
+  // step 1.
   const stepBlockedReason: string | null = (() => {
     switch (currentStep) {
       case "identity":
-        return summary.nameError && nameTouched ? summary.nameError : null;
+        // Inline IdentityStep error handles this; no footer narration.
+        return null;
       case "model":
         return summary.modelError ? summary.modelError : null;
       default:
@@ -137,6 +140,11 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
 
   function markNameTouched() {
     if (!nameTouched) setNameTouched(true);
+  }
+
+  function goToStep(stepId: AgentBuilderStepId) {
+    if (stepId === "identity") markNameTouched();
+    setCurrentStep(stepId);
   }
 
   function goNext() {
@@ -206,11 +214,26 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
         </p>
       </header>
 
-      <Stepper currentStep={currentStep} onSelect={setCurrentStep} />
+      <Stepper
+        currentStep={currentStep}
+        onSelect={setCurrentStep}
+        // Highlight Identity as invalid in the stepper whenever the
+        // user has acknowledged the field but left it empty — the
+        // visited heuristic stops the "fresh load" pageload from
+        // shouting before the user has interacted.
+        invalidSteps={
+          (nameTouched || currentStep !== "identity") && summary.nameError
+            ? new Set<AgentBuilderStepId>(["identity"])
+            : new Set<AgentBuilderStepId>()
+        }
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0">
-          <div className="mx-auto w-full max-w-2xl">
+          {/* `pb-16` reserves height for the sticky footer so the
+             gradient/blur strip never overlaps live form fields
+             on the 1440×720 reviewer viewport. */}
+          <div className="mx-auto w-full max-w-2xl pb-16">
             <StepPanel
               step={currentStep}
               state={state}
@@ -238,6 +261,10 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
               canAdvance={canAdvance}
               stepBlockedReason={stepBlockedReason}
               isCreating={createAgent.isPending}
+              missingNameRecovery={finalStep && !summary.canCreate && Boolean(summary.nameError)}
+              missingModelRecovery={finalStep && !summary.canCreate && Boolean(summary.modelError)}
+              onJumpToIdentity={() => goToStep("identity")}
+              onJumpToModel={() => goToStep("model")}
               onBack={goBack}
               onNext={goNext}
               onCreate={handleCreate}
@@ -250,7 +277,7 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
           data-testid="eaos-agent-builder-summary"
           className="lg:sticky lg:top-2 lg:self-start"
         >
-          <SummaryCard state={state} />
+          <SummaryCard state={state} onJumpToIdentity={() => goToStep("identity")} />
         </aside>
       </div>
     </section>
@@ -260,9 +287,11 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
 function Stepper({
   currentStep,
   onSelect,
+  invalidSteps,
 }: {
   currentStep: AgentBuilderStepId;
   onSelect: (step: AgentBuilderStepId) => void;
+  invalidSteps: ReadonlySet<AgentBuilderStepId>;
 }) {
   return (
     <ol
@@ -271,6 +300,7 @@ function Stepper({
     >
       {AGENT_BUILDER_STEPS.map((step) => {
         const active = step.id === currentStep;
+        const invalid = invalidSteps.has(step.id);
         return (
           <li key={step.id}>
             <button
@@ -278,16 +308,25 @@ function Stepper({
               onClick={() => onSelect(step.id)}
               data-testid={`eaos-agent-builder-step-${step.id}`}
               data-active={active ? "true" : "false"}
+              data-invalid={invalid ? "true" : "false"}
               aria-current={active ? "step" : undefined}
+              title={invalid ? "Required field missing — visit this step to fix." : undefined}
               className={
                 "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background "
                 + (active
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border bg-background text-muted-foreground hover:bg-accent/40 hover:text-foreground")
+                  ? invalid
+                    ? "border-amber-500 bg-amber-500 text-background"
+                    : "border-foreground bg-foreground text-background"
+                  : invalid
+                    ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+                    : "border-border bg-background text-muted-foreground hover:bg-accent/40 hover:text-foreground")
               }
             >
               <span className="font-mono tabular-nums text-[11px] opacity-70">{step.index}</span>
               <span>{step.label}</span>
+              {invalid ? (
+                <CircleAlert className="h-3 w-3" aria-label="invalid" />
+              ) : null}
             </button>
           </li>
         );
@@ -305,6 +344,10 @@ function StepperFooter({
   canAdvance,
   stepBlockedReason,
   isCreating,
+  missingNameRecovery,
+  missingModelRecovery,
+  onJumpToIdentity,
+  onJumpToModel,
   onBack,
   onNext,
   onCreate,
@@ -317,6 +360,10 @@ function StepperFooter({
   canAdvance: boolean;
   stepBlockedReason: string | null;
   isCreating: boolean;
+  missingNameRecovery: boolean;
+  missingModelRecovery: boolean;
+  onJumpToIdentity: () => void;
+  onJumpToModel: () => void;
   onBack: () => void;
   onNext: () => void;
   onCreate: () => void;
@@ -328,16 +375,42 @@ function StepperFooter({
   return (
     <div
       data-testid="eaos-agent-builder-footer"
-      className="sticky bottom-0 z-10 mt-6 flex flex-col gap-2 border-t border-border bg-background/95 pt-4 pb-2 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+      // The footer is sticky so it stays in view on shorter viewports,
+      // but the panel above adds bottom padding (pb-24 on the StepPanel)
+      // so the gradient/blur never overlaps live form fields. Keep this
+      // explicit so reviewers can verify it from the source.
+      className="sticky bottom-0 z-10 mt-6 flex flex-col gap-2 border-t border-border bg-background pt-3 pb-2"
     >
       {buttonReason ? (
-        <p
-          data-testid="eaos-agent-builder-disabled-reason"
-          className="text-[11px] text-amber-700 dark:text-amber-300"
-          role="status"
-        >
-          {buttonReason}
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p
+            data-testid="eaos-agent-builder-disabled-reason"
+            className="text-[11px] text-amber-700 dark:text-amber-300"
+            role="status"
+          >
+            {buttonReason}
+          </p>
+          {missingNameRecovery ? (
+            <button
+              type="button"
+              data-testid="eaos-agent-builder-go-identity"
+              onClick={onJumpToIdentity}
+              className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+            >
+              Go to Identity →
+            </button>
+          ) : null}
+          {missingModelRecovery ? (
+            <button
+              type="button"
+              data-testid="eaos-agent-builder-go-model"
+              onClick={onJumpToModel}
+              className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-900 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+            >
+              Go to Model →
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <div className="flex items-center justify-between gap-3">
         <Button
@@ -386,12 +459,20 @@ function StepperFooter({
   );
 }
 
-function SummaryCard({ state }: { state: AgentBuilderState }) {
+function SummaryCard({
+  state,
+  onJumpToIdentity,
+}: {
+  state: AgentBuilderState;
+  onJumpToIdentity: () => void;
+}) {
   const summary = summarizeAgentBuilder(state);
+  const nameMissing = Boolean(summary.nameError);
   return (
     <div
       className="rounded-md border border-border bg-card p-4 text-sm"
       data-testid="eaos-agent-builder-summary-card"
+      data-summary-invalid={nameMissing ? "true" : "false"}
     >
       <div className="flex items-center gap-3">
         <div
@@ -402,7 +483,10 @@ function SummaryCard({ state }: { state: AgentBuilderState }) {
         />
         <div className="min-w-0">
           <p
-            className="truncate text-sm font-semibold text-foreground"
+            className={
+              "truncate text-sm font-semibold " +
+              (nameMissing ? "text-amber-800 dark:text-amber-200" : "text-foreground")
+            }
             data-testid="eaos-agent-builder-summary-name"
           >
             {summary.displayName}
@@ -415,6 +499,22 @@ function SummaryCard({ state }: { state: AgentBuilderState }) {
           </p>
         </div>
       </div>
+      {nameMissing ? (
+        <div
+          data-testid="eaos-agent-builder-summary-name-missing"
+          className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <span>Name not set yet — required to create.</span>
+          <button
+            type="button"
+            data-testid="eaos-agent-builder-summary-go-identity"
+            onClick={onJumpToIdentity}
+            className="font-medium underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            Go to Identity →
+          </button>
+        </div>
+      ) : null}
 
       <dl className="mt-4 space-y-2 text-[12px]">
         <SummaryRow

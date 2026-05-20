@@ -1,0 +1,39 @@
+{
+  "schema": "eaos-targeted-screenshots/v1",
+  "generatedAt": "2026-05-20T04:48:30.623Z",
+  "base": "http://localhost:5173",
+  "viewer": "customer-member",
+  "mode": "populated",
+  "captures": [
+    {
+      "id": "org-selected-node",
+      "file": "org-selected-node.png",
+      "ok": true
+    },
+    {
+      "id": "org-company-root-selected",
+      "file": "org-company-root-selected.png",
+      "ok": true
+    },
+    {
+      "id": "builder-identity-pristine-720",
+      "file": "builder-identity-pristine-720.png",
+      "ok": true
+    },
+    {
+      "id": "builder-knowledge-recovery-720",
+      "file": "builder-knowledge-recovery-720.png",
+      "ok": true
+    },
+    {
+      "id": "missions-list-720",
+      "file": "missions-list-720.png",
+      "ok": true
+    },
+    {
+      "id": "missions-list-scrolled-720",
+      "file": "missions-list-scrolled-720.png",
+      "ok": true
+    }
+  ]
+}

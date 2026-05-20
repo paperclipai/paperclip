@@ -176,27 +176,27 @@ function resolvePrimaryState(
 function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
   if (issue.assigneeUserId) {
     return {
-      currentLabel: "User assignee",
+      currentLabel: "Human teammate",
       currentTruth: "Backend-backed",
       currentReason: "Assigned to a human teammate",
     };
   }
   if (issue.assigneeAgentId) {
     return {
-      currentLabel: "Agent assignee",
+      currentLabel: "Agent",
       currentTruth: "Backend-backed",
       currentReason: "Assigned to an agent",
     };
   }
   if (issue.executionAgentNameKey) {
     return {
-      currentLabel: "Executing agent role",
+      currentLabel: "Role-based agent",
       currentTruth: "Backend-backed",
       currentReason: "Picked up by a role-based agent",
     };
   }
   return {
-    currentLabel: "No current owner",
+    currentLabel: "Unassigned",
     currentTruth: "Backend-derived",
     currentReason: "No owner assigned yet",
   };

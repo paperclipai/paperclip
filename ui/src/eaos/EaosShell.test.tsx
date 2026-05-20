@@ -106,8 +106,13 @@ describe("EaosShell", () => {
     expect(section?.getAttribute("id")).toBe("eaos-section-content");
   });
 
-  it("renders the LET-503 single-noun primary rail in contract order", () => {
+  it("renders the LET-503 single-noun primary rail in contract order (operator)", async () => {
     renderAt("/eaos");
+    // The Admin entry is operator-gated and the access query resolves
+    // asynchronously, so flush the query microtasks before asserting on
+    // the rail order. The mock above pins isInstanceAdmin=true, so once
+    // the query settles the operator-only Admin entry must be visible.
+    await flushReactQuery();
     const links = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
     ).map((node) => node.textContent?.trim());
@@ -123,6 +128,54 @@ describe("EaosShell", () => {
       "Agent Builder",
       "Admin",
     ]);
+  });
+
+  it("hides the Admin rail entry for customer-member viewers", async () => {
+    // Re-mock the access query as a non-operator customer-member; we
+    // import the EaosShell again after the mock so the new fixture is
+    // applied to the new render.
+    vi.doMock("@/api/access", () => ({
+      accessApi: {
+        getCurrentBoardAccess: vi.fn().mockResolvedValue({
+          user: { id: "user-2", email: null, name: "Customer Member", image: null },
+          userId: "user-2",
+          isInstanceAdmin: false,
+          companyIds: [],
+          memberships: [],
+          source: "test-fixture",
+          keyId: null,
+        }),
+      },
+    }));
+    vi.resetModules();
+    const { EaosShell: CustomerShell } = await import("./EaosShell");
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    actSync(() => {
+      root.render(
+        <QueryClientProvider client={makeQueryClient()}>
+          <MemoryRouter initialEntries={["/eaos"]}>
+            <Routes>
+              <Route path="eaos/*" element={<CustomerShell variant="eaos" />}>
+                <Route index element={<div data-testid="child-content">EAOS child content</div>} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReactQuery();
+    const labels = Array.from(
+      container.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]'),
+    ).map((node) => node.textContent?.trim());
+    expect(labels).not.toContain("Admin");
+    const adminLink = container.querySelector(
+      '[data-testid="eaos-primary-nav-link-admin"]',
+    );
+    expect(adminLink).toBeNull();
+    vi.doUnmock("@/api/access");
+    root.unmount();
   });
 
   it("renders the rail as a single group (no Operator/Build-Admin headers)", () => {

@@ -1,10 +1,16 @@
 import { NavLink } from "@/lib/router";
 import { EAOS_PRIMARY_NAV_ZONES, type EaosNavZone } from "./nav-zones";
+import { useEaosViewerRole } from "./useEaosViewerRole";
 
 // LET-503 (LET-502 contract §2) — single-level, single-noun rail. No
 // section headers, no dashed "Stub" count pills, no icons. Counts appear
 // later only when backed by a live read (e.g. Approvals badge); the rail
 // itself stays calm so the active item is the visual focus.
+//
+// LET-503 review round 2: `Admin` is operator-gated. The Admin surface
+// surfaces the member roster + an audit/secrets pointer, which is fine
+// for operator-class viewers (owner/admin/operator/instance admin) but
+// is not a customer-member surface and was confusing in the rail.
 
 export interface EaosPrimaryNavProps {
   // Mobile/tablet drawer state. When true, the nav renders inside a slide-in
@@ -12,6 +18,8 @@ export interface EaosPrimaryNavProps {
   drawerOpen: boolean;
   onClose: () => void;
 }
+
+const OPERATOR_ONLY_ZONE_IDS: ReadonlySet<string> = new Set(["admin"]);
 
 function NavItem({ zone, end }: { zone: EaosNavZone; end?: boolean }) {
   return (
@@ -40,12 +48,17 @@ function NavItem({ zone, end }: { zone: EaosNavZone; end?: boolean }) {
 }
 
 export function EaosPrimaryNav({ drawerOpen, onClose }: EaosPrimaryNavProps) {
+  const { isOperator } = useEaosViewerRole();
+  const visibleZones = EAOS_PRIMARY_NAV_ZONES.filter(
+    (zone) => !OPERATOR_ONLY_ZONE_IDS.has(zone.id) || isOperator,
+  );
   return (
     <nav
       role="navigation"
       aria-label="Primary"
       data-testid="eaos-primary-nav"
       data-drawer-open={drawerOpen ? "true" : "false"}
+      data-viewer-role={isOperator ? "operator" : "customer"}
       className={
         "w-60 shrink-0 border-r border-border bg-sidebar text-sidebar-foreground " +
         "absolute inset-y-0 left-0 z-20 transition-transform duration-150 ease-out md:static md:inset-auto md:translate-x-0 " +
@@ -58,7 +71,7 @@ export function EaosPrimaryNav({ drawerOpen, onClose }: EaosPrimaryNavProps) {
           aria-label="Primary navigation"
           data-testid="eaos-primary-nav-group-primary"
         >
-          {EAOS_PRIMARY_NAV_ZONES.map((zone) => (
+          {visibleZones.map((zone) => (
             <NavItem key={zone.id} zone={zone} end={zone.path === "/eaos"} />
           ))}
         </ul>

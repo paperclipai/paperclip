@@ -363,6 +363,28 @@ function statusLabel(status: Issue["status"]): { label: string; tone: string } {
   }
 }
 
+function attentionReason(issue: Issue): string | null {
+  switch (issue.status) {
+    case "in_review":
+      return "Awaiting review";
+    case "blocked": {
+      const count = issue.blockedBy?.length ?? 0;
+      if (count > 0) return `Blocked by ${count} dependency${count === 1 ? "" : "s"}`;
+      return "Blocked";
+    }
+    case "in_progress":
+      return null;
+    case "todo":
+    case "backlog":
+      return "Queued";
+    case "done":
+    case "cancelled":
+      return null;
+    default:
+      return null;
+  }
+}
+
 function ActivityRow({
   issue,
   isLast,
@@ -375,6 +397,7 @@ function ActivityRow({
   const chip = statusLabel(issue.status);
   const missionRef = issue.identifier ?? issue.id;
   const safeTitle = redactSecretLikeText(issue.title);
+  const reason = compact ? null : attentionReason(issue);
   return (
     <li
       data-testid={`eaos-command-center-activity-row-${issue.id}`}
@@ -393,13 +416,23 @@ function ActivityRow({
           {issue.identifier}
         </span>
       ) : null}
-      <Link
-        to={`/eaos/missions/${missionRef}`}
-        className="min-w-0 flex-1 truncate font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        title={safeTitle}
-      >
-        {safeTitle}
-      </Link>
+      <div className="min-w-0 flex-1">
+        <Link
+          to={`/eaos/missions/${missionRef}`}
+          className="block truncate font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          title={safeTitle}
+        >
+          {safeTitle}
+        </Link>
+        {reason ? (
+          <span
+            data-testid={`eaos-command-center-activity-row-${issue.id}-reason`}
+            className="block truncate text-[11px] text-muted-foreground"
+          >
+            {reason}
+          </span>
+        ) : null}
+      </div>
       <span
         className={
           "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide " +

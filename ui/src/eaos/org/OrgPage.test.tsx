@@ -230,6 +230,34 @@ describe("OrgPage (LET-503)", () => {
     });
   });
 
+  it("prepends an explicit company root node and surfaces company context on select", async () => {
+    agentsListMock.mockResolvedValue([
+      makeAgent({ id: "ceo-1", name: "Andrii", role: "ceo", status: "active" }),
+      makeAgent({ id: "eng-1", name: "Alex", role: "engineer", status: "running" }),
+    ]);
+    await renderOrg();
+
+    const rootSelector = '[data-testid="eaos-org-node-__eaos-org-company-root"]';
+    await waitForAssertion(() => {
+      expect(container?.querySelector(rootSelector)).not.toBeNull();
+    });
+
+    const rootNode = container!.querySelector(rootSelector) as HTMLElement;
+    expect(rootNode.textContent ?? "").toMatch(/Letsmake/);
+    expect(rootNode.textContent ?? "").toMatch(/Company/);
+
+    await act(async () => {
+      rootNode.click();
+    });
+
+    await waitForAssertion(() => {
+      const details = container?.querySelector('[data-testid="eaos-org-details"]');
+      expect(details?.getAttribute("data-eaos-org-details-kind")).toBe("company");
+      expect(details?.textContent ?? "").toMatch(/Company/);
+      expect(details?.textContent ?? "").toMatch(/Leaders/);
+    });
+  });
+
   it("names the missing reporting-graph backend as a truthful gap (derived source)", async () => {
     agentsListMock.mockResolvedValue([makeAgent({ id: "eng-1", role: "engineer" })]);
     await renderOrg();

@@ -20,6 +20,13 @@ const FORBIDDEN_NEEDLES: ReadonlyArray<string> = [
   // Operator escape hatches.
   "Kernel/Admin",
   "Kernel / Admin",
+  "Open in admin",
+  "Open in Admin",
+  "Open in kernel",
+  "Open in Kernel",
+  "Legacy kernel",
+  "Decide in kernel",
+  "Decide in admin",
   // Truth-posture jargon.
   "BACKEND-BACKED",
   "BACKEND-DERIVED",
@@ -37,6 +44,15 @@ const FORBIDDEN_NEEDLES: ReadonlyArray<string> = [
   "DOCUMENT_UPDATED",
   "BLOCKED_ON_DEPENDENCY",
   "pending_approval",
+  // Debug / runtime jargon that customer-mode rails should never expose.
+  "adapter_managed",
+  "operator_branch",
+  "adapterConfig",
+  "runtimeConfig",
+  "executionWorkspace",
+  "Stage participant",
+  "Latest run id",
+  "executionRunId",
 ];
 
 interface Route {
@@ -55,6 +71,20 @@ const ROUTES: readonly Route[] = [
   { id: "eaos-runs", path: "/eaos/runs", waitForSelector: '[data-testid="eaos-runs-page"]' },
   { id: "eaos-approvals", path: "/eaos/approvals", waitForSelector: '[data-testid="eaos-approvals-page"]' },
   { id: "eaos-knowledge", path: "/eaos/knowledge", waitForSelector: '[data-eaos-zone-id="knowledge"], [data-testid^="eaos-knowledge-"]' },
+  // LET-503 review round 2: extend audit to Blueprints + mission detail
+  // so any customer-visible operator/runtime jargon on those surfaces
+  // also fails the gate. The Admin route is explicitly excluded for
+  // customer-mode because the primary nav now hides it for non-operator
+  // viewers; the runner asserts the nav-link itself is missing instead.
+  { id: "eaos-blueprints", path: "/eaos/blueprints", waitForSelector: '[data-testid^="eaos-blueprints-"]' },
+  {
+    id: "eaos-mission-detail",
+    // Anchor on the populated-fixture identifier so the page resolves a
+    // real mission rather than falling back to the not-found state.
+    path: "/eaos/missions/ACME-104",
+    waitForSelector:
+      '[data-eaos-zone-id="missions"], [data-testid^="eaos-mission-"], [data-testid="eaos-missions-page"]',
+  },
 ];
 
 async function loadPlaywright(): Promise<typeof import("playwright")> {
@@ -121,6 +151,11 @@ async function run(): Promise<void> {
 
     const findings: Finding[] = [];
     const summary: Array<{ route: string; ok: boolean; bytes: number }> = [];
+    // Track once-per-run: customer-mode primary nav must not surface the
+    // Admin operator surface. We assert against the first successfully
+    // rendered route (dashboard) so the chrome has been mounted.
+    let adminNavCheckedAt: string | null = null;
+    let adminNavLinkSeen = false;
 
     for (const route of ROUTES) {
       const page = await context.newPage();
@@ -141,6 +176,27 @@ async function run(): Promise<void> {
           return `${tc}\n---\n${html}`;
         });
         summary.push({ route: route.id, ok: anchorHit, bytes: text.length });
+
+        // Once-per-run: assert the Admin nav-link is not rendered for
+        // customer-member viewers. We check on the first anchor-hit page
+        // so the primary nav is mounted; subsequent routes share the
+        // same chrome.
+        if (anchorHit && adminNavCheckedAt === null) {
+          adminNavCheckedAt = route.id;
+          adminNavLinkSeen = await page.evaluate(() => {
+            const link = document.querySelector('[data-testid="eaos-primary-nav-link-admin"]');
+            return Boolean(link);
+          });
+          if (adminNavLinkSeen) {
+            findings.push({
+              route: route.id,
+              needle: "eaos-primary-nav-link-admin",
+              snippet:
+                "Admin primary-nav link is rendered for customer-member viewer — operator-only zone should be hidden.",
+            });
+          }
+        }
+
         for (const needle of FORBIDDEN_NEEDLES) {
           const index = text.indexOf(needle);
           if (index !== -1) {
@@ -172,6 +228,10 @@ async function run(): Promise<void> {
       viewer: "customer-member",
       mode: "populated",
       forbidden: FORBIDDEN_NEEDLES,
+      adminNav: {
+        checkedAt: adminNavCheckedAt,
+        present: adminNavLinkSeen,
+      },
       routes: summary,
       findings,
       pass: findings.length === 0,
