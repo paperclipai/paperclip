@@ -1177,4 +1177,167 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  it("clears stranded_assigned_issue recovery when PATCH changes the assignee on a blocked issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:assignee-change",
+      evidence: { latestRunId: randomUUID() },
+      nextAction: "Reassign or resolve the source issue.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ assigneeAgentId: managerId })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      activeRecoveryAction: null,
+    });
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+      outcome: "cancelled",
+    });
+    expect(actionRow?.resolutionNote).toContain("new owner while blocked");
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("clears stranded_assigned_issue recovery when PATCH sets status=done on a blocked issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:done-status",
+      evidence: { latestRunId: randomUUID() },
+      nextAction: "Reassign or resolve the source issue.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "done" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "cancelled",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("clears stranded_assigned_issue recovery when PATCH adds first-class blockers to a blocked issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Blocker issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:add-blockers",
+      evidence: { latestRunId: randomUUID() },
+      nextAction: "Reassign or resolve the source issue.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ blockedByIssueIds: [blockerIssueId] })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      activeRecoveryAction: null,
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("keeps stranded_assigned_issue recovery active when PATCH does not change disposition", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:no-disposition-change",
+      evidence: { latestRunId: randomUUID() },
+      nextAction: "Reassign or resolve the source issue.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ priority: "high" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+    });
+    expect(patched.body.activeRecoveryAction).not.toBeNull();
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).not.toBeNull();
+  });
 });
