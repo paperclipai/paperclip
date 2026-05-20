@@ -151,6 +151,9 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('a[href^="/instance/settings/plugins/"]')).toHaveLength(1);
+    });
     const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
     expect(pluginLinks).toHaveLength(1);
     expect(pluginLinks[0]?.getAttribute("href")).toBe("/instance/settings/plugins/linear");
@@ -190,6 +193,9 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll('a[href^="/instance/settings/plugins/"]')).toHaveLength(1);
+    });
     const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
     expect(pluginLinks).toHaveLength(1);
     expect(pluginLinks[0]?.getAttribute("href")).toBe("/instance/settings/plugins/hybrid");
@@ -215,9 +221,14 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
-    const topLevelLinks = Array.from(
-      container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'),
-    );
+    await vi.waitFor(() => {
+      const links = Array.from(
+        container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'),
+      );
+      expect(links.some((a) => a.getAttribute("href") === "/instance/settings/plugins/linear")).toBe(true);
+    });
+
+    const topLevelLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href^="/instance/settings/"]'));
     const hrefs = topLevelLinks.map((a) => a.getAttribute("href"));
 
     const pluginsIndex = hrefs.indexOf("/instance/settings/plugins");
@@ -258,6 +269,9 @@ describe("InstanceSidebar", () => {
     queryClient = rendered.queryClient;
     await flushReact();
 
+    await vi.waitFor(() => {
+      expect(mockPluginsApi.list).toHaveBeenCalled();
+    });
     const pluginLinks = Array.from(container.querySelectorAll('a[href^="/instance/settings/plugins/"]'));
     expect(pluginLinks).toHaveLength(0);
   });
