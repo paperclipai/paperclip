@@ -141,6 +141,15 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  agentConfigurationDoc as copilotAgentConfigurationDoc,
+  models as copilotModels,
+  execute as copilotExecute,
+  listCopilotSkills,
+  syncCopilotSkills,
+  testEnvironment as copilotTestEnvironment,
+  sessionCodec as copilotSessionCodec,
+} from "./copilot-local/index.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -305,6 +314,19 @@ const codexLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
+};
+
+const copilotLocalAdapter: ServerAdapterModule = {
+  type: "copilot_local",
+  execute: copilotExecute,
+  testEnvironment: copilotTestEnvironment,
+  listSkills: listCopilotSkills,
+  syncSkills: syncCopilotSkills,
+  sessionCodec: copilotSessionCodec,
+  sessionManagement: getAdapterSessionManagement("copilot_local") ?? undefined,
+  models: copilotModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: copilotAgentConfigurationDoc,
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
@@ -512,6 +534,7 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
     claudeLocalAdapter,
+    copilotLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,

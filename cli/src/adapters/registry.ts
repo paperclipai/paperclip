@@ -9,6 +9,7 @@ import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
 import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
+import { copilotLocalCLIAdapter } from "./copilot-local/index.js";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
 
@@ -66,6 +67,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     acpxLocalCLIAdapter,
     claudeLocalCLIAdapter,
+    copilotLocalCLIAdapter,
     codexLocalCLIAdapter,
     openCodeLocalCLIAdapter,
     piLocalCLIAdapter,
