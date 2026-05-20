@@ -395,9 +395,50 @@ const openclawGatewayAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openclawGatewayAgentConfigurationDoc,
 };
 
+function getOpenCodeHome(agentId: string): string {
+  const paperclipHome = process.env.PAPERCLIP_HOME
+    ? path.resolve(process.env.PAPERCLIP_HOME)
+    : path.join(os.homedir(), ".paperclip");
+  return path.join(paperclipHome, "instances", "default", "workspaces", "opencode", agentId);
+}
+
+async function ensureOpenCodeWorkspace(agentId: string): Promise<string> {
+  const openCodeHome = getOpenCodeHome(agentId);
+  await fs.promises.mkdir(openCodeHome, { recursive: true });
+  await fs.promises.mkdir(path.join(openCodeHome, "sessions"), { recursive: true });
+  await fs.promises.mkdir(path.join(openCodeHome, "cache"), { recursive: true });
+  return openCodeHome;
+}
+
+const rawOpenCodeExecute = openCodeExecute;
+
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
-  execute: openCodeExecute,
+  execute: async (ctx) => {
+    const agentId = ctx.agent?.id ?? "";
+    const existingConfig = ctx.config ?? {};
+    const existingEnv =
+      typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
+        ? (existingConfig.env as Record<string, string>)
+        : {};
+
+    // ── Auto-isolate OpenCode agents ────────────────────────────────────
+    let openCodeHome = existingEnv.OPENCODE_HOME;
+    if (!openCodeHome) {
+      openCodeHome = await ensureOpenCodeWorkspace(agentId);
+    }
+
+    const patchedConfig: Record<string, unknown> = {
+      ...existingConfig,
+      env: {
+        ...existingEnv,
+        OPENCODE_HOME: openCodeHome,
+      },
+      cwd: existingConfig.cwd ?? openCodeHome,
+    };
+
+    return rawOpenCodeExecute({ ...ctx, config: patchedConfig });
+  },
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
   syncSkills: syncOpenCodeSkills,
@@ -438,6 +479,28 @@ const piLocalAdapter: ServerAdapterModule = {
 // intentional until hermes ships a matching AdapterExecutionContext type.
 const executeHermesLocal = hermesExecute as unknown as ServerAdapterModule["execute"];
 
+function getHermesHome(agentId: string): string {
+  const paperclipHome = process.env.PAPERCLIP_HOME
+    ? path.resolve(process.env.PAPERCLIP_HOME)
+    : path.join(os.homedir(), ".paperclip");
+  return path.join(paperclipHome, "instances", "default", "workspaces", "hermes", agentId);
+}
+
+async function ensureHermesWorkspace(agentId: string): Promise<{ hermesHome: string; subprocessHome: string; gitConfigPath: string }> {
+  const hermesHome = getHermesHome(agentId);
+  const subprocessHome = path.join(hermesHome, "home");
+  const gitConfigPath = path.join(hermesHome, ".gitconfig");
+  await fs.promises.mkdir(hermesHome, { recursive: true });
+  await fs.promises.mkdir(subprocessHome, { recursive: true });
+  // Create .gitconfig if it doesn't exist
+  try {
+    await fs.promises.access(gitConfigPath);
+  } catch {
+    await fs.promises.writeFile(gitConfigPath, `[user]\n\tname = ${agentId}\n\temail = ${agentId}@paperclip.local\n`);
+  }
+  return { hermesHome, subprocessHome, gitConfigPath };
+}
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: async (ctx) => {
@@ -449,6 +512,19 @@ const hermesLocalAdapter: ServerAdapterModule = {
       typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
         ? (existingConfig.env as Record<string, string>)
         : {};
+
+    // ── Auto-isolate Hermes agents ──────────────────────────────────────
+    const agentId = ctx.agent?.id ?? "";
+    let hermesHome = existingEnv.HERMES_HOME;
+    let subprocessHome = existingEnv.HOME;
+    let gitConfigPath = existingEnv.GIT_CONFIG_GLOBAL;
+    if (!hermesHome) {
+      const workspace = await ensureHermesWorkspace(agentId);
+      hermesHome = workspace.hermesHome;
+      subprocessHome = workspace.subprocessHome;
+      gitConfigPath = workspace.gitConfigPath;
+    }
+
     const explicitApiKey =
       typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
     const promptTemplate =
@@ -468,7 +544,11 @@ const hermesLocalAdapter: ServerAdapterModule = {
         ...existingEnv,
         ...(!explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
         PAPERCLIP_RUN_ID: normalizedCtx.runId,
+        HERMES_HOME: hermesHome,
+        HOME: subprocessHome ?? hermesHome,
+        GIT_CONFIG_GLOBAL: gitConfigPath ?? "",
       },
+      cwd: existingConfig.cwd ?? hermesHome,
     };
 
     // Only inject the auth guard into promptTemplate when a custom template already exists.
