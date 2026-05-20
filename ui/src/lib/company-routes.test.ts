@@ -28,6 +28,17 @@ describe("company routes", () => {
     );
   });
 
+  it("prefixes company import/export board routes so they resolve under a company", () => {
+    expect(isBoardPathWithoutPrefix("/company/import")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/company/export")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/company/import")).toBeNull();
+    expect(applyCompanyPrefix("/company/import", "PAP")).toBe("/PAP/company/import");
+    expect(applyCompanyPrefix("/company/export", "PAP")).toBe("/PAP/company/export");
+    expect(applyCompanyPrefix("/company/export/files/agents/ceo.md", "PAP")).toBe(
+      "/PAP/company/export/files/agents/ceo.md",
+    );
+  });
+
   it("treats /search as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/search")).toBe(true);
     expect(extractCompanyPrefixFromPath("/search")).toBeNull();
