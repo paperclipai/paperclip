@@ -175,7 +175,7 @@ export function Issues() {
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
   }
-if (if (!isLoading && !error && issues.length === 0)) {
+if (!isLoading && !error && issues.length === 0){
   return (
     <EmptyState
       icon={CircleDot}
