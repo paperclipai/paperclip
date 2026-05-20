@@ -122,6 +122,57 @@ import {
   RUN_FINALIZE_ISSUE_CLOSED_DONE,
 } from "./orchestration-invariants.js";
 import {
+  buildProcessLossMessage,
+  CANCEL_AGENT_NOT_INVOKABLE,
+  CANCEL_AGENT_NO_LONGER_EXISTS,
+  CANCEL_ASSIGNEE_CHANGED_BEFORE_START,
+  CANCEL_BUDGET_PAUSE,
+  CANCEL_CONTINUATION_WAIT_REVIEW,
+  CANCEL_CONTROL_PLANE_DEFAULT,
+  CANCEL_ISSUE_DEPS_BLOCKED,
+  CANCEL_ISSUE_NOT_FOUND,
+  CANCEL_ISSUE_SUBTREE_PAUSE_HOLD,
+  CANCEL_MAX_TURN_LOCK_CHANGED_BEFORE_START,
+  CANCEL_REVIEW_PARTICIPANT_CHANGED_BEFORE_START,
+  CANCEL_SCHEDULED_RETRY_ISSUE_CANCELLED,
+  CANCEL_SCHEDULED_RETRY_ISSUE_REASSIGNED,
+  detachedProcessStillAliveMessage,
+  LIFECYCLE_ADAPTER_INVOCATION,
+  LIFECYCLE_COMMENT_WAKE_DEFERRED_EXISTS,
+  LIFECYCLE_COMMENT_WAKE_EXHAUSTED,
+  LIFECYCLE_COMMENT_WAKE_QUEUED_FOLLOWUP,
+  LIFECYCLE_DETACHED_CHILD_ACTIVITY_CLEARED,
+  LIFECYCLE_MAX_TURN_CONTINUATION_POLICY_DISABLED,
+  LIFECYCLE_PROCESS_LOSS_RETRY_QUEUED,
+  LIFECYCLE_RUN_CANCELLED,
+  LIFECYCLE_RUN_FINALIZED_AFTER_ISSUE_CLOSED,
+  LIFECYCLE_RUN_STARTED,
+  LIFECYCLE_SCHEDULED_RETRY_ALREADY_PROMOTED,
+  LIFECYCLE_SCHEDULED_RETRY_CANCELLED_ISSUE_CANCELLED,
+  LIFECYCLE_SCHEDULED_RETRY_CANCELLED_OWNERSHIP_CHANGED,
+  LIFECYCLE_SCHEDULED_RETRY_NONE_LIVE,
+  LIFECYCLE_SCHEDULED_RETRY_PROMOTED_TO_QUEUE,
+  LIFECYCLE_SCHEDULED_RETRY_REQUESTED_NOW,
+  lifecycleBoundedRetryExhausted,
+  lifecycleProcessLossRetryQueued,
+  lifecycleReusedMaxTurnContinuation,
+  lifecycleRunOutcome,
+  lifecycleScheduledBoundedRetry,
+  processLossMessageWithRetry,
+  SCHEDULED_RETRY_SUPPRESSED_AGENT_GONE,
+  SCHEDULED_RETRY_SUPPRESSED_AGENT_NOT_INVOKABLE,
+  SCHEDULED_RETRY_SUPPRESSED_DEPS_BLOCKED,
+  SCHEDULED_RETRY_SUPPRESSED_ISSUE_GONE,
+  SCHEDULED_RETRY_SUPPRESSED_ISSUE_REASSIGNED,
+  SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_ISSUE_GONE,
+  SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_ISSUE_REASSIGNED,
+  SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_LOCK,
+  SCHEDULED_RETRY_SUPPRESSED_REVIEW_PARTICIPANT,
+  SCHEDULED_RETRY_SUPPRESSED_SUBTREE_PAUSE,
+  scheduledMaxTurnSuppressedNotInProgress,
+  scheduledRetrySuppressedTerminalStatus,
+} from "./heartbeat-lifecycle-messages.js";
+import {
   computeDeferredTimerBaseline,
   countAgentNonTimerPendingRuns,
 } from "./heartbeat-timer-yield.js";
@@ -2263,22 +2314,6 @@ async function terminateHeartbeatRunProcess(input: {
   );
 }
 
-function buildProcessLossMessage(run: {
-  processPid: number | null;
-  processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
-  if (options?.descendantOnly && run.processGroupId) {
-    return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
-  }
-  if (run.processPid) {
-    return `Process lost -- child pid ${run.processPid} is no longer running`;
-  }
-  if (run.processGroupId) {
-    return `Process lost -- process group ${run.processGroupId} is no longer running`;
-  }
-  return "Process lost -- server may have restarted";
-}
-
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -4414,7 +4449,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Detached child process reported activity; cleared detached warning",
+      message: LIFECYCLE_DETACHED_CHILD_ACTIVITY_CLEARED,
     });
     return updated;
   }
@@ -4661,7 +4696,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment after one retry; no further comment wake will be queued",
+        message: LIFECYCLE_COMMENT_WAKE_EXHAUSTED,
       });
       return { outcome: "retry_exhausted" as const, queuedRun: null };
     }
@@ -4687,7 +4722,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "Run ended without an issue comment; a deferred comment wake already exists for this issue",
+        message: LIFECYCLE_COMMENT_WAKE_DEFERRED_EXISTS,
       });
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
@@ -4698,7 +4733,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "Run ended without an issue comment; queued one follow-up wake to require a comment",
+        message: LIFECYCLE_COMMENT_WAKE_QUEUED_FOLLOWUP,
       });
       return { outcome: "retry_queued" as const, queuedRun };
     }
@@ -4804,7 +4839,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: LIFECYCLE_PROCESS_LOSS_RETRY_QUEUED,
       payload: {
         retryOfRunId: run.id,
       },
@@ -4868,7 +4903,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
       return {
         allowed: false,
-        reason: "Scheduled retry suppressed because the agent is not invokable",
+        reason: SCHEDULED_RETRY_SUPPRESSED_AGENT_NOT_INVOKABLE,
         errorCode: "agent_not_invokable",
         issueId,
         details: {
@@ -4895,7 +4930,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!issue) {
       return {
         allowed: false,
-        reason: "Scheduled retry suppressed because the target issue no longer exists",
+        reason: SCHEDULED_RETRY_SUPPRESSED_ISSUE_GONE,
         errorCode: "issue_not_found",
         issueId,
         details: { issueId },
@@ -4905,7 +4940,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (issue.assigneeAgentId !== run.agentId) {
       return {
         allowed: false,
-        reason: "Scheduled retry suppressed because issue ownership changed",
+        reason: SCHEDULED_RETRY_SUPPRESSED_ISSUE_REASSIGNED,
         errorCode: "issue_reassigned",
         issueId,
         details: {
@@ -4929,7 +4964,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
       return {
         allowed: false,
-        reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`,
+        reason: scheduledMaxTurnSuppressedNotInProgress(issue.status),
         errorCode: "issue_not_in_progress",
         issueId,
         details: { issueId, currentStatus: issue.status, requiredStatus: "in_progress" },
@@ -4943,7 +4978,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ) {
       return {
         allowed: false,
-        reason: "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+        reason: SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_LOCK,
         errorCode: "issue_execution_lock_changed",
         issueId,
         details: {
@@ -4963,7 +4998,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!participantMatches) {
           return {
             allowed: false,
-            reason: "Scheduled retry suppressed because the issue is waiting on another review participant",
+            reason: SCHEDULED_RETRY_SUPPRESSED_REVIEW_PARTICIPANT,
             errorCode: "issue_review_participant_changed",
             issueId,
             details: {
@@ -4980,7 +5015,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (activePauseHold) {
       return {
         allowed: false,
-        reason: "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
+        reason: SCHEDULED_RETRY_SUPPRESSED_SUBTREE_PAUSE,
         errorCode: "issue_paused",
         issueId,
         details: {
@@ -4996,7 +5031,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (readiness && !readiness.isDependencyReady) {
       return {
         allowed: false,
-        reason: "Scheduled retry suppressed because issue dependencies are still blocked",
+        reason: SCHEDULED_RETRY_SUPPRESSED_DEPS_BLOCKED,
         errorCode: "issue_dependencies_blocked",
         issueId,
         details: {
@@ -5099,7 +5134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!agent) {
       const gate = {
         allowed: false as const,
-        reason: "Scheduled retry suppressed because the agent no longer exists",
+        reason: SCHEDULED_RETRY_SUPPRESSED_AGENT_GONE,
         errorCode: "agent_not_invokable" as const,
         issueId: readNonEmptyString(parseObject(dueRun.contextSnapshot).issueId),
         details: { agentId: dueRun.agentId },
@@ -5164,7 +5199,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Scheduled retry became due and was promoted to the queued run pool",
+      message: LIFECYCLE_SCHEDULED_RETRY_PROMOTED_TO_QUEUE,
       payload: {
         scheduledRetryAttempt: promoted.scheduledRetryAttempt,
         scheduledRetryAt: promoted.scheduledRetryAt ? new Date(promoted.scheduledRetryAt).toISOString() : null,
@@ -5232,7 +5267,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: `Bounded retry exhausted after ${run.scheduledRetryAttempt ?? 0} scheduled attempts; no further automatic retry will be queued`,
+        message: lifecycleBoundedRetryExhausted(run.scheduledRetryAttempt ?? 0),
         payload: {
           retryReason,
           scheduledRetryAttempt: run.scheduledRetryAttempt ?? 0,
@@ -5386,7 +5421,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (!lockedIssue) {
             return {
               outcome: "not_scheduled",
-              reason: "Scheduled max-turn continuation suppressed because the target issue no longer exists",
+              reason: SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_ISSUE_GONE,
               errorCode: "issue_not_found",
               issueId,
               details: { issueId },
@@ -5396,7 +5431,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (lockedIssue.assigneeAgentId !== run.agentId) {
             return {
               outcome: "not_scheduled",
-              reason: "Scheduled max-turn continuation suppressed because issue ownership changed",
+              reason: SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_ISSUE_REASSIGNED,
               errorCode: "issue_reassigned",
               issueId,
               details: {
@@ -5420,7 +5455,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (lockedIssue.status !== "in_progress") {
             return {
               outcome: "not_scheduled",
-              reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${lockedIssue.status})`,
+              reason: scheduledMaxTurnSuppressedNotInProgress(lockedIssue.status),
               errorCode: "issue_not_in_progress",
               issueId,
               details: { issueId, currentStatus: lockedIssue.status, requiredStatus: "in_progress" },
@@ -5431,7 +5466,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return {
               outcome: "not_scheduled",
               reason:
-                "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+                SCHEDULED_RETRY_SUPPRESSED_MAX_TURN_LOCK,
               errorCode: "issue_execution_lock_changed",
               issueId,
               details: {
@@ -5548,7 +5583,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: `Reused existing max-turn continuation ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        message: lifecycleReusedMaxTurnContinuation(retryRun.scheduledRetryAttempt, schedule.maxAttempts),
         payload: {
           retryRunId: retryRun.id,
           retryReason,
@@ -5572,7 +5607,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Scheduled bounded retry ${schedule.attempt}/${schedule.maxAttempts} for ${schedule.dueAt.toISOString()}`,
+      message: lifecycleScheduledBoundedRetry(schedule.attempt, schedule.maxAttempts, schedule.dueAt.toISOString()),
       payload: {
         retryRunId: retryRun.id,
         retryReason,
@@ -5685,13 +5720,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (alreadyPromoted) {
         return {
           outcome: "already_promoted" as const,
-          message: "Scheduled retry was already promoted",
+          message: LIFECYCLE_SCHEDULED_RETRY_ALREADY_PROMOTED,
           scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
         };
       }
       return {
         outcome: "no_scheduled_retry" as const,
-        message: "No live scheduled retry exists for this issue",
+        message: LIFECYCLE_SCHEDULED_RETRY_NONE_LIVE,
         scheduledRetry: null,
       };
     }
@@ -5746,13 +5781,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (alreadyPromoted) {
         return {
           outcome: "already_promoted" as const,
-          message: "Scheduled retry was already promoted",
+          message: LIFECYCLE_SCHEDULED_RETRY_ALREADY_PROMOTED,
           scheduledRetry: summarizeIssueScheduledRetryRun(alreadyPromoted),
         };
       }
       return {
         outcome: "no_scheduled_retry" as const,
-        message: "No live scheduled retry exists for this issue",
+        message: LIFECYCLE_SCHEDULED_RETRY_NONE_LIVE,
         scheduledRetry: null,
       };
     }
@@ -5761,7 +5796,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Scheduled retry was requested to run now",
+      message: LIFECYCLE_SCHEDULED_RETRY_REQUESTED_NOW,
       payload: {
         issueId: issue.id,
         scheduledRetryAttempt: updated.scheduledRetryAttempt,
@@ -5781,7 +5816,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (promotion.outcome === "promoted") {
       return {
         outcome: "promoted" as const,
-        message: "Scheduled retry was promoted to the queued run pool",
+        message: LIFECYCLE_SCHEDULED_RETRY_PROMOTED_TO_QUEUE,
         scheduledRetry,
       };
     }
@@ -5794,7 +5829,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     return {
       outcome: "already_promoted" as const,
-      message: "Scheduled retry was already promoted",
+      message: LIFECYCLE_SCHEDULED_RETRY_ALREADY_PROMOTED,
       scheduledRetry,
     };
   }
@@ -5867,11 +5902,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelRunInternal(run.id, CANCEL_AGENT_NO_LONGER_EXISTS);
       return null;
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      await cancelRunInternal(run.id, CANCEL_AGENT_NOT_INVOKABLE);
       return null;
     }
 
@@ -5897,7 +5932,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
+        await cancelRunInternal(run.id, CANCEL_ISSUE_SUBTREE_PAUSE_HOLD);
         await logActivity(db, {
           companyId: run.companyId,
           actorType: "system",
@@ -6045,8 +6080,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     unresolvedBlockerIssueIds: string[],
   ) {
     const now = new Date();
-    const reason =
-      "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+    const reason = CANCEL_ISSUE_DEPS_BLOCKED;
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
@@ -6134,7 +6168,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         stale: true,
         errorCode: "issue_not_found",
-        reason: "Cancelled because the target issue no longer exists",
+        reason: CANCEL_ISSUE_NOT_FOUND,
         details: { issueId },
       };
     }
@@ -6162,8 +6196,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           stale: true,
           errorCode: "issue_continuation_waiting_on_review",
-          reason:
-            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+          reason: CANCEL_CONTINUATION_WAIT_REVIEW,
           details: {
             issueId,
             wakeReason,
@@ -6178,8 +6211,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
-        reason:
-          "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead",
+        reason: CANCEL_ASSIGNEE_CHANGED_BEFORE_START,
         details: {
           issueId,
           previousAssigneeAgentId: run.agentId,
@@ -6213,8 +6245,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         stale: true,
         errorCode: "issue_execution_lock_changed",
-        reason:
-          "Cancelled because max-turn continuation no longer owns the issue execution lock before the queued run could start",
+        reason: CANCEL_MAX_TURN_LOCK_CHANGED_BEFORE_START,
         details: {
           issueId,
           expectedExecutionRunId: run.id,
@@ -6233,8 +6264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return {
             stale: true,
             errorCode: "issue_review_participant_changed",
-            reason:
-              "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
+            reason: CANCEL_REVIEW_PARTICIPANT_CHANGED_BEFORE_START,
             details: {
               issueId,
               currentStageType: executionState?.currentStageType ?? null,
@@ -6614,7 +6644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
+          const detachedMessage = detachedProcessStillAliveMessage(run.processPid);
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
             errorCode: DETACHED_PROCESS_ERROR_CODE,
@@ -6647,7 +6677,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? processLossMessageWithRetry(baseMessage) : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
@@ -6656,13 +6686,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           {
             resultJson: parseObject(run.resultJson),
             errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            errorMessage: shouldRetry ? processLossMessageWithRetry(baseMessage) : baseMessage,
           },
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? processLossMessageWithRetry(baseMessage) : baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -6690,7 +6720,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         stream: "system",
         level: "error",
         message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+          ? lifecycleProcessLossRetryQueued(baseMessage, retriedRun?.id ?? "")
           : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
@@ -7644,7 +7674,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "run started",
+        message: LIFECYCLE_RUN_STARTED,
       });
 
       handle = await runLogStore.begin({
@@ -7777,7 +7807,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
-          message: "adapter invocation",
+          message: LIFECYCLE_ADAPTER_INVOCATION,
           payload: {
             ...(meta as unknown as Record<string, unknown>),
             ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
@@ -8009,7 +8039,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eventType: "lifecycle",
           stream: "system",
           level: outcome === "succeeded" ? "info" : "error",
-          message: `run ${outcome}`,
+          message: lifecycleRunOutcome(outcome),
           payload: {
             status,
             exitCode: adapterResult.exitCode,
@@ -8047,7 +8077,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
+              message: LIFECYCLE_MAX_TURN_CONTINUATION_POLICY_DISABLED,
               payload: {
                 retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
                 policy,
@@ -8968,8 +8998,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
           const now = new Date();
           const reason = issueCancelled
-            ? "Cancelled because the issue was cancelled before the scheduled retry became due"
-            : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            ? CANCEL_SCHEDULED_RETRY_ISSUE_CANCELLED
+            : CANCEL_SCHEDULED_RETRY_ISSUE_REASSIGNED;
           const cancelled = await tx
             .update(heartbeatRuns)
             .set({
@@ -9023,8 +9053,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             stream: "system",
             level: "warn",
             message: issueCancelled
-              ? "Scheduled retry cancelled because issue was cancelled before it became due"
-              : "Scheduled retry cancelled because issue ownership changed before it became due",
+              ? LIFECYCLE_SCHEDULED_RETRY_CANCELLED_ISSUE_CANCELLED
+              : LIFECYCLE_SCHEDULED_RETRY_CANCELLED_OWNERSHIP_CHANGED,
             payload: {
               issueId: issue.id,
               issueStatus: issue.status,
@@ -9617,7 +9647,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(runId: string, reason = CANCEL_CONTROL_PLANE_DEFAULT) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
@@ -9660,7 +9690,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "run cancelled",
+        message: LIFECYCLE_RUN_CANCELLED,
       });
       await releaseIssueExecutionAndPromote(cancelled);
     }
@@ -9716,7 +9746,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "run finalized after issue closed",
+      message: LIFECYCLE_RUN_FINALIZED_AFTER_ISSUE_CLOSED,
       payload: {
         issueStatus: "done",
         reason: RUN_FINALIZE_ISSUE_CLOSED_DONE,
@@ -9878,7 +9908,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
 
     for (const runId of runIds) {
-      await cancelRunInternal(runId, "Cancelled due to budget pause");
+      await cancelRunInternal(runId, CANCEL_BUDGET_PAUSE);
     }
 
     await cancelPendingWakeupsForBudgetScope(scope);

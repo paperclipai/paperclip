@@ -359,7 +359,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_assignee_changed");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_assignee_changed" });
     expect(wakeup?.status).toBe("skipped");
-    expect(wakeup?.error).toContain("assignee changed");
+    expect(wakeup?.error).toContain("经办人");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
@@ -468,7 +468,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_not_in_progress");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_not_in_progress" });
     expect(wakeup?.status).toBe("skipped");
-    expect(wakeup?.error).toContain("blocked");
+    expect(wakeup?.error).toContain("进行中");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
@@ -555,7 +555,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_execution_lock_changed");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_execution_lock_changed" });
     expect(wakeup?.status).toBe("skipped");
-    expect(wakeup?.error).toContain("execution lock");
+    expect(wakeup?.error).toContain("执行锁");
     expect(issue?.executionRunId).toBe(lockOwnerRunId);
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
@@ -636,7 +636,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_review_participant_changed");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_review_participant_changed" });
     expect(wakeup?.status).toBe("skipped");
-    expect(wakeup?.error).toContain("in-review participant changed");
+    expect(wakeup?.error).toContain("审阅参与者");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
@@ -825,7 +825,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.errorCode).toBe("issue_continuation_waiting_on_review");
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_continuation_waiting_on_review" });
     expect(wakeup?.status).toBe("skipped");
-    expect(wakeup?.error).toContain("continuation summary says the executor should wait");
+    expect(wakeup?.error).toContain("交接摘要");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 });

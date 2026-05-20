@@ -4,6 +4,7 @@
  */
 
 import type { IssueBlockerAttention } from "@paperclipai/shared";
+import { translateLegacyRunLifecycleMessage } from "./run-lifecycle-legacy-display";
 
 export const UI_LOCALE = "zh-CN" as const;
 
@@ -1423,40 +1424,15 @@ export const agentDetailUi = {
     };
     return `[${labels[stream] ?? stream}]`;
   },
-  /** 运行详情「事件」里服务端写入的 lifecycle 英文短句 → 界面中文（库内仍存英文） */
+  /** 运行详情「事件」里 lifecycle 短句 → 界面中文（库内旧英文经 legacy 映射） */
   runLifecycleMessageDisplay: (message: string) => {
     const trimmed = message.trim();
     if (trimmed.toLowerCase().startsWith("[paperclip]")) {
       const t = translatePaperclipTranscriptLine(trimmed);
       if (t !== trimmed) return t;
     }
-    const exact: Record<string, string> = {
-      "run started": "运行已开始",
-      "run cancelled": "运行已取消",
-      "adapter invocation": "调用适配器",
-    };
-    if (exact[trimmed]) return exact[trimmed] ?? message;
-
-    const staleTerminalQueued = /^Cancelled because issue reached terminal status \((\w+)\) before the queued run could start$/.exec(
-      trimmed,
-    );
-    if (staleTerminalQueued) {
-      const raw = staleTerminalQueued[1] ?? "";
-      const statusZh: Record<string, string> = { done: "已完成", cancelled: "已取消" };
-      return `事务在排队运行启动前已进入终态（${statusZh[raw] ?? raw}），本运行已取消。`;
-    }
-
-    const outcomeMatch = /^run (succeeded|failed|cancelled|timed_out)$/.exec(trimmed);
-    if (outcomeMatch) {
-      const o = outcomeMatch[1] ?? "";
-      const byOutcome: Record<string, string> = {
-        succeeded: "运行成功",
-        failed: "运行失败",
-        cancelled: "运行已取消",
-        timed_out: "运行超时",
-      };
-      return byOutcome[o] ?? message;
-    }
+    const legacy = translateLegacyRunLifecycleMessage(trimmed);
+    if (legacy) return legacy;
     return message;
   },
   /** 原始转写左侧列：TranscriptEntry.kind */
