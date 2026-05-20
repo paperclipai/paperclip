@@ -184,16 +184,7 @@ if (!issues || issues.length === 0) {
     />
   );
 }
-if (!issues || issues.length === 0) {
-  return (
-    <EmptyState
-      icon={CircleDot}
-      title="No issues yet"
-      description="Create your first issue to start tracking work."
-    />
-  );
-}
-  return (
+ return (
     <IssuesList
       issues={issues ?? []}
       isLoading={isLoading}
