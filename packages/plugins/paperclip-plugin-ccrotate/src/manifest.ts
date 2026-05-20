@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "kkroo.ccrotate";
-export const PLUGIN_VERSION = "0.5.0";
+export const PLUGIN_VERSION = "0.6.0";
 
 // Slot + launcher constants. Kept here so manifest + UI exports stay in sync.
 export const SLOT_IDS = {
@@ -105,6 +105,22 @@ const manifest: PaperclipPluginManifestV1 = {
       routeKey: "import",
       method: "POST",
       path: "/import",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
+    {
+      routeKey: "switch",
+      method: "POST",
+      path: "/switch",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
+    {
+      routeKey: "set-session",
+      method: "POST",
+      path: "/set-session",
       auth: "board",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },

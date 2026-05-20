@@ -1,6 +1,6 @@
 {
   "name": "@kkroo/paperclip-plugin-ccrotate",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Paperclip plugin that exposes ccrotate-snapped Claude/Codex account pools to the UI for visualization, and persists the latest export blob to plugin state for Job-pod hooks to re-import.",
   "license": "MIT",
   "type": "module",

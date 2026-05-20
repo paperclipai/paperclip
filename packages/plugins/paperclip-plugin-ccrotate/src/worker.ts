@@ -248,6 +248,142 @@ async function handleRefresh(): Promise<PluginApiResponse> {
   return { status: 200, body: { ok: true, errors: errors.length > 0 ? errors : undefined } };
 }
 
+async function handleSwitch(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  // Switch the active account (writes current.json via local `ccrotate switch`).
+  // ccrotate-serve picks up the new pointer on its next state read; in HTTP-state
+  // mode (the cluster deploy) that state-server lives in the auth-bot pod and
+  // the bot reflects writes back on its next freshness tick. In file-state mode
+  // the change is immediate.
+  const body = (input.body ?? {}) as { email?: unknown; target?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const target = typeof body.target === "string" ? body.target.trim() : "claude";
+  if (!email || !email.includes("@")) {
+    return { status: 400, body: { error: "email (with @) required" } };
+  }
+  if (target !== "claude" && target !== "codex") {
+    return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
+  }
+  const result = await runProcess("ccrotate", ["--target", target, "switch", email], 15_000);
+  if (result.code !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error: result.stderr.trim() || result.stdout.trim() || `ccrotate switch exit ${result.code}`,
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      email,
+      target,
+      stdout: result.stdout.trim(),
+    },
+  };
+}
+
+async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  // Operator-supplied sessionKey paste. Proxies to the auth-bot's
+  // /setSession then chains /reloginViaSession — same pair the
+  // /ccrotate:setSession intercepted slash command drives. Required
+  // because the auth-bot's magic-link auto-fallback only works for
+  // accounts readable by GMAIL_REFRESH_TOKEN; everything else needs an
+  // operator sessionKey from a real browser.
+  //
+  // Auth-bot is reachable via the cluster Service `ccrotate-auth-bot:7000`
+  // (paperclip-0 runs in-namespace). For local-dev this would 404 quietly —
+  // not a primary devbox surface.
+  const body = (input.body ?? {}) as { email?: unknown; sessionKey?: unknown; target?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const sessionKey = typeof body.sessionKey === "string" ? body.sessionKey.trim() : "";
+  const target = typeof body.target === "string" ? body.target.trim() : "claude";
+  if (!email || !email.includes("@")) {
+    return { status: 400, body: { error: "email (with @) required" } };
+  }
+  if (!sessionKey || !sessionKey.startsWith("sk-ant-") || sessionKey.length < 40) {
+    return {
+      status: 400,
+      body: { error: "sessionKey shape check failed — expected `sk-ant-sid01-...` (≥40 chars)" },
+    };
+  }
+  if (target !== "claude") {
+    return { status: 400, body: { error: "target must be 'claude' (codex uses different auth)" } };
+  }
+  const botBase = process.env.CCROTATE_AUTH_BOT_URL ?? "http://ccrotate-auth-bot.paperclip.svc:7000";
+  // Step 1: persist sessionKey
+  let setRes: Response;
+  try {
+    setRes = await fetch(`${botBase}/setSession`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, target, sessionKey }),
+    });
+  } catch (e) {
+    return { status: 502, body: { error: `auth-bot unreachable: ${describeError(e)}` } };
+  }
+  if (!setRes.ok) {
+    const text = await setRes.text().catch(() => "");
+    return { status: setRes.status, body: { error: `bot /setSession returned ${setRes.status}: ${text.slice(0, 300)}` } };
+  }
+  // Step 2: chain relogin (~30-90s)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120_000);
+  let loginRes: Response;
+  try {
+    loginRes = await fetch(`${botBase}/reloginViaSession`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, target }),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        sessionKeyPersisted: true,
+        error: `sessionKey saved but /reloginViaSession failed: ${describeError(e)}. Stale-poller will retry.`,
+      },
+    };
+  }
+  clearTimeout(timer);
+  const loginBody = (await loginRes.json().catch(() => ({}))) as Record<string, unknown>;
+  if (loginRes.status === 409 && loginBody?.code === "SESSIONKEY_IDENTITY_MISMATCH") {
+    return {
+      status: 409,
+      body: {
+        ok: false,
+        sessionKeyPersisted: true,
+        code: "SESSIONKEY_IDENTITY_MISMATCH",
+        requestedEmail: loginBody.requestedEmail,
+        snappedEmail: loginBody.snappedEmail,
+        error: `sessionKey identity mismatch — the key actually belongs to ${loginBody.snappedEmail}. Tokens were written to ${loginBody.snappedEmail}'s profile.`,
+      },
+    };
+  }
+  if (!loginRes.ok) {
+    return {
+      status: loginRes.status,
+      body: {
+        ok: false,
+        sessionKeyPersisted: true,
+        error: `bot /reloginViaSession returned ${loginRes.status}: ${String(loginBody?.error || "").slice(0, 300)}`,
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      email,
+      snapStdout: loginBody?.snapStdout,
+    },
+  };
+}
+
 async function handleImport(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (!ctxRef) return { status: 503, body: { error: "plugin not initialized" } };
   const body = (input.body ?? {}) as { blob?: unknown };
@@ -351,6 +487,10 @@ const plugin: PaperclipPlugin = definePlugin({
           return await handleStatePut(input);
         case "import":
           return await handleImport(input);
+        case "switch":
+          return await handleSwitch(input);
+        case "set-session":
+          return await handleSetSession(input);
         default:
           return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
       }

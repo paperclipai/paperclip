@@ -1,15 +1,21 @@
-// ccrotate plugin UI — three slots: page, sidebarPanel, settingsPage.
+// ccrotate plugin UI v0.6.0 — three slots: page, sidebarPanel, settingsPage.
 //
-// All three components hit the plugin's `apiRoutes` (snapshot, refresh,
-// state-get, state-put, import) via plain `fetch("/api/plugins/<id>/<path>")`.
+// All components hit the plugin's `apiRoutes` (snapshot, refresh, state-get,
+// state-put, import, switch, set-session) via plain `fetch("/api/plugins/<id>/<path>")`.
 // The host's session cookie provides board-level auth (manifest declares
 // `auth: "board"` on each route), so credentials are scoped automatically.
 //
-// Why one file: ccrotate's UI is small and the three components share
-// types, styles, and the snapshot-fetcher hook. Splitting would just
-// scatter the styles and force the hook to live in a shared module.
+// v0.6.0 follow-ups (F-UI-1..5):
+//   - F-UI-1: per-row "switch" button on non-active accounts → POST /switch
+//   - F-UI-2: per-row "set sessionKey" inline form → POST /set-session
+//   - F-UI-3: per-model utilization columns (sonnet/opus)
+//   - F-UI-4: 30s auto-refresh timer in the snapshot hook
+//   - F-UI-5: narrow-viewport responsive layout (grid cards stack)
+//
+// Why one file: the three components share styles, the snapshot-fetcher
+// hook, and the PoolTable render. Splitting would just scatter state.
 
-import { useState, useEffect, useCallback, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, useRef, type CSSProperties, type FormEvent } from "react";
 import type {
   PluginPageProps,
   PluginSidebarProps,
@@ -18,7 +24,7 @@ import type {
 import { PLUGIN_ID } from "../manifest.js";
 import type { SnapshotResponse, AccountRow, CcrotateTarget } from "../types.js";
 
-// ─── shared fetch helpers ───────────────────────────────────────────────────
+// ─── fetch helpers ──────────────────────────────────────────────────────────
 
 function apiUrl(path: string): string {
   return `/api/plugins/${PLUGIN_ID}${path}`;
@@ -37,50 +43,62 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
-  if (!res.ok) throw new Error(`${path} → ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    // Surface structured error bodies (e.g. SESSIONKEY_IDENTITY_MISMATCH)
+    // so callers can render actionable messages instead of just stringified
+    // HTML errors.
+    const text = await res.text();
+    let parsed: any;
+    try { parsed = JSON.parse(text); } catch {}
+    const err = new Error(parsed?.error ?? `${path} → ${res.status} ${text}`);
+    (err as any).status = res.status;
+    (err as any).body = parsed;
+    throw err;
+  }
   return (await res.json()) as T;
 }
 
-// ─── snapshot hook ──────────────────────────────────────────────────────────
+// ─── snapshot hook with auto-refresh (F-UI-4) ───────────────────────────────
+
+const AUTO_REFRESH_MS = 30_000;
 
 function useSnapshot(companyId: string | null | undefined) {
   const [data, setData] = useState<SnapshotResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const mounted = useRef(true);
 
-  const load = useCallback(async () => {
+  useEffect(() => () => { mounted.current = false; }, []);
+
+  const fetchOnce = useCallback(async (silent = false) => {
     if (!companyId) return;
-    setLoading(true);
-    setError(null);
+    if (!silent) setLoading(true);
     try {
       const r = await getJson<SnapshotResponse>(`/snapshot?companyId=${encodeURIComponent(companyId)}`);
-      setData(r);
+      if (mounted.current) {
+        setData(r);
+        setError(null);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mounted.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (mounted.current && !silent) setLoading(false);
     }
   }, [companyId]);
 
   useEffect(() => {
-    let cancelled = false;
     if (!companyId) {
       setLoading(false);
       return;
     }
-    (async () => {
-      try {
-        const r = await getJson<SnapshotResponse>(`/snapshot?companyId=${encodeURIComponent(companyId)}`);
-        if (!cancelled) setData(r);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [companyId]);
+    void fetchOnce(false);
+    // F-UI-4: silent re-fetch every 30s so the open page stays current
+    // without manual refresh. Errors from background refetches surface
+    // in the error state but don't blank the data.
+    const handle = setInterval(() => { void fetchOnce(true); }, AUTO_REFRESH_MS);
+    return () => clearInterval(handle);
+  }, [companyId, fetchOnce]);
 
   const refresh = useCallback(async () => {
     if (!companyId) return;
@@ -88,18 +106,18 @@ function useSnapshot(companyId: string | null | undefined) {
     setError(null);
     try {
       await postJson("/refresh", { companyId });
-      await load();
+      await fetchOnce(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mounted.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setRefreshing(false);
+      if (mounted.current) setRefreshing(false);
     }
-  }, [companyId, load]);
+  }, [companyId, fetchOnce]);
 
-  return { data, loading, error, refreshing, refresh, reload: load };
+  return { data, loading, error, refreshing, refresh, reload: fetchOnce };
 }
 
-// ─── shared styles ──────────────────────────────────────────────────────────
+// ─── styles ─────────────────────────────────────────────────────────────────
 
 const pageStyle: CSSProperties = {
   padding: "24px",
@@ -114,6 +132,7 @@ const cardStyle: CSSProperties = {
   borderRadius: "8px",
   padding: "16px",
   background: "var(--card, #09090b)",
+  overflowX: "auto", // F-UI-5: prevent horizontal layout break on narrow viewports
 };
 
 const headerRowStyle: CSSProperties = {
@@ -122,6 +141,7 @@ const headerRowStyle: CSSProperties = {
   justifyContent: "space-between",
   gap: "12px",
   marginBottom: "12px",
+  flexWrap: "wrap", // F-UI-5
 };
 
 const headerTitleStyle: CSSProperties = {
@@ -139,6 +159,7 @@ const tableStyle: CSSProperties = {
   width: "100%",
   borderCollapse: "collapse",
   fontSize: "13px",
+  minWidth: "640px", // F-UI-5: table is still wide; card scrolls horizontally
 };
 
 const thStyle: CSSProperties = {
@@ -175,6 +196,12 @@ const secondaryBtnStyle: CSSProperties = {
   color: "var(--secondary-foreground, #fafafa)",
 };
 
+const smallBtnStyle: CSSProperties = {
+  ...secondaryBtnStyle,
+  fontSize: "11px",
+  padding: "4px 10px",
+};
+
 const textareaStyle: CSSProperties = {
   width: "100%",
   minHeight: "120px",
@@ -188,8 +215,18 @@ const textareaStyle: CSSProperties = {
   resize: "vertical",
 };
 
-// Tier color + dot rendering matches `/ccrotate:when` output semantics
-// (extra=green, base=yellow, exhausted=gray dim, stale=red).
+const inputStyle: CSSProperties = {
+  fontSize: "12px",
+  padding: "6px 10px",
+  fontFamily: "ui-monospace, SFMono-Regular, monospace",
+  border: "1px solid var(--border, #27272a)",
+  borderRadius: "6px",
+  background: "var(--input, #18181b)",
+  color: "var(--foreground, #fafafa)",
+  outline: "none",
+  width: "100%",
+};
+
 function tierDot(row: AccountRow): { color: string; label: string } {
   if (!row.isHealthy) return { color: "#ef4444", label: "stale" };
   const tier = (row.tier || "").toLowerCase();
@@ -199,12 +236,107 @@ function tierDot(row: AccountRow): { color: string; label: string } {
   return { color: "#71717a", label: row.tier || "?" };
 }
 
+// ─── inline per-row sessionKey paste form (F-UI-2) ──────────────────────────
+
+function SetSessionInlineForm({
+  email,
+  companyId,
+  onClose,
+  onSuccess,
+}: {
+  email: string;
+  companyId: string;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [sessionKey, setSessionKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = sessionKey.trim();
+    if (trimmed.length < 40 || !trimmed.startsWith("sk-ant-")) {
+      setErr("expected sk-ant-sid01-... (≥40 chars)");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await postJson("/set-session", { companyId, email, target: "claude", sessionKey: trimmed });
+      onSuccess();
+      onClose();
+    } catch (e: any) {
+      // Mismatch error has structured body
+      if (e?.body?.code === "SESSIONKEY_IDENTITY_MISMATCH") {
+        setErr(`mismatch: key belongs to ${e.body.snappedEmail}`);
+      } else {
+        setErr(e?.message ?? String(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ display: "grid", gap: "6px", marginTop: "6px" }}>
+      <input
+        type="text"
+        autoFocus
+        placeholder="sk-ant-sid01-..."
+        value={sessionKey}
+        onChange={(e) => setSessionKey(e.target.value)}
+        style={inputStyle}
+        disabled={busy}
+      />
+      {err && <div style={{ ...subtleStyle, color: "#ef4444" }}>{err}</div>}
+      <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end" }}>
+        <button type="button" style={smallBtnStyle} onClick={onClose} disabled={busy}>
+          cancel
+        </button>
+        <button type="submit" style={{ ...smallBtnStyle, ...primaryBtnStyle, fontSize: "11px", padding: "4px 10px" }} disabled={busy || !sessionKey.trim()}>
+          {busy ? "relogging in…" : "set + relogin"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // ─── pool table (shared by Page + SettingsPage) ─────────────────────────────
 
-function PoolTable({ target, accounts }: { target: CcrotateTarget; accounts: AccountRow[] }) {
+function PoolTable({
+  target,
+  accounts,
+  companyId,
+  onMutated,
+}: {
+  target: CcrotateTarget;
+  accounts: AccountRow[];
+  companyId: string | null;
+  onMutated: () => void;
+}) {
+  const [busyEmail, setBusyEmail] = useState<string | null>(null);
+  const [sessionFormEmail, setSessionFormEmail] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<{ email: string; msg: string } | null>(null);
+
   if (!accounts.length) {
     return <div style={subtleStyle}>(no {target} accounts in pool)</div>;
   }
+
+  async function doSwitch(email: string) {
+    if (!companyId) return;
+    setBusyEmail(email);
+    setRowError(null);
+    try {
+      await postJson("/switch", { companyId, email, target });
+      onMutated();
+    } catch (e: any) {
+      setRowError({ email, msg: e?.message ?? String(e) });
+    } finally {
+      setBusyEmail(null);
+    }
+  }
+
   return (
     <table style={tableStyle}>
       <thead>
@@ -212,28 +344,80 @@ function PoolTable({ target, accounts }: { target: CcrotateTarget; accounts: Acc
           <th style={thStyle}>★</th>
           <th style={thStyle}>account</th>
           <th style={thStyle}>tier</th>
-          <th style={thStyle}>5h util</th>
-          <th style={thStyle}>7d util</th>
+          <th style={thStyle}>5h</th>
+          <th style={thStyle}>7d</th>
+          {/* F-UI-3: per-model utilization */}
+          <th style={thStyle}>7d sonnet</th>
+          <th style={thStyle}>7d opus</th>
           <th style={thStyle}>availability</th>
+          <th style={thStyle}></th>
         </tr>
       </thead>
       <tbody>
         {accounts.map((row) => {
           const { color, label } = tierDot(row);
+          const isBusy = busyEmail === row.email;
+          const isSessionFormOpen = sessionFormEmail === row.email;
           return (
-            <tr key={row.email}>
-              <td style={tdStyle}>{row.isActive ? "★" : ""}</td>
-              <td style={tdStyle}>{row.email}</td>
-              <td style={tdStyle}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                  <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, display: "inline-block" }} />
-                  {label}
-                </span>
-              </td>
-              <td style={tdStyle}>{row.utilization5h != null ? `${row.utilization5h}%` : "—"}</td>
-              <td style={tdStyle}>{row.utilization7d != null ? `${row.utilization7d}%` : "—"}</td>
-              <td style={tdStyle}>{row.availability || "—"}</td>
-            </tr>
+            <>
+              <tr key={row.email}>
+                <td style={tdStyle}>{row.isActive ? "★" : ""}</td>
+                <td style={tdStyle}>{row.email}</td>
+                <td style={tdStyle}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, display: "inline-block" }} />
+                    {label}
+                  </span>
+                </td>
+                <td style={tdStyle}>{row.utilization5h != null ? `${row.utilization5h}%` : "—"}</td>
+                <td style={tdStyle}>{row.utilization7d != null ? `${row.utilization7d}%` : "—"}</td>
+                <td style={tdStyle}>{row.utilization7dSonnet != null ? `${row.utilization7dSonnet}%` : "—"}</td>
+                <td style={tdStyle}>{row.utilization7dOpus != null ? `${row.utilization7dOpus}%` : "—"}</td>
+                <td style={tdStyle}>{row.availability || "—"}</td>
+                <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
+                  {/* F-UI-1: switch button per row */}
+                  {target === "claude" && !row.isActive && (
+                    <button
+                      type="button"
+                      style={smallBtnStyle}
+                      disabled={isBusy || !companyId}
+                      onClick={() => doSwitch(row.email)}
+                      title="Make this the active account"
+                    >
+                      {isBusy ? "switching…" : "switch"}
+                    </button>
+                  )}
+                  {/* F-UI-2: per-row sessionKey paste (claude only) */}
+                  {target === "claude" && (
+                    <button
+                      type="button"
+                      style={{ ...smallBtnStyle, marginLeft: "4px" }}
+                      onClick={() => setSessionFormEmail(isSessionFormOpen ? null : row.email)}
+                      title="Paste a fresh sessionKey for this account"
+                    >
+                      {isSessionFormOpen ? "close" : "sessionKey"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+              {isSessionFormOpen && companyId && (
+                <tr key={`${row.email}-form`}>
+                  <td colSpan={9} style={{ ...tdStyle, paddingTop: 0, paddingBottom: "16px" }}>
+                    <SetSessionInlineForm
+                      email={row.email}
+                      companyId={companyId}
+                      onClose={() => setSessionFormEmail(null)}
+                      onSuccess={onMutated}
+                    />
+                  </td>
+                </tr>
+              )}
+              {rowError && rowError.email === row.email && (
+                <tr key={`${row.email}-err`}>
+                  <td colSpan={9} style={{ ...tdStyle, color: "#ef4444" }}>{rowError.msg}</td>
+                </tr>
+              )}
+            </>
           );
         })}
       </tbody>
@@ -241,11 +425,11 @@ function PoolTable({ target, accounts }: { target: CcrotateTarget; accounts: Acc
   );
 }
 
-// ─── slot: Page (full nav page at /plugins/kkroo.ccrotate) ──────────────────
+// ─── slot: Page (full nav page) ─────────────────────────────────────────────
 
 export function CcrotatePage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? null;
-  const { data, loading, error, refreshing, refresh } = useSnapshot(companyId);
+  const { data, loading, error, refreshing, refresh, reload } = useSnapshot(companyId);
 
   return (
     <div style={pageStyle}>
@@ -254,7 +438,7 @@ export function CcrotatePage({ context }: PluginPageProps) {
           <h2 style={{ ...headerTitleStyle, fontSize: "20px" }}>ccrotate pool</h2>
           <div style={subtleStyle}>
             {data?.fetchedAt
-              ? `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}`
+              ? `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}  ·  auto-refresh every ${AUTO_REFRESH_MS / 1000}s`
               : loading
                 ? "loading…"
                 : "no data"}
@@ -291,7 +475,12 @@ export function CcrotatePage({ context }: PluginPageProps) {
             {pool?.error ? (
               <div style={subtleStyle}>{pool.error}</div>
             ) : (
-              <PoolTable target={target} accounts={pool?.accounts ?? []} />
+              <PoolTable
+                target={target}
+                accounts={pool?.accounts ?? []}
+                companyId={companyId}
+                onMutated={() => void reload(false)}
+              />
             )}
           </div>
         );
@@ -300,7 +489,7 @@ export function CcrotatePage({ context }: PluginPageProps) {
   );
 }
 
-// ─── slot: SidebarPanel (compact status widget) ─────────────────────────────
+// ─── slot: SidebarPanel ─────────────────────────────────────────────────────
 
 export function CcrotateSidebarPanel({ context }: PluginSidebarProps) {
   const companyId = context.companyId ?? null;
@@ -325,7 +514,7 @@ export function CcrotateSidebarPanel({ context }: PluginSidebarProps) {
         <div style={{ display: "grid", gap: "6px", fontSize: "12px" }}>
           <div>
             <span style={{ color: "var(--muted-foreground, #a1a1aa)" }}>★ active: </span>
-            {claudeActive ? claudeActive.email : <span style={subtleStyle}>none</span>}
+            {claudeActive ? <span style={{ wordBreak: "break-all" }}>{claudeActive.email}</span> : <span style={subtleStyle}>none</span>}
           </div>
           <div>
             <span style={{ color: "var(--muted-foreground, #a1a1aa)" }}>claude usable: </span>
@@ -343,7 +532,7 @@ export function CcrotateSidebarPanel({ context }: PluginSidebarProps) {
   );
 }
 
-// ─── slot: SettingsPage (state import/export) ───────────────────────────────
+// ─── slot: SettingsPage ─────────────────────────────────────────────────────
 
 export function CcrotateSettingsPage({ context }: PluginSettingsPageProps) {
   const companyId = context.companyId ?? null;
