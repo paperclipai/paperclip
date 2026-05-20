@@ -432,7 +432,8 @@ export const doneEvidenceSchema = z.object({
 
 export type DoneEvidence = z.infer<typeof doneEvidenceSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.partial().extend({
+  requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
