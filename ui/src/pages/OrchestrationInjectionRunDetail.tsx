@@ -21,6 +21,7 @@ import { agentRouteRef, agentUrl, formatDateTime } from "../lib/utils";
 import { Link, useParams, useSearchParams } from "@/lib/router";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { nav, orchestrationInjectionPage } from "../lib/i18n";
+import { RUN_LIST_PATH } from "../lib/run-routes";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -197,7 +198,7 @@ export function OrchestrationInjectionRunDetail() {
   useEffect(() => {
     setBreadcrumbs([
       { label: nav.work },
-      { label: nav.orchestrationInjection, href: "/orchestration-injection" },
+      { label: nav.orchestrationInjection, href: RUN_LIST_PATH },
       { label: orchestrationInjectionPage.runDetailTitle },
     ]);
   }, [setBreadcrumbs]);
@@ -407,7 +408,7 @@ export function OrchestrationInjectionRunDetail() {
 
   const backLink = (
     <Link
-      to="/orchestration-injection"
+      to={RUN_LIST_PATH}
       className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
     >
       <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />

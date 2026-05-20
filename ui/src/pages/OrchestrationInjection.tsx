@@ -16,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime, cn } from "../lib/utils";
 import { useNavigate } from "@/lib/router";
 import { nav, orchestrationInjectionPage } from "../lib/i18n";
+import { runDetailPath } from "../lib/run-routes";
 
 function runSummaryLine(run: HeartbeatRun) {
   if (run.resultJson && typeof run.resultJson === "object") {
@@ -54,7 +55,7 @@ export function OrchestrationInjection() {
 
   const runsPagedQuery = useQuery({
     queryKey: [
-      "orchestration-injection-paged",
+      "runs-paged",
       selectedCompanyId,
       pageIndex,
       pageSize,
@@ -114,7 +115,7 @@ export function OrchestrationInjection() {
   const totalPages = Math.max(1, Math.ceil(totalRuns / pageSize));
 
   const openRun = (runId: string) => {
-    navigate(`/orchestration-injection/runs/${runId}`);
+    navigate(runDetailPath(runId));
   };
 
   return (

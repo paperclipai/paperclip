@@ -20,6 +20,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "design-guide",
   "search",
   "heartbeat-tasks",
+  "runs",
+  /** @deprecated Legacy slug; kept for unprefixed-path detection until bookmarks expire. */
   "orchestration-injection",
   "orchestration-gates",
   /** LLM Wiki 等插件注册的板级页面路径（manifest `routePath: "wiki"`） */

@@ -86,7 +86,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
     id: "closed-issue-run-finalize",
     component: "关单后运行结案",
     uiLinks: [
-      { to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" },
+      { to: "/runs", labelKey: "jumpOrchestrationInjection" },
       { to: "/issues", labelKey: "jumpIssues" },
     ],
     configurable:
@@ -99,7 +99,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
   {
     id: "orphan-reap",
     component: "孤儿运行回收",
-    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    uiLinks: [{ to: "/runs", labelKey: "jumpOrchestrationInjection" }],
     configurable:
       "周期性扫描可带「多久算陈旧」阈值（默认约 5 分钟，以当前实现为准）；属服务端内部策略，看板无单独页。",
     hardcoded:
@@ -135,7 +135,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
   {
     id: "stranded-wake-requeue",
     component: "滞留补救",
-    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    uiLinks: [{ to: "/runs", labelKey: "jumpOrchestrationInjection" }],
     configurable:
       "团队、事务上的档位与预算仍适用。实例可单独关掉「自动建滞留回收子单」（通常只影响是否生成子单，不等同于整段滞留对账都停）；具体变量名见代码位置。本行的补派、唤醒多数仍会跑，除非协作树上有暂停类抑制。",
     hardcoded:
@@ -155,7 +155,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
   {
     id: "silent-active-run-watchdog",
     component: "活跃无输出盯梢",
-    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    uiLinks: [{ to: "/runs", labelKey: "jumpOrchestrationInjection" }],
     configurable: "阈值（约 1h / 4h 等）写在实现里，本页不暴露滑块；若将来实例级可配会出现在设置。",
     hardcoded:
       "活跃无输出盯梢说明：跑次长时间卡在活跃却几乎没控制台输出时，分级怀疑，并可能开复查单或留评论。\n\n与「心跳避退」不是一回事：这里盯的是输出静默，并对同类提醒去重。\n\n触发：每轮调度内，扫描正在跑且命中静默规则的心跳跑次。\n\n结果：可能创建或挂上「活跃无输出复核」类事务并叫醒；细节见活动日志。",
@@ -164,7 +164,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
   {
     id: "bare-wake",
     component: "无单不叫",
-    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    uiLinks: [{ to: "/runs", labelKey: "jumpOrchestrationInjection" }],
     configurable: "没有单独总开关；一次叫醒必须能落到具体事务上，否则系统不认。",
     hardcoded:
       "无单不叫说明：说不清是哪张单就不叫醒；台账和界面要一致。\n\n拒绝「只有一句话、但绑不上任何事务」的即时叫醒，以免智能体在真空中瞎跑。事务已关单却仍挂着「进行中」的运行，请看本表「关单后运行结案」，不在此条里取消。\n\n触发：外部只丢了说明却指不到某条事务。\n\n结果：不进入执行队列，并留下可追溯的跳过原因。",
@@ -175,7 +175,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
     component: "互动叫醒",
     uiLinks: [
       { to: "/issues", labelKey: "jumpIssues" },
-      { to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" },
+      { to: "/runs", labelKey: "jumpOrchestrationInjection" },
     ],
     configurable:
       "可按事务调「评论叫醒要带多少上下文」（档位）；未设则用团队默认值。若当前界面没有该字段，只能走接口或等后续版本露出。",
@@ -198,7 +198,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
   {
     id: "recovery",
     component: "协作树护栏",
-    uiLinks: [{ to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" }],
+    uiLinks: [{ to: "/runs", labelKey: "jumpOrchestrationInjection" }],
     configurable:
       "若实例对人因暂停、未复机等有抑制策略，以活动日志与当前版本为准。",
     hardcoded:
@@ -210,7 +210,7 @@ export const orchestrationGatesRows: ReadonlyArray<OrchestrationGatesTableRow> =
     component: "滞留回收",
     uiLinks: [
       { to: "/issues", labelKey: "jumpIssues" },
-      { to: "/orchestration-injection", labelKey: "jumpOrchestrationInjection" },
+      { to: "/runs", labelKey: "jumpOrchestrationInjection" },
     ],
     configurable:
       "与「滞留补救」同一套：树上的暂停、预算、以及「是否自动建滞留回收子单」的实例开关都还在；最后一项往往只关建子单，不一定整段对账都停。变量名见代码位置。",

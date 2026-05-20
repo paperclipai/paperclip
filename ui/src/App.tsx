@@ -61,7 +61,20 @@ import { useCompany } from "./context/CompanyContext";
 import { useDialogActions } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+import { RUN_LIST_PATH, runDetailPath } from "./lib/run-routes";
 import { onboarding } from "./lib/i18n";
+
+function LegacyOrchestrationInjectionListRedirect() {
+  const location = useLocation();
+  return <Navigate to={`${RUN_LIST_PATH}${location.search}${location.hash}`} replace />;
+}
+
+function LegacyOrchestrationInjectionRunRedirect() {
+  const { runId } = useParams();
+  const location = useLocation();
+  if (!runId) return <LegacyOrchestrationInjectionListRedirect />;
+  return <Navigate to={`${runDetailPath(runId)}${location.search}${location.hash}`} replace />;
+}
 
 function boardRoutes() {
   return (
@@ -116,8 +129,10 @@ function boardRoutes() {
       <Route path="routines" element={<Routines />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="heartbeat-tasks" element={<HeartbeatTasks />} />
-      <Route path="orchestration-injection/runs/:runId" element={<OrchestrationInjectionRunDetail />} />
-      <Route path="orchestration-injection" element={<OrchestrationInjection />} />
+      <Route path="runs/:runId" element={<OrchestrationInjectionRunDetail />} />
+      <Route path="runs" element={<OrchestrationInjection />} />
+      <Route path="orchestration-injection/runs/:runId" element={<LegacyOrchestrationInjectionRunRedirect />} />
+      <Route path="orchestration-injection" element={<LegacyOrchestrationInjectionListRedirect />} />
       <Route path="orchestration-gates" element={<OrchestrationGates />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
@@ -303,6 +318,8 @@ export function App() {
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
           <Route path="heartbeat-tasks" element={<UnprefixedBoardRedirect />} />
+          <Route path="runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route path="runs" element={<UnprefixedBoardRedirect />} />
           <Route path="orchestration-injection/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="orchestration-injection" element={<UnprefixedBoardRedirect />} />
           <Route path="orchestration-gates" element={<UnprefixedBoardRedirect />} />

@@ -42,4 +42,11 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/dashboard/live", "PAP")).toBe("/PAP/dashboard/live");
     expect(toCompanyRelativePath("/PAP/dashboard/live")).toBe("/dashboard/live");
   });
+
+  it("treats company run list paths as board routes that need a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/runs")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/runs/run-123")).toBe(true);
+    expect(applyCompanyPrefix("/runs/run-123", "PAP")).toBe("/PAP/runs/run-123");
+    expect(toCompanyRelativePath("/PAP/runs/run-123")).toBe("/runs/run-123");
+  });
 });

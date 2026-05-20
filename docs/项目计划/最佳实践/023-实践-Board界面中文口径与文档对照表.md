@@ -92,7 +92,7 @@
 
 ---
 
-## 6. 路由改名：`orchestration-injection` → `runs`（董事会 · 2026-05-20 · **未开工**）
+## 6. 路由改名：`orchestration-injection` → `runs`（董事会 · 2026-05-20 · **已落地**）
 
 | 层 | 现行（废弃） | 目标 | 说明 |
 | --- | --- | --- | --- |
@@ -100,7 +100,7 @@
 | **URL** | `/orchestration-injection/runs/:runId` | `/runs/:runId` | 去掉路径里重复的 `runs` 段 |
 | **兼容** | — | 旧路径 **重定向** 到新路径 | `App.tsx` + 无公司前缀的 `UnprefixedBoardRedirect` |
 | **板级根** | `company-routes.ts` 登记 `orchestration-injection` | 改为 `runs` | 公司前缀解析 |
-| **链接** | `Sidebar`、`OrchestrationGates`、`orchestration-gates-copy` 等 | 全部 `/runs` | 约十余处 |
+| **链接** | `Sidebar`、`OrchestrationGates`、`orchestration-gates-copy` 等 | 全部 `/runs` | 已改；真值见 `ui/src/lib/run-routes.ts` |
 | **代码名（可二期）** | `OrchestrationInjection*.tsx`、`orchestrationInjectionPage` | `RunListPage` / `RunDetailPage`、`runListPage` 等 | 与 [050 §Run 呈现统一](../执行/050-运行时间线唤起溯源与档位-UI.md) 合并做单；**`runLedger`（事务运行账本）勿混** |
 
 **不动：** `/orchestration-gates`（**编排闸门**，调度说明页，不是运行清单）。
@@ -122,5 +122,6 @@
 
 | 日期 | 摘要 |
 | --- | --- |
+| 2026-05-20 | UI：`App.tsx` 新路由 + 旧路径重定向；`run-routes.ts` |
 | 2026-05-20 | §6：路由真值 `orchestration-injection` → `/runs`、`/runs/:runId`；旧路径仅兼容重定向 |
 | 2026-05-20 | 首版：根治「编排注入」与 **运行清单** 错位；固定侧边栏路径与 050/060 分期说法 |

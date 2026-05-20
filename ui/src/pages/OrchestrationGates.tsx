@@ -102,7 +102,7 @@ export function OrchestrationGates() {
           <Link to="/heartbeat-tasks" className="text-primary hover:underline">
             {orchestrationGatesPage.relatedHeartbeatTasks}
           </Link>
-          <Link to="/orchestration-injection" className="inline-flex items-center gap-1 text-primary hover:underline">
+          <Link to="/runs" className="inline-flex items-center gap-1 text-primary hover:underline">
             <Workflow className="h-3.5 w-3.5" />
             {orchestrationGatesPage.relatedInjection}
           </Link>

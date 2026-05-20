@@ -106,7 +106,7 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label={nav.issues} icon={CircleDot} />
           <SidebarNavItem to="/routines" label={nav.routines} icon={Repeat} />
           <SidebarNavItem to="/heartbeat-tasks" label={nav.heartbeatTasks} icon={HeartPulse} />
-          <SidebarNavItem to="/orchestration-injection" label={nav.orchestrationInjection} icon={Workflow} />
+          <SidebarNavItem to="/runs" label={nav.orchestrationInjection} icon={Workflow} />
           <SidebarNavItem to="/orchestration-gates" label={nav.orchestrationGates} icon={Shield} />
           <SidebarNavItem to="/goals" label={nav.goals} icon={Target} />
           {showWorkspacesLink ? (
