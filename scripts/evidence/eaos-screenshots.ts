@@ -4,28 +4,46 @@
  *
  * Walks the EAOS primary-nav routes at 1440×900, 1920×1080, and a small
  * 1440×720 viewport (for the scroll-proof shot). Saves PNGs under
- * `evidence/LET-503/screenshots/<viewport>/<route-slug>.png`.
+ * `evidence/LET-503/screenshots/<viewport>/<route-slug>.png` and writes a
+ * `manifest.json` describing per-route capture status (`anchor-hit`,
+ * `truthful-gap`, etc.) so the reviewer can tell at a glance whether each
+ * screenshot is the authenticated surface or the unauthenticated empty
+ * state.
  *
  * No vendor traffic is involved. The script is intentionally read-only:
  * navigates to each `/eaos/*` route, waits for it to render, and snapshots
  * the visible viewport. No live action is invoked.
  *
- * Usage:
+ * Usage (repo-available command — no global `tsx` required):
  *
  *   # Terminal 1 — start the EAOS dev UI (proxies /api to your API server)
  *   pnpm --filter @paperclipai/ui dev
  *
- *   # Terminal 2 — ensure your `paperclip-session` cookie is set so the
- *   # API proxy can authenticate, then run:
- *   tsx scripts/evidence/eaos-screenshots.ts \
+ *   # Terminal 2 — run the runner using the tsx copy that ships with the
+ *   # paperclip CLI workspace (the workspace root does not list tsx as a
+ *   # top-level devDep):
+ *   node cli/node_modules/.bin/tsx scripts/evidence/eaos-screenshots.ts \
+ *     --base http://localhost:5173 \
+ *     --theme light \
+ *     --out evidence/LET-503/screenshots
+ *
+ *   # Optional — supply a session cookie to capture the authenticated UI:
+ *   node cli/node_modules/.bin/tsx scripts/evidence/eaos-screenshots.ts \
  *     --base http://localhost:5173 \
  *     --cookie 'paperclip-session=...' \
+ *     --theme light \
  *     --out evidence/LET-503/screenshots
  *
  * The cookie is read once and re-applied per viewport so the auth state
  * does not bleed between runs. If `--cookie` is omitted the script still
- * runs but pages will render their no-company / loading / error state —
- * which is itself a valid form of evidence for the truthful-gap audit.
+ * completes successfully: pages render their no-company / loading / error
+ * state and each shot is tagged `truthful-gap` in the manifest — which is
+ * itself a valid form of evidence for the LET-505 audit.
+ *
+ * `--theme light|dark` (default `light`) writes `paperclip.theme` into
+ * `localStorage` via an init script before the React app mounts, so the
+ * captured surfaces match the LET-502 light-first design contract even
+ * when the global `ui/index.html` fallback would otherwise pick dark.
  *
  * The output directory layout is:
  *
@@ -33,6 +51,7 @@
  *     1440/<route>.png       — desktop 1440×900
  *     1920/<route>.png       — wide 1920×1080
  *     scroll/<route>.png     — 1440×720, scrolled to bottom for scroll proof
+ *     manifest.json          — per-route capture status (anchor-hit/gap)
  *
  * Hard gates: no deploy, no restart, no prod migration, no spend, no live
  * vendor enablement. Outputs are local PNG files only.
@@ -42,8 +61,8 @@
 // resolve the pnpm-store copy directly (same pattern as
 // scripts/let-368-evidence.mjs). This keeps the runner usable without a
 // workspace package.json change.
-import { mkdir, readdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Browser, BrowserContext, Cookie } from "playwright";
 
@@ -61,10 +80,24 @@ async function loadPlaywright(): Promise<typeof import("playwright")> {
   return (await import(pathToFileURL(entry).toString())) as typeof import("playwright");
 }
 
+type ThemeChoice = "light" | "dark";
+
 interface Args {
   readonly base: string;
   readonly cookie: string | null;
   readonly outDir: string;
+  readonly theme: ThemeChoice;
+  readonly anchorTimeoutMs: number;
+}
+
+interface CaptureRecord {
+  readonly viewport: ViewportSpec["id"];
+  readonly route: string;
+  readonly path: string;
+  readonly file: string;
+  readonly status: "anchor-hit" | "truthful-gap" | "error";
+  readonly subStep?: string;
+  readonly note?: string;
 }
 
 interface RouteSpec {
@@ -161,6 +194,8 @@ function parseArgs(argv: readonly string[]): Args {
   let base = "http://localhost:5173";
   let cookie: string | null = null;
   let outDir = "evidence/LET-503/screenshots";
+  let theme: ThemeChoice = "light";
+  let anchorTimeoutMs = 8_000;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--base" || arg === "-b") {
@@ -169,9 +204,15 @@ function parseArgs(argv: readonly string[]): Args {
       cookie = argv[++i] ?? null;
     } else if (arg === "--out" || arg === "-o") {
       outDir = argv[++i] ?? outDir;
+    } else if (arg === "--theme" || arg === "-t") {
+      const next = argv[++i];
+      if (next === "light" || next === "dark") theme = next;
+    } else if (arg === "--anchor-timeout") {
+      const next = Number.parseInt(argv[++i] ?? "", 10);
+      if (Number.isFinite(next) && next > 0) anchorTimeoutMs = next;
     }
   }
-  return { base, cookie, outDir };
+  return { base, cookie, outDir, theme, anchorTimeoutMs };
 }
 
 function cookieToPlaywright(raw: string, baseUrl: string): Cookie[] {
@@ -202,50 +243,96 @@ async function captureRoute(
   args: Args,
   viewport: ViewportSpec,
   route: RouteSpec,
-): Promise<void> {
+): Promise<CaptureRecord[]> {
+  const records: CaptureRecord[] = [];
   const page = await context.newPage();
-  await page.setViewportSize({ width: viewport.width, height: viewport.height });
-
-  const url = new URL(route.path, args.base).toString();
-  await page.goto(url, { waitUntil: "domcontentloaded" });
-
   try {
-    await page.waitForSelector(route.waitForSelector, { timeout: 15_000, state: "visible" });
-  } catch {
-    // Surface still renders even if the API is unauthenticated; the
-    // resulting screenshot is the truthful gap state, which is itself
-    // valid evidence.
-  }
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
-  if (route.subSteps && viewport.id !== "scroll") {
-    for (const step of route.subSteps) {
-      const stepBtn = page.getByTestId(step.stepperTestId);
-      await stepBtn.click({ trial: false });
-      // small settle — purely DOM update.
-      await page.waitForTimeout(150);
-      const target = resolve(args.outDir, viewport.id, `${route.id}-${step.slug}.png`);
-      await ensureDir(dirname(target));
-      await page.screenshot({ path: target, fullPage: false });
+    const url = new URL(route.path, args.base).toString();
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+
+    let anchorHit = false;
+    try {
+      await page.waitForSelector(route.waitForSelector, {
+        timeout: args.anchorTimeoutMs,
+        state: "visible",
+      });
+      anchorHit = true;
+    } catch {
+      // Truthful-gap path: the surface still renders (empty / loading /
+      // unauthenticated state), and that PNG is recorded with status
+      // `truthful-gap`. We do NOT throw — every viewport must produce a
+      // file so the manifest is complete.
     }
-    await page.close();
-    return;
-  }
 
-  if (viewport.scrollToBottom) {
-    await page.evaluate(() => {
-      const scroller =
-        document.querySelector('section[id="eaos-section-content"] > div') ??
-        document.scrollingElement ??
-        document.documentElement;
-      if (scroller) (scroller as HTMLElement).scrollTop = (scroller as HTMLElement).scrollHeight;
+    // Substeps are stepper-driven and only meaningful when the anchor
+    // rendered. If it did not, we record one truthful-gap shot per route
+    // for this viewport and skip clicking buttons that may not exist.
+    if (route.subSteps && viewport.id !== "scroll" && anchorHit) {
+      for (const step of route.subSteps) {
+        const stepBtn = page.getByTestId(step.stepperTestId);
+        const target = resolve(args.outDir, viewport.id, `${route.id}-${step.slug}.png`);
+        await ensureDir(dirname(target));
+        try {
+          await stepBtn.waitFor({ state: "visible", timeout: 3_000 });
+          await stepBtn.click({ trial: false });
+          await page.waitForTimeout(150);
+          await page.screenshot({ path: target, fullPage: false });
+          records.push({
+            viewport: viewport.id,
+            route: route.id,
+            path: route.path,
+            file: target,
+            status: "anchor-hit",
+            subStep: step.slug,
+          });
+        } catch (error) {
+          // Stepper button missing — capture whatever is on screen for
+          // this sub-step slot so the reviewer can see the gap.
+          await page.screenshot({ path: target, fullPage: false });
+          records.push({
+            viewport: viewport.id,
+            route: route.id,
+            path: route.path,
+            file: target,
+            status: "truthful-gap",
+            subStep: step.slug,
+            note: `stepper button ${step.stepperTestId} not visible: ${(error as Error).message?.split("\n")[0] ?? "unknown"}`,
+          });
+        }
+      }
+      return records;
+    }
+
+    if (viewport.scrollToBottom) {
+      await page.evaluate(() => {
+        const scroller =
+          document.querySelector('section[id="eaos-section-content"] > div') ??
+          document.scrollingElement ??
+          document.documentElement;
+        if (scroller) (scroller as HTMLElement).scrollTop = (scroller as HTMLElement).scrollHeight;
+      });
+      await page.waitForTimeout(200);
+    }
+
+    const target = resolve(args.outDir, viewport.id, `${route.id}.png`);
+    await ensureDir(dirname(target));
+    await page.screenshot({ path: target, fullPage: false });
+    records.push({
+      viewport: viewport.id,
+      route: route.id,
+      path: route.path,
+      file: target,
+      status: anchorHit ? "anchor-hit" : "truthful-gap",
+      note: anchorHit
+        ? undefined
+        : `anchor selector "${route.waitForSelector}" not visible within ${args.anchorTimeoutMs}ms; captured empty/error state`,
     });
-    await page.waitForTimeout(200);
+    return records;
+  } finally {
+    await page.close();
   }
-
-  const target = resolve(args.outDir, viewport.id, `${route.id}.png`);
-  await ensureDir(dirname(target));
-  await page.screenshot({ path: target, fullPage: false });
-  await page.close();
 }
 
 async function main(): Promise<void> {
@@ -262,23 +349,73 @@ async function main(): Promise<void> {
     await context.addCookies(cookieToPlaywright(args.cookie, args.base));
   }
 
-  let captured = 0;
+  // Pin the LET-502 light-first theme (or dark, if explicitly requested)
+  // before the React app mounts, regardless of the global ui/index.html
+  // fallback. addInitScript fires on every navigation in this context.
+  await context.addInitScript((theme: string) => {
+    try {
+      window.localStorage.setItem("paperclip.theme", theme);
+    } catch {
+      /* localStorage unavailable in some contexts — ignore. */
+    }
+  }, args.theme);
+
+  const records: CaptureRecord[] = [];
   for (const viewport of VIEWPORTS) {
     for (const route of ROUTES) {
       if (viewport.id === "scroll" && route.subSteps) continue;
-      await captureRoute(context, args, viewport, route);
-      captured++;
+      try {
+        const routeRecords = await captureRoute(context, args, viewport, route);
+        records.push(...routeRecords);
+      } catch (error) {
+        records.push({
+          viewport: viewport.id,
+          route: route.id,
+          path: route.path,
+          file: resolve(args.outDir, viewport.id, `${route.id}.png`),
+          status: "error",
+          note: (error as Error).message?.split("\n")[0] ?? "capture threw",
+        });
+      }
     }
   }
 
   await context.close();
   await browser.close();
 
+  const outDirAbs = resolve(args.outDir);
+  const portableRecords = records.map((record) => ({
+    ...record,
+    file: relative(outDirAbs, record.file) || record.file,
+  }));
+  const manifest = {
+    schema: "eaos-screenshots/v1",
+    generatedAt: new Date().toISOString(),
+    base: args.base,
+    theme: args.theme,
+    cookieApplied: Boolean(args.cookie),
+    anchorTimeoutMs: args.anchorTimeoutMs,
+    captures: portableRecords,
+  };
+  const manifestPath = resolve(args.outDir, "manifest.json");
+  await ensureDir(dirname(manifestPath));
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+  const counts = records.reduce(
+    (acc, record) => {
+      acc[record.status] = (acc[record.status] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<CaptureRecord["status"], number>,
+  );
+
   // eslint-disable-next-line no-console
   console.log(
-    `LET-505 — captured ${captured} screenshots to ${args.outDir}. Auth cookie was ${
-      args.cookie ? "applied" : "not supplied"
-    }; unauthenticated runs capture truthful-gap states.`,
+    `LET-505 — wrote ${records.length} captures to ${args.outDir} (anchor-hit=${
+      counts["anchor-hit"] ?? 0
+    }, truthful-gap=${counts["truthful-gap"] ?? 0}, error=${counts.error ?? 0}). Theme=${
+      args.theme
+    }; cookie ${args.cookie ? "applied" : "not supplied"}. Manifest: ${manifestPath}`,
   );
 }
 

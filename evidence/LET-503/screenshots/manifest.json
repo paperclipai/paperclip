@@ -1,0 +1,266 @@
+{
+  "schema": "eaos-screenshots/v1",
+  "generatedAt": "2026-05-20T00:46:10.598Z",
+  "base": "http://localhost:5173",
+  "theme": "light",
+  "cookieApplied": false,
+  "anchorTimeoutMs": 8000,
+  "captures": [
+    {
+      "viewport": "1440",
+      "route": "eaos-dashboard",
+      "path": "/eaos",
+      "file": "1440/eaos-dashboard.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid=\"eaos-command-center-landing\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-missions",
+      "path": "/eaos/missions",
+      "file": "1440/eaos-missions.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid=\"eaos-missions-page\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-agents",
+      "path": "/eaos/agents",
+      "file": "1440/eaos-agents.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid=\"eaos-agents-page\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-agents-new",
+      "path": "/eaos/agents/new",
+      "file": "1440/eaos-agents-new.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid=\"eaos-agent-builder-page\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-org",
+      "path": "/eaos/org",
+      "file": "1440/eaos-org.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid=\"eaos-org-page\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-projects",
+      "path": "/eaos/projects",
+      "file": "1440/eaos-projects.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-eaos-zone-id=\"projects\"], [data-testid^=\"eaos-projects-\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-runs",
+      "path": "/eaos/runs",
+      "file": "1440/eaos-runs.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-eaos-zone-id=\"runs\"], [data-testid^=\"eaos-runs-\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-approvals",
+      "path": "/eaos/approvals",
+      "file": "1440/eaos-approvals.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-eaos-zone-id=\"approvals\"], [data-testid^=\"eaos-approvals-\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-knowledge",
+      "path": "/eaos/knowledge",
+      "file": "1440/eaos-knowledge.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-eaos-zone-id=\"knowledge\"], [data-testid^=\"eaos-knowledge-\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-blueprints",
+      "path": "/eaos/blueprints",
+      "file": "1440/eaos-blueprints.png",
+      "status": "truthful-gap",
+      "note": "anchor selector \"[data-testid^=\"eaos-blueprints-\"]\" not visible within 8000ms; captured empty/error state"
+    },
+    {
+      "viewport": "1440",
+      "route": "eaos-admin",
+      "path": "/eaos/admin",
+      "file": "1440/eaos-admin.png",
+      "status": "error",
+      "note": "page.goto: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-dashboard",
+      "path": "/eaos",
+      "file": "1920/eaos-dashboard.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-missions",
+      "path": "/eaos/missions",
+      "file": "1920/eaos-missions.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-agents",
+      "path": "/eaos/agents",
+      "file": "1920/eaos-agents.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-agents-new",
+      "path": "/eaos/agents/new",
+      "file": "1920/eaos-agents-new.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-org",
+      "path": "/eaos/org",
+      "file": "1920/eaos-org.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-projects",
+      "path": "/eaos/projects",
+      "file": "1920/eaos-projects.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-runs",
+      "path": "/eaos/runs",
+      "file": "1920/eaos-runs.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-approvals",
+      "path": "/eaos/approvals",
+      "file": "1920/eaos-approvals.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-knowledge",
+      "path": "/eaos/knowledge",
+      "file": "1920/eaos-knowledge.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-blueprints",
+      "path": "/eaos/blueprints",
+      "file": "1920/eaos-blueprints.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "1920",
+      "route": "eaos-admin",
+      "path": "/eaos/admin",
+      "file": "1920/eaos-admin.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-dashboard",
+      "path": "/eaos",
+      "file": "scroll/eaos-dashboard.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-missions",
+      "path": "/eaos/missions",
+      "file": "scroll/eaos-missions.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-agents",
+      "path": "/eaos/agents",
+      "file": "scroll/eaos-agents.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-org",
+      "path": "/eaos/org",
+      "file": "scroll/eaos-org.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-projects",
+      "path": "/eaos/projects",
+      "file": "scroll/eaos-projects.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-runs",
+      "path": "/eaos/runs",
+      "file": "scroll/eaos-runs.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-approvals",
+      "path": "/eaos/approvals",
+      "file": "scroll/eaos-approvals.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-knowledge",
+      "path": "/eaos/knowledge",
+      "file": "scroll/eaos-knowledge.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-blueprints",
+      "path": "/eaos/blueprints",
+      "file": "scroll/eaos-blueprints.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    },
+    {
+      "viewport": "scroll",
+      "route": "eaos-admin",
+      "path": "/eaos/admin",
+      "file": "scroll/eaos-admin.png",
+      "status": "error",
+      "note": "browserContext.newPage: Target page, context or browser has been closed"
+    }
+  ]
+}

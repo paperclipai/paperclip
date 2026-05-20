@@ -1,6 +1,6 @@
 # LET-503 — Role-gating audit (ordinary user surfaces)
 
-Anchored at branch `enterprise-agent-os/LET-504` head `a3e640f4`.
+Anchored at branch `enterprise-agent-os/LET-504` head `b086033b` (LET-505 evidence-package commit; underlying LET-503/LET-504 product commits are `6f05c9f1`, `421b70ba`, `a3e640f4`).
 
 Scope: every primary `/eaos/*` route the ordinary user can reach via the left rail or in-page CTAs. For each surface, this audit walks the rendered controls and confirms that no operator-/admin-only control is exposed.
 

@@ -1,6 +1,6 @@
 # LET-503 — No-fake-data audit
 
-Anchored at branch `enterprise-agent-os/LET-504` head `a3e640f4` (builds on LET-503 commits `421b70ba` and `6f05c9f1`).
+Anchored at branch `enterprise-agent-os/LET-504` head `b086033b` (LET-505 evidence-package commit on top of LET-504 manual-builder commit `a3e640f4` and LET-503 commits `421b70ba` + `6f05c9f1`).
 
 Each row walks the on-screen counts/cards/rows for a route and classifies the source. Verdict legend:
 

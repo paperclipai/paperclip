@@ -1,6 +1,6 @@
 # LET-503 — EAOS route map & backend data sources
 
-Anchored at branch `enterprise-agent-os/LET-504` head `a3e640f4` (which builds on the LET-503 commits `421b70ba` and `6f05c9f1`). This map covers every primary-nav surface and every page mounted under `/eaos/*` in `ui/src/App.tsx`.
+Anchored at branch `enterprise-agent-os/LET-504` head `b086033b` (LET-505 evidence-package commit on top of the LET-504 manual-builder commit `a3e640f4` and the LET-503 commits `421b70ba` + `6f05c9f1`). This map covers every primary-nav surface and every page mounted under `/eaos/*` in `ui/src/App.tsx`.
 
 Conventions:
 - **API** column names the typed client function in `ui/src/api/*` (each function points at a documented `/api/...` endpoint scoped by `companyId`).
@@ -48,5 +48,5 @@ Conventions:
 
 ## Notes for the reviewer
 
-- The branch state at `a3e640f4` reflects the LET-503 cleanup (`6f05c9f1`), the first-class org graph (`421b70ba`), and the LET-504 manual builder.
+- The branch state at `b086033b` reflects the LET-503 cleanup (`6f05c9f1`), the first-class org graph (`421b70ba`), the LET-504 manual builder (`a3e640f4`), and the LET-505 evidence package (this commit).
 - `/eaos/missions` retains the older LET-424 dual-chip posture row (`SHELL_POSTURE_LABEL` + `NOT_CONNECTED_DATA_LABEL`). That predates the LET-502 contract §3 reduction and is flagged as a follow-up in the implementation handoff. Other primary surfaces (`/eaos`, `/eaos/agents`, `/eaos/org`, `/eaos/agents/new`) follow the cleaner LET-502 §3 posture.
