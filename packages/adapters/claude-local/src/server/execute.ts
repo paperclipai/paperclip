@@ -1068,15 +1068,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           runId,
         })
       : null;
+    const effectiveSessionId = quarantineResult?.quarantined ? null : sessionId ?? null;
+    // When we just quarantined a poisoned jsonl, force a brand-new --session-id
+    // on the first attempt too. Otherwise the CLI's "no session arg" path can
+    // land on another stale jsonl in the same project dir (multiple prompt
+    // bundles, prior runs in the same cwd). Symmetric with the SDK-400 retry
+    // branch below.
+    const postQuarantineFreshSessionId = quarantineResult?.quarantined ? randomUUID() : null;
     if (quarantineResult?.quarantined) {
       await onLog(
         "stdout",
-        `[paperclip] Quarantined poisoned session jsonl "${quarantineResult.path}" (synthetic id: ${quarantineResult.poisonId}). Starting fresh session.\n`,
+        `[paperclip] Quarantined poisoned session jsonl "${quarantineResult.path}" (synthetic id: ${quarantineResult.poisonId}). Starting fresh session "${postQuarantineFreshSessionId}".\n`,
       );
     }
-    const effectiveSessionId = quarantineResult?.quarantined ? null : sessionId ?? null;
 
-    const initial = await runAttempt(effectiveSessionId);
+    const initial = await runAttempt(effectiveSessionId, postQuarantineFreshSessionId);
     // Drop the (exitCode !== 0) gate from the retry condition: the Anthropic
     // Agent SDK 400 on previous_message_id surfaces with subtype=success and
     // exitCode 0, so we rely on the detector regex as the source of truth. On
