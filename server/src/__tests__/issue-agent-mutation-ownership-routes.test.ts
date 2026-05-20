@@ -13,6 +13,8 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  create: vi.fn(),
+  createChild: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -46,7 +48,9 @@ const mockDocumentService = vi.hoisted(() => ({
 }));
 
 const mockWorkProductService = vi.hoisted(() => ({
+  createForIssue: vi.fn(),
   getById: vi.fn(),
+  remove: vi.fn(),
   update: vi.fn(),
 }));
 
@@ -187,21 +191,37 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
+function createRunContextDb(contextSnapshot: Record<string, unknown> = {}) {
+  return {
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          then: async (resolve: (rows: unknown[]) => unknown) =>
+            resolve([{
+              id: ownerRunId,
+              companyId,
+              agentId: ownerAgentId,
+              contextSnapshot,
+            }]),
+        })),
+      })),
+    })),
+  };
+}
+
+async function createApp(actor: Record<string, unknown>, db: unknown = createRunContextDb()) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
-  const fakeDb = {
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
-  };
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(fakeDb as any, mockStorageService as any));
+  app.use("/api", issueRoutes(db as any, mockStorageService as any));
   app.use(errorHandler);
   return app;
 }
@@ -262,6 +282,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.create.mockReset();
+    mockIssueService.createChild.mockReset();
     mockIssueService.getAttachmentById.mockReset();
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
@@ -315,7 +337,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockDocumentService.upsertIssueDocument.mockReset();
+    mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
+    mockWorkProductService.remove.mockReset();
     mockWorkProductService.update.mockReset();
     mockStorageService.putFile.mockReset();
     mockStorageService.getObject.mockReset();
@@ -337,6 +361,28 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      ...makeIssue({
+        id: "88888888-8888-4888-8888-888888888888",
+        status: "todo",
+        assigneeAgentId: null,
+      }),
+      ...input,
+      companyId,
+    }));
+    mockIssueService.createChild.mockImplementation(async (_parentId: string, input: Record<string, unknown>) => ({
+      issue: {
+        ...makeIssue({
+          id: "99999999-9999-4999-8999-999999999999",
+          status: "todo",
+          parentId: issueId,
+          assigneeAgentId: null,
+        }),
+        ...input,
+        companyId,
+      },
+      parentBlockerAdded: false,
+    }));
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -378,6 +424,14 @@ describe("agent issue mutation checkout ownership", () => {
         latestRevisionNumber: 2,
       },
     });
+    mockWorkProductService.createForIssue.mockResolvedValue({
+      id: "product-2",
+      issueId,
+      companyId,
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+    });
     mockWorkProductService.getById.mockResolvedValue({
       id: "product-1",
       issueId,
@@ -390,6 +444,12 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       type: "artifact",
       title: "Updated",
+    });
+    mockWorkProductService.remove.mockResolvedValue({
+      id: "product-1",
+      issueId,
+      companyId,
+      type: "artifact",
     });
     mockStorageService.putFile.mockResolvedValue({
       provider: "local_disk",
@@ -456,6 +516,112 @@ describe("agent issue mutation checkout ownership", () => {
         createdByAgentId: ownerAgentId,
         createdByRunId: ownerRunId,
         lockedDocumentStrategy: "create_new_document",
+      }),
+    );
+  });
+
+  it.each([
+    [
+      "work product create",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/work-products`).send({
+          type: "artifact",
+          provider: "test",
+          title: "Artifact",
+        }),
+    ],
+    ["work product update", (app: express.Express) => request(app).patch("/api/work-products/product-1").send({ title: "Blocked" })],
+    ["work product delete", (app: express.Express) => request(app).delete("/api/work-products/product-1")],
+    [
+      "attachment upload",
+      (app: express.Express) =>
+        request(app)
+          .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+          .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
+    ],
+    ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
+  ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest) => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await sendRequest(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+    expect(mockWorkProductService.remove).not.toHaveBeenCalled();
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+    expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+    expect(mockIssueService.removeAttachment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "issue create",
+      (app: express.Express) =>
+        request(app).post(`/api/companies/${companyId}/issues`).send({
+          title: "Downstream source work",
+          assigneeAdapterOverrides: { modelProfile: "cheap" },
+        }),
+    ],
+    [
+      "child issue create",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/children`).send({
+          title: "Downstream child source work",
+          assigneeAdapterOverrides: { modelProfile: "cheap" },
+        }),
+    ],
+    [
+      "issue update",
+      (app: express.Express) =>
+        request(app).patch(`/api/issues/${issueId}`).send({
+          assigneeAdapterOverrides: { modelProfile: "cheap" },
+        }),
+    ],
+  ])("blocks cheap status-only recovery runs from propagating cheap profile through %s", async (_name, sendRequest) => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await sendRequest(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("cannot assign downstream issue work to the cheap model profile");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows board users to set explicit cheap issue assignee profile overrides", async () => {
+    const app = await createApp(boardActor());
+
+    await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAdapterOverrides: { modelProfile: "cheap" } })
+      .expect(200);
+
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
       }),
     );
   });

@@ -645,6 +645,57 @@ async function resolveHeadSha(cwd: string) {
   }
 }
 
+async function resolveVerifiedGitRef(cwd: string, refName: string) {
+  const trimmed = refName.trim();
+  if (!trimmed) return null;
+  try {
+    await execFileAsync("git", ["-C", cwd, "rev-parse", "--verify", "--quiet", `${trimmed}^{commit}`], {
+      cwd,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: 128 * 1024,
+    });
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGitUpstreamRef(cwd: string) {
+  try {
+    const upstream = (await execFileAsync(
+      "git",
+      ["-C", cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      {
+        cwd,
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: 128 * 1024,
+      },
+    )).stdout.trim();
+    return upstream ? await resolveVerifiedGitRef(cwd, upstream) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveInferredDefaultBaseRef(cwd: string) {
+  const upstream = await resolveGitUpstreamRef(cwd);
+  if (upstream) return upstream;
+
+  const candidates = ["origin/master", "origin/main", "master", "main"];
+  const resolvedCandidates = await Promise.all(
+    candidates.map((candidate) => resolveVerifiedGitRef(cwd, candidate)),
+  );
+  for (const resolved of resolvedCandidates) {
+    if (resolved) return resolved;
+  }
+
+  return null;
+}
+
+async function resolveDefaultDiffBaseRef(cwd: string, workspace: WorkspaceDiffTarget) {
+  return workspace.baseRef?.trim() || await resolveInferredDefaultBaseRef(cwd);
+}
+
 async function resolveBaseRef(cwd: string, baseRef: string | null, workspace: WorkspaceDiffTarget) {
   const resolvedBaseRef = baseRef ?? workspace.baseRef ?? null;
   if (!resolvedBaseRef) {
@@ -705,9 +756,16 @@ export function workspaceDiffService() {
   return {
     async getDiff(workspace: WorkspaceDiffTarget, query: WorkspaceDiffQueryOptions): Promise<WorkspaceDiffResponse> {
       const { cwd, repoRoot } = await resolveWorkspacePaths(workspace);
+      const defaultBaseRef = await resolveDefaultDiffBaseRef(cwd, workspace);
+      const workspaceWithDefaultBaseRef = { ...workspace, baseRef: defaultBaseRef };
       const paths = normalizePathFilters(query.paths);
       const warnings: WorkspaceDiffWarning[] = [];
-      const { files: filesByPath, baseRef } = await collectFiles({ cwd, workspace, query, paths });
+      const { files: filesByPath, baseRef } = await collectFiles({
+        cwd,
+        workspace: workspaceWithDefaultBaseRef,
+        query,
+        paths,
+      });
       const allFiles = Array.from(filesByPath.values()).sort((left, right) => left.path.localeCompare(right.path));
       const cappedFiles = allFiles.slice(0, WORKSPACE_DIFF_CAPS.maxFiles);
       if (allFiles.length > cappedFiles.length) {
@@ -771,7 +829,7 @@ export function workspaceDiffService() {
         companyId: workspace.companyId,
         view: query.view,
         baseRef,
-        defaultBaseRef: workspace.baseRef,
+        defaultBaseRef,
         headSha: await resolveHeadSha(cwd),
         includeUntracked: query.includeUntracked,
         paths,
