@@ -24,12 +24,17 @@
 // "Connect later" affordance.
 
 import { useMemo, useState, type FormEvent } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, MessageSquare, Plug, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, CheckCircle2, Loader2, MessageSquare, Plug, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import { ApiError } from "@/api/client";
-import { eaosOnboardingApi, type SlackInstallPreviewResponse } from "@/api/eaosOnboarding";
+import {
+  eaosOnboardingApi,
+  type SlackConnectionResponse,
+  type SlackConnectionState,
+  type SlackInstallPreviewResponse,
+} from "@/api/eaosOnboarding";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useNavigate } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
@@ -387,6 +392,96 @@ function NextStepsPanel({
   );
 }
 
+interface SlackStateBadge {
+  readonly label: string;
+  readonly icon: typeof CheckCircle2;
+  readonly tone: "neutral" | "pending" | "success" | "danger";
+  readonly testId: string;
+}
+
+function badgeForConnectionState(state: SlackConnectionState): SlackStateBadge {
+  switch (state) {
+    case "connected":
+      return {
+        label: "Connected",
+        icon: CheckCircle2,
+        tone: "success",
+        testId: "eaos-onboarding-next-step-slack-badge-connected",
+      };
+    case "pending_approval":
+      return {
+        label: "Pending approval",
+        icon: Loader2,
+        tone: "pending",
+        testId: "eaos-onboarding-next-step-slack-badge-pending",
+      };
+    case "applying":
+      return {
+        label: "Applying",
+        icon: Loader2,
+        tone: "pending",
+        testId: "eaos-onboarding-next-step-slack-badge-applying",
+      };
+    case "partial":
+      return {
+        label: "Partially applied",
+        icon: AlertTriangle,
+        tone: "danger",
+        testId: "eaos-onboarding-next-step-slack-badge-partial",
+      };
+    case "error":
+      return {
+        label: "Setup error",
+        icon: AlertTriangle,
+        tone: "danger",
+        testId: "eaos-onboarding-next-step-slack-badge-error",
+      };
+    case "not_connected":
+    default:
+      return {
+        label: "Not connected",
+        icon: MessageSquare,
+        tone: "neutral",
+        testId: "eaos-onboarding-next-step-slack-badge-not-connected",
+      };
+  }
+}
+
+function badgeClassesByTone(tone: SlackStateBadge["tone"]): string {
+  switch (tone) {
+    case "success":
+      return "border-green-200 bg-green-50 text-green-900 dark:border-green-700 dark:bg-green-950 dark:text-green-100";
+    case "pending":
+      return "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100";
+    case "danger":
+      return "border-red-200 bg-red-50 text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100";
+    case "neutral":
+    default:
+      return "border-border bg-background text-muted-foreground";
+  }
+}
+
+function ctaLabelForConnectionState(
+  state: SlackConnectionState,
+  hasPreview: boolean,
+): string {
+  switch (state) {
+    case "connected":
+      return "View connection";
+    case "pending_approval":
+      return "Open approval card →";
+    case "applying":
+      return "Open approval card →";
+    case "partial":
+      return "Resume setup";
+    case "error":
+      return "Try again";
+    case "not_connected":
+    default:
+      return hasPreview ? "Refresh preview" : "Preview & connect";
+  }
+}
+
 function SlackConnectCard({
   card,
   companyId,
@@ -397,6 +492,19 @@ function SlackConnectCard({
   const Icon = card.icon;
   const [preview, setPreview] = useState<SlackInstallPreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Truthful, server-derived connection state. The "Connected" pill renders
+  // ONLY when `state === "connected"`, which itself only happens when the
+  // canonical capability_apply_plans pipeline reached `applied`. Fetching a
+  // preview never flips this — preview is just the human-readable scope +
+  // named-secret summary surfaced inside the card.
+  const connectionQuery = useQuery<SlackConnectionResponse>({
+    queryKey: ["eaos", "onboarding", "slack-connection", companyId],
+    queryFn: () => eaosOnboardingApi.slackConnection(companyId as string),
+    enabled: Boolean(companyId),
+    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+  });
 
   const previewMutation = useMutation({
     mutationFn: async (cid: string) => eaosOnboardingApi.slackInstallPreview(cid),
@@ -420,33 +528,42 @@ function SlackConnectCard({
     previewMutation.mutate(companyId);
   };
 
-  const slackConnected = Boolean(preview);
+  const connectionState: SlackConnectionState =
+    connectionQuery.data?.state ?? "not_connected";
+  const badge = badgeForConnectionState(connectionState);
+  const BadgeIcon = badge.icon;
+  const approvalCardPath =
+    connectionQuery.data?.approvalCardPath ?? preview?.approvalCardPath ?? null;
+  const ctaLabel = ctaLabelForConnectionState(connectionState, Boolean(preview));
+  const showPreviewBody = Boolean(preview);
 
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid={card.testId}
-      data-eaos-onboarding-card-status={slackConnected ? "preview-ready" : card.status}
-      data-eaos-onboarding-slack-connected={slackConnected ? "true" : "false"}
+      data-eaos-onboarding-card-status={card.status}
+      data-eaos-onboarding-slack-state={connectionState}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
           <p className="text-sm font-medium text-foreground">{card.title}</p>
         </div>
-        {slackConnected ? (
-          <span
-            className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-green-900 dark:border-green-700 dark:bg-green-950 dark:text-green-100"
-            data-testid="eaos-onboarding-next-step-slack-pill"
-          >
-            <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-            Slack connected
-          </span>
-        ) : null}
+        <span
+          className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${badgeClassesByTone(badge.tone)}`}
+          data-testid={badge.testId}
+          data-eaos-onboarding-slack-badge={connectionState}
+        >
+          <BadgeIcon
+            className={`h-3 w-3${badge.tone === "pending" ? " animate-spin" : ""}`}
+            aria-hidden="true"
+          />
+          {badge.label}
+        </span>
       </div>
       <p className="text-xs text-muted-foreground">{card.description}</p>
 
-      {preview ? (
+      {showPreviewBody && preview ? (
         <div
           className="rounded-md border border-dashed border-border bg-background p-2 text-[11px] text-muted-foreground"
           data-testid="eaos-onboarding-next-step-slack-preview"
@@ -478,15 +595,15 @@ function SlackConnectCard({
 
       <div className="flex items-center justify-between gap-2 pt-1">
         <span
-          className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          className={`inline-flex items-center gap-1 rounded-md border border-dashed px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${badgeClassesByTone(badge.tone)}`}
           data-testid={`${card.testId}-status`}
         >
-          {slackConnected ? "Preview ready" : "Safe install preview"}
+          {badge.label}
         </span>
         <div className="flex items-center gap-2">
-          {preview?.approvalCardPath ? (
+          {approvalCardPath ? (
             <Link
-              to={preview.approvalCardPath}
+              to={approvalCardPath}
               data-testid="eaos-onboarding-next-step-slack-approval-link"
               className="text-[11px] font-medium text-primary hover:underline"
             >
@@ -495,7 +612,7 @@ function SlackConnectCard({
           ) : null}
           <Button
             type="button"
-            variant={slackConnected ? "ghost" : "default"}
+            variant={connectionState === "connected" ? "ghost" : "default"}
             size="sm"
             onClick={handlePreview}
             disabled={!companyId || previewMutation.isPending}
@@ -506,11 +623,7 @@ function SlackConnectCard({
                 : "Loads a safe Slack install preview — no tokens are submitted."
             }
           >
-            {previewMutation.isPending
-              ? "Loading preview…"
-              : slackConnected
-                ? "Refresh preview"
-                : card.ctaLabel}
+            {previewMutation.isPending ? "Loading preview…" : ctaLabel}
           </Button>
         </div>
       </div>

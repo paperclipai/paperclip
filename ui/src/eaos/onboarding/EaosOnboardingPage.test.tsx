@@ -222,9 +222,12 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
     });
   });
 
-  describe("LET-514 — Slack safe install preview", () => {
+  describe("LET-514 — Slack safe install preview + truthful connection state", () => {
     const SLACK_PREVIEW_PATH =
       "/api/companies/c-1/eaos/onboarding/slack-install-preview";
+    const SLACK_CONNECTION_PATH =
+      "/api/companies/c-1/eaos/onboarding/slack-connection";
+
     const SLACK_PREVIEW_RESPONSE = {
       preview: {
         catalogId: "verified/slack-app",
@@ -261,7 +264,73 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
       approvalCardPath: "/companies/c-1/agents/agent-xyz/capability-apply",
       approvalCardAgentId: "agent-xyz",
       liveApplyEnabled: false as const,
+      connectionState: "not_connected" as const,
     };
+
+    function makeConnectionResponse(
+      state:
+        | "not_connected"
+        | "pending_approval"
+        | "applying"
+        | "connected"
+        | "partial"
+        | "error",
+      overrides: Partial<{
+        planId: string | null;
+        approvalId: string | null;
+        lastUpdatedAt: string | null;
+        approvalCardPath: string | null;
+        approvalCardAgentId: string | null;
+      }> = {},
+    ) {
+      return {
+        state,
+        planId: overrides.planId ?? null,
+        approvalId: overrides.approvalId ?? null,
+        lastUpdatedAt: overrides.lastUpdatedAt ?? null,
+        approvalCardPath:
+          overrides.approvalCardPath ??
+          (state === "not_connected"
+            ? null
+            : "/companies/c-1/agents/agent-xyz/capability-apply"),
+        approvalCardAgentId:
+          overrides.approvalCardAgentId ??
+          (state === "not_connected" ? null : "agent-xyz"),
+        requiredSecretNames: [
+          "SLACK_APP_CLIENT_ID",
+          "SLACK_APP_CLIENT_SECRET",
+          "SLACK_APP_SIGNING_SECRET",
+        ],
+        liveApplyEnabled: false as const,
+      };
+    }
+
+    function stubFetch(handlers: {
+      preview?: unknown;
+      connection: unknown;
+    }) {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        if (url.endsWith(SLACK_CONNECTION_PATH)) {
+          return new Response(JSON.stringify(handlers.connection), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith(SLACK_PREVIEW_PATH)) {
+          return new Response(
+            JSON.stringify(handlers.preview ?? SLACK_PREVIEW_RESPONSE),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
 
     async function renderOnboardingPostCreate() {
       companiesRef.current = [{ id: "c-1", name: "Acme" }];
@@ -277,61 +346,143 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
       });
     }
 
-    it("fetches the safe install preview and shows the Slack-connected pill", async () => {
-      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : (input as URL).toString();
-        if (url.endsWith(SLACK_PREVIEW_PATH)) {
-          return new Response(JSON.stringify(SLACK_PREVIEW_RESPONSE), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response("not found", { status: 404 });
-      });
-      vi.stubGlobal("fetch", fetchMock);
-
+    it("renders the 'Not connected' badge on initial paint (no fake connected copy)", async () => {
+      stubFetch({ connection: makeConnectionResponse("not_connected") });
       try {
         await renderOnboardingPostCreate();
-        await clickSlackCta();
         await waitForAssertion(() => {
-          expect(fetchMock).toHaveBeenCalled();
-          const pill = container?.querySelector(
-            '[data-testid="eaos-onboarding-next-step-slack-pill"]',
+          const card = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack"]',
           );
-          expect(pill?.textContent ?? "").toContain("Slack connected");
+          expect(card?.getAttribute("data-eaos-onboarding-slack-state")).toBe(
+            "not_connected",
+          );
+          const badge = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack-badge-not-connected"]',
+          );
+          expect(badge?.textContent ?? "").toContain("Not connected");
+          // The connected badge MUST NOT be present.
+          expect(
+            container?.querySelector(
+              '[data-testid="eaos-onboarding-next-step-slack-badge-connected"]',
+            ),
+          ).toBeNull();
         });
       } finally {
         vi.unstubAllGlobals();
       }
     });
 
-    it("renders the approval card link from the preview response (round-trip)", async () => {
-      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : (input as URL).toString();
-        if (url.endsWith(SLACK_PREVIEW_PATH)) {
-          return new Response(JSON.stringify(SLACK_PREVIEW_RESPONSE), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response("not found", { status: 404 });
+    it("does not flip to 'Connected' when only the preview fetch succeeds", async () => {
+      // Andrii directive: preview is part of the safe flow, not the whole
+      // product. The "Connected" pill must only appear when the server-derived
+      // connection state is `connected` — never from a preview fetch.
+      stubFetch({
+        connection: makeConnectionResponse("not_connected"),
+        preview: SLACK_PREVIEW_RESPONSE,
       });
-      vi.stubGlobal("fetch", fetchMock);
-
       try {
         await renderOnboardingPostCreate();
         await clickSlackCta();
+        await waitForAssertion(() => {
+          // The preview body is now visible.
+          expect(
+            container?.querySelector(
+              '[data-testid="eaos-onboarding-next-step-slack-preview"]',
+            ),
+          ).not.toBeNull();
+          // But the card's connection state is still "not_connected" and the
+          // connected badge MUST NOT be on the DOM.
+          const card = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack"]',
+          );
+          expect(card?.getAttribute("data-eaos-onboarding-slack-state")).toBe(
+            "not_connected",
+          );
+          expect(
+            container?.querySelector(
+              '[data-testid="eaos-onboarding-next-step-slack-badge-connected"]',
+            ),
+          ).toBeNull();
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it.each([
+      {
+        state: "pending_approval" as const,
+        badgeTestId: "eaos-onboarding-next-step-slack-badge-pending",
+        badgeLabel: "Pending approval",
+      },
+      {
+        state: "applying" as const,
+        badgeTestId: "eaos-onboarding-next-step-slack-badge-applying",
+        badgeLabel: "Applying",
+      },
+      {
+        state: "connected" as const,
+        badgeTestId: "eaos-onboarding-next-step-slack-badge-connected",
+        badgeLabel: "Connected",
+      },
+      {
+        state: "partial" as const,
+        badgeTestId: "eaos-onboarding-next-step-slack-badge-partial",
+        badgeLabel: "Partially applied",
+      },
+      {
+        state: "error" as const,
+        badgeTestId: "eaos-onboarding-next-step-slack-badge-error",
+        badgeLabel: "Setup error",
+      },
+    ])(
+      "renders the truthful badge '$badgeLabel' for state '$state'",
+      async ({ state, badgeTestId, badgeLabel }) => {
+        stubFetch({
+          connection: makeConnectionResponse(state, {
+            planId: "plan-123",
+            lastUpdatedAt: "2026-05-20T10:00:00.000Z",
+          }),
+        });
+        try {
+          await renderOnboardingPostCreate();
+          await waitForAssertion(() => {
+            const card = container?.querySelector(
+              '[data-testid="eaos-onboarding-next-step-slack"]',
+            );
+            expect(card?.getAttribute("data-eaos-onboarding-slack-state")).toBe(
+              state,
+            );
+            const badge = container?.querySelector(`[data-testid="${badgeTestId}"]`);
+            expect(badge).not.toBeNull();
+            expect(badge?.textContent ?? "").toContain(badgeLabel);
+          });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      },
+    );
+
+    it("renders the approval card link from the connection response (round-trip)", async () => {
+      stubFetch({
+        connection: makeConnectionResponse("pending_approval", {
+          planId: "plan-pending",
+          approvalId: "approval-1",
+          approvalCardPath: "/companies/c-1/agents/agent-xyz/capability-apply",
+          approvalCardAgentId: "agent-xyz",
+        }),
+      });
+      try {
+        await renderOnboardingPostCreate();
         await waitForAssertion(() => {
           const link = container?.querySelector(
             '[data-testid="eaos-onboarding-next-step-slack-approval-link"]',
           ) as HTMLAnchorElement | null;
           expect(link).not.toBeNull();
-          // The approval card link must match the server-issued path verbatim.
           expect(link?.getAttribute("href")).toBe(
-            SLACK_PREVIEW_RESPONSE.approvalCardPath,
+            "/companies/c-1/agents/agent-xyz/capability-apply",
           );
-          // Round-trip: the link points at the canonical capability-apply
-          // surface for the bootstrap agent the server resolved for us.
           expect(link?.getAttribute("href")).toMatch(
             /^\/companies\/[^/]+\/agents\/[^/]+\/capability-apply$/,
           );
@@ -346,25 +497,15 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
         ...SLACK_PREVIEW_RESPONSE,
         preview: {
           ...SLACK_PREVIEW_RESPONSE.preview,
-          // Simulated upstream regression: a Bearer token in the customer-
-          // visible summary. The UI must redact it before render.
           summary:
             "Preview only — installs the verified Slack capability. Authorization: Bearer xoxb-deadbeef-deadbeef-1234567890 must not survive into the DOM.",
           displayName: "Slack (xoxb-deadbeef-deadbeef-1234567890)",
         },
       };
-      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : (input as URL).toString();
-        if (url.endsWith(SLACK_PREVIEW_PATH)) {
-          return new Response(JSON.stringify(tainted), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response("not found", { status: 404 });
+      stubFetch({
+        connection: makeConnectionResponse("not_connected"),
+        preview: tainted,
       });
-      vi.stubGlobal("fetch", fetchMock);
-
       try {
         await renderOnboardingPostCreate();
         await clickSlackCta();
@@ -374,8 +515,6 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
           );
           expect(previewCard).not.toBeNull();
           const text = previewCard?.textContent ?? "";
-          // The raw Bearer-prefixed value and the xoxb- Slack token shape must
-          // be redacted before they hit the DOM.
           expect(text).not.toMatch(/Bearer\s+xoxb-/);
           expect(text).not.toMatch(/xoxb-deadbeef/);
           expect(text).toMatch(/\[REDACTED\]/);

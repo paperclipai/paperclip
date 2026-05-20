@@ -103,3 +103,9 @@ export {
   type SlackInstallPreview,
   type SlackInstallPreviewMcpChange,
 } from "./slack-install-preview.js";
+export {
+  SLACK_CONNECTION_STATES,
+  resolveSlackConnectionState,
+  type SlackConnectionState,
+  type SlackConnectionStateRow,
+} from "./slack-connection-state.js";
