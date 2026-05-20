@@ -199,6 +199,33 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+
+  // Generic /me endpoint — works for both board (human) and agent actors
+  api.get("/me", async (req, res) => {
+    if (req.actor.type === "none") {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+    if (req.actor.type === "agent") {
+      res.json({
+        type: "agent",
+        agentId: req.actor.agentId,
+        companyId: req.actor.companyId,
+        source: req.actor.source,
+      });
+      return;
+    }
+    // Board (human user)
+    res.json({
+      type: "board",
+      userId: req.actor.userId,
+      userName: req.actor.userName ?? null,
+      userEmail: req.actor.userEmail ?? null,
+      companyIds: req.actor.companyIds ?? [],
+      isInstanceAdmin: req.actor.isInstanceAdmin ?? false,
+      source: req.actor.source,
+    });
+  });
   api.use(
     "/health",
     healthRoutes(db, {

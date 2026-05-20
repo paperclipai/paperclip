@@ -225,13 +225,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
   return [
     makeTool(
       "paperclipMe",
-      "Get the current authenticated Paperclip actor details",
+      "Get the current authenticated Paperclip actor details (works for both board users and agents)",
       z.object({}),
-      async () => client.requestJson("GET", "/agents/me"),
+      async () => client.requestJson("GET", "/me"),
     ),
     makeTool(
       "paperclipInboxLite",
-      "Get the current authenticated agent inbox-lite assignment list",
+      "Get the current authenticated agent inbox-lite assignment list (agent auth only)",
       z.object({}),
       async () => client.requestJson("GET", "/agents/me/inbox-lite"),
     ),
@@ -591,6 +591,70 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/approvals/${encodeURIComponent(approvalId)}/comments`, {
           body: { body },
         }),
+    ),
+    makeTool(
+      "paperclipListCompanies",
+      "List companies the current board user has access to",
+      z.object({}),
+      async () => client.requestJson("GET", "/companies"),
+    ),
+    makeTool(
+      "paperclipGetDashboard",
+      "Get a company dashboard summary with issue and agent stats",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) =>
+        client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/dashboard`),
+    ),
+    makeTool(
+      "paperclipListActivity",
+      "List recent activity events for a company, optionally filtered by agent or entity",
+      z.object({
+        companyId: companyIdOptional,
+        agentId: z.string().uuid().optional(),
+        entityType: z.string().optional(),
+        entityId: z.string().optional(),
+        limit: z.number().int().positive().max(200).optional(),
+      }),
+      async ({ companyId, agentId, entityType, entityId, limit }) => {
+        const params = new URLSearchParams();
+        if (agentId) params.set("agentId", agentId);
+        if (entityType) params.set("entityType", entityType);
+        if (entityId) params.set("entityId", entityId);
+        if (limit) params.set("limit", String(limit));
+        const qs = params.toString();
+        return client.requestJson(
+          "GET",
+          `/companies/${client.resolveCompanyId(companyId)}/activity${qs ? `?${qs}` : ""}`,
+        );
+      },
+    ),
+    makeTool(
+      "paperclipGetIssueActivity",
+      "Get activity log for a specific issue",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) =>
+        client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/activity`),
+    ),
+    makeTool(
+      "paperclipListRoutines",
+      "List routines (recurring scheduled agent work) in a company",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) =>
+        client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/routines`),
+    ),
+    makeTool(
+      "paperclipGetRoutine",
+      "Get a routine by id including its schedule and configuration",
+      z.object({ routineId: z.string().uuid() }),
+      async ({ routineId }) =>
+        client.requestJson("GET", `/routines/${encodeURIComponent(routineId)}`),
+    ),
+    makeTool(
+      "paperclipRunRoutine",
+      "Manually trigger a routine to run now",
+      z.object({ routineId: z.string().uuid() }),
+      async ({ routineId }) =>
+        client.requestJson("POST", `/routines/${encodeURIComponent(routineId)}/run`, { body: {} }),
     ),
     makeTool(
       "paperclipApiRequest",
