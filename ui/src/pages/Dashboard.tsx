@@ -24,6 +24,7 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { TokenUsageDashboardCard } from "../components/TokenUsageDashboardCard";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -305,6 +306,8 @@ export function Dashboard() {
               <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
+
+          <TokenUsageDashboardCard companyId={selectedCompanyId!} agents={agents ?? []} />
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
