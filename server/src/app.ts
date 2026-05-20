@@ -690,16 +690,32 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  void loader.loadAll().then((result) => {
-    if (!result) return;
-    for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+  // loader.loadAll() activates every status='ready' plugin, which calls
+  // workerManager.startWorker() on each. On the API tier the workerManager
+  // is the stub from services/plugin-worker-manager-stub.ts; every call
+  // throws ApiTierPluginWorkerError, plugin-loader catches it and writes
+  // status='error' to the DB. That strands every ready plugin on every
+  // api-tier pod boot; the worker tier subsequently loads zero plugins
+  // because they're all errored. Mirrors the bundled-plugin-install skip
+  // in server/src/index.ts so plugin lifecycle only runs on the tier that
+  // can host workers.
+  if (appConfig.paperclipNodeRole === "api") {
+    logger.info(
+      { role: appConfig.paperclipNodeRole },
+      "skipping plugin loadAll on startup (API tier — workers tier owns plugin lifecycle)",
+    );
+  } else {
+    void loader.loadAll().then((result) => {
+      if (!result) return;
+      for (const loaded of result.results) {
+        if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+          devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+        }
       }
-    }
-  }).catch((err) => {
-    logger.error({ err }, "Failed to load ready plugins on startup");
-  });
+    }).catch((err) => {
+      logger.error({ err }, "Failed to load ready plugins on startup");
+    });
+  }
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
     devWatcher?.close();
