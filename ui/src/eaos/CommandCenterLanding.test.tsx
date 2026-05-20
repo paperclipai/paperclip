@@ -178,7 +178,9 @@ describe("CommandCenterLanding (LET-503 dashboard)", () => {
 
     await renderLanding();
 
-    const header = container?.querySelector('[data-testid="eaos-command-center-header"]');
+    // LET-506 — the legacy `eaos-command-center-header` slot collapsed
+    // into the shared `EaosPageHeader` (testid `eaos-command-center-page-header`).
+    const header = container?.querySelector('[data-testid="eaos-command-center-page-header"]');
     expect(header).not.toBeNull();
     const headerText = header?.textContent ?? "";
     expect(headerText).toContain("Dashboard");

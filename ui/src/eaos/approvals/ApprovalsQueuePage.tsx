@@ -15,6 +15,7 @@ import { approvalsApi } from "@/api/approvals";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
 import {
@@ -58,20 +59,16 @@ export function ApprovalsQueuePage({ now }: ApprovalsQueuePageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-approvals-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-approvals-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-approvals-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-approvals-title"
-        >
-          Approvals
-        </h1>
-      </header>
+      <EaosPageHeader title="Approvals" testId="eaos-approvals-page-header" />
+      <h1 id="eaos-approvals-title" className="sr-only" data-testid="eaos-approvals-title">
+        Approvals
+      </h1>
 
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
       {!selectedCompanyId ? (
         <NoCompanyState />
       ) : isLoading ? (
@@ -99,6 +96,7 @@ export function ApprovalsQueuePage({ now }: ApprovalsQueuePageProps = {}) {
           ))}
         </>
       )}
+      </div>
     </section>
   );
 }

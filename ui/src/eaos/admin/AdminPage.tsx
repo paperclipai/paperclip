@@ -16,6 +16,7 @@ import { accessApi } from "@/api/access";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
 
@@ -43,40 +44,37 @@ export function AdminPage() {
   return (
     <section
       aria-labelledby="eaos-admin-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-admin-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-admin-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-admin-title"
-        >
-          Admin
-        </h1>
-      </header>
+      <EaosPageHeader title="Admin" testId="eaos-admin-page-header" />
+      <h1 id="eaos-admin-title" className="sr-only" data-testid="eaos-admin-title">
+        Admin
+      </h1>
 
-      {!selectedCompanyId ? (
-        <NoCompanyState />
-      ) : isLoading ? (
-        <LoadingState />
-      ) : isError ? (
-        <ErrorState message={readErrorMessage(membersQuery.error)} />
-      ) : (
-        <>
-          <AccessPostureCard access={access} />
-          <SummaryStrip counts={counts} />
-          {members.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <MembersList members={members} />
-          )}
-        </>
-      )}
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
+        {!selectedCompanyId ? (
+          <NoCompanyState />
+        ) : isLoading ? (
+          <LoadingState />
+        ) : isError ? (
+          <ErrorState message={readErrorMessage(membersQuery.error)} />
+        ) : (
+          <>
+            <AccessPostureCard access={access} />
+            <SummaryStrip counts={counts} />
+            {members.length === 0 ? (
+              <EmptyState />
+            ) : (
+              <MembersList members={members} />
+            )}
+          </>
+        )}
 
-      <AuditPointer />
-      <SecretsPointer />
+        <AuditPointer />
+        <SecretsPointer />
+      </div>
     </section>
   );
 }

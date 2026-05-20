@@ -19,6 +19,7 @@ import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { blueprintsApi, type BlueprintCatalogEntry } from "@/api/blueprints";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
 import {
@@ -62,40 +63,37 @@ export function BlueprintsCatalogPage() {
   return (
     <section
       aria-labelledby="eaos-blueprints-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-blueprints-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
       data-eaos-catalog-enabled={hasData ? (enabled ? "true" : "false") : "unknown"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-blueprints-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-blueprints-title"
-        >
-          Blueprints
-        </h1>
-      </header>
+      <EaosPageHeader title="Agent Builder" testId="eaos-blueprints-page-header" />
+      <h1 id="eaos-blueprints-title" className="sr-only" data-testid="eaos-blueprints-title">
+        Blueprints
+      </h1>
 
-      {!selectedCompanyId ? (
-        <NoCompanyState />
-      ) : isLoading ? (
-        <LoadingState />
-      ) : isError ? (
-        <ErrorState message={readErrorMessage(catalogQuery.error)} />
-      ) : !enabled ? (
-        <DisabledState />
-      ) : loaded.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <CatalogBody
-          filters={filters}
-          onFiltersChange={setFilters}
-          loaded={loaded}
-          visible={visible}
-          summary={summary}
-        />
-      )}
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
+        {!selectedCompanyId ? (
+          <NoCompanyState />
+        ) : isLoading ? (
+          <LoadingState />
+        ) : isError ? (
+          <ErrorState message={readErrorMessage(catalogQuery.error)} />
+        ) : !enabled ? (
+          <DisabledState />
+        ) : loaded.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <CatalogBody
+            filters={filters}
+            onFiltersChange={setFilters}
+            loaded={loaded}
+            visible={visible}
+            summary={summary}
+          />
+        )}
+      </div>
     </section>
   );
 }

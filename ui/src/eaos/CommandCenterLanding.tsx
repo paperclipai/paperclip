@@ -1,5 +1,6 @@
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
+import { EaosPageHeader } from "./EaosPageHeader";
 import { redactSecretLikeText } from "./secret-redact";
 import { useMissionTelemetry, type MissionTelemetry } from "./command-center/mission-telemetry";
 
@@ -30,40 +31,29 @@ export function CommandCenterLanding({ telemetryHook = useMissionTelemetry }: Co
   return (
     <section
       aria-labelledby="eaos-command-center-title"
-      className="flex min-h-0 flex-1 flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-command-center-landing"
       data-eaos-data-connected={telemetry.companyScoped ? "true" : "false"}
     >
-      <DashboardHeader />
-
-      <PostureTiles telemetry={telemetry} />
-
-      {/* LET-503 round-5 — Linear-style state rails. The previous single
-          "Needs attention" panel is replaced with three short state rails:
-          Running / Blocked / In review. Each rail mirrors the Missions
-          list row contract (status icon + identifier + title) so the
-          surfaces stay consistent.  Recently completed remains a quiet
-          secondary rail below. */}
-      <StateRails telemetry={telemetry} />
-
-      <RecentlyCompleted telemetry={telemetry} />
-    </section>
-  );
-}
-
-function DashboardHeader() {
-  return (
-    <header
-      className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3"
-      data-testid="eaos-command-center-header"
-    >
-      <h1
-        id="eaos-command-center-title"
-        className="text-xl font-semibold tracking-tight text-foreground"
-      >
+      <EaosPageHeader title="Dashboard" testId="eaos-command-center-page-header" />
+      <h1 id="eaos-command-center-title" className="sr-only">
         Dashboard
       </h1>
-    </header>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
+        <PostureTiles telemetry={telemetry} />
+
+        {/* LET-503 round-5 — Linear-style state rails. The previous single
+            "Needs attention" panel is replaced with three short state rails:
+            Running / Blocked / In review. Each rail mirrors the Missions
+            list row contract (status icon + identifier + title) so the
+            surfaces stay consistent.  Recently completed remains a quiet
+            secondary rail below. */}
+        <StateRails telemetry={telemetry} />
+
+        <RecentlyCompleted telemetry={telemetry} />
+      </div>
+    </section>
   );
 }
 

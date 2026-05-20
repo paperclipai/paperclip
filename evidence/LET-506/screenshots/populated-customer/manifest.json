@@ -1,7 +1,7 @@
 {
   "schema": "eaos-screenshots/v1",
-  "generatedAt": "2026-05-20T08:47:11.410Z",
-  "base": "http://localhost:5174",
+  "generatedAt": "2026-05-20T09:31:12.374Z",
+  "base": "http://localhost:5173",
   "theme": "light",
   "cookieApplied": false,
   "mockApi": true,

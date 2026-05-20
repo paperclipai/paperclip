@@ -5,6 +5,7 @@ import { ArrowUpRight, BookOpen, Workflow } from "lucide-react";
 import { companySkillsApi } from "@/api/companySkills";
 import { useCompany } from "@/context/CompanyContext";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
 
 export function KnowledgePage() {
@@ -27,31 +28,28 @@ export function KnowledgePage() {
   return (
     <section
       aria-labelledby="eaos-knowledge-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-knowledge-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-knowledge-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-knowledge-title"
-        >
-          Knowledge
-        </h1>
-      </header>
+      <EaosPageHeader title="Knowledge" testId="eaos-knowledge-page-header" />
+      <h1 id="eaos-knowledge-title" className="sr-only" data-testid="eaos-knowledge-title">
+        Knowledge
+      </h1>
 
-      <PlaybooksSection
-        selectedCompanyId={selectedCompanyId}
-        isLoading={isLoading}
-        isError={isError}
-        errorMessage={readErrorMessage(skillsQuery.error)}
-        skills={skills}
-      />
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
+        <PlaybooksSection
+          selectedCompanyId={selectedCompanyId}
+          isLoading={isLoading}
+          isError={isError}
+          errorMessage={readErrorMessage(skillsQuery.error)}
+          skills={skills}
+        />
 
-      <KbIndexGapSection />
+        <KbIndexGapSection />
 
-      <DocumentsGapSection />
+        <DocumentsGapSection />
+      </div>
     </section>
   );
 }

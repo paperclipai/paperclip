@@ -56,6 +56,7 @@ import { EaosZonePlaceholder } from "./eaos/EaosZonePlaceholder";
 import { MissionDetail } from "./eaos/MissionDetail";
 import { MissionsListPage } from "./eaos/missions/MissionsListPage";
 import { AgentsRosterPage } from "./eaos/agents/AgentsRosterPage";
+import { AgentDetailPage } from "./eaos/agents/AgentDetailPage";
 import { AgentBuilderPage } from "./eaos/agents/builder/AgentBuilderPage";
 import { ApprovalsQueuePage } from "./eaos/approvals/ApprovalsQueuePage";
 import { RunsTimelinePage } from "./eaos/runs/RunsTimelinePage";
@@ -404,6 +405,13 @@ export function App() {
                 surface only shows status, adapter, heartbeat, and budget.
               */}
               <Route path="agents" element={<AgentsRosterPage />} />
+              {/*
+                LET-506 — Multica-pattern customer detail under the canonical
+                EAOS shell. Read-only inspector + overview backed by the
+                canonical agent/runtime/session/skills endpoints; mutating
+                controls stay in Kernel.
+              */}
+              <Route path="agents/:agentRef" element={<AgentDetailPage />} />
               {/*
                 LET-504 — Manual agent builder under the canonical EAOS
                 shell. Single primary `Create agent` CTA on the final

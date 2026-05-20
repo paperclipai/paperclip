@@ -37,6 +37,7 @@ export interface AgentRosterRow {
   readonly pauseReason: string | null;
   readonly budgetMonthlyCents: number;
   readonly spentMonthlyCents: number;
+  readonly detailRoute: string;
   readonly kernelRoute: string;
 }
 
@@ -110,6 +111,7 @@ export function buildAgentRosterRow(agent: Agent): AgentRosterRow {
     pauseReason: agent.pauseReason,
     budgetMonthlyCents: agent.budgetMonthlyCents,
     spentMonthlyCents: agent.spentMonthlyCents,
+    detailRoute: `/eaos/agents/${encodeURIComponent(agent.urlKey || agent.id)}`,
     kernelRoute: `/agents/${encodeURIComponent(agent.id)}`,
   };
 }

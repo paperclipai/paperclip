@@ -23,6 +23,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { AGENT_ROLE_LABELS, type AgentRole, type Agent } from "@paperclipai/shared";
 import { redactSecretLikeText } from "../secret-redact";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosOrgGraph, type EaosOrgGraphNodeDecoration } from "./EaosOrgGraph";
 import { AgentAvatar } from "../agents/AgentAvatar";
 
@@ -136,23 +137,14 @@ export function OrgPage() {
       data-testid="eaos-org-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
       data-eaos-org-source={treeBackendSource}
-      className="flex min-h-0 flex-1 flex-col gap-3"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-org-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-org-title"
-        >
-          Org
-        </h1>
-        {selectedCompany ? (
-          <span className="text-xs text-muted-foreground">
-            {redactSecretLikeText(selectedCompany.name)}
-          </span>
-        ) : null}
-      </header>
+      <EaosPageHeader title="Org" testId="eaos-org-page-header" />
+      <h1 id="eaos-org-title" className="sr-only" data-testid="eaos-org-title">
+        Org
+      </h1>
 
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
       {!selectedCompanyId ? (
         <ContextNote
           testId="eaos-org-no-company"
@@ -197,6 +189,7 @@ export function OrgPage() {
       )}
 
       <GapNote source={treeBackendSource} />
+      </div>
     </section>
   );
 }

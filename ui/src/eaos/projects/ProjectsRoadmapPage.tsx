@@ -14,6 +14,7 @@ import { projectsApi } from "@/api/projects";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
 import {
@@ -66,20 +67,16 @@ export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-projects-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-projects-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-projects-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-projects-title"
-        >
-          Projects
-        </h1>
-      </header>
+      <EaosPageHeader title="Projects" testId="eaos-projects-page-header" />
+      <h1 id="eaos-projects-title" className="sr-only" data-testid="eaos-projects-title">
+        Projects
+      </h1>
 
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
       {!selectedCompanyId ? (
         <NoCompanyState />
       ) : isLoading ? (
@@ -113,6 +110,7 @@ export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
           ))}
         </>
       )}
+      </div>
     </section>
   );
 }

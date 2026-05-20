@@ -11,6 +11,7 @@ import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   buildAgentRosterRow,
@@ -56,28 +57,29 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-agents-title"
-      className="flex min-h-0 flex-1 flex-col gap-4"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-agents-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-agents-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-agents-title"
-        >
-          Agents
-        </h1>
-        <Link
-          to="/eaos/agents/new"
-          data-testid="eaos-agents-new-cta"
-          className="inline-flex items-center gap-1.5 self-start rounded-md border border-foreground bg-foreground px-3.5 py-2 text-sm font-semibold text-background shadow-sm hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:self-auto"
-        >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          New agent
-        </Link>
-      </header>
+      <EaosPageHeader
+        title="Agents"
+        testId="eaos-agents-page-header"
+        actions={
+          <Link
+            to="/eaos/agents/new"
+            data-testid="eaos-agents-new-cta"
+            className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-foreground px-2.5 py-1 text-xs font-semibold text-background hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <Plus className="h-3 w-3" aria-hidden="true" />
+            New agent
+          </Link>
+        }
+      />
+      <h1 id="eaos-agents-title" className="sr-only" data-testid="eaos-agents-title">
+        Agents
+      </h1>
 
+      <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
       {!selectedCompanyId ? (
         <NoCompanyState />
       ) : isLoading ? (
@@ -92,6 +94,7 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
           <AgentTable rows={rows} referenceNow={referenceNow} />
         </>
       )}
+      </div>
     </section>
   );
 }
@@ -228,12 +231,13 @@ function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Da
             testId="eaos-agents-row-avatar"
           />
           <div className="min-w-0">
-            <span
-              className="block truncate font-medium text-foreground"
-              data-testid="eaos-agents-row-name"
+            <Link
+              to={row.detailRoute}
+              className="block truncate font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              data-testid="eaos-agents-row-detail-link"
             >
               {redactSecretLikeText(row.name)}
-            </span>
+            </Link>
             {row.title ? (
               <span className="block truncate text-[11px] text-muted-foreground">
                 {redactSecretLikeText(row.title)}
@@ -263,13 +267,22 @@ function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Da
         {formatUsdCents(row.spentMonthlyCents)} / {formatUsdCents(row.budgetMonthlyCents)}
       </td>
       <td className="px-3 py-2 text-right">
-        <Link
-          to={row.kernelRoute}
-          className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          data-testid="eaos-agents-row-kernel-link"
-        >
-          Open →
-        </Link>
+        <div className="flex items-center justify-end gap-2">
+          <Link
+            to={row.detailRoute}
+            className="text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-agents-row-detail-action"
+          >
+            Inspect
+          </Link>
+          <Link
+            to={row.kernelRoute}
+            className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-agents-row-kernel-link"
+          >
+            Kernel
+          </Link>
+        </div>
       </td>
     </tr>
   );

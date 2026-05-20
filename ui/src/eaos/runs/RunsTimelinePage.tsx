@@ -19,6 +19,7 @@ import { activityApi } from "@/api/activity";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
 import { useEaosViewerRole } from "../useEaosViewerRole";
 import { humanizeActivityAction, humanizeActorType } from "./activity-labels";
@@ -66,20 +67,16 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-runs-title"
-      className="flex flex-col gap-5"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-runs-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-runs-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-runs-title"
-        >
-          Runs
-        </h1>
-      </header>
+      <EaosPageHeader title="Runs" testId="eaos-runs-page-header" />
+      <h1 id="eaos-runs-title" className="sr-only" data-testid="eaos-runs-title">
+        Runs
+      </h1>
 
+      <div className="flex min-h-0 flex-1 flex-col gap-5 px-4 py-4 sm:px-6 lg:px-8">
       {!selectedCompanyId ? (
         <NoCompanyState />
       ) : isLoading ? (
@@ -94,6 +91,7 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
           <RunsTable rows={rows} referenceNow={referenceNow} isOperator={isOperator} />
         </>
       )}
+      </div>
     </section>
   );
 }

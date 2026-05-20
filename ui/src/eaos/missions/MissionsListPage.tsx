@@ -160,7 +160,7 @@ export function MissionsListPage({ now, initialMode = "list" }: MissionsListPage
       ) : rows.length === 0 ? (
         <EmptyState />
       ) : mode === "list" ? (
-        <MissionList rows={rows} isOperator={isOperator} agentLookup={agentLookup} />
+        <MissionList buckets={buckets} isOperator={isOperator} agentLookup={agentLookup} />
       ) : (
         <MissionBoard buckets={buckets} isOperator={isOperator} agentLookup={agentLookup} />
       )}
@@ -307,29 +307,58 @@ function capitalize(value: string): string {
 }
 
 function MissionList({
-  rows,
+  buckets,
   isOperator,
   agentLookup,
 }: {
-  rows: readonly MissionRow[];
+  buckets: ReturnType<typeof bucketMissions>;
   isOperator: boolean;
   agentLookup: AgentLookup;
 }) {
+  // LET-506 phase-2 — adapt Multica's `ListView` status grouping. List
+  // rows live under a single scroller, but each status group carries a
+  // sticky-ish heading so the row column stays readable even when the
+  // count gets long. Empty buckets are intentionally omitted so the
+  // surface stays calm.
+  const sections: Array<{ id: string; title: string; rows: readonly MissionRow[] }> = [
+    { id: "active", title: "Active", rows: buckets.active },
+    { id: "blocked", title: "Blocked", rows: buckets.blocked },
+    { id: "in-review", title: "In review", rows: buckets.inReview },
+    { id: "done", title: "Done", rows: buckets.done },
+    { id: "cancelled", title: "Cancelled", rows: buckets.cancelled },
+  ].filter((section) => section.rows.length > 0);
+
   return (
     <div
       data-testid="eaos-missions-list"
       className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card"
     >
-      <ul role="list" className="divide-y divide-border">
-        {rows.map((row) => (
-          <MissionListRow
-            key={row.id}
-            row={row}
-            isOperator={isOperator}
-            agentLookup={agentLookup}
-          />
-        ))}
-      </ul>
+      {sections.map((section) => (
+        <section
+          key={section.id}
+          aria-label={section.title}
+          data-testid={`eaos-missions-list-group-${section.id}`}
+          data-mission-group={section.id}
+        >
+          <header
+            className="sticky top-0 z-[1] flex items-center justify-between gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground backdrop-blur supports-[backdrop-filter]:bg-muted/30"
+            data-testid={`eaos-missions-list-group-${section.id}-header`}
+          >
+            <span>{section.title}</span>
+            <span className="tabular-nums">{section.rows.length}</span>
+          </header>
+          <ul role="list" className="divide-y divide-border">
+            {section.rows.map((row) => (
+              <MissionListRow
+                key={row.id}
+                row={row}
+                isOperator={isOperator}
+                agentLookup={agentLookup}
+              />
+            ))}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }

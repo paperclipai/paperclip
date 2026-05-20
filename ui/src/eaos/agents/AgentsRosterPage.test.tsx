@@ -112,6 +112,7 @@ async function renderRoster(initialPath = "/eaos/agents") {
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
             <Route path="/eaos/agents" element={<AgentsRosterPage now={now} />} />
+            <Route path="/eaos/agents/:agentRef" element={<div data-testid="eaos-agent-detail-stub" />} />
             <Route path="/agents/:agentId" element={<div data-testid="kernel-agent-detail-stub" />} />
           </Routes>
         </MemoryRouter>
@@ -200,9 +201,11 @@ describe("AgentsRosterPage (LET-503 cleanup)", () => {
     await waitForMicrotaskAssertion(() => {
       expect(container?.querySelector('[data-testid="eaos-agents-row"]')).not.toBeNull();
     });
-    // Only navigation links to the kernel detail page; no buttons mutating state.
+    // Navigation only: EAOS inspect + Kernel escape hatch. No buttons mutate state.
     const buttons = container?.querySelectorAll("button");
     expect(buttons?.length ?? 0).toBe(0);
+    const detailLink = container?.querySelector('[data-testid="eaos-agents-row-detail-action"]');
+    expect(detailLink?.getAttribute("href")).toContain("/eaos/agents/frontend-engineer");
     const kernelLink = container?.querySelector('[data-testid="eaos-agents-row-kernel-link"]');
     expect(kernelLink?.getAttribute("href")).toContain("/agents/");
   });
