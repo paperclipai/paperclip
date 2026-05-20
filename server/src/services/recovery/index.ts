@@ -14,8 +14,13 @@ export type {
 } from "./origins.js";
 export {
   classifyIssueGraphLiveness,
+  classifyAdapterErrorClass,
+  ADAPTER_ERROR_CLASS_RECOMMENDED_ACTIONS,
+  STORM_CAP_WINDOW_MS,
+  STORM_CAP_MAX_FAILS,
 } from "./issue-graph-liveness.js";
 export type {
+  AdapterErrorClass,
   IssueGraphLivenessInput,
   IssueLivenessAgentInput,
   IssueLivenessDependencyPathEntry,

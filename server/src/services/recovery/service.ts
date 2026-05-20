@@ -40,6 +40,11 @@ import {
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
+  classifyAdapterErrorClass,
+  ADAPTER_ERROR_CLASS_RECOMMENDED_ACTIONS,
+  STORM_CAP_WINDOW_MS,
+  STORM_CAP_MAX_FAILS,
+  type AdapterErrorClass,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
@@ -2259,6 +2264,148 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  // ---------------------------------------------------------------------------
+  // Storm cap (GOV-4): 2-strike park — prevent recovery storm
+  // ---------------------------------------------------------------------------
+
+  async function loadRecentFailedRunsForIssue(
+    companyId: string,
+    agentId: string,
+    issueId: string,
+  ): Promise<Array<{ errorCode: string | null }>> {
+    const cutoff = new Date(Date.now() - STORM_CAP_WINDOW_MS);
+    return db
+      .select({ errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out", "cancelled"]),
+          gt(heartbeatRuns.createdAt, cutoff),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(50);
+  }
+
+  function detectStormCapHit(
+    runs: Array<{ errorCode: string | null }>,
+  ): { hit: false } | { hit: true; errorClass: AdapterErrorClass; count: number } {
+    const countByClass = new Map<AdapterErrorClass, number>();
+    for (const run of runs) {
+      const cls = classifyAdapterErrorClass(run.errorCode);
+      countByClass.set(cls, (countByClass.get(cls) ?? 0) + 1);
+    }
+    for (const [cls, count] of countByClass.entries()) {
+      if (count >= STORM_CAP_MAX_FAILS) {
+        return { hit: true, errorClass: cls, count };
+      }
+    }
+    return { hit: false };
+  }
+
+  function buildStormCapParkedComment(input: {
+    agentId: string;
+    recoveryIssue: typeof issues.$inferSelect;
+    errorClass: AdapterErrorClass;
+    failCount: number;
+    prefix: string;
+  }): string {
+    const issueLink = issueUiLink(
+      { identifier: input.recoveryIssue.identifier, id: input.recoveryIssue.id },
+      input.prefix,
+    );
+    const action = ADAPTER_ERROR_CLASS_RECOMMENDED_ACTIONS[input.errorClass];
+    const isCmdTooLong = input.errorClass === "command_line_too_long";
+    const lines = [
+      `**Recovery storm cap applied** — \`${input.agentId}\` failed ${input.failCount} times in the last hour with error class \`${input.errorClass}\`.`,
+      "",
+      "Creating another recovery ticket would cause a recovery storm. This issue is now **PARKED** pending manual review.",
+      "",
+      `- Error class: \`${input.errorClass}\``,
+      `- Failure count (last 1h): ${input.failCount}`,
+      `- Agent: \`${input.agentId}\``,
+      `- Issue: ${issueLink}`,
+    ];
+    if (isCmdTooLong) {
+      lines.push("- Bulk adapter swap: **disabled** for `command_line_too_long` class");
+    }
+    lines.push("", `**Required action:** ${action}`);
+    lines.push(
+      "",
+      "When the root cause is resolved, resume the agent and clear the `recovery_park` pause reason.",
+    );
+    return lines.join("\n");
+  }
+
+  async function checkAndApplyStormCap(input: {
+    issue: typeof issues.$inferSelect;
+    recoveryIssue: typeof issues.$inferSelect;
+    assigneeAgentId: string;
+    runId: string | null | undefined;
+  }): Promise<{ kind: "not_hit" } | { kind: "already_parked" } | { kind: "parked"; errorClass: AdapterErrorClass }> {
+    // Guard: command_line_too_long bulk adapter swap path is disabled.
+    // For ALL classes: if ≥2 failures in last 1h with same error class → park.
+    const recentRuns = await loadRecentFailedRunsForIssue(
+      input.issue.companyId,
+      input.assigneeAgentId,
+      input.recoveryIssue.id,
+    );
+    const cap = detectStormCapHit(recentRuns);
+    if (!cap.hit) return { kind: "not_hit" };
+
+    // Idempotency: if agent is already parked by a previous storm cap, skip comment.
+    const agent = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, input.assigneeAgentId))
+      .then((rows) => rows[0] ?? null);
+
+    if (agent?.pauseReason === "recovery_park") {
+      logger.info(
+        { agentId: input.assigneeAgentId, issueId: input.recoveryIssue.id, errorClass: cap.errorClass },
+        "storm cap: agent already parked, skipping duplicate comment",
+      );
+      return { kind: "already_parked" };
+    }
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const parkedComment = buildStormCapParkedComment({
+      agentId: input.assigneeAgentId,
+      recoveryIssue: input.recoveryIssue,
+      errorClass: cap.errorClass,
+      failCount: cap.count,
+      prefix,
+    });
+
+    await issuesSvc.addComment(
+      input.recoveryIssue.id,
+      parkedComment,
+      { runId: input.runId ?? null },
+    );
+
+    await db
+      .update(agents)
+      .set({ status: "paused", pauseReason: "recovery_park", pausedAt: new Date(), updatedAt: new Date() })
+      .where(eq(agents.id, input.assigneeAgentId));
+
+    logger.warn(
+      {
+        agentId: input.assigneeAgentId,
+        issueId: input.recoveryIssue.id,
+        sourceIssueId: input.issue.id,
+        errorClass: cap.errorClass,
+        failCount: cap.count,
+      },
+      "storm cap: recovery parked, agent paused with recovery_park",
+    );
+
+    return { kind: "parked", errorClass: cap.errorClass };
+  }
+
+  // ---------------------------------------------------------------------------
+
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
     runId?: string | null;
@@ -2291,6 +2438,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+
+    // Storm cap: if same error class hit ≥2 times in last 1h for the recovery
+    // issue's assignee (or, when the recovery issue is unassigned, the source
+    // issue's assignee), park instead of spawning another debris ticket.
+    const stormCapAgentId = recoveryIssue.assigneeAgentId ?? issue.assigneeAgentId;
+    if (stormCapAgentId) {
+      const stormCapResult = await checkAndApplyStormCap({
+        issue,
+        recoveryIssue,
+        assigneeAgentId: stormCapAgentId,
+        runId: input.runId,
+      });
+      if (stormCapResult.kind === "parked" || stormCapResult.kind === "already_parked") {
+        return { kind: "storm_capped" as const };
+      }
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
@@ -2453,6 +2616,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
+      stormCapped: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
@@ -2484,6 +2648,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
+      } else if (escalation.kind === "storm_capped") {
+        result.stormCapped += 1;
+        result.skipped += 1;
       } else {
         result.skipped += 1;
       }
