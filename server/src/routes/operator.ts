@@ -41,8 +41,8 @@ const classifyActionSchema = z.object({
   costDeltaUsdPerMonth: z.number().nullable().optional(),
   callCostUsd: z.number().nullable().optional(),
   branch: z.string().nullable().optional(),
-  // Optional context for the audit log.
-  companyId: z.string().trim().min(1).optional(),
+  // Optional context for the audit log. The audit-log companyId is always
+  // derived from the caller's actor scope — callers cannot supply it.
   targetEntityType: z.string().trim().min(1).optional(),
   targetEntityId: z.string().trim().min(1).optional(),
 });
@@ -166,11 +166,22 @@ export function operatorRoutes(db: Db) {
       const evaluation = classifyAction(action);
 
       // Persist to activity log so the trail of fast-execute decisions is
-      // durable. companyId falls back to the caller's company (agent) or
-      // the body-supplied one (board).
-      const companyId =
-        body.companyId ??
-        (req.actor.type === "agent" ? req.actor.companyId : undefined);
+      // durable. companyId is derived from the caller's actor scope only —
+      // body-supplied companyId is intentionally ignored to prevent
+      // cross-company audit-log injection. For agent callers we use their
+      // own companyId; for single-company board callers we use the one
+      // company they have access to. Board callers with multiple companies
+      // (or none) skip the audit entry — the classifier still returns its
+      // verdict.
+      let companyId: string | undefined;
+      if (req.actor.type === "agent") {
+        companyId = req.actor.companyId;
+      } else if (req.actor.type === "board") {
+        const allowed = req.actor.companyIds ?? [];
+        if (allowed.length === 1) {
+          companyId = allowed[0];
+        }
+      }
 
       if (companyId) {
         await logActivity(db, {
