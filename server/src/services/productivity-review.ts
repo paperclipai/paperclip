@@ -795,7 +795,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
 
     const prefixCache = new Map<string, string>();
+    const companyProductivityReviewFlagCache = new Map<string, boolean>();
     for (const candidate of candidates) {
+      let disableFlag = companyProductivityReviewFlagCache.get(candidate.companyId);
+      if (disableFlag === undefined) {
+        disableFlag = await db
+          .select({ disableAutoProductivityReview: companies.disableAutoProductivityReview })
+          .from(companies)
+          .where(eq(companies.id, candidate.companyId))
+          .then((rows) => rows[0]?.disableAutoProductivityReview ?? false);
+        companyProductivityReviewFlagCache.set(candidate.companyId, disableFlag);
+      }
+      if (disableFlag) {
+        logger.info({ companyId: candidate.companyId }, "auto-productivity-review skipped (company flag)");
+        result.skipped += 1;
+        continue;
+      }
       if (!candidate.assigneeAgentId) {
         result.skipped += 1;
         continue;

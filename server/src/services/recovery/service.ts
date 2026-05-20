@@ -1179,7 +1179,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueIds: [] as string[],
     };
 
+    const companyProductivityReviewFlagCache = new Map<string, boolean>();
     for (const run of candidates) {
+      let disableFlag = companyProductivityReviewFlagCache.get(run.companyId);
+      if (disableFlag === undefined) {
+        disableFlag = await db
+          .select({ disableAutoProductivityReview: companies.disableAutoProductivityReview })
+          .from(companies)
+          .where(eq(companies.id, run.companyId))
+          .then((rows) => rows[0]?.disableAutoProductivityReview ?? false);
+        companyProductivityReviewFlagCache.set(run.companyId, disableFlag);
+      }
+      if (disableFlag) {
+        logger.info({ companyId: run.companyId }, "auto-productivity-review skipped (company flag)");
+        result.skipped += 1;
+        continue;
+      }
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;
