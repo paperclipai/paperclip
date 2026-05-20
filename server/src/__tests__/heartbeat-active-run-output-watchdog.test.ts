@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -15,6 +14,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -62,43 +62,6 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const activeRuns = await db
-      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
-      .from(heartbeatRuns)
-      .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
-    if (activeRuns.length === 0) return;
-    const now = new Date();
-    const runIds = activeRuns.map((run) => run.id);
-    const wakeupRequestIds = activeRuns
-      .map((run) => run.wakeupRequestId)
-      .filter((value): value is string => typeof value === "string" && value.length > 0);
-    await db
-      .update(heartbeatRuns)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        updatedAt: now,
-        errorCode: "test_cleanup",
-        error: "Cancelled by active-run watchdog test cleanup",
-      })
-      .where(inArray(heartbeatRuns.id, runIds));
-    if (wakeupRequestIds.length > 0) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: "cancelled",
-          finishedAt: now,
-          error: "Cancelled by active-run watchdog test cleanup",
-        })
-        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -111,23 +74,14 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
   });
 
-  // scanSilentActiveRuns -> enqueueWakeup -> startNextQueuedRunForAgent
-  // fires `void executeRun(...)` background work that the test never awaits
-  // (heartbeat.ts ~line 7304). PR #55 added cancelActiveRunsForCleanup +
-  // single-confirm waitForHeartbeatIdle, but verify_canary run 26014448824
-  // still deadlocked on TRUNCATE for 3 tests — the postRun lifecycle hook
-  // (heartbeat.ts:6568) continues writes after status update because it
-  // doesn't observe the cancellation flag. Mirrors the proven pattern in
-  // heartbeat-stale-queue-invalidation.test.ts: reset the mock so any
-  // in-flight resolution returns the inert default, clear runningProcesses
-  // defensively, cancel active runs, then triple-confirm idle (3×50ms
-  // consecutive idle reads) + 50ms settle before TRUNCATE.
   afterEach(async () => {
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
@@ -140,23 +94,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       model: "test-model",
     }));
     runningProcesses.clear();
-    await cancelActiveRunsForCleanup(db, 5_000);
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    await cleanupHeartbeatTestState(db, heartbeat);
   });
 
   afterAll(async () => {
@@ -259,7 +197,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
     const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -297,7 +234,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         `GITHUB_TOKEN=${leakedGithubToken}`,
       ].join("\n"),
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -318,7 +254,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -346,7 +281,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
     });
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
@@ -377,7 +311,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       snoozedUntil: new Date(now.getTime() + 60 * 60 * 1000),
       reason: "Intentional quiet run",
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
 
     const staleResult = await heartbeat.scanSilentActiveRuns({ now, companyId: stale.companyId });
     const noisyResult = await heartbeat.scanSilentActiveRuns({ now, companyId: noisy.companyId });
@@ -392,7 +325,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -448,7 +380,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -500,7 +431,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -590,7 +520,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
     });
-    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
 
     const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
