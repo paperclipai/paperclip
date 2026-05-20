@@ -1324,13 +1324,22 @@ export function routineService(
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+          // Walks the `.cause` chain because `drizzle-orm/postgres-js` wraps
+          // the raw `PostgresError` inside a `DrizzleQueryError` — a shallow
+          // check misses the wrapped violation (see ZERA-582).
+          let isOpenExecutionConflict = false;
+          const seen = new Set<unknown>();
+          let current: unknown = error;
+          while (current && typeof current === "object" && !seen.has(current)) {
+            seen.add(current);
+            const err = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+            const constraint = err.constraint ?? err.constraint_name;
+            if (err.code === "23505" && constraint === "issues_open_routine_execution_uq") {
+              isOpenExecutionConflict = true;
+              break;
+            }
+            current = err.cause;
+          }
           if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }

@@ -43,8 +43,17 @@
 #       our patch becomes "previously applied" via cherry-pick equivalence and
 #       the rebase will report it under SECURITY_PATCH_ALREADY_UPSTREAM (extend
 #       that detection if/when this lands).
-#   - paperclipai/paperclip#6463  fix: unwrap DrizzleQueryError cause chain
-#       Our PR. Same equivalence story — drops out cleanly on merge.
+#   - paperclipai/paperclip#5850  walk drizzle .cause chain in unique-violation
+#                                 predicates (ZERA-582; generalizes the fix
+#                                 across companies, plugins, routines)
+#       Matches fork commit shape: three 3-site hunks updating
+#       isIssuePrefixConflict (server/src/services/companies.ts),
+#       isPluginKeyConflict (server/src/services/plugin-registry.ts), and
+#       the inline conflict check in server/src/services/routines.ts. Our
+#       commit was filed as #6463 / #6462 but closed as duplicates once we
+#       discovered the upstream queue already had 7 PRs for this. When
+#       #5850 merges, the rebase will detect the patch as already-applied
+#       (cherry-pick equivalence) and our commit drops out cleanly.
 #
 set -euo pipefail
 
