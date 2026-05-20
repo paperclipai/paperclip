@@ -14,6 +14,7 @@ import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentCapabilityRoutes } from "./routes/agent-capabilities.js";
 import { capabilityApplyRoutes } from "./routes/capability-apply.js";
+import { mcpCatalogRoutes } from "./routes/mcp-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -214,6 +215,7 @@ export async function createApp(
   api.use(companySkillRoutes(db));
   api.use(agentCapabilityRoutes(db));
   api.use(capabilityApplyRoutes(db, { capabilityApplyLive: opts.capabilityApplyLive ?? false }));
+  api.use(mcpCatalogRoutes());
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));

@@ -33,6 +33,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useNavigate } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
+import { EaosMcpPicker } from "./EaosMcpPicker";
 
 const DEFAULT_ASSISTANT_LABEL = "Personal Assistant";
 
@@ -55,7 +56,7 @@ function deriveAssistantDefault(companyName: string): string {
 }
 
 export function EaosOnboardingPage() {
-  const { createCompany, companies } = useCompany();
+  const { createCompany, companies, selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<FormState>({
@@ -127,6 +128,7 @@ export function EaosOnboardingPage() {
           <NextStepsPanel
             assistantName={effectiveAssistantName}
             onContinue={goToDashboard}
+            companyId={selectedCompanyId}
           />
         )}
       </div>
@@ -272,7 +274,7 @@ interface NextStepCard {
   readonly title: string;
   readonly description: string;
   readonly icon: typeof MessageSquare;
-  readonly status: "pending-backend" | "queued-stub";
+  readonly status: "pending-backend" | "queued-stub" | "preview-ready";
   readonly ctaLabel: string;
   readonly testId: string;
 }
@@ -280,9 +282,11 @@ interface NextStepCard {
 function NextStepsPanel({
   assistantName,
   onContinue,
+  companyId,
 }: {
   assistantName: string;
   onContinue: () => void;
+  companyId: string | null;
 }) {
   const cards = useMemo<readonly NextStepCard[]>(
     () => [
@@ -302,8 +306,8 @@ function NextStepsPanel({
         description:
           "Choose which capability bundles your assistant can use. Each pick is staged as a preview, allowlisted in the catalog, and only applied after an explicit approval.",
         icon: Plug,
-        status: "pending-backend",
-        ctaLabel: "Pick later",
+        status: "preview-ready",
+        ctaLabel: "Browse catalog",
         testId: "eaos-onboarding-next-step-mcp",
       },
       {
@@ -360,22 +364,83 @@ function NextStepsPanel({
           </Button>
         </header>
         <ul className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          {cards.map((card) => (
-            <NextStepCardItem key={card.id} card={card} />
-          ))}
+          {cards.map((card) =>
+            card.id === "mcp-picker" ? (
+              <McpPickerCard key={card.id} card={card} companyId={companyId} />
+            ) : (
+              <NextStepCardItem key={card.id} card={card} />
+            ),
+          )}
         </ul>
         <p
           className="rounded-md border border-dashed border-border bg-background p-3 text-[11px] text-muted-foreground"
           data-testid="eaos-onboarding-backend-gap"
         >
           <span className="font-medium text-foreground">Backend gap:</span>{" "}
-          Live Slack/MCP install paths and the auto-created &quot;Personal CEO
-          recommendations&quot; mission are tracked as follow-ups. Until they
-          land each card stays preview-only with no destructive external side
-          effects.
+          The MCP catalog picker runs a fail-closed preview (allowlist + SSRF +
+          named secret refs); apply still lands behind the per-agent capability
+          approval card. Slack connect and the auto-created &quot;Personal CEO
+          recommendations&quot; mission are tracked as follow-ups; each card
+          stays preview-only with no destructive external side effects.
         </p>
       </section>
     </div>
+  );
+}
+
+function McpPickerCard({
+  card,
+  companyId,
+}: {
+  card: NextStepCard;
+  companyId: string | null;
+}) {
+  const Icon = card.icon;
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <li
+      className="flex flex-col gap-2 rounded-md border border-border bg-card p-3 md:col-span-2"
+      data-testid={card.testId}
+      data-eaos-onboarding-card-status={card.status}
+      data-eaos-onboarding-mcp-picker-expanded={expanded ? "true" : "false"}
+    >
+      <div className="flex items-center gap-2">
+        <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <p className="text-sm font-medium text-foreground">{card.title}</p>
+      </div>
+      <p className="text-xs text-muted-foreground">{card.description}</p>
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          data-testid={`${card.testId}-status`}
+        >
+          {expanded ? "Catalog open" : "Safe install preview"}
+        </span>
+        <Button
+          type="button"
+          variant={expanded ? "ghost" : "default"}
+          size="sm"
+          onClick={() => setExpanded((prev) => !prev)}
+          disabled={!companyId}
+          data-testid={`${card.testId}-cta`}
+          aria-expanded={expanded}
+          aria-controls="eaos-onboarding-mcp-picker"
+          title={
+            !companyId
+              ? "Workspace not ready yet."
+              : "Opens the verified MCP catalog. Picks stage a fail-closed preview only — no raw secrets, no apply."
+          }
+        >
+          {expanded ? "Close catalog" : card.ctaLabel}
+        </Button>
+      </div>
+      {expanded ? (
+        <div id="eaos-onboarding-mcp-picker">
+          <EaosMcpPicker />
+        </div>
+      ) : null}
+    </li>
   );
 }
 

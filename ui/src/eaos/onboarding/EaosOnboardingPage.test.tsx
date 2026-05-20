@@ -200,14 +200,22 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
       expect(
         container?.querySelector('[data-testid="eaos-onboarding-next-steps"]'),
       ).not.toBeNull();
-      // Next-step CTAs must remain disabled until backend connectors land.
-      const ctaButtons = container?.querySelectorAll(
-        '[data-testid$="-cta"]',
-      ) as NodeListOf<HTMLButtonElement> | undefined;
-      expect((ctaButtons?.length ?? 0) >= 3).toBe(true);
-      ctaButtons?.forEach((button) => {
-        expect(button.disabled).toBe(true);
-      });
+      // LET-515: the MCP catalog CTA is now an interactive "Browse catalog"
+      // button. Slack + CEO recommendations remain disabled placeholders.
+      const slackCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-slack-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(slackCta?.disabled).toBe(true);
+      const mcpCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-mcp-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(mcpCta).not.toBeNull();
+      expect(mcpCta?.disabled).toBe(false);
+      expect(mcpCta?.textContent ?? "").toContain("Browse catalog");
+      const ceoCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-ceo-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(ceoCta?.disabled).toBe(true);
       // Backend-gap label is visible.
       expect(
         container?.querySelector('[data-testid="eaos-onboarding-backend-gap"]'),

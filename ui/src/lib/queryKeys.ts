@@ -215,4 +215,9 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  mcpCatalog: {
+    list: (companyId: string) => ["mcp-catalog", companyId, "list"] as const,
+    preview: (companyId: string, catalogId: string) =>
+      ["mcp-catalog", companyId, "preview", catalogId] as const,
+  },
 };
