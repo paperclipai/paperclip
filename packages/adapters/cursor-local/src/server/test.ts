@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  asNumber,
   asString,
   asStringArray,
   parseObject,
@@ -98,6 +99,7 @@ export async function testEnvironment(
   let command = asString(config.command, "agent");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -148,7 +150,6 @@ export async function testEnvironment(
   });
   command = sandboxCommand.command;
   env = sandboxCommand.env;
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,
@@ -158,6 +159,19 @@ export async function testEnvironment(
     env,
   });
   if (installCheck) checks.push(installCheck);
+  const finalSandboxCommand = await prepareCursorSandboxCommand({
+    runId,
+    target,
+    command,
+    cwd,
+    env,
+    remoteSystemHomeDirHint: sandboxCommand.remoteSystemHomeDir,
+    timeoutSec: 45,
+    graceSec: 5,
+  });
+  command = finalSandboxCommand.command;
+  env = finalSandboxCommand.env;
+  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -218,6 +232,64 @@ export async function testEnvironment(
         hint: "Use `agent` or `cursor-agent` to run the automatic installation and auth probe.",
       });
     } else {
+      // Cursor's `agent` binary still pays cold-start overhead in container
+      // sandboxes, but standard-2 probes no longer need a 120s version budget.
+      const versionProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.versionProbeTimeoutSec, targetIsSandbox ? 60 : 45),
+      );
+      const versionProbe = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
+        command,
+        ["--version"],
+        {
+          cwd,
+          env,
+          timeoutSec: versionProbeTimeoutSec,
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      );
+      const versionDetail = summarizeProbeDetail(versionProbe.stdout, versionProbe.stderr, null);
+      if (versionProbe.timedOut) {
+        checks.push({
+          code: "cursor_version_probe_timed_out",
+          level: "error",
+          message: "Cursor version probe timed out.",
+          hint: "Run `agent --version` manually in this working directory to confirm the installed CLI is reachable non-interactively.",
+        });
+      } else if ((versionProbe.exitCode ?? 1) === 0) {
+        checks.push({
+          code: "cursor_version_probe_passed",
+          level: "info",
+          message: "Cursor version probe succeeded.",
+          ...(versionDetail ? { detail: versionDetail } : {}),
+        });
+      } else {
+        checks.push({
+          code: "cursor_version_probe_failed",
+          level: "error",
+          message: "Cursor version probe failed.",
+          ...(versionDetail ? { detail: versionDetail } : {}),
+          hint: "Run `agent --version` manually in this working directory to confirm the installed CLI is reachable non-interactively.",
+        });
+      }
+
+      const canRunHelloProbe = checks.every(
+        (check) =>
+          check.code !== "cursor_version_probe_failed" &&
+          check.code !== "cursor_version_probe_timed_out",
+      );
+      if (!canRunHelloProbe) {
+        return {
+          adapterType: ctx.adapterType,
+          status: summarizeStatus(checks),
+          checks,
+          testedAt: new Date().toISOString(),
+        };
+      }
+
       const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
@@ -231,6 +303,12 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("Respond with hello.");
 
+      // Sandbox bridges still add cursor CLI cold-start overhead, but the
+      // standard-2 tier now completes probes fast enough that 90s is ample.
+      const helloProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+      );
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,
@@ -239,7 +317,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: 45,
+          timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => {},
         },

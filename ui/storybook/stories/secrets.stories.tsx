@@ -22,7 +22,6 @@ if (typeof window !== "undefined") {
 function StorybookSecretsFixtures({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   // Seed query caches synchronously so children hydrate from cache on first render.
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
   queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecrets);
 
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();

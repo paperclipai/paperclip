@@ -22,6 +22,7 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
+  IssueAssigneeAdapterOverrides,
   IssueThreadInteraction,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
@@ -32,6 +33,8 @@ import type {
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
+  PluginManagedSkillResolution,
+  CompanySkill,
   Routine,
   RoutineRun,
   Agent,
@@ -54,6 +57,10 @@ export type {
   PluginManagedProjectResolution,
   PluginManagedRoutineDeclaration,
   PluginManagedRoutineResolution,
+  PluginManagedSkillDeclaration,
+  PluginManagedSkillFileDeclaration,
+  PluginManagedSkillResolution,
+  CompanySkill,
   Routine,
   RoutineRun,
   PluginLocalFolderDeclaration,
@@ -337,12 +344,52 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Checkout/ref requested for the workspace, when known. */
+  repoRef: string | null;
+  /** Default comparison ref for workspace tooling, when known. */
+  defaultRef: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Execution workspace metadata (read-only via ctx.executionWorkspaces)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-safe execution workspace metadata provided by the host. This exposes
+ * the local/repository coordinates plugins need for workspace tooling without
+ * giving the SDK a host-owned diff engine.
+ */
+export interface PluginExecutionWorkspaceMetadata {
+  /** UUID primary key. */
+  id: string;
+  /** UUID of the owning company. */
+  companyId: string;
+  /** UUID of the parent project. */
+  projectId: string;
+  /** UUID of the backing project workspace, when present. */
+  projectWorkspaceId: string | null;
+  /** Absolute filesystem path to the workspace when locally realized. */
+  path: string | null;
+  /** Current working directory for local workspace tooling. */
+  cwd: string | null;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Base ref configured for the workspace, when known. */
+  baseRef: string | null;
+  /** Branch name configured for the workspace, when known. */
+  branchName: string | null;
+  /** Host provider type for the realized workspace. */
+  providerType: string | null;
+  /** Provider metadata already safe for plugin consumption. */
+  providerMetadata: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +497,8 @@ export interface PluginLocalFoldersClient {
     relativePath: string,
     contents: string,
   ): Promise<PluginLocalFolderStatus>;
+  /** Delete a file below a configured folder after containment checks. Missing files are treated as already deleted. */
+  deleteFile(companyId: string, folderKey: string, relativePath: string): Promise<PluginLocalFolderStatus>;
 }
 
 /**
@@ -810,6 +859,19 @@ export interface PluginProjectsClient {
 }
 
 /**
+ * `ctx.executionWorkspaces` — read execution workspace metadata.
+ *
+ * Requires `execution.workspaces.read`.
+ */
+export interface PluginExecutionWorkspacesClient {
+  /**
+   * Return plugin-safe metadata for an execution workspace. The host enforces
+   * company access before returning any workspace coordinates.
+   */
+  get(workspaceId: string, companyId: string): Promise<PluginExecutionWorkspaceMetadata | null>;
+}
+
+/**
  * `ctx.routines` — resolve and reconcile plugin-managed Paperclip routines.
  *
  * Requires `routines.managed` capability.
@@ -837,6 +899,19 @@ export interface PluginRoutinesClient {
       companyId: string,
       overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
     ): Promise<RoutineRun>;
+  };
+}
+
+/**
+ * `ctx.skills` — resolve and reconcile plugin-managed company skills.
+ *
+ * Requires `skills.managed` capability.
+ */
+export interface PluginSkillsClient {
+  managed: {
+    get(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reconcile(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reset(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
   };
 }
 
@@ -1257,12 +1332,12 @@ export interface PluginIssuesClient {
     title: string;
     description?: string;
     status?: Issue["status"];
-    workMode?: Issue["workMode"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
     assigneeUserId?: string | null;
     requestDepth?: number;
     billingCode?: string | null;
+    assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
     surfaceVisibility?: IssueSurfaceVisibility;
     originKind?: PluginIssueOriginKind;
     originId?: string | null;
@@ -1281,7 +1356,6 @@ export interface PluginIssuesClient {
       | "title"
       | "description"
       | "status"
-      | "workMode"
       | "priority"
       | "assigneeAgentId"
       | "assigneeUserId"
@@ -1621,8 +1695,14 @@ export interface PluginContext {
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
 
+  /** Read execution workspace metadata. Requires `execution.workspaces.read`. */
+  executionWorkspaces: PluginExecutionWorkspacesClient;
+
   /** Resolve and reconcile plugin-managed routines. Requires `routines.managed`. */
   routines: PluginRoutinesClient;
+
+  /** Resolve and reconcile plugin-managed company skills. Requires `skills.managed`. */
+  skills: PluginSkillsClient;
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;

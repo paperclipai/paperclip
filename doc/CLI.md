@@ -204,7 +204,28 @@ pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhos
 
 ## Local Storage Defaults
 
-Default local instance root is `~/.paperclip/instances/default`:
+Local Paperclip data lives under the selected instance root. `PAPERCLIP_HOME` chooses the home directory and `PAPERCLIP_INSTANCE_ID` chooses the instance.
+
+```text
+~/.paperclip/                                     # PAPERCLIP_HOME
+└── instances/
+    └── default/                                  # instance root (PAPERCLIP_INSTANCE_ID)
+        ├── config.json                           # runtime config
+        ├── .env                                  # instance env file
+        ├── db/                                   # embedded PostgreSQL data
+        ├── data/
+        │   ├── storage/                          # local_disk uploads
+        │   └── backups/                          # automatic DB backups
+        ├── logs/
+        ├── secrets/
+        │   └── master.key                        # local_encrypted master key
+        ├── workspaces/                           # default agent workspaces
+        ├── projects/                             # project execution workspaces
+        ├── companies/                            # per-company adapter homes (e.g. codex-home)
+        └── codex-home/                           # per-instance codex home (when not company-scoped)
+```
+
+Default paths for the canonical install:
 
 - config: `~/.paperclip/instances/default/config.json`
 - embedded db: `~/.paperclip/instances/default/db`

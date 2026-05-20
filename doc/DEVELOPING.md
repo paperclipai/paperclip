@@ -157,6 +157,27 @@ See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) 
 
 For a separate review-oriented container that keeps `codex`/`claude` login state in Docker volumes and checks out PRs into an isolated scratch workspace, see `doc/UNTRUSTED-PR-REVIEW.md`.
 
+## Local Instance Layout
+
+Every local install keeps runtime state directly under the selected instance root:
+
+```text
+~/.paperclip/instances/default/                  # instance root
+  config.json                                    # runtime config
+  .env                                           # instance env file
+  db/                                            # embedded PostgreSQL data
+  data/
+    storage/                                     # local_disk uploads
+    backups/                                     # automatic DB backups
+  logs/
+  secrets/master.key                             # local_encrypted master key
+  workspaces/<agent-id>/                         # default agent workspaces
+  projects/                                      # project execution workspaces
+  companies/<company-id>/codex-home/             # per-company codex_local home
+```
+
+`PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
+
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
@@ -164,7 +185,7 @@ The server will automatically use embedded PostgreSQL and persist data at:
 
 - `~/.paperclip/instances/default/db`
 
-Override home and instance:
+Override home or instance:
 
 ```sh
 PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
@@ -280,7 +301,7 @@ paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
 
-Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install:
+Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install. Point `--from-config` at the instance config:
 
 ```sh
 cd /path/to/paperclip/.paperclip/worktrees/PAP-884-ai-commits-component

@@ -4,6 +4,7 @@ import {
   createSecretSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
@@ -138,6 +139,40 @@ describe("secret validators", () => {
         }),
       ],
     });
+  });
+
+  it("validates AWS provider vault discovery draft config without allowing sensitive keys", () => {
+    expect(
+      secretProviderConfigDiscoveryPreviewSchema.parse({
+        provider: "aws_secrets_manager",
+        config: {
+          region: "us-east-1",
+          namespace: "production",
+          secretNamePrefix: "paperclip",
+        },
+        query: "paperclip",
+        pageSize: 50,
+      }),
+    ).toEqual({
+      provider: "aws_secrets_manager",
+      config: {
+        region: "us-east-1",
+        namespace: "production",
+        secretNamePrefix: "paperclip",
+      },
+      query: "paperclip",
+      pageSize: 50,
+    });
+
+    expect(() =>
+      secretProviderConfigDiscoveryPreviewSchema.parse({
+        provider: "aws_secrets_manager",
+        config: {
+          region: "us-east-1",
+          accessKeyId: "AKIA...",
+        },
+      }),
+    ).toThrow(/sensitive field/i);
   });
 
   it("caps AWS remote import paging and row counts", () => {

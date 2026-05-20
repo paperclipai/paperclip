@@ -42,6 +42,7 @@ async function createApp(
     jobDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
+    captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
@@ -56,6 +57,16 @@ async function createApp(
 
   const app = express();
   app.use(express.json());
+  if (routeOverrides.captureJsonContext) {
+    app.use((_req, res, next) => {
+      const originalJson = res.json.bind(res);
+      res.json = ((body: unknown) => {
+        routeOverrides.captureJsonContext?.((res as any).__errorContext, body);
+        return originalJson(body);
+      }) as typeof res.json;
+      next();
+    });
+  }
   app.use((req, _res, next) => {
     req.actor = actor as typeof req.actor;
     next();
@@ -222,6 +233,46 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).not.toHaveBeenCalled();
     expect(mockLifecycle.enable).not.toHaveBeenCalled();
     expect(mockLifecycle.disable).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("resolves plugin keys without probing the UUID id column for core plugin actions", async () => {
+    const pluginKey = "paperclipqa.hello-plugin";
+    const plugin = {
+      id: pluginId,
+      pluginKey,
+      version: "1.0.0",
+      status: "ready",
+    };
+    mockRegistry.getById.mockImplementation(() => {
+      throw new Error("getById should not be called for plugin keys");
+    });
+    mockRegistry.getByKey.mockResolvedValue(plugin);
+    mockLifecycle.unload.mockResolvedValue(plugin);
+    mockLifecycle.enable.mockResolvedValue(plugin);
+    mockLifecycle.disable.mockResolvedValue(plugin);
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const inspectRes = await request(app).get(`/api/plugins/${pluginKey}`);
+    const disableRes = await request(app).post(`/api/plugins/${pluginKey}/disable`).send({});
+    const enableRes = await request(app).post(`/api/plugins/${pluginKey}/enable`).send({});
+    const uninstallRes = await request(app).delete(`/api/plugins/${pluginKey}?purge=true`);
+
+    expect(inspectRes.status).toBe(200);
+    expect(disableRes.status).toBe(200);
+    expect(enableRes.status).toBe(200);
+    expect(uninstallRes.status).toBe(200);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith(pluginKey);
+    expect(mockLifecycle.disable).toHaveBeenCalledWith(pluginId, undefined);
+    expect(mockLifecycle.enable).toHaveBeenCalledWith(pluginId);
+    expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
   it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
@@ -584,6 +635,40 @@ describe.sequential("plugin tool and bridge authz", () => {
       key: "sync",
       params: {},
       renderEnvironment: null,
+    });
+  });
+
+  it("attaches worker bridge errors to the HTTP logger context", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(new Error("missing source_objects column"));
+    const captured: Array<{ context: any; body: unknown }> = [];
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+      captureJsonContext: (context, body) => {
+        captured.push({ context, body });
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/source-objects`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      code: "UNKNOWN",
+      message: "missing source_objects column",
+    });
+    expect(captured.at(-1)?.context?.error).toMatchObject({
+      message: "missing source_objects column",
+      details: {
+        pluginId,
+        pluginKey: "paperclip.example",
+        bridgeMethod: "getData",
+        dataKey: "source-objects",
+        bridgeCode: "UNKNOWN",
+      },
     });
   });
 
