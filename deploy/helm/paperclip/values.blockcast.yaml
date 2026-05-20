@@ -84,6 +84,18 @@ env:
       value: https://paperclip.blockcast.net
     - name: PAPERCLIP_AUTH_BASE_URL_MODE
       value: explicit
+    # Disable self-serve email+password registration. Stops the
+    # unauthenticated `POST /api/auth/sign-up/email` exploitation chain
+    # documented in BLO-* (filed 2026-05-20): anonymous user → signup →
+    # cli-auth challenge → self-approve → `pcp_board_*` bearer that the
+    # paperclip-public-tools auth-proxy at `/ccrotate`, `/linear`, `/figma`,
+    # `/webflow`, `/tempo`, `/gbrain` accepts wholesale (the proxy validates
+    # via `/api/cli-auth/me` and does not check company-membership). Verified
+    # end-to-end against production 2026-05-20T20:14Z with synthetic users
+    # since cleaned up. Proper fix is OIDC + auth-proxy membership check
+    # (PCL-1879); this is the stopgap.
+    - name: PAPERCLIP_AUTH_DISABLE_SIGN_UP
+      value: "true"
     - name: PAPERCLIP_DEPLOYMENT_MODE
       value: authenticated
     - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
