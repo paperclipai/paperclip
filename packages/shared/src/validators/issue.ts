@@ -167,6 +167,19 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+export const doneEvidenceSchema = z.object({
+  prLink: z.string().min(1),
+  releaseSha: z.string().min(1),
+  deployRunId: z.string().min(1),
+  testServerHealthGreen: z.boolean(),
+  smokeReportLinks: z.array(z.string()),
+  consoleErrors: z.number().int().min(0),
+  networkErrors: z.number().int().min(0),
+  evidenceLinks: z.array(z.string()),
+});
+
+export type DoneEvidence = z.infer<typeof doneEvidenceSchema>;
+
 export const updateIssueSchema = createIssueSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -175,6 +188,7 @@ export const updateIssueSchema = createIssueSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  doneEvidence: doneEvidenceSchema.optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
