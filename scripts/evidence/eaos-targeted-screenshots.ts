@@ -132,7 +132,9 @@ const CAPTURES: readonly Capture[] = [
     path: "/eaos/missions",
     waitFor: '[data-testid="eaos-missions-page"]',
     setup: async (page) => {
-      await page.waitForSelector('[data-testid="eaos-missions-bucket-active"]', {
+      // LET-503 round-4: Missions list is a flat Linear-style list now;
+      // wait for the list container, not the old bucket selector.
+      await page.waitForSelector('[data-testid="eaos-missions-list"]', {
         timeout: 6_000,
       });
       // Make sure the scroll position starts at the top so the first
@@ -154,7 +156,9 @@ const CAPTURES: readonly Capture[] = [
     path: "/eaos/missions",
     waitFor: '[data-testid="eaos-missions-page"]',
     setup: async (page) => {
-      await page.waitForSelector('[data-testid="eaos-missions-bucket-active"]', {
+      // LET-503 round-4: Missions list is a flat Linear-style list now;
+      // wait for the list container, not the old bucket selector.
+      await page.waitForSelector('[data-testid="eaos-missions-list"]', {
         timeout: 6_000,
       });
       // Scroll halfway then to the bottom so reviewers can see the

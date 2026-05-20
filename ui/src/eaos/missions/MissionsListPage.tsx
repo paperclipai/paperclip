@@ -1,57 +1,70 @@
-// LET-424 Mission Control thin slice (read-only).
+// LET-503 round-4 — `/eaos/missions` rebuilt to a Linear-style task
+// product surface. Andrii's escalation rejected the previous bucketed
+// card layout as too generic and too dashboard-like. The Telegram
+// reference is a Paperclip/Linear issue tracker: a single flat list as
+// the default view (compact rows with status icon + priority + id +
+// title + project label + assignee avatar + updated time + open arrow)
+// and a Board view toggle for Kanban columns with compact issue cards.
 //
-// Frontend contract: LET-409 §14 (Mission task-object), §15.1–§15.3
-// (truth/freshness/confidence chips, no-live-action posture, kernel
-// backlinks). This surface only reads canonical Issue records from
-// `/api/companies/:companyId/issues` and renders a backend-derived mission
-// view through the LET-424 mission-resolver.
-//
-// Posture rules:
-//   - Shell chip is BACKEND-BACKED whenever the route is rendered.
-//   - Data chip becomes BACKEND-BACKED only after a successful issue fetch.
-//     Until then (loading / error), the data chip is PREVIEW · Not connected.
-//   - Counts come exclusively from the resolved Issue rows; no Stub data
-//     contributes to any counted total, in line with LET-409 §10/§15.
-//   - Per-row truth labels follow `MissionRow.truthLabel`/`*Truth` fields:
-//     Backend-backed for raw fields, Backend-derived for resolver rollups.
-//   - No mutating actions (approve / deploy / restart / spend / vendor) are
-//     rendered. Only safe links back to kernel issue pages and the LET-409
-//     spec doc.
-//   - Live-action keyword detection raises an advisory "live-action mention"
-//     chip; it does NOT enable any live control here.
+// What this page does NOT do anymore:
+//   - No 6-tile KPI/summary strip at the top. Linear shows a count and
+//     filter pills, not a wide dashboard band.
+//   - No 5 separate bucket sections in the default view; the list is
+//     flat with status-grouped chips per row.
+//   - No mission "cards" with stacked field grids in the default view —
+//     all fields collapse to a single compact row.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import {
+  AlertCircle,
+  AlertTriangle,
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpRight,
+  Circle,
+  CircleDashed,
+  CircleDot,
+  CircleSlash,
+  Eye,
+  Folder,
+  LayoutGrid,
+  Loader2,
+  Minus,
+  Rows3,
+} from "lucide-react";
+import type { Issue, IssuePriority } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
-import { EaosStateChip } from "../EaosStateChip";
 import { useEaosViewerRole } from "../useEaosViewerRole";
 import { AgentAvatar } from "../agents/AgentAvatar";
-import type * as React from "react";
 import {
   bucketMissions,
   resolveMissionRow,
   summarizeMissionList,
-  type MissionFreshnessLabel,
   type MissionPrimaryState,
   type MissionRow,
-  type MissionTruthLabel,
 } from "./mission-resolver";
 
 const MISSION_FETCH_LIMIT = 100;
+
+type ViewMode = "list" | "board";
 
 interface MissionsListPageProps {
   // Tests inject a fixed `now` so freshness chips are deterministic. In
   // production we let the resolver default to `new Date()` per call.
   now?: Date;
+  // Tests + the targeted screenshot runner can pin the default view.
+  initialMode?: ViewMode;
 }
 
-export function MissionsListPage({ now }: MissionsListPageProps = {}) {
+export function MissionsListPage({ now, initialMode = "list" }: MissionsListPageProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { isOperator } = useEaosViewerRole();
+  const [mode, setMode] = useState<ViewMode>(initialMode);
 
   const issuesQuery = useQuery({
     queryKey: selectedCompanyId
@@ -82,18 +95,32 @@ export function MissionsListPage({ now }: MissionsListPageProps = {}) {
   return (
     <section
       aria-labelledby="eaos-missions-title"
-      className="flex flex-col gap-5"
+      className="flex min-h-0 flex-1 flex-col gap-3"
       data-testid="eaos-missions-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
+      data-eaos-missions-mode={mode}
     >
-      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <h1
-          id="eaos-missions-title"
-          className="text-xl font-semibold tracking-tight text-foreground"
-          data-testid="eaos-missions-title"
-        >
-          Missions
-        </h1>
+      <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <div className="flex items-baseline gap-2">
+          <h1
+            id="eaos-missions-title"
+            className="text-xl font-semibold tracking-tight text-foreground"
+            data-testid="eaos-missions-title"
+          >
+            Missions
+          </h1>
+          {rows.length > 0 ? (
+            <span
+              className="text-xs font-normal tabular-nums text-muted-foreground"
+              data-testid="eaos-missions-count"
+            >
+              {rows.length}
+            </span>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          <ViewModeToggle mode={mode} onChange={setMode} />
+        </div>
       </header>
 
       {!selectedCompanyId ? (
@@ -104,78 +131,44 @@ export function MissionsListPage({ now }: MissionsListPageProps = {}) {
         <ErrorState message={readErrorMessage(issuesQuery.error)} />
       ) : rows.length === 0 ? (
         <EmptyState />
+      ) : mode === "list" ? (
+        <MissionList rows={rows} isOperator={isOperator} />
       ) : (
-        <>
-          <SummaryStrip summary={summary} />
-          <MissionBucket
-            id="active"
-            title="Active"
-            description="In progress, or queued with an owner."
-            rows={buckets.active}
-            isOperator={isOperator}
-          />
-          <MissionBucket
-            id="blocked"
-            title="Blocked"
-            description="Waiting on a dependency or external unblock."
-            rows={buckets.blocked}
-            isOperator={isOperator}
-          />
-          <MissionBucket
-            id="in-review"
-            title="In review"
-            description="Awaiting reviewer or approval owner."
-            rows={buckets.inReview}
-            isOperator={isOperator}
-          />
-          <MissionBucket
-            id="done-with-evidence"
-            title="Done"
-            description="Closed with a plan or work product attached."
-            rows={buckets.doneWithEvidence}
-            isOperator={isOperator}
-          />
-          <MissionBucket
-            id="other"
-            title="Other"
-            description="Cancelled, stale, or needing a next owner."
-            rows={buckets.other}
-            isOperator={isOperator}
-            allowEmpty
-          />
-        </>
+        <MissionBoard buckets={buckets} isOperator={isOperator} />
       )}
+
+      {hasData && rows.length > 0 ? <FilterSummary summary={summary} /> : null}
     </section>
   );
 }
 
 function readErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
-  return "Failed to load canonical issues.";
+  return "Failed to load missions.";
 }
 
 function NoCompanyState() {
   return (
-    <div
+    <p
       role="status"
-      className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-missions-no-company"
     >
-      Select a company from the top bar to see its missions.
-    </div>
+      Select a company scope in the top bar to load missions.
+    </p>
   );
 }
 
 function LoadingState() {
   return (
-    <div
+    <p
       role="status"
       aria-live="polite"
-      className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-missions-loading"
     >
       Loading missions…
-    </div>
+    </p>
   );
 }
 
@@ -183,379 +176,432 @@ function ErrorState({ message }: { message: string }) {
   return (
     <div
       role="alert"
-      className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
+      className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
       data-testid="eaos-missions-error"
     >
       <p className="font-medium">Could not load missions.</p>
-      <p className="mt-1 text-xs">{message}</p>
-      <p className="mt-1 text-xs">Refresh to try again.</p>
+      <p className="mt-1">{message}</p>
     </div>
   );
 }
 
 function EmptyState() {
   return (
-    <div
+    <p
       role="status"
-      className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
+      className="rounded-md border border-dashed border-border bg-card px-3 py-2 text-xs text-muted-foreground"
       data-testid="eaos-missions-empty"
     >
-      No missions yet. New work will show up here.
+      No missions in this scope yet.
+    </p>
+  );
+}
+
+function ViewModeToggle({ mode, onChange }: { mode: ViewMode; onChange: (next: ViewMode) => void }) {
+  return (
+    <div
+      role="tablist"
+      aria-label="View mode"
+      data-testid="eaos-missions-view-toggle"
+      className="inline-flex items-center rounded-md border border-border bg-card p-0.5 text-xs"
+    >
+      <ViewModeButton mode={mode} active="list" onChange={onChange} icon={Rows3} label="List" />
+      <ViewModeButton mode={mode} active="board" onChange={onChange} icon={LayoutGrid} label="Board" />
     </div>
   );
 }
 
-interface SummaryStripProps {
-  summary: ReturnType<typeof summarizeMissionList>;
-}
-
-function SummaryStrip({ summary }: SummaryStripProps) {
-  const items: Array<{ id: string; label: string; value: number }> = [
-    { id: "total", label: "Total", value: summary.totalBackendBacked },
-    { id: "active", label: "Active", value: summary.active },
-    { id: "blocked", label: "Blocked", value: summary.blocked },
-    { id: "in-review", label: "In review", value: summary.inReview },
-    { id: "done-with-evidence", label: "Done", value: summary.doneWithEvidence },
-    { id: "stale", label: "Stale", value: summary.stale },
-  ];
+function ViewModeButton({
+  mode,
+  active,
+  onChange,
+  icon: Icon,
+  label,
+}: {
+  mode: ViewMode;
+  active: ViewMode;
+  onChange: (next: ViewMode) => void;
+  icon: typeof Rows3;
+  label: string;
+}) {
+  const selected = mode === active;
   return (
-    <dl
-      data-testid="eaos-missions-summary"
-      className="grid grid-cols-2 gap-2 rounded-md border border-border bg-card p-3 sm:grid-cols-3 lg:grid-cols-6"
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      data-testid={`eaos-missions-view-${active}`}
+      onClick={() => onChange(active)}
+      className={
+        "inline-flex items-center gap-1 rounded px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+        (selected
+          ? "bg-foreground text-background"
+          : "text-muted-foreground hover:bg-accent/40 hover:text-foreground")
+      }
     >
-      {items.map((item) => (
-        <div
-          key={item.id}
-          data-testid={`eaos-missions-summary-${item.id}`}
-          className="flex flex-col gap-0.5"
-        >
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{item.label}</dt>
-          <dd className="text-lg font-semibold text-foreground">{item.value}</dd>
-        </div>
-      ))}
-    </dl>
+      <Icon className="h-3 w-3" aria-hidden="true" />
+      {label}
+    </button>
   );
 }
 
-interface MissionBucketProps {
-  id: string;
-  title: string;
-  description: string;
-  rows: readonly MissionRow[];
-  isOperator: boolean;
-  allowEmpty?: boolean;
-}
+// ---- Linear-style flat list ----
 
-function MissionBucket({ id, title, description, rows, isOperator, allowEmpty }: MissionBucketProps) {
-  if (rows.length === 0 && !allowEmpty) return null;
+function MissionList({ rows, isOperator }: { rows: readonly MissionRow[]; isOperator: boolean }) {
   return (
-    <section
-      aria-labelledby={`eaos-missions-bucket-${id}-title`}
-      className="flex flex-col gap-2"
-      data-testid={`eaos-missions-bucket-${id}`}
+    <div
+      data-testid="eaos-missions-list"
+      className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card"
     >
-      <header className="flex flex-col gap-0.5">
-        <h2
-          id={`eaos-missions-bucket-${id}-title`}
-          className="text-sm font-semibold text-foreground"
-        >
-          {title}{" "}
-          <span className="text-xs font-normal text-muted-foreground">({rows.length})</span>
-        </h2>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </header>
-      {rows.length === 0 ? (
-        <div
-          className="rounded-md border border-dashed border-border bg-card p-3 text-xs text-muted-foreground"
-          data-testid={`eaos-missions-bucket-${id}-empty`}
-        >
-          No issues currently in this bucket.
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-2" data-testid={`eaos-missions-bucket-${id}-rows`}>
-          {rows.map((row) => (
-            <MissionRowCard key={row.id} row={row} isOperator={isOperator} />
-          ))}
-        </ul>
-      )}
-    </section>
+      <ul role="list" className="divide-y divide-border">
+        {rows.map((row) => (
+          <MissionListRow key={row.id} row={row} isOperator={isOperator} />
+        ))}
+      </ul>
+    </div>
   );
 }
 
-function MissionRowCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
+function MissionListRow({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
   return (
     <li
-      className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid="eaos-missions-row"
       data-mission-id={row.id}
       data-mission-primary-state={row.primaryState}
+      data-mission-priority={row.priority}
       data-mission-freshness={row.freshness}
+      className="group flex items-center gap-3 px-3 py-2 hover:bg-accent/30"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <PrimaryStateChip state={row.primaryState} reason={row.primaryStateReason} />
-        {isOperator ? <TruthChip truth={row.truthLabel} /> : null}
-        {isOperator || row.freshness === "Stale" ? (
-          <FreshnessChip freshness={row.freshness} updatedAt={row.updatedAt} />
-        ) : null}
-        {row.riskSummary.liveActionMentioned ? (
-          <EaosStateChip
-            label="APPROVAL REQUIRED"
-            prefix="Risk"
-            title="Mentions a live-action category (deploy, restart, prod, etc). Read-only advisory; no live control is rendered here."
-          />
-        ) : null}
-      </div>
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-foreground">
-          {row.identifier ? (
-            <span className="text-muted-foreground" data-testid="eaos-missions-row-identifier">
-              {row.identifier} ·{" "}
-            </span>
-          ) : null}
-          <span data-testid="eaos-missions-row-title">{row.title}</span>
-        </p>
-        <p className="text-xs text-muted-foreground" data-testid="eaos-missions-row-primary-reason">
-          {row.primaryStateReason}
-        </p>
-      </div>
-      <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-        <Field
-          label="Owner"
-          value={row.ownerSummary.currentLabel}
-          truth={row.ownerSummary.currentTruth}
-          reason={row.ownerSummary.currentReason}
-          showTruth={isOperator}
-          leading={
-            row.ownerSummary.avatar ? (
-              <AgentAvatar
-                size="sm"
-                subject={row.ownerSummary.avatar}
-                testId="eaos-missions-row-owner-avatar"
-              />
-            ) : null
-          }
-        />
-        <Field
-          label="Evidence"
-          value={
-            row.evidenceSummary.hasPlanDocument || row.evidenceSummary.hasWorkProducts
-              ? [
-                  row.evidenceSummary.hasPlanDocument ? "plan doc" : null,
-                  row.evidenceSummary.hasWorkProducts ? "work products" : null,
-                ]
-                  .filter(Boolean)
-                  .join(" + ")
-              : "None attached"
-          }
-          truth={row.evidenceSummary.truth}
-          showTruth={isOperator}
-        />
-        {/* Next step is filler in the default "active / continue work" case;
-            only show it when the resolver surfaces an actionable next move. */}
-        {row.nextGateSummary.label && row.nextGateSummary.label !== "Continue active work" ? (
-          <Field
-            label="Next step"
-            value={row.nextGateSummary.label}
-            truth={row.nextGateSummary.truth}
-            reason={row.nextGateSummary.requiresHuman ? "Needs a human" : undefined}
-            showTruth={isOperator}
-          />
-        ) : null}
-        {/* Dependencies counts add no signal when both are zero — hide. */}
-        {row.treeSummary.blocksCount > 0 || row.treeSummary.blockedByCount > 0 ? (
-          <Field
-            label="Dependencies"
-            value={
-              row.treeSummary.blockedByCount === 0
-                ? `Blocks ${row.treeSummary.blocksCount}`
-                : row.treeSummary.blocksCount === 0
-                  ? `Blocked by ${row.treeSummary.blockedByCount}`
-                  : `Blocks ${row.treeSummary.blocksCount} · Blocked by ${row.treeSummary.blockedByCount}`
-            }
-            truth={row.treeSummary.truth}
-            showTruth={isOperator}
-          />
-        ) : null}
-      </dl>
-      <div className="flex flex-wrap items-center gap-3 text-xs">
-        <Link
-          to={row.kernelRoute}
-          className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          data-testid="eaos-missions-row-kernel-link"
-          disableIssueQuicklook
+      <StatusIcon state={row.primaryState} />
+      <PriorityIcon priority={row.priority} />
+      {row.identifier ? (
+        <span
+          data-testid="eaos-missions-row-identifier"
+          className="hidden w-20 shrink-0 truncate font-mono text-[11px] text-muted-foreground tabular-nums sm:inline"
         >
-          Open details →
-        </Link>
-      </div>
+          {row.identifier}
+        </span>
+      ) : null}
+      <Link
+        to={`/eaos/missions/${row.identifier ?? row.id}`}
+        className="min-w-0 flex-1 truncate text-sm text-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:underline"
+        data-testid="eaos-missions-row-title"
+      >
+        {row.title}
+      </Link>
+      {row.projectLabel ? (
+        <ProjectChip label={row.projectLabel} urlKey={row.projectUrlKey} />
+      ) : null}
+      {row.ownerSummary.avatar ? (
+        <AgentAvatar
+          size="sm"
+          subject={row.ownerSummary.avatar}
+          ariaLabel={`${row.ownerSummary.currentLabel} — ${row.ownerSummary.currentReason}`}
+          testId="eaos-missions-row-owner-avatar"
+        />
+      ) : (
+        <UnassignedDot />
+      )}
+      <RelativeTimeCell at={row.updatedAt} />
+      {row.riskSummary.liveActionMentioned && isOperator ? (
+        <AlertTriangle
+          className="h-3.5 w-3.5 text-amber-600"
+          aria-label="Live-action risk"
+          data-testid="eaos-missions-row-risk"
+        />
+      ) : null}
+      <Link
+        to={`/eaos/missions/${row.identifier ?? row.id}`}
+        aria-label={`Open ${row.identifier ?? row.title}`}
+        className="invisible text-muted-foreground transition-opacity hover:text-foreground group-hover:visible focus-visible:visible focus-visible:outline-none focus-visible:underline"
+        data-testid="eaos-missions-row-open"
+      >
+        <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
+      </Link>
     </li>
   );
 }
 
-function Field({
-  label,
-  value,
-  truth,
-  reason,
-  showTruth,
-  leading,
+// ---- Board (Kanban) ----
+
+function MissionBoard({
+  buckets,
+  isOperator,
 }: {
-  label: string;
-  value: string;
-  truth: MissionTruthLabel;
-  reason?: string;
-  showTruth: boolean;
-  leading?: React.ReactNode;
+  buckets: { active: MissionRow[]; blocked: MissionRow[]; inReview: MissionRow[]; doneWithEvidence: MissionRow[]; other: MissionRow[] };
+  isOperator: boolean;
 }) {
+  const columns: Array<{ id: string; title: string; rows: MissionRow[] }> = [
+    { id: "active", title: "Active", rows: buckets.active },
+    { id: "blocked", title: "Blocked", rows: buckets.blocked },
+    { id: "in-review", title: "In review", rows: buckets.inReview },
+    { id: "done", title: "Done", rows: buckets.doneWithEvidence },
+  ];
   return (
-    <div className="flex flex-col gap-0.5" data-testid={`eaos-missions-row-field-${label.toLowerCase().replace(/\s+/g, "-")}`}>
-      <dt className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-        {label}
-        {showTruth ? <TruthInlineMark truth={truth} /> : null}
-      </dt>
-      <dd className="flex items-center gap-1.5 text-foreground">
-        {leading}
-        <span className="truncate">{value}</span>
-      </dd>
-      {reason ? <p className="text-[11px] text-muted-foreground">{reason}</p> : null}
+    <div
+      data-testid="eaos-missions-board"
+      className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto sm:grid-cols-2 lg:grid-cols-4"
+    >
+      {columns.map((column) => (
+        <BoardColumn key={column.id} {...column} isOperator={isOperator} />
+      ))}
     </div>
   );
 }
 
-function TruthInlineMark({ truth }: { truth: MissionTruthLabel }) {
-  const tone =
-    truth === "Backend-backed"
-      ? "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-200"
-      : "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-200";
-  const tip =
-    truth === "Backend-backed"
-      ? "Backend-backed: value mirrors a canonical Issue field."
-      : "Backend-derived: rollup computed from canonical fields by the LET-424 resolver.";
-  return (
-    <span
-      className={"rounded px-1 py-0 text-[9px] font-medium uppercase tracking-wide " + tone}
-      title={tip}
-      data-testid={`eaos-missions-field-truth-${truth.toLowerCase().replace(/[^a-z]+/g, "-")}`}
-    >
-      {truth === "Backend-backed" ? "Backed" : "Derived"}
-    </span>
-  );
-}
-
-const PRIMARY_STATE_LABELS: Record<MissionPrimaryState, string> = {
-  active: "Active",
-  "needs-next-owner": "Needs owner",
-  blocked: "Blocked",
-  "in-review": "In review",
-  "release-held": "Release held",
-  "done-with-evidence": "Done · evidence",
-  "done-evidence-incomplete": "Done · no evidence",
-  cancelled: "Cancelled",
-  stale: "Stale",
-};
-
-const PRIMARY_STATE_TONE: Record<MissionPrimaryState, string> = {
-  active:
-    "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-600 dark:bg-blue-950 dark:text-blue-100",
-  "needs-next-owner":
-    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-100",
-  blocked:
-    "border-red-300 bg-red-50 text-red-800 dark:border-red-600 dark:bg-red-950 dark:text-red-100",
-  "in-review":
-    "border-violet-300 bg-violet-50 text-violet-800 dark:border-violet-600 dark:bg-violet-950 dark:text-violet-100",
-  "release-held":
-    "border-orange-300 bg-orange-50 text-orange-900 dark:border-orange-600 dark:bg-orange-950 dark:text-orange-100",
-  "done-with-evidence":
-    "border-green-300 bg-green-50 text-green-800 dark:border-green-600 dark:bg-green-950 dark:text-green-100",
-  "done-evidence-incomplete":
-    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-100",
-  cancelled:
-    "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200",
-  stale:
-    "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200",
-};
-
-function PrimaryStateChip({
-  state,
-  reason,
+function BoardColumn({
+  id,
+  title,
+  rows,
+  isOperator,
 }: {
-  state: MissionPrimaryState;
-  reason: string;
+  id: string;
+  title: string;
+  rows: MissionRow[];
+  isOperator: boolean;
 }) {
   return (
-    <span
-      data-testid={`eaos-missions-primary-state-${state}`}
-      title={reason}
-      className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide " +
-        PRIMARY_STATE_TONE[state]
-      }
+    <section
+      aria-label={title}
+      data-testid={`eaos-missions-board-column-${id}`}
+      className="flex min-h-0 flex-col gap-2 rounded-md border border-border bg-card p-2"
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      {PRIMARY_STATE_LABELS[state]}
-    </span>
+      <header className="flex items-center justify-between px-1">
+        <h3 className="text-xs font-semibold tracking-wide text-foreground">{title}</h3>
+        <span className="text-[11px] tabular-nums text-muted-foreground">{rows.length}</span>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
+        {rows.length === 0 ? (
+          <p
+            className="rounded border border-dashed border-border bg-background px-2 py-1.5 text-[11px] text-muted-foreground"
+            data-testid={`eaos-missions-board-column-${id}-empty`}
+          >
+            None.
+          </p>
+        ) : (
+          rows.map((row) => <BoardCard key={row.id} row={row} isOperator={isOperator} />)
+        )}
+      </div>
+    </section>
   );
 }
 
-function TruthChip({ truth }: { truth: MissionTruthLabel }) {
-  // Operator-only provenance hint — soft tone, plain language, no
-  // BACKEND-BACKED / PREVIEW jargon for non-operators (caller gates it).
-  const tip =
-    truth === "Backend-backed"
-      ? "Row identity and status mirror canonical Issue fields."
-      : "Row is derived from canonical Issue fields by the LET-424 resolver.";
-  const label = truth === "Backend-backed" ? "Live data" : "Derived";
+function BoardCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
+  return (
+    <Link
+      to={`/eaos/missions/${row.identifier ?? row.id}`}
+      data-testid="eaos-missions-board-card"
+      data-mission-id={row.id}
+      data-mission-priority={row.priority}
+      className="block rounded-md border border-border bg-background p-2.5 transition-colors hover:border-foreground/30 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <PriorityIcon priority={row.priority} />
+        {row.identifier ? <span className="font-mono tabular-nums">{row.identifier}</span> : null}
+      </div>
+      <p className="mt-1.5 line-clamp-2 text-sm text-foreground">{row.title}</p>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          {row.ownerSummary.avatar ? (
+            <AgentAvatar
+              size="xs"
+              subject={row.ownerSummary.avatar}
+              ariaLabel={row.ownerSummary.currentLabel}
+            />
+          ) : (
+            <UnassignedDot small />
+          )}
+          {row.projectLabel ? <ProjectChip label={row.projectLabel} urlKey={row.projectUrlKey} compact /> : null}
+        </div>
+        <RelativeTimeCell at={row.updatedAt} compact />
+        {row.riskSummary.liveActionMentioned && isOperator ? (
+          <AlertTriangle className="h-3 w-3 text-amber-600" aria-label="Live-action risk" />
+        ) : null}
+      </div>
+    </Link>
+  );
+}
+
+// ---- Small leaf components ----
+
+function StatusIcon({ state }: { state: MissionPrimaryState }) {
+  switch (state) {
+    case "active":
+      return (
+        <Loader2
+          className="h-3.5 w-3.5 shrink-0 text-blue-600 animate-[spin_3s_linear_infinite]"
+          aria-label="Active"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="active"
+        />
+      );
+    case "blocked":
+      return (
+        <AlertCircle
+          className="h-3.5 w-3.5 shrink-0 text-amber-600"
+          aria-label="Blocked"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="blocked"
+        />
+      );
+    case "in-review":
+      return (
+        <Eye
+          className="h-3.5 w-3.5 shrink-0 text-violet-600"
+          aria-label="In review"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="in-review"
+        />
+      );
+    case "release-held":
+      return (
+        <Eye
+          className="h-3.5 w-3.5 shrink-0 text-amber-600"
+          aria-label="Release held"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="release-held"
+        />
+      );
+    case "done-with-evidence":
+      return (
+        <CircleDot
+          className="h-3.5 w-3.5 shrink-0 text-emerald-600"
+          aria-label="Done"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="done"
+        />
+      );
+    case "done-evidence-incomplete":
+      return (
+        <CircleDot
+          className="h-3.5 w-3.5 shrink-0 text-emerald-500/60"
+          aria-label="Done — evidence light"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="done-evidence-incomplete"
+        />
+      );
+    case "cancelled":
+      return (
+        <CircleSlash
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          aria-label="Cancelled"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="cancelled"
+        />
+      );
+    case "stale":
+      return (
+        <CircleDashed
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          aria-label="Stale"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="stale"
+        />
+      );
+    case "needs-next-owner":
+      return (
+        <Circle
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          aria-label="Needs an owner"
+          data-testid="eaos-missions-row-status-icon"
+          data-state="needs-next-owner"
+        />
+      );
+  }
+}
+
+function PriorityIcon({ priority }: { priority: IssuePriority }) {
+  const Icon = priority === "critical"
+    ? AlertTriangle
+    : priority === "high"
+      ? ArrowUp
+      : priority === "medium"
+        ? ArrowRight
+        : priority === "low"
+          ? ArrowDown
+          : Minus;
+  const tone = priority === "critical"
+    ? "text-red-600"
+    : priority === "high"
+      ? "text-orange-500"
+      : priority === "medium"
+        ? "text-muted-foreground"
+        : "text-muted-foreground/70";
+  return (
+    <Icon
+      className={"h-3.5 w-3.5 shrink-0 " + tone}
+      aria-label={`Priority: ${priority}`}
+      data-testid="eaos-missions-row-priority"
+      data-priority={priority}
+    />
+  );
+}
+
+function ProjectChip({ label, urlKey, compact }: { label: string; urlKey: string | null; compact?: boolean }) {
+  const inner = (
+    <span
+      className={
+        "inline-flex shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground " +
+        (compact ? "max-w-[120px] truncate" : "max-w-[160px] truncate")
+      }
+      data-testid="eaos-missions-row-project"
+    >
+      <Folder className="h-3 w-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+  return urlKey ? <Link to={`/eaos/projects/${urlKey}`}>{inner}</Link> : inner;
+}
+
+function UnassignedDot({ small }: { small?: boolean } = {}) {
   return (
     <span
-      data-testid={`eaos-missions-truth-${truth.toLowerCase().replace(/[^a-z]+/g, "-")}`}
-      title={tip}
-      className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+      data-testid="eaos-missions-row-owner-unassigned"
+      aria-label="Unassigned"
+      className={
+        "inline-flex shrink-0 items-center justify-center rounded-full border border-dashed border-border bg-background " +
+        (small ? "h-4 w-4" : "h-[22px] w-[22px]")
+      }
+    />
+  );
+}
+
+function RelativeTimeCell({ at, compact }: { at: Date | null; compact?: boolean }) {
+  const label = formatRelative(at);
+  return (
+    <span
+      className={
+        "shrink-0 tabular-nums text-muted-foreground " + (compact ? "text-[10px]" : "text-[11px]")
+      }
+      data-testid="eaos-missions-row-updated"
+      title={at ? at.toISOString() : undefined}
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-60" />
       {label}
     </span>
   );
 }
 
-const FRESHNESS_TONE: Record<MissionFreshnessLabel, string> = {
-  Fresh:
-    "border-green-300 bg-green-50 text-green-800 dark:border-green-600 dark:bg-green-950 dark:text-green-100",
-  Aging:
-    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-100",
-  Stale:
-    "border-zinc-300 bg-zinc-50 text-zinc-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100",
-  Unknown:
-    "border-zinc-300 bg-zinc-50 text-zinc-700 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200",
-};
+function formatRelative(at: Date | null): string {
+  if (!at) return "—";
+  const ms = Date.now() - at.getTime();
+  if (ms < 60_000) return "now";
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const d = Math.floor(hr / 24);
+  if (d < 30) return `${d}d`;
+  return at.toISOString().slice(0, 10);
+}
 
-function FreshnessChip({
-  freshness,
-  updatedAt,
-}: {
-  freshness: MissionFreshnessLabel;
-  updatedAt: Date | null;
-}) {
-  const tip = updatedAt
-    ? `Last updated ${updatedAt.toISOString()}.`
-    : "No recent activity recorded.";
-  const label =
-    freshness === "Fresh"
-      ? "Fresh"
-      : freshness === "Aging"
-        ? "Aging"
-        : freshness === "Stale"
-          ? "Stale"
-          : "Unknown activity";
+function FilterSummary({ summary }: { summary: ReturnType<typeof summarizeMissionList> }) {
   return (
-    <span
-      data-testid={`eaos-missions-freshness-${freshness.toLowerCase()}`}
-      title={tip}
-      className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium " +
-        FRESHNESS_TONE[freshness]
-      }
+    <p
+      data-testid="eaos-missions-filter-summary"
+      className="px-1 text-[11px] text-muted-foreground"
     >
-      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      {label}
-    </span>
+      {summary.active} active · {summary.blocked} blocked · {summary.inReview} in review · {summary.doneWithEvidence} done
+      {summary.stale > 0 ? ` · ${summary.stale} stale` : ""}
+    </p>
   );
 }

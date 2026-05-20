@@ -179,21 +179,14 @@ describe("MissionsListPage", () => {
         status: "blocked",
         title: "Blocked populated mission",
         assigneeAgentId: "agent-1",
-        // Force a non-empty blockedBy so the Dependencies field surfaces
-        // (it is now hidden when both blocks/blockedBy are zero).
-        blockedBy: [
-          {
-            id: "dep-1",
-            identifier: "LET-DEP",
-            title: "Dependency issue",
-            status: "in_progress",
-          },
-        ] as never,
       }),
     ]);
     await render();
 
     const html = container?.innerHTML ?? "";
+    // LET-503 round-4: the Linear-style flat list does not surface
+    // backend-shaped tokens, raw issue field names, or implementation
+    // posture chips anywhere in the customer DOM.
     expect(html).not.toContain("BACKEND-BACKED");
     expect(html).not.toContain("BACKED");
     expect(html).not.toContain("DERIVED");
@@ -203,11 +196,6 @@ describe("MissionsListPage", () => {
     expect(html).not.toContain("issue.assigneeUserId");
     expect(html).not.toContain("issue.executionAgentNameKey");
     expect(html).not.toContain("NEXT GATE");
-    // Customer-friendly labels are present for the surfaces that have
-    // signal — Next step on a blocked row points at unblock; Dependencies
-    // surfaces because blockedBy has at least one item.
-    expect(html).toContain("Next step");
-    expect(html).toContain("Dependencies");
   });
 
   it("hides filler 'Continue active work' and zero-zero Dependencies for an active row with no blockers", async () => {
@@ -223,28 +211,108 @@ describe("MissionsListPage", () => {
     ]);
     await render();
     const html = container?.innerHTML ?? "";
+    // The Linear-style compact row never emits these filler strings —
+    // the test still acts as a regression guard against jargon coming
+    // back in either the row or the bucket layout.
     expect(html).not.toContain("Continue active work");
     expect(html).not.toContain("Blocks 0 · Blocked by 0");
-    // Owner and Evidence are still shown (always relevant).
-    expect(html).toContain("Owner");
-    expect(html).toContain("Evidence");
+    // Compact row is wired — the avatar still renders for an agent owner.
+    expect(
+      container?.querySelector('[data-testid="eaos-missions-row-owner-avatar"]'),
+    ).not.toBeNull();
   });
 
-  it("surfaces operator provenance chips when viewer is operator-class", async () => {
-    viewerRoleMock.mockReturnValue({ isOperator: true, isInstanceAdmin: true, membershipRole: "owner", loading: false });
+  it("renders the Linear-style List view by default with compact rows + status icon + priority + project + assignee avatar", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
     listMock.mockResolvedValueOnce([
       makeIssue({
-        id: "active-ops",
-        identifier: "LET-OPS",
+        id: "active-1",
+        identifier: "LET-A",
         status: "in_progress",
-        title: "Operator-visible mission",
+        priority: "high",
+        title: "Active mission",
         assigneeAgentId: "agent-1",
+        project: { id: "p1", urlKey: "growth", name: "Growth Q3" } as never,
+      }),
+      makeIssue({
+        id: "blocked-1",
+        identifier: "LET-B",
+        status: "blocked",
+        priority: "critical",
+        title: "Blocked mission",
+        assigneeAgentId: "agent-2",
       }),
     ]);
     await render();
+
+    // Default view is the flat list — not the bucketed card layout.
+    const page = container?.querySelector('[data-testid="eaos-missions-page"]');
+    expect(page?.getAttribute("data-eaos-missions-mode")).toBe("list");
+    expect(container?.querySelector('[data-testid="eaos-missions-list"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="eaos-missions-board"]')).toBeNull();
+
+    // Compact rows render with status icon + priority + identifier +
+    // project + owner avatar + updated time.
+    const rows = Array.from(
+      container?.querySelectorAll('[data-testid="eaos-missions-row"]') ?? [],
+    );
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.getAttribute("data-mission-primary-state")).toBe("active");
+    expect(rows[0]?.getAttribute("data-mission-priority")).toBe("high");
+    expect(rows[1]?.getAttribute("data-mission-primary-state")).toBe("blocked");
+    expect(rows[1]?.getAttribute("data-mission-priority")).toBe("critical");
+
+    // The row title is a link into the EAOS mission detail.
+    const titleLink = rows[0]?.querySelector(
+      '[data-testid="eaos-missions-row-title"]',
+    ) as HTMLAnchorElement | null;
+    expect(titleLink?.textContent).toContain("Active mission");
+    expect(titleLink?.getAttribute("href") ?? "").toMatch(/\/eaos\/missions\/LET-A$/);
+
+    // Project chip surfaces for the row that has a linked project.
+    expect(rows[0]?.querySelector('[data-testid="eaos-missions-row-project"]')).not.toBeNull();
+    expect(rows[1]?.querySelector('[data-testid="eaos-missions-row-project"]')).toBeNull();
+
+    // Owner avatar renders (deterministic) for agent assignees.
     expect(
-      container?.querySelector('[data-testid="eaos-missions-truth-backend-backed"]'),
+      rows[0]?.querySelector('[data-testid="eaos-missions-row-owner-avatar"]'),
     ).not.toBeNull();
+  });
+
+  it("flips to the Kanban Board view via the view toggle", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    listMock.mockResolvedValueOnce([
+      makeIssue({ id: "active-1", identifier: "LET-A", status: "in_progress", title: "Active" }),
+      makeIssue({ id: "blocked-1", identifier: "LET-B", status: "blocked", title: "Blocked" }),
+    ]);
+    await render();
+
+    const boardTab = container?.querySelector(
+      '[data-testid="eaos-missions-view-board"]',
+    ) as HTMLButtonElement | null;
+    expect(boardTab).not.toBeNull();
+    await act(async () => {
+      boardTab?.click();
+    });
+    await flush();
+
+    const page = container?.querySelector('[data-testid="eaos-missions-page"]');
+    expect(page?.getAttribute("data-eaos-missions-mode")).toBe("board");
+
+    expect(container?.querySelector('[data-testid="eaos-missions-board"]')).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="eaos-missions-board-column-active"]'),
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="eaos-missions-board-column-blocked"]'),
+    ).not.toBeNull();
+
+    // Board cards link into the same mission detail.
+    const cards = Array.from(
+      container?.querySelectorAll('[data-testid="eaos-missions-board-card"]') ?? [],
+    ) as HTMLAnchorElement[];
+    expect(cards.length).toBe(2);
+    expect(cards[0]?.getAttribute("href") ?? "").toMatch(/\/eaos\/missions\/LET-A$/);
   });
 
   it("shows the empty state when the backend returns zero issues", async () => {
@@ -253,55 +321,10 @@ describe("MissionsListPage", () => {
 
     const empty = container?.querySelector('[data-testid="eaos-missions-empty"]');
     expect(empty).not.toBeNull();
-
-    // Counts must NOT be inflated by preview/stub data when there are no rows.
-    const summary = container?.querySelector('[data-testid="eaos-missions-summary"]');
-    expect(summary).toBeNull();
-  });
-
-  it("renders mission rows bucketed by primary state with kernel backlinks", async () => {
-    listMock.mockResolvedValueOnce([
-      makeIssue({
-        id: "active-1",
-        identifier: "LET-A",
-        status: "in_progress",
-        title: "Active mission",
-      }),
-      makeIssue({
-        id: "blocked-1",
-        identifier: "LET-B",
-        status: "blocked",
-        title: "Blocked mission",
-      }),
-      makeIssue({
-        id: "review-1",
-        identifier: "LET-C",
-        status: "in_review",
-        title: "Review mission",
-      }),
-    ]);
-    await render();
-
-    expect(
-      container?.querySelector('[data-testid="eaos-missions-bucket-active-rows"]'),
-    ).not.toBeNull();
-    expect(
-      container?.querySelector('[data-testid="eaos-missions-bucket-blocked-rows"]'),
-    ).not.toBeNull();
-    expect(
-      container?.querySelector('[data-testid="eaos-missions-bucket-in-review-rows"]'),
-    ).not.toBeNull();
-
-    const summary = container?.querySelector('[data-testid="eaos-missions-summary-total"]');
-    expect(summary?.textContent).toContain("3");
-
-    const kernelLinks = Array.from(
-      container?.querySelectorAll('[data-testid="eaos-missions-row-kernel-link"]') ?? [],
-    );
-    expect(kernelLinks.length).toBe(3);
-    const hrefs = kernelLinks.map((link) => link.getAttribute("href") ?? "");
-    // The Link wrapper applies the active company's prefix to internal hrefs.
-    expect(hrefs.some((href) => href.endsWith("/issues/active-1"))).toBe(true);
+    // The view toggle is still rendered (header chrome stays consistent)
+    // but the list/board surfaces are not — empty path takes precedence.
+    expect(container?.querySelector('[data-testid="eaos-missions-list"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="eaos-missions-board"]')).toBeNull();
   });
 
   it("renders an error state and does NOT render any rows when the fetch fails", async () => {
@@ -314,7 +337,7 @@ describe("MissionsListPage", () => {
     expect(error?.textContent).toContain("network exploded");
 
     expect(container?.querySelector('[data-testid="eaos-missions-row"]')).toBeNull();
-    expect(container?.querySelector('[data-testid="eaos-missions-summary"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="eaos-missions-list"]')).toBeNull();
   });
 
   it("renders zero mutating controls — no approve/deploy/restart/rerun/apply buttons appear", async () => {
@@ -334,11 +357,5 @@ describe("MissionsListPage", () => {
         ).toBe(false);
       }
     }
-
-    // The advisory live-action chip should appear when the title mentions a
-    // live-action category (e.g., "deploy") so operators still see the risk.
-    expect(
-      container?.querySelector('[data-testid="eaos-state-chip-approval-required"]'),
-    ).not.toBeNull();
   });
 });

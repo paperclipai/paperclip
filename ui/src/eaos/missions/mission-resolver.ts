@@ -17,7 +17,7 @@
 // status, assignee IDs, blocker summaries, updatedAt) — none of which carry
 // secret payloads by contract.
 
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssuePriority, IssueStatus } from "@paperclipai/shared";
 
 export type MissionTruthLabel = "Backend-backed" | "Backend-derived";
 
@@ -44,6 +44,10 @@ export interface MissionRow {
   readonly truthLabel: MissionTruthLabel;
   readonly freshness: MissionFreshnessLabel;
   readonly updatedAt: Date | null;
+  // LET-503 round-4: Linear-style task row fields.
+  readonly priority: IssuePriority;
+  readonly projectLabel: string | null;
+  readonly projectUrlKey: string | null;
   readonly ownerSummary: {
     readonly currentLabel: string;
     readonly currentTruth: MissionTruthLabel;
@@ -294,6 +298,9 @@ export function resolveMissionRow(issue: Issue, now: Date = new Date()): Mission
     truthLabel: "Backend-backed",
     freshness,
     updatedAt,
+    priority: issue.priority,
+    projectLabel: issue.project?.name ?? null,
+    projectUrlKey: issue.project?.urlKey ?? null,
     ownerSummary: resolveOwner(issue),
     evidenceSummary: resolveEvidence(issue),
     riskSummary: resolveRisk(issue),
