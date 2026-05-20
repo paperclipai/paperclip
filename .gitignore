@@ -62,8 +62,10 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
-# Cursor IDE — local only (rules, hooks, editor state; not committed)
-.cursor/
+# Cursor IDE — local editor state (not committed); team rules tracked under rules/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .routic/
 
 # --- Local / secrets / editor (patterns aligned with token-bridge-v2) ---

@@ -17,7 +17,7 @@
 
 旧文件名若仍含「工单」（如 `002-实践-工单运行记录…`），仅表建档历史；正文与新文一律写 **事务**。UI 字典以 `ui/src/lib/i18n.ts` 为准。
 
-**Paperclip 租户（实例侧）约定：** 公司已收敛为 **test-co（测试）+ routic（正式）** 等既定集合。**新建公司：**非经人类当轮拍板不得扩张——总则 **[`AGENTS.md`](../../AGENTS.md)** §5 第 **16** 条，Cursor **[`.cursor/rules/routic-project.mdc`](../../.cursor/rules/routic-project.mdc)**。**迁移门禁：**新适配器、模型搭配、指令词/模版等与执行平面相关的变更，须在 **`test-co` 验证闭环**后再同步到 **`routic`**（§5 第 **17** 条）。
+**Paperclip 租户（实例侧）约定：** 公司已收敛为 **test-co（测试）+ routic（正式）** 等既定集合。**新建公司 / test-co→routic 迁移门禁：** **[`AGENTS.md`](../../AGENTS.md)** §5 第 **16–17** 条。Cursor 稳定前缀见 **[`.cursor/rules/README.md`](../../.cursor/rules/README.md)**。
 
 1. **任务不清楚 → 先讨论**（与人或 Board 对齐目标、边界、成功标准；不要猜任务）。
 2. **讨论仍不清楚 → 先探查**：本地 **代码 + 仓库文档（如 `doc/`、`AGENTS.md`）+ [`index.md`](index.md) 全量链接**；必要时 **上网检索**补上下文。

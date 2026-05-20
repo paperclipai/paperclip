@@ -773,7 +773,7 @@ export const agentDetail = {
   agentsCrumb: "智能体",
   runs: "运行",
   runPrefix: "运行",
-  instructions: "指令",
+  instructions: "设定",
   configuration: "配置",
   skills: "技能",
   budget: "预算",
@@ -1621,19 +1621,19 @@ export const agentDetailUi = {
   instructionsAdvancedCollapsible: "高级选项",
   instructionsModeLabel: "模式",
   instructionsModeTooltip:
-    "托管：由 Paperclip 存储并提供指令包。外部：你在磁盘上自行指定存放指令包的目录路径。",
+    "托管：由 Paperclip 存储并提供设定文件包。外部：你在磁盘上自行指定存放设定文件的目录路径。",
   instructionsModeManaged: "托管",
   instructionsModeExternal: "外部",
   instructionsRootPathLabel: "根路径",
   instructionsRootPathTooltip:
-    "指令包在磁盘上的绝对目录。托管模式下由 Paperclip 自动设置。",
+    "设定文件在磁盘上的绝对目录。托管模式下由 Paperclip 自动设置。",
   instructionsRootPathManagedEmpty: "（托管）",
   instructionsEntryFileLabel: "入口文件",
   instructionsEntryFileTooltip:
-    "智能体加载指令时最先读取的文件。默认为 AGENTS.md。",
+    "智能体加载设定时最先读取的文件。默认为 AGENTS.md。",
   bundlePathPlaceholder: "/absolute/path/to/agent/prompts",
   newInstructionFilePlaceholder: "TOOLS.md",
-  instructionsHeadingPlaceholder: "# 智能体指令",
+  instructionsHeadingPlaceholder: "# 智能体设定",
   fileContentsPlaceholder: "文件内容",
   copyAsMarkdownTitle: "复制为 Markdown",
 } as const;

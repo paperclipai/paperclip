@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>061 · 运行详情叙事流 — 预览入口</title>
+  <style>
+    body {
+      font-family: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+      max-width: 40rem;
+      margin: 3rem auto;
+      padding: 0 1.25rem;
+      line-height: 1.6;
+      color: #18181b;
+    }
+    h1 { font-size: 1.25rem; margin-bottom: 0.75rem; }
+    p { margin: 0.75rem 0; color: #52525b; font-size: 0.9375rem; }
+    code, a { font-size: 0.875rem; }
+    a { color: #2563eb; }
+    .box {
+      margin-top: 1.25rem;
+      padding: 1rem 1.25rem;
+      border: 1px solid #e4e4e7;
+      background: #fafafa;
+    }
+  </style>
+</head>
+<body>
+  <h1>061 · 运行详情叙事流预览</h1>
+  <p>预览已迁入 <strong>Paperclip 应用内</strong>，使用真实 Layout、主题 token 与 shadcn 组件，不再维护独立 HTML 皮肤。</p>
+  <div class="box">
+    <p><strong>本地开发</strong>（需已起 dev 服，本实例默认 <code>http://localhost:4100</code>）：</p>
+    <p><a id="preview-link" href="http://localhost:4100/ROU/design-preview/run-detail-narrative">打开叙事流设计预览</a></p>
+    <p style="font-size:0.8125rem">路径：<code>/{公司前缀}/design-preview/run-detail-narrative</code>（将 <code>ROU</code> 换成当前团队前缀）</p>
+  </div>
+  <p>设计真值：<code>docs/项目计划/技术设计/054-运行详情叙事流-技术设计 2026-05-20.md</code></p>
+  <p>执行单：<code>docs/项目计划/执行/061-运行详情叙事流-UI.md</code></p>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      var base = q.get("base") || "http://localhost:4100";
+      var prefix = (q.get("prefix") || "ROU").replace(/^\//, "");
+      var href = base.replace(/\/$/, "") + "/" + prefix + "/design-preview/run-detail-narrative";
+      var a = document.getElementById("preview-link");
+      if (a) { a.href = href; a.textContent = href; }
+    })();
+  </script>
+</body>
+</html>
