@@ -164,7 +164,7 @@ export function getInvocationChannelRows(
     {
       id: "scheduled",
       label: "Scheduled",
-      description: "Heartbeat / cron / routine entry-points.",
+      description: "Run on a recurring schedule you define.",
       availability: { kind: "available" },
     },
     {
@@ -352,6 +352,15 @@ export interface AgentBuilderSummary {
   readonly skillsLabel: string;
   readonly knowledgeLabel: string;
   readonly canCreate: boolean;
+  // Human-readable reason the final CTA is disabled (or null when ready).
+  // Surfaced both inline on the Identity step and next to the final
+  // `Create agent` button so reviewers / users never see an ambiguous
+  // disabled button without an explanation.
+  readonly cannotCreateReason: string | null;
+  // Per-field validation messages for the Identity step. Empty string
+  // means the field is OK.
+  readonly nameError: string;
+  readonly modelError: string;
 }
 
 const NBSP = " ";
@@ -402,7 +411,19 @@ export function summarizeAgentBuilder(state: AgentBuilderState): AgentBuilderSum
     ? `${knowledgeModeLabel} · discovery on`
     : `${knowledgeModeLabel} · discovery off`;
 
-  const canCreate = Boolean(name) && state.model.trim().length > 0;
+  const hasName = Boolean(name);
+  const hasModel = state.model.trim().length > 0;
+  const canCreate = hasName && hasModel;
+  const nameError = hasName ? "" : "Name is required.";
+  const modelError = hasModel ? "" : "Primary model is required.";
+  let cannotCreateReason: string | null = null;
+  if (!hasName && !hasModel) {
+    cannotCreateReason = "Add a name on Identity and a model on Model to enable.";
+  } else if (!hasName) {
+    cannotCreateReason = "Add a name on Identity to enable.";
+  } else if (!hasModel) {
+    cannotCreateReason = "Add a primary model on Model to enable.";
+  }
 
   return {
     displayName,
@@ -420,6 +441,9 @@ export function summarizeAgentBuilder(state: AgentBuilderState): AgentBuilderSum
     skillsLabel,
     knowledgeLabel,
     canCreate,
+    cannotCreateReason,
+    nameError,
+    modelError,
   };
 }
 

@@ -103,6 +103,8 @@ PASS. Adapter mix is derived from `agentsApi.list`. No raw MCP/capability toggle
 ## Shell-level guards
 
 - `EaosPrimaryNav` only renders `EAOS_PRIMARY_NAV_ZONES`, which does **not** include the legacy `Kernel / Admin` rail any more (`EAOS_KERNEL_NAV` is kept exported for secret-sweep tests but is not rendered in the primary rail).
+- The top bar's `Kernel` escape hatch is rendered **only for operator-class viewers**: instance admins and company members whose role is `owner`, `admin`, or `operator`. Customer-class viewers (member / viewer / no membership) do not see the hatch — confirmed by the parallel `populated-customer/` screenshot bucket which captures the same routes with `--viewer customer-member`.
+- The bottom posture strip's audit pin (`Audit · n/a`) and `Operator session` label are gated by the same `useEaosViewerRole` hook. Customer viewers see an empty `<footer role="contentinfo">` landmark (preserved for assistive tech) with no visible chrome; the live/approval state chips still appear for any viewer when the context actually applies.
 - The kernel/`/agent-os` and `/dashboard` routes remain reachable (preserved per LET-503 requirement #8), so operators retain their normal entry points.
 - Every visible string is funnelled through `redactSecretLikeText` at the call-sites that touch user-controlled content (agent name, issue title, capability blob, company name, error messages).
 

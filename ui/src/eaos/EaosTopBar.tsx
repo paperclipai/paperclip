@@ -4,6 +4,7 @@ import { KeyRound, Search, User } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { EAOS_KERNEL_NAV } from "./nav-zones";
 import { redactSecretLikeText } from "./secret-redact";
+import { useEaosViewerRole } from "./useEaosViewerRole";
 
 // LET-503 (LET-502 contract §3) — calm top bar. No posture/stub chips, no
 // dashed indicator badges. Scope chip stays compact; command palette
@@ -21,6 +22,11 @@ export interface EaosTopBarProps {
 export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
   const isKernel = variant === "kernel";
   const { selectedCompany } = useCompany();
+  // Customer roles never see the Kernel/Admin escape hatch from the
+  // EAOS shell. Operator-class viewers (instance admin, owner, admin,
+  // operator) keep the hatch so they can drop into the legacy console.
+  const { isOperator } = useEaosViewerRole();
+  const showKernelHatch = isKernel || isOperator;
 
   // Open the existing command palette by dispatching the shortcut its global
   // listener already handles. Keeps this slice from coupling to the dialog
@@ -127,16 +133,18 @@ export function EaosTopBar({ variant, onOpenPrimaryNav }: EaosTopBarProps) {
           <User aria-hidden="true" className="h-4 w-4" />
         </button>
 
-        <Link
-          to={isKernel ? "/eaos" : EAOS_KERNEL_NAV.path}
-          aria-label={isKernel ? "Return to Enterprise Agent OS shell" : "Open kernel/admin console"}
-          title={isKernel ? "Return to Enterprise Agent OS" : "Legacy kernel / admin"}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          data-testid="eaos-topbar-kernel-hatch"
-        >
-          <KeyRound aria-hidden="true" className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{isKernel ? "EAOS" : "Kernel"}</span>
-        </Link>
+        {showKernelHatch ? (
+          <Link
+            to={isKernel ? "/eaos" : EAOS_KERNEL_NAV.path}
+            aria-label={isKernel ? "Return to Enterprise Agent OS shell" : "Open kernel/admin console"}
+            title={isKernel ? "Return to Enterprise Agent OS" : "Legacy kernel / admin"}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-topbar-kernel-hatch"
+          >
+            <KeyRound aria-hidden="true" className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{isKernel ? "EAOS" : "Kernel"}</span>
+          </Link>
+        ) : null}
       </div>
     </header>
   );

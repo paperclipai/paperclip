@@ -24,7 +24,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosShell } from "./EaosShell";
-import { actSync } from "./test-helpers";
+import { actSync, flushReactQuery } from "./test-helpers";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null }),
@@ -36,6 +36,25 @@ vi.mock("@/api/issues", () => ({
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+
+// LET-503 review fix: the audit/operator-session footer is now
+// operator-only. These chrome-cleanup assertions are scoped to the
+// operator viewer path — pin the access mock to instance admin so the
+// posture strip renders the operator chrome the suite is checking
+// against.
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    getCurrentBoardAccess: vi.fn().mockResolvedValue({
+      user: { id: "user-1", email: null, name: "Test Admin", image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: [],
+      memberships: [],
+      source: "test-fixture",
+      keyId: null,
+    }),
+  },
 }));
 
 let container: HTMLDivElement | null = null;
@@ -83,14 +102,20 @@ describe("EAOS shell chrome (LET-503 cleanup)", () => {
     expect(text).not.toContain("Data · BACKEND-BACKED");
   });
 
-  it("does NOT advertise Shell/Data dual chips on the bottom posture strip", () => {
+  it("does NOT advertise Shell/Data dual chips on the bottom posture strip", async () => {
     renderEaosPath("/eaos");
+    // The audit/operator-session chrome is operator-gated and resolves
+    // asynchronously through the access query; flush before reading.
+    await flushReactQuery();
     const strip = container?.querySelector('[data-testid="eaos-posture-strip"]');
     const text = strip?.textContent ?? "";
     expect(text).not.toContain("Shell · BACKEND-BACKED");
     expect(text).not.toContain("Data · PREVIEW");
     expect(text).not.toContain("Data · BACKEND-BACKED");
-    // Audit pin is the only persistent breadcrumb.
+    // For operator-class viewers (this fixture pins instance admin) the
+    // audit pin is the only persistent breadcrumb. Customers see an
+    // empty footer instead — covered by the customer-role evidence
+    // captured in the LET-503 screenshot runner.
     expect(text).toContain("Audit");
   });
 

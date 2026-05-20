@@ -30,6 +30,24 @@ vi.mock("@/api/agents", () => ({
   agentsApi: { list: vi.fn().mockResolvedValue([]) },
 }));
 
+// The top bar's Kernel hatch is now operator-gated (LET-503 review fix).
+// The route smoke tests verify the hatch URL when it is rendered, so we
+// pin board access to an instance admin so the hatch is visible and the
+// href assertions still cover the routing behavior.
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    getCurrentBoardAccess: vi.fn().mockResolvedValue({
+      user: { id: "user-1", email: null, name: "Test Admin", image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
+      source: "test-fixture",
+      keyId: null,
+    }),
+  },
+}));
+
 // LET-415: /eaos and /agent-os are global, unprefixed product routes. The
 // shell links must NEVER be auto-prefixed with a company, even when a company
 // is selected in CompanyContext.

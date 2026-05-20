@@ -76,9 +76,11 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Browser, BrowserContext, Cookie } from "playwright";
 import {
-  SCREENSHOT_API_ROUTES,
+  buildScreenshotApiRoutes,
   SCREENSHOT_COMPANY_ID,
   screenshotApiFallback,
+  type ScreenshotFixtureMode,
+  type ScreenshotViewerRole,
 } from "./eaos-screenshot-fixtures";
 
 async function loadPlaywright(): Promise<typeof import("playwright")> {
@@ -104,6 +106,14 @@ interface Args {
   readonly theme: ThemeChoice;
   readonly anchorTimeoutMs: number;
   readonly mockApi: boolean;
+  // Populated | empty mock fixture mode. `populated` returns a small
+  // backend-shaped sample so the screenshots prove agents/issues/runs
+  // chrome; `empty` keeps the truthful zero-data empty states.
+  readonly fixtureMode: ScreenshotFixtureMode;
+  // Operator-admin (sees Kernel hatch + posture audit footer) or
+  // customer-member (no operator chrome). Used together with
+  // fixtureMode to capture the role-gating evidence.
+  readonly viewerRole: ScreenshotViewerRole;
 }
 
 interface CaptureRecord {
@@ -213,6 +223,8 @@ function parseArgs(argv: readonly string[]): Args {
   let theme: ThemeChoice = "light";
   let anchorTimeoutMs = 8_000;
   let mockApi = true;
+  let fixtureMode: ScreenshotFixtureMode = "empty";
+  let viewerRole: ScreenshotViewerRole = "operator-admin";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--base" || arg === "-b") {
@@ -231,9 +243,15 @@ function parseArgs(argv: readonly string[]): Args {
       mockApi = true;
     } else if (arg === "--no-mock-api") {
       mockApi = false;
+    } else if (arg === "--mode") {
+      const next = argv[++i];
+      if (next === "populated" || next === "empty") fixtureMode = next;
+    } else if (arg === "--viewer") {
+      const next = argv[++i];
+      if (next === "operator-admin" || next === "customer-member") viewerRole = next;
     }
   }
-  return { base, cookie, outDir, theme, anchorTimeoutMs, mockApi };
+  return { base, cookie, outDir, theme, anchorTimeoutMs, mockApi, fixtureMode, viewerRole };
 }
 
 function cookieToPlaywright(raw: string, baseUrl: string): Cookie[] {
@@ -395,6 +413,10 @@ async function main(): Promise<void> {
   // endpoint — so the captured PNGs show authentic empty states without
   // any fake counts/metrics/activity leaking in.
   if (args.mockApi) {
+    const routes = buildScreenshotApiRoutes({
+      mode: args.fixtureMode,
+      viewerRole: args.viewerRole,
+    });
     // Match only URLs whose path begins with `/api/`. A plain glob like
     // `**/api/**` also catches Vite source modules under `/src/api/...`
     // and breaks the React app load — anchor the match with a RegExp.
@@ -402,7 +424,7 @@ async function main(): Promise<void> {
       const request = route.request();
       const url = new URL(request.url());
       const method = request.method();
-      const match = SCREENSHOT_API_ROUTES.find((spec) => {
+      const match = routes.find((spec) => {
         if (spec.methodPattern && !spec.methodPattern.test(method)) return false;
         return spec.pathPattern.test(url.pathname);
       });
@@ -454,6 +476,8 @@ async function main(): Promise<void> {
     theme: args.theme,
     cookieApplied: Boolean(args.cookie),
     mockApi: args.mockApi,
+    fixtureMode: args.mockApi ? args.fixtureMode : "live",
+    viewerRole: args.mockApi ? args.viewerRole : "live",
     seededCompanyId: args.mockApi ? SCREENSHOT_COMPANY_ID : null,
     anchorTimeoutMs: args.anchorTimeoutMs,
     captures: portableRecords,
@@ -476,7 +500,9 @@ async function main(): Promise<void> {
       counts["anchor-hit"] ?? 0
     }, truthful-gap=${counts["truthful-gap"] ?? 0}, error=${counts.error ?? 0}). Theme=${
       args.theme
-    }; cookie ${args.cookie ? "applied" : "not supplied"}; mockApi=${args.mockApi}. Manifest: ${manifestPath}`,
+    }; cookie ${args.cookie ? "applied" : "not supplied"}; mockApi=${args.mockApi}; mode=${
+      args.fixtureMode
+    }; viewer=${args.viewerRole}. Manifest: ${manifestPath}`,
   );
 }
 

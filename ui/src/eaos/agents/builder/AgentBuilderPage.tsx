@@ -97,12 +97,28 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
   const finalStep = isFinalStep(currentStep);
   const firstStep = isFirstStep(currentStep);
 
+  // Per-step validation reason for the Next/Create button. The user
+  // must finish each step's required fields before advancing — empty
+  // Name on Identity should not silently let them walk to the end and
+  // then encounter a disabled Create button with no explanation.
+  const stepBlockedReason: string | null = (() => {
+    switch (currentStep) {
+      case "identity":
+        return summary.nameError ? summary.nameError : null;
+      case "model":
+        return summary.modelError ? summary.modelError : null;
+      default:
+        return null;
+    }
+  })();
+  const canAdvance = stepBlockedReason === null;
+
   function patch(next: Partial<AgentBuilderState>) {
     setState((prev) => ({ ...prev, ...next }));
   }
 
   function goNext() {
-    if (finalStep) return;
+    if (finalStep || !canAdvance) return;
     setCurrentStep((s) => nextStep(s));
   }
 
@@ -193,6 +209,9 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
               finalStep={finalStep}
               firstStep={firstStep}
               canCreate={summary.canCreate}
+              cannotCreateReason={summary.cannotCreateReason}
+              canAdvance={canAdvance}
+              stepBlockedReason={stepBlockedReason}
               isCreating={createAgent.isPending}
               onBack={goBack}
               onNext={goNext}
@@ -257,6 +276,9 @@ function StepperFooter({
   finalStep,
   firstStep,
   canCreate,
+  cannotCreateReason,
+  canAdvance,
+  stepBlockedReason,
   isCreating,
   onBack,
   onNext,
@@ -266,51 +288,74 @@ function StepperFooter({
   finalStep: boolean;
   firstStep: boolean;
   canCreate: boolean;
+  cannotCreateReason: string | null;
+  canAdvance: boolean;
+  stepBlockedReason: string | null;
   isCreating: boolean;
   onBack: () => void;
   onNext: () => void;
   onCreate: () => void;
 }) {
+  // Surface the exact reason a primary button is disabled. Reviewers
+  // should never see a greyed-out "Create agent" with no explanation
+  // for why it cannot fire.
+  const buttonReason = finalStep ? (canCreate ? null : cannotCreateReason) : stepBlockedReason;
   return (
     <div
       data-testid="eaos-agent-builder-footer"
-      className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-4"
+      className="mt-6 flex flex-col gap-2 border-t border-border pt-4"
     >
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={onBack}
-        data-testid="eaos-agent-builder-back"
-      >
-        <ArrowLeft className="mr-1 h-3 w-3" aria-hidden="true" />
-        {firstStep ? "Cancel" : "Back"}
-      </Button>
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground tabular-nums">
-          Step {stepIndex + 1} of {AGENT_BUILDER_STEPS.length}
-        </span>
-        {finalStep ? (
-          <Button
-            type="button"
-            size="sm"
-            onClick={onCreate}
-            disabled={!canCreate || isCreating}
-            data-testid="eaos-agent-builder-create"
-          >
-            {isCreating ? "Creating…" : "Create agent"}
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            onClick={onNext}
-            data-testid="eaos-agent-builder-next"
-          >
-            Next
-            <ArrowRight className="ml-1 h-3 w-3" aria-hidden="true" />
-          </Button>
-        )}
+      {buttonReason ? (
+        <p
+          data-testid="eaos-agent-builder-disabled-reason"
+          className="text-[11px] text-amber-700 dark:text-amber-300"
+          role="status"
+        >
+          {buttonReason}
+        </p>
+      ) : null}
+      <div className="flex items-center justify-between gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onBack}
+          data-testid="eaos-agent-builder-back"
+        >
+          <ArrowLeft className="mr-1 h-3 w-3" aria-hidden="true" />
+          {firstStep ? "Cancel" : "Back"}
+        </Button>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            Step {stepIndex + 1} of {AGENT_BUILDER_STEPS.length}
+          </span>
+          {finalStep ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={onCreate}
+              disabled={!canCreate || isCreating}
+              data-testid="eaos-agent-builder-create"
+              title={canCreate ? undefined : cannotCreateReason ?? undefined}
+              aria-describedby={canCreate ? undefined : "eaos-agent-builder-disabled-reason"}
+            >
+              {isCreating ? "Creating…" : "Create agent"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              onClick={onNext}
+              disabled={!canAdvance}
+              data-testid="eaos-agent-builder-next"
+              title={canAdvance ? undefined : stepBlockedReason ?? undefined}
+              aria-describedby={canAdvance ? undefined : "eaos-agent-builder-disabled-reason"}
+            >
+              Next
+              <ArrowRight className="ml-1 h-3 w-3" aria-hidden="true" />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -482,6 +527,13 @@ function IdentityStep({
   state: AgentBuilderState;
   patch: (next: Partial<AgentBuilderState>) => void;
 }) {
+  // Track whether the user has interacted with the Name field so we
+  // don't shout `Name is required` on a pristine pageload. Once
+  // touched, the inline error stays sticky on empty so clearing a
+  // previously-typed name still surfaces the validation message.
+  const [nameTouched, setNameTouched] = useState(state.name.length > 0);
+  const nameMissing = state.name.trim().length === 0;
+  const showNameError = nameTouched && nameMissing;
   return (
     <PanelShell
       title="Identity"
@@ -489,17 +541,43 @@ function IdentityStep({
       testId="eaos-agent-builder-panel-identity"
     >
       <div className="space-y-1">
-        <FieldLabel htmlFor="agent-name">Name</FieldLabel>
+        <FieldLabel htmlFor="agent-name">
+          Name <span aria-hidden="true" className="text-red-600">*</span>
+          <span className="sr-only"> (required)</span>
+        </FieldLabel>
         <input
           id="agent-name"
           data-testid="eaos-agent-builder-name"
           value={state.name}
-          onChange={(event) => patch({ name: event.target.value })}
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onChange={(event) => {
+            patch({ name: event.target.value });
+            if (!nameTouched) setNameTouched(true);
+          }}
+          onBlur={() => setNameTouched(true)}
+          className={
+            "w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring "
+            + (showNameError ? "border-red-500" : "border-border")
+          }
           placeholder="e.g. Research Analyst"
           maxLength={120}
           autoFocus
+          aria-required="true"
+          aria-invalid={showNameError ? "true" : undefined}
+          aria-describedby={showNameError ? "agent-name-error" : "agent-name-help"}
         />
+        {showNameError ? (
+          <p
+            id="agent-name-error"
+            data-testid="eaos-agent-builder-name-error"
+            className="text-[11px] text-red-600 dark:text-red-400"
+          >
+            Name is required to continue.
+          </p>
+        ) : (
+          <p id="agent-name-help" className="text-[11px] text-muted-foreground">
+            Shown in the agent list and on every comment this agent posts.
+          </p>
+        )}
       </div>
 
       <div className="space-y-1">
@@ -895,14 +973,14 @@ function SkillsStep({
   return (
     <PanelShell
       title="Skills"
-      description="Optional skills the agent should pin. Built-in runtime skills are added automatically."
+      description="Optional skills the agent should pin. Built-in skills are added automatically."
       testId="eaos-agent-builder-panel-skills"
     >
       <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
         <div>
           <p className="text-sm text-foreground">Skill discovery</p>
           <p className="text-[11px] text-muted-foreground">
-            Auto-attach matching skills at run-time based on the task.
+            Auto-attach matching skills when this agent runs, based on the task.
           </p>
         </div>
         <button
@@ -996,7 +1074,7 @@ function KnowledgeStep({
         <div>
           <p className="text-sm text-foreground">Knowledge discovery</p>
           <p className="text-[11px] text-muted-foreground">
-            Search the configured knowledge sources at run-time.
+            Search the configured knowledge sources when this agent runs.
           </p>
         </div>
         <button
@@ -1070,7 +1148,7 @@ function KnowledgeStep({
         data-testid="eaos-agent-builder-knowledge-advanced"
       >
         <summary className="cursor-pointer text-[12px] text-muted-foreground">
-          Sources and labels (advanced)
+          Sources and labels
         </summary>
         <ul className="mt-3 space-y-2">
           {rows.map((row) => (

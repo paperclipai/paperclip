@@ -17,8 +17,9 @@ vi.hoisted(() => {
 
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { EaosShell } from "./EaosShell";
-import { actSync } from "./test-helpers";
+import { actSync, flushReactQuery } from "./test-helpers";
 
 // The shell renders Link / NavLink wrappers from @/lib/router, which call
 // useCompany(). Provide a deterministic stub so the wrappers degrade to plain
@@ -26,6 +27,31 @@ import { actSync } from "./test-helpers";
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null }),
 }));
+
+// LET-503 review fix: the top bar's Kernel hatch + posture-strip audit
+// footer are operator-gated, so the shell now reads access via
+// `accessApi.getCurrentBoardAccess()`. Pin the access mock to an
+// instance admin so the original landmark/visibility assertions in this
+// file (which all assume the operator chrome is present) stay valid.
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    getCurrentBoardAccess: vi.fn().mockResolvedValue({
+      user: { id: "user-1", email: null, name: "Test Admin", image: null },
+      userId: "user-1",
+      isInstanceAdmin: true,
+      companyIds: [],
+      memberships: [],
+      source: "test-fixture",
+      keyId: null,
+    }),
+  },
+}));
+
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+}
 
 let container: HTMLDivElement | null = null;
 
@@ -35,17 +61,19 @@ function renderAt(initialPath: string, variant: "eaos" | "kernel" = "eaos") {
   const root = createRoot(container);
   actSync(() => {
     root.render(
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path={variant === "kernel" ? "k/*" : "eaos/*"} element={<EaosShell variant={variant} />}>
-            <Route index element={<div data-testid="child-content">EAOS child content</div>} />
-            <Route
-              path="other"
-              element={<div data-testid="child-content-other">Other content</div>}
-            />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path={variant === "kernel" ? "k/*" : "eaos/*"} element={<EaosShell variant={variant} />}>
+              <Route index element={<div data-testid="child-content">EAOS child content</div>} />
+              <Route
+                path="other"
+                element={<div data-testid="child-content-other">Other content</div>}
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
   });
   return { root };
@@ -144,15 +172,19 @@ describe("EaosShell", () => {
     expect(trigger?.getAttribute("aria-label")).toContain("command palette");
   });
 
-  it("exposes a visible kernel escape hatch button in the top bar", () => {
+  it("exposes a visible kernel escape hatch button in the top bar for operator-class viewers", async () => {
     renderAt("/eaos");
+    // The hatch is now operator-gated; wait for the access query to
+    // resolve so the admin fixture flips isOperator before asserting.
+    await flushReactQuery();
     const hatch = container?.querySelector('[data-testid="eaos-topbar-kernel-hatch"]');
     expect(hatch).not.toBeNull();
     expect((hatch?.getAttribute("aria-label") ?? "").toLowerCase()).toContain("kernel");
   });
 
-  it("renders the bottom posture strip with the audit pin", () => {
+  it("renders the bottom posture strip with the audit pin for operator-class viewers", async () => {
     renderAt("/eaos");
+    await flushReactQuery();
     const strip = container?.querySelector('[data-testid="eaos-posture-strip"]');
     expect(strip).not.toBeNull();
     const audit = container?.querySelector('[data-testid="eaos-posture-strip-audit"]');

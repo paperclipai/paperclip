@@ -128,6 +128,11 @@ describe("AgentBuilderPage stepper navigation", () => {
       expect(root?.getAttribute("data-step")).toBe("identity");
     });
 
+    // Identity requires Name before Next is enabled — type one before
+    // walking the stepper, otherwise the inline validation would block
+    // the very first transition (which is the intended behavior).
+    await act(async () => typeInto("eaos-agent-builder-name", "Stepper Test Agent"));
+
     const expectedOrder = ["model", "invocations", "tools", "skills", "knowledge"];
     for (const next of expectedOrder) {
       await act(async () => click("eaos-agent-builder-next"));
@@ -136,6 +141,59 @@ describe("AgentBuilderPage stepper navigation", () => {
         expect(root?.getAttribute("data-step")).toBe(next);
       });
     }
+  });
+
+  it("disables Next on Identity until Name is filled and surfaces the reason", async () => {
+    await renderBuilder();
+    await waitForAssertion(() => {
+      const root = container?.querySelector('[data-testid="eaos-agent-builder-page"]');
+      expect(root?.getAttribute("data-step")).toBe("identity");
+      const next = container?.querySelector(
+        '[data-testid="eaos-agent-builder-next"]',
+      ) as HTMLButtonElement | null;
+      expect(next?.disabled).toBe(true);
+    });
+
+    // Typing a name then clearing it surfaces the inline validation.
+    await act(async () => typeInto("eaos-agent-builder-name", "Temp"));
+    await act(async () => typeInto("eaos-agent-builder-name", ""));
+    await waitForAssertion(() => {
+      const err = container?.querySelector(
+        '[data-testid="eaos-agent-builder-name-error"]',
+      );
+      expect(err?.textContent).toContain("Name is required");
+      const reason = container?.querySelector(
+        '[data-testid="eaos-agent-builder-disabled-reason"]',
+      );
+      expect(reason?.textContent).toContain("Name is required");
+    });
+
+    // Typing a valid name re-enables Next and clears the disabled reason.
+    await act(async () => typeInto("eaos-agent-builder-name", "Research Analyst"));
+    await waitForAssertion(() => {
+      const next = container?.querySelector(
+        '[data-testid="eaos-agent-builder-next"]',
+      ) as HTMLButtonElement | null;
+      expect(next?.disabled).toBe(false);
+      expect(
+        container?.querySelector('[data-testid="eaos-agent-builder-name-error"]'),
+      ).toBeNull();
+    });
+  });
+
+  it("shows the Create agent disabled reason on the final step until name is set", async () => {
+    await renderBuilder();
+    await act(async () => click("eaos-agent-builder-step-knowledge"));
+    await waitForAssertion(() => {
+      const cta = container?.querySelector(
+        '[data-testid="eaos-agent-builder-create"]',
+      ) as HTMLButtonElement | null;
+      expect(cta?.disabled).toBe(true);
+      const reason = container?.querySelector(
+        '[data-testid="eaos-agent-builder-disabled-reason"]',
+      );
+      expect(reason?.textContent).toContain("Identity");
+    });
   });
 
   it("renders Create agent only on the final step", async () => {
