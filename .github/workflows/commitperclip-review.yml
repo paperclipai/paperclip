@@ -1,0 +1,61 @@
+name: commitperclip PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# Always runs from base branch context — never executes PR code.
+# pull_request_target gives access to secrets for untrusted fork PRs.
+
+permissions:
+  pull-requests: write
+  security-events: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout base branch (never PR code)
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate commitperclip token
+        id: token
+        run: |
+          TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          echo "::add-mask::$TOKEN"
+          echo "value=$TOKEN" >> $GITHUB_OUTPUT
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+
+      - name: Run quality gates
+        id: quality
+        run: node .github/scripts/run-quality-gates.mjs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+
+      - name: Run security gates
+        run: node .github/scripts/check-pr-security.mjs
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+
+      - name: Fail if quality gates failed
+        if: steps.quality.outcome == 'failure'
+        run: |
+          echo "One or more quality gates failed. See commitperclip comment on the PR for details."
+          exit 1
