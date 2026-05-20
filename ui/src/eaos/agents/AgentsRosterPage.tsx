@@ -13,6 +13,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
+import { useEaosViewerRole } from "../useEaosViewerRole";
 import {
   buildAgentRosterRow,
   humanizeAdapterType,
@@ -31,6 +32,7 @@ interface AgentsRosterPageProps {
 
 export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { isOperator } = useEaosViewerRole();
 
   const agentsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -91,7 +93,7 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
       ) : (
         <>
           <SummaryStrip counts={counts} />
-          <AgentTable rows={rows} referenceNow={referenceNow} />
+          <AgentTable rows={rows} referenceNow={referenceNow} isOperator={isOperator} />
         </>
       )}
       </div>
@@ -187,9 +189,11 @@ function SummaryStrip({ counts }: { counts: AgentRosterCounts }) {
 function AgentTable({
   rows,
   referenceNow,
+  isOperator,
 }: {
   rows: readonly AgentRosterRow[];
   referenceNow: Date;
+  isOperator: boolean;
 }) {
   return (
     <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card">
@@ -207,7 +211,12 @@ function AgentTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <AgentRow key={row.id} row={row} referenceNow={referenceNow} />
+            <AgentRow
+              key={row.id}
+              row={row}
+              referenceNow={referenceNow}
+              isOperator={isOperator}
+            />
           ))}
         </tbody>
       </table>
@@ -215,7 +224,15 @@ function AgentTable({
   );
 }
 
-function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Date }) {
+function AgentRow({
+  row,
+  referenceNow,
+  isOperator,
+}: {
+  row: AgentRosterRow;
+  referenceNow: Date;
+  isOperator: boolean;
+}) {
   return (
     <tr
       className="border-b border-border last:border-b-0 hover:bg-accent/40"
@@ -275,13 +292,21 @@ function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Da
           >
             Inspect
           </Link>
-          <Link
-            to={row.kernelRoute}
-            className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            data-testid="eaos-agents-row-kernel-link"
-          >
-            Kernel
-          </Link>
+          {/*
+            LET-513 §6 — `row.kernelRoute` leaves the EAOS shell (legacy
+            `/agents/:id`). Customer viewers stay inside the EAOS detail
+            page; only operator-class viewers see the explicit admin
+            escape hatch.
+          */}
+          {isOperator ? (
+            <Link
+              to={row.kernelRoute}
+              className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              data-testid="eaos-agents-row-kernel-link"
+            >
+              Open in admin →
+            </Link>
+          ) : null}
         </div>
       </td>
     </tr>

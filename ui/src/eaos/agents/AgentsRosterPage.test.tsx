@@ -21,6 +21,26 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
+// LET-513 §6 — kernel escape hatch is role-gated. Default to operator so
+// existing assertions continue to find the link; the dedicated
+// customer-gating test below flips this.
+const viewerRoleMock = vi.fn<() => {
+  isOperator: boolean;
+  isInstanceAdmin: boolean;
+  membershipRole: string | null;
+  loading: boolean;
+}>();
+viewerRoleMock.mockReturnValue({
+  isOperator: true,
+  isInstanceAdmin: true,
+  membershipRole: "owner",
+  loading: false,
+});
+
+vi.mock("../useEaosViewerRole", () => ({
+  useEaosViewerRole: () => viewerRoleMock(),
+}));
+
 const agentsListMock = vi.fn<(companyId: string) => Promise<Agent[]>>();
 
 vi.mock("@/api/agents", () => ({

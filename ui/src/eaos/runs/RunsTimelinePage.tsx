@@ -12,7 +12,7 @@
 //   - Replay / transcript / tool-call deep view stays inside Mission
 //     detail; this surface routes there rather than rendering a stub.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity as ActivityIcon, History } from "lucide-react";
 import { activityApi } from "@/api/activity";
@@ -20,6 +20,11 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
+import {
+  EaosViewControls,
+  eaosMatchesFilter,
+  type EaosViewMode,
+} from "../EaosViewControls";
 import { redactSecretLikeText } from "../secret-redact";
 import { useEaosViewerRole } from "../useEaosViewerRole";
 import { humanizeActivityAction, humanizeActorType } from "./activity-labels";
@@ -40,6 +45,8 @@ export interface RunsTimelinePageProps {
 export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { isOperator } = useEaosViewerRole();
+  const [viewMode, setViewMode] = useState<EaosViewMode>("cards");
+  const [filter, setFilter] = useState<string>("");
 
   const activityQuery = useQuery({
     queryKey: selectedCompanyId
@@ -49,10 +56,16 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
     enabled: Boolean(selectedCompanyId),
   });
 
-  const rows = useMemo<RunTimelineRow[]>(
-    () => collapseEventsToRuns(activityQuery.data ?? []),
-    [activityQuery.data],
-  );
+  const rows = useMemo<RunTimelineRow[]>(() => {
+    const collapsed = collapseEventsToRuns(activityQuery.data ?? []);
+    if (!filter) return collapsed;
+    return collapsed.filter((row) =>
+      eaosMatchesFilter(
+        `${row.issueTitle ?? ""} ${row.issueIdentifier ?? ""} ${row.latestAction}`,
+        filter,
+      ),
+    );
+  }, [activityQuery.data, filter]);
   const counts = useMemo<RunTimelineCounts>(
     () => summarizeRunTimeline(activityQuery.data ?? []),
     [activityQuery.data],
@@ -88,7 +101,24 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
       ) : (
         <>
           <SummaryStrip counts={counts} referenceNow={referenceNow} />
-          <RunsTable rows={rows} referenceNow={referenceNow} isOperator={isOperator} />
+          <EaosViewControls
+            mode={viewMode}
+            onModeChange={setViewMode}
+            filter={filter}
+            onFilterChange={setFilter}
+            filterPlaceholder="Filter runs…"
+            testIdPrefix="eaos-runs"
+          />
+          {rows.length === 0 ? (
+            <FilteredEmptyState filter={filter} />
+          ) : (
+            <RunsTable
+              rows={rows}
+              referenceNow={referenceNow}
+              isOperator={isOperator}
+              viewMode={viewMode}
+            />
+          )}
         </>
       )}
       </div>
@@ -155,6 +185,20 @@ function EmptyState() {
   );
 }
 
+function FilteredEmptyState({ filter }: { filter: string }) {
+  return (
+    <div
+      role="status"
+      className="rounded-md border border-dashed border-border bg-card p-3 text-xs text-muted-foreground"
+      data-testid="eaos-runs-filter-empty"
+    >
+      {filter
+        ? `No runs match “${filter.slice(0, 40)}”.`
+        : "No runs match the current filter."}
+    </div>
+  );
+}
+
 function SummaryStrip({
   counts,
   referenceNow,
@@ -196,10 +240,12 @@ function RunsTable({
   rows,
   referenceNow,
   isOperator,
+  viewMode,
 }: {
   rows: readonly RunTimelineRow[];
   referenceNow: Date;
   isOperator: boolean;
+  viewMode: EaosViewMode;
 }) {
   return (
     <section
@@ -214,8 +260,13 @@ function RunsTable({
         </h2>
       </header>
       <ul
-        className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
+        className={
+          viewMode === "list"
+            ? "flex flex-col gap-1.5"
+            : "grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
+        }
         data-testid="eaos-runs-rows"
+        data-eaos-view-mode={viewMode}
       >
         {rows.map((row) => (
           <RunRow
@@ -223,6 +274,7 @@ function RunsTable({
             row={row}
             referenceNow={referenceNow}
             isOperator={isOperator}
+            viewMode={viewMode}
           />
         ))}
       </ul>
@@ -234,18 +286,32 @@ function RunRow({
   row,
   referenceNow,
   isOperator,
+  viewMode,
 }: {
   row: RunTimelineRow;
   referenceNow: Date;
   isOperator: boolean;
+  viewMode: EaosViewMode;
 }) {
   const missionRef = row.issueIdentifier ?? row.issueId;
   const actorLabel = humanizeActorType(row.latestActorType);
+  if (viewMode === "list") {
+    return (
+      <RunRowList
+        row={row}
+        missionRef={missionRef}
+        actorLabel={actorLabel}
+        referenceNow={referenceNow}
+        isOperator={isOperator}
+      />
+    );
+  }
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid="eaos-runs-row"
       data-run-id={row.runId}
+      data-eaos-view-mode="cards"
     >
       <div className="flex flex-wrap items-center gap-2">
         <span
@@ -323,6 +389,85 @@ function RunRow({
           </Link>
         ) : null}
       </div>
+    </li>
+  );
+}
+
+function RunRowList({
+  row,
+  missionRef,
+  actorLabel,
+  referenceNow,
+  isOperator,
+}: {
+  row: RunTimelineRow;
+  missionRef: string | null | undefined;
+  actorLabel: string;
+  referenceNow: Date;
+  isOperator: boolean;
+}) {
+  return (
+    <li
+      className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-[12px]"
+      data-testid="eaos-runs-row"
+      data-run-id={row.runId}
+      data-eaos-view-mode="list"
+    >
+      {row.latestActorType === "agent" && row.agentId ? (
+        <AgentAvatar
+          size="sm"
+          subject={{ kind: "agent", agentId: row.agentId, name: actorLabel, role: null }}
+          testId="eaos-runs-row-actor-avatar"
+        />
+      ) : row.latestActorType === "user" ? (
+        <AgentAvatar
+          size="sm"
+          subject={{ kind: "user", userId: row.latestActorId, name: actorLabel }}
+          testId="eaos-runs-row-actor-avatar"
+        />
+      ) : (
+        <AgentAvatar size="sm" subject={{ kind: "system" }} testId="eaos-runs-row-actor-avatar" />
+      )}
+      <div className="min-w-0 flex-1">
+        <p
+          className="truncate font-medium text-foreground"
+          data-testid="eaos-runs-row-title"
+        >
+          {redactSecretLikeText(row.issueTitle ?? "Recent run")}
+        </p>
+        <p
+          className="truncate text-[11px] text-muted-foreground"
+          data-testid="eaos-runs-row-actor"
+        >
+          {actorLabel} · {humanizeActivityAction(row.latestAction)}
+        </p>
+      </div>
+      <span
+        className="hidden shrink-0 text-[11px] text-muted-foreground sm:inline tabular-nums"
+        data-testid="eaos-runs-row-last-event"
+        title={`Last event ${relativeOrNever(row.lastActivityAt, referenceNow)}`}
+      >
+        {relativeOrNever(row.lastActivityAt, referenceNow)}
+      </span>
+      {missionRef ? (
+        <Link
+          to={`/eaos/missions/${missionRef}`}
+          className="shrink-0 text-[11px] font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          data-testid="eaos-runs-row-mission-link"
+        >
+          <History aria-hidden="true" className="mr-1 inline h-3 w-3" />
+          Mission
+        </Link>
+      ) : null}
+      {isOperator && row.issueId ? (
+        <Link
+          to={`/issues/${row.issueId}`}
+          className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          data-testid="eaos-runs-row-kernel-link"
+        >
+          Admin →
+        </Link>
+      ) : null}
     </li>
   );
 }

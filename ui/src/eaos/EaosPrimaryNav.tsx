@@ -4,6 +4,7 @@ import { Plus, Search } from "lucide-react";
 import { useDialogActions } from "@/context/DialogContext";
 import {
   EAOS_NAV_GROUPS,
+  EAOS_OPERATOR_ONLY_ZONE_IDS,
   EAOS_PRIMARY_NAV_ZONES,
   type EaosNavGroup,
   type EaosNavZone,
@@ -25,7 +26,10 @@ export interface EaosPrimaryNavProps {
   onClose: () => void;
 }
 
-const OPERATOR_ONLY_ZONE_IDS: ReadonlySet<string> = new Set(["admin"]);
+// LET-513 §4 — operator gating is now data-driven via the `operatorOnly`
+// flag on each EaosNavZone (`nav-zones.ts`). The rail filters against the
+// set exposed here; `RequireOperator` in App.tsx uses the same source so
+// direct-URL access also fails closed.
 
 function openCommandPalette() {
   if (typeof window === "undefined") return;
@@ -111,7 +115,7 @@ export function EaosPrimaryNav({ drawerOpen, onClose }: EaosPrimaryNavProps) {
   const { openNewIssue } = useDialogActions();
 
   const visibleZones = EAOS_PRIMARY_NAV_ZONES.filter(
-    (zone) => !OPERATOR_ONLY_ZONE_IDS.has(zone.id) || isOperator,
+    (zone) => !EAOS_OPERATOR_ONLY_ZONE_IDS.has(zone.id) || isOperator,
   );
 
   const openNewMission = useCallback(() => {

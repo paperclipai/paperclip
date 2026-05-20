@@ -6,6 +6,8 @@ import {
   EAOS_KERNEL_NAV,
   EAOS_LEGACY_SECONDARY_PATHS,
   EAOS_NAV_GROUPS,
+  EAOS_OPERATOR_ONLY_PATHS,
+  EAOS_OPERATOR_ONLY_ZONE_IDS,
   EAOS_PRIMARY_NAV,
   EAOS_PRIMARY_NAV_ZONES,
 } from "./nav-zones";
@@ -115,5 +117,39 @@ describe("EAOS nav groups (LET-506 Multica adaptation)", () => {
     expect(byId.get("knowledge")?.group).toBe("workspace");
     expect(byId.get("blueprints")?.group).toBe("configure");
     expect(byId.get("admin")?.group).toBe("configure");
+  });
+});
+
+describe("EAOS customer-vs-operator scope (LET-513 §4)", () => {
+  const CANONICAL_CUSTOMER_ZONE_IDS = [
+    "command-center",
+    "missions",
+    "projects",
+    "agents",
+    "runs",
+    "knowledge",
+  ];
+
+  it("keeps the canonical customer zones visible to non-operator viewers", () => {
+    for (const zoneId of CANONICAL_CUSTOMER_ZONE_IDS) {
+      expect(EAOS_OPERATOR_ONLY_ZONE_IDS.has(zoneId)).toBe(false);
+    }
+  });
+
+  it("marks Org, Approvals, Admin, and Agent Builder operator-only", () => {
+    expect(EAOS_OPERATOR_ONLY_ZONE_IDS.has("org")).toBe(true);
+    expect(EAOS_OPERATOR_ONLY_ZONE_IDS.has("approvals")).toBe(true);
+    expect(EAOS_OPERATOR_ONLY_ZONE_IDS.has("admin")).toBe(true);
+    expect(EAOS_OPERATOR_ONLY_ZONE_IDS.has("blueprints")).toBe(true);
+  });
+
+  it("keeps the operator-only path set in sync with the zone flags", () => {
+    const derived = new Set<string>();
+    for (const zone of EAOS_PRIMARY_NAV_ZONES) {
+      if (zone.operatorOnly) derived.add(zone.path);
+    }
+    expect(Array.from(EAOS_OPERATOR_ONLY_PATHS).sort()).toEqual(
+      Array.from(derived).sort(),
+    );
   });
 });

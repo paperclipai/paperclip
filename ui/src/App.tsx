@@ -68,6 +68,9 @@ import { BlueprintsCatalogPage } from "./eaos/blueprints/BlueprintsCatalogPage";
 import { BlueprintDetailPage } from "./eaos/blueprints/BlueprintDetailPage";
 import { OrgPage } from "./eaos/org/OrgPage";
 import { EAOS_PRIMARY_NAV } from "./eaos/nav-zones";
+import { RequireOperator } from "./eaos/RequireOperator";
+import { EaosOnboardingPage } from "./eaos/onboarding/EaosOnboardingPage";
+import { EaosCommandCenterRoute } from "./eaos/EaosCommandCenterRoute";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -386,7 +389,19 @@ export function App() {
           </Route>
           <Route path="eaos" element={<EaosProductLayout />}>
             <Route element={<EaosShell variant="eaos" />}>
-              <Route index element={<CommandCenterLanding />} />
+              {/*
+                LET-513 §1 — `/eaos` now goes through `EaosCommandCenterRoute`
+                so first-run users with no companies are redirected into the
+                in-shell onboarding screen before they see the dashboard.
+              */}
+              <Route index element={<EaosCommandCenterRoute />} />
+              {/*
+                LET-513 §1 — EAOS-native first-run onboarding. Lives inside
+                the canonical shell so the rail + topbar stay consistent.
+                Renders the create-workspace form, then surfaces a Next
+                Steps panel with safe install-preview cards.
+              */}
+              <Route path="onboarding" element={<EaosOnboardingPage />} />
               <Route path="sandbox" element={<Eaos />} />
               <Route path="missions" element={<MissionsListPage />} />
               {/*
@@ -429,14 +444,14 @@ export function App() {
                 from the canonical agent roster and names the missing graph
                 as a truthful gap.
               */}
-              <Route path="org" element={<OrgPage />} />
+              <Route path="org" element={<RequireOperator surfaceLabel="Org"><OrgPage /></RequireOperator>} />
               {/*
                 LET-484 working-product slice — `/eaos/approvals` now renders
                 a read-only queue backed by `approvalsApi.list`. Decision
                 controls remain inside the kernel detail page; this surface
                 is a backend-backed briefing and routing surface only.
               */}
-              <Route path="approvals" element={<ApprovalsQueuePage />} />
+              <Route path="approvals" element={<RequireOperator surfaceLabel="Approvals"><ApprovalsQueuePage /></RequireOperator>} />
               {/*
                 LET-484 working-product slice — `/eaos/runs` renders a
                 read-only run timeline collapsed from the canonical activity
@@ -465,7 +480,7 @@ export function App() {
                 truthful temporary gap; per-agent capability-apply plans live
                 inside the kernel agent detail page (LET-357 / LET-396).
               */}
-              <Route path="capabilities" element={<CapabilitiesPage />} />
+              <Route path="capabilities" element={<RequireOperator surfaceLabel="Capabilities"><CapabilitiesPage /></RequireOperator>} />
               {/*
                 LET-484 working-product slice — `/eaos/admin` renders a
                 read-only member roster + access posture backed by
@@ -474,7 +489,7 @@ export function App() {
                 view and dedicated audit-log endpoint are named as truthful
                 temporary gaps.
               */}
-              <Route path="admin" element={<AdminPage />} />
+              <Route path="admin" element={<RequireOperator surfaceLabel="Admin"><AdminPage /></RequireOperator>} />
               {/*
                 LET-501 follow-on C — Blueprint catalog and detail
                 workbench. Read-only inside the canonical /eaos shell;
@@ -484,18 +499,26 @@ export function App() {
                 the canonical `/versions/:version` + `/instances`
                 sub-paths from LET-497 §5.
               */}
-              <Route path="blueprints" element={<BlueprintsCatalogPage />} />
-              <Route path="blueprints/:blueprintRef" element={<BlueprintDetailPage />} />
-              <Route
-                path="blueprints/:blueprintRef/capabilities"
-                element={<BlueprintDetailPage />}
-              />
-              <Route
-                path="blueprints/:blueprintRef/versions/:version"
-                element={<BlueprintDetailPage />}
-              />
-              <Route path="blueprints/:blueprintRef/instances" element={<BlueprintDetailPage />} />
-              <Route path="blueprints/:blueprintRef/audit" element={<BlueprintDetailPage />} />
+              {/*
+                LET-513 §4 — Blueprint authoring is admin/operator-only
+                (the customer rail no longer surfaces it). The route group
+                shares a single `RequireOperator` parent so direct-URL hits
+                also fail closed.
+              */}
+              <Route element={<RequireOperator surfaceLabel="Agent Builder" />}>
+                <Route path="blueprints" element={<BlueprintsCatalogPage />} />
+                <Route path="blueprints/:blueprintRef" element={<BlueprintDetailPage />} />
+                <Route
+                  path="blueprints/:blueprintRef/capabilities"
+                  element={<BlueprintDetailPage />}
+                />
+                <Route
+                  path="blueprints/:blueprintRef/versions/:version"
+                  element={<BlueprintDetailPage />}
+                />
+                <Route path="blueprints/:blueprintRef/instances" element={<BlueprintDetailPage />} />
+                <Route path="blueprints/:blueprintRef/audit" element={<BlueprintDetailPage />} />
+              </Route>
               {EAOS_PRIMARY_NAV.filter(
                 (zone) =>
                   zone.path !== "/eaos"

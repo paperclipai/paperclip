@@ -168,12 +168,18 @@ describe("KnowledgePage (LET-484 working-product slice)", () => {
     });
   });
 
-  it("does NOT render any live action buttons", async () => {
+  it("does NOT render any mutating row controls", async () => {
     skillsListMock.mockResolvedValue([makeSkill({ id: "s-1", name: "Pack" })]);
     await renderKnowledge();
     await waitForMicrotaskAssertion(() => {
       expect(container?.querySelector('[data-testid="eaos-knowledge-playbook-row"]')).not.toBeNull();
     });
-    expect(container?.querySelectorAll("button").length).toBe(0);
+    // LET-513 §5 — the toolbar adds two presentational view-mode buttons
+    // (Cards / List). Mutating actions (delete, archive, override-trust)
+    // still must not exist on a playbook row.
+    const rowButtons = container?.querySelectorAll(
+      '[data-testid="eaos-knowledge-playbook-row"] button',
+    );
+    expect(rowButtons?.length ?? 0).toBe(0);
   });
 });

@@ -22,6 +22,21 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
+// LET-513 §6 — kernel/legacy escape hatch is now gated by viewer role. The
+// existing suite was written when every row showed the link; mock the
+// viewer role hook with operator=true so those assertions still hold, and
+// add dedicated cases below for the customer-gated path.
+const viewerRoleMock = vi.fn<() => {
+  isOperator: boolean;
+  isInstanceAdmin: boolean;
+  membershipRole: string | null;
+  loading: boolean;
+}>();
+
+vi.mock("../useEaosViewerRole", () => ({
+  useEaosViewerRole: () => viewerRoleMock(),
+}));
+
 const projectsListMock = vi.fn<(companyId: string) => Promise<Project[]>>();
 const goalsListMock = vi.fn<(companyId: string) => Promise<Goal[]>>();
 
@@ -87,6 +102,13 @@ let queryClient: QueryClient;
 beforeEach(() => {
   projectsListMock.mockReset();
   goalsListMock.mockReset();
+  viewerRoleMock.mockReset();
+  viewerRoleMock.mockReturnValue({
+    isOperator: true,
+    isInstanceAdmin: true,
+    membershipRole: "owner",
+    loading: false,
+  });
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
@@ -215,7 +237,7 @@ describe("ProjectsRoadmapPage (LET-484 working-product slice)", () => {
     });
   });
 
-  it("does NOT render any live action buttons", async () => {
+  it("does NOT render any mutating action controls on rows", async () => {
     projectsListMock.mockResolvedValue([
       makeProject({ id: "p", name: "Alpha", status: "in_progress" }),
     ]);
@@ -224,8 +246,84 @@ describe("ProjectsRoadmapPage (LET-484 working-product slice)", () => {
     await waitForMicrotaskAssertion(() => {
       expect(container?.querySelector('[data-testid="eaos-projects-row"]')).not.toBeNull();
     });
-    expect(container?.querySelectorAll("button").length).toBe(0);
+    // LET-513 §5 — the view-mode segmented control adds two buttons
+    // (Cards / List), but they only change the visible layout. No row
+    // renders a mutate / approve / archive / start-workspace control.
+    const rowButtons = container?.querySelectorAll(
+      '[data-testid="eaos-projects-row"] button',
+    );
+    expect(rowButtons?.length ?? 0).toBe(0);
     const kernelLink = container?.querySelector('[data-testid="eaos-projects-row-kernel-link"]');
     expect(kernelLink?.getAttribute("href")).toBe("/LET/projects/p");
+  });
+
+  it("hides the legacy kernel link for customer-member viewers", async () => {
+    viewerRoleMock.mockReturnValue({
+      isOperator: false,
+      isInstanceAdmin: false,
+      membershipRole: "member",
+      loading: false,
+    });
+    projectsListMock.mockResolvedValue([
+      makeProject({ id: "p", name: "Alpha", status: "in_progress" }),
+    ]);
+    goalsListMock.mockResolvedValue([]);
+    await renderRoadmap();
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-projects-row"]')).not.toBeNull();
+    });
+    const kernelLink = container?.querySelector(
+      '[data-testid="eaos-projects-row-kernel-link"]',
+    );
+    expect(kernelLink).toBeNull();
+  });
+
+  it("filters and toggles view mode via the EaosViewControls", async () => {
+    projectsListMock.mockResolvedValue([
+      makeProject({ id: "ip-1", name: "Alpha mission", status: "in_progress" }),
+      makeProject({ id: "ip-2", name: "Beta launch", status: "in_progress" }),
+    ]);
+    goalsListMock.mockResolvedValue([]);
+    await renderRoadmap();
+    await waitForMicrotaskAssertion(() => {
+      expect(
+        container?.querySelectorAll(
+          '[data-testid="eaos-projects-bucket-in_progress-rows"] [data-testid="eaos-projects-row"]',
+        ).length,
+      ).toBe(2);
+    });
+    const input = container?.querySelector(
+      '[data-testid="eaos-projects-filter-input"]',
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      if (input) {
+        nativeSetter?.call(input, "alpha");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    await waitForMicrotaskAssertion(() => {
+      const rows = container?.querySelectorAll(
+        '[data-testid="eaos-projects-bucket-in_progress-rows"] [data-testid="eaos-projects-row"]',
+      );
+      expect(rows?.length).toBe(1);
+      expect(rows?.[0]?.getAttribute("data-project-id")).toBe("ip-1");
+    });
+    const listBtn = container?.querySelector(
+      '[data-testid="eaos-projects-view-mode-list"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      listBtn?.click();
+    });
+    await waitForMicrotaskAssertion(() => {
+      const list = container?.querySelector(
+        '[data-testid="eaos-projects-bucket-in_progress-rows"]',
+      );
+      expect(list?.getAttribute("data-eaos-view-mode")).toBe("list");
+    });
   });
 });

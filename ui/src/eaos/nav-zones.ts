@@ -1,19 +1,23 @@
 // Primary nav zones for the `/eaos` shell.
 //
-// LET-506 (Multica reference adaptation, mapping doc revision 1) — the rail
-// is now grouped Multica-style:
+// LET-513 (customer/operator gating, contract §4) — the rail surfaces only
+// what an ordinary user should see:
 //
-//   - Top section (no group label): Dashboard. Multica places Inbox + My
-//     Issues at the top with no group label; the EAOS equivalent for round-1
-//     is a single "Dashboard" entry covering the personal landing surface.
-//   - "Workspace" group: Missions, Projects, Agents, Org, Runs, Approvals,
-//     Knowledge.
-//   - "Configure" group: Agent Builder, Admin (operator-gated; the rail
-//     entry stays hidden for customer-member viewers per LET-503 review).
+//   - Customer-visible zones (always): Dashboard, Missions, Projects,
+//     Agents, Runs, Knowledge.
+//   - Operator-only zones (filtered out of the rail for customer-member
+//     viewers AND blocked at the route level by `RequireOperator`): Org,
+//     Approvals, Capabilities, Blueprints (Agent Builder), Admin.
+//
+// LET-506 (Multica reference adaptation) keeps the rail grouped:
+//
+//   - Top section (no group label): Dashboard.
+//   - "Workspace" group: customer-visible workspace surfaces + operator
+//     additions (Org, Approvals).
+//   - "Configure" group: Agent Builder + Admin (operator-only).
 //
 // LET-503 still owns:
 //   - Single-noun labels (no slash labels).
-//   - `Org` is a first-class route.
 //   - `Kernel / Admin` is demoted out of the primary rail (it lives under
 //     Admin → Legacy kernel link).
 //
@@ -47,6 +51,10 @@ export interface EaosNavZone {
   readonly tier: EaosNavTier;
   readonly group: EaosNavGroup;
   readonly icon: LucideIcon;
+  // LET-513 §4 — when true, the rail filters this zone out for
+  // customer-member viewers and the route is wrapped in `RequireOperator`
+  // so direct-URL access also fails closed.
+  readonly operatorOnly?: boolean;
 }
 
 const PRIMARY_ZONES: readonly EaosNavZone[] = [
@@ -94,6 +102,7 @@ const PRIMARY_ZONES: readonly EaosNavZone[] = [
     tier: "primary",
     group: "workspace",
     icon: Network,
+    operatorOnly: true,
   },
   {
     id: "runs",
@@ -112,6 +121,7 @@ const PRIMARY_ZONES: readonly EaosNavZone[] = [
     tier: "primary",
     group: "workspace",
     icon: CircleCheck,
+    operatorOnly: true,
   },
   {
     id: "knowledge",
@@ -130,6 +140,7 @@ const PRIMARY_ZONES: readonly EaosNavZone[] = [
     tier: "primary",
     group: "configure",
     icon: Hammer,
+    operatorOnly: true,
   },
   {
     id: "admin",
@@ -139,10 +150,22 @@ const PRIMARY_ZONES: readonly EaosNavZone[] = [
     tier: "primary",
     group: "configure",
     icon: Settings,
+    operatorOnly: true,
   },
 ] as const;
 
 export const EAOS_PRIMARY_NAV_ZONES: readonly EaosNavZone[] = PRIMARY_ZONES;
+
+// LET-513 §4 — single source of truth for which zones are operator-only.
+// The rail filters against this set, and the route guard in App.tsx
+// (`RequireOperator`) cross-checks the path against this same list so a
+// direct URL hit also fails closed for customer-member viewers.
+export const EAOS_OPERATOR_ONLY_ZONE_IDS: ReadonlySet<string> = new Set(
+  PRIMARY_ZONES.filter((zone) => zone.operatorOnly === true).map((zone) => zone.id),
+);
+export const EAOS_OPERATOR_ONLY_PATHS: ReadonlySet<string> = new Set(
+  PRIMARY_ZONES.filter((zone) => zone.operatorOnly === true).map((zone) => zone.path),
+);
 
 // Combined zone list used by the router (App.tsx) and shell tests as the
 // canonical iteration source. Kept for downstream import compatibility.

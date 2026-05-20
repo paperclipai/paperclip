@@ -188,12 +188,13 @@ describe("EaosShell", () => {
     root.unmount();
   });
 
-  it("renders the LET-506 Multica-style group structure (Personal unlabeled, Workspace, Configure)", () => {
+  it("renders the LET-506 Multica-style group structure (Personal unlabeled, Workspace, Configure)", async () => {
     renderAt("/eaos");
-    // Multica's sidebar groups Personal/Workspace/Configure; the EAOS
-    // adaptation renders the Personal section unlabeled (Dashboard sits
-    // flush below the search/new-mission header) and labels the Workspace
-    // + Configure groups for screen readers and the visual hierarchy.
+    // LET-513 §4 — Configure now contains only operator-only zones
+    // (Agent Builder + Admin). The default access fixture for this suite
+    // is an instance admin, so we flush the access query before asserting
+    // the Configure group is rendered.
+    await flushReactQuery();
     expect(
       container?.querySelector('[data-testid="eaos-primary-nav-group-personal"]'),
     ).not.toBeNull();

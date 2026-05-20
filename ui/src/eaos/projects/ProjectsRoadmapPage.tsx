@@ -6,7 +6,7 @@
 // the operator having to context-switch. Action verbs (start workspace,
 // archive, configure) stay inside the kernel project detail.
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarClock, Layers } from "lucide-react";
 import { goalsApi } from "@/api/goals";
@@ -16,7 +16,13 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
 import { EaosStateChip } from "../EaosStateChip";
+import {
+  EaosViewControls,
+  eaosMatchesFilter,
+  type EaosViewMode,
+} from "../EaosViewControls";
 import { redactSecretLikeText } from "../secret-redact";
+import { useEaosViewerRole } from "../useEaosViewerRole";
 import {
   groupRoadmap,
   summarizeRoadmap,
@@ -31,6 +37,9 @@ export interface ProjectsRoadmapPageProps {
 
 export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { isOperator } = useEaosViewerRole();
+  const [viewMode, setViewMode] = useState<EaosViewMode>("cards");
+  const [filter, setFilter] = useState<string>("");
 
   const projectsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -48,10 +57,16 @@ export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
     enabled: Boolean(selectedCompanyId),
   });
 
-  const buckets = useMemo<readonly ProjectRoadmapBucket[]>(
-    () => groupRoadmap(projectsQuery.data ?? [], goalsQuery.data ?? []),
-    [projectsQuery.data, goalsQuery.data],
-  );
+  const buckets = useMemo<readonly ProjectRoadmapBucket[]>(() => {
+    const grouped = groupRoadmap(projectsQuery.data ?? [], goalsQuery.data ?? []);
+    if (!filter) return grouped;
+    return grouped.map((bucket) => ({
+      ...bucket,
+      rows: bucket.rows.filter((row) =>
+        eaosMatchesFilter(`${row.name} ${row.description ?? ""}`, filter),
+      ),
+    }));
+  }, [projectsQuery.data, goalsQuery.data, filter]);
   const counts = useMemo<ProjectRoadmapCounts>(
     () => summarizeRoadmap(projectsQuery.data ?? [], goalsQuery.data ?? []),
     [projectsQuery.data, goalsQuery.data],
@@ -90,11 +105,21 @@ export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
       ) : (
         <>
           <SummaryStrip counts={counts} />
+          <EaosViewControls
+            mode={viewMode}
+            onModeChange={setViewMode}
+            filter={filter}
+            onFilterChange={setFilter}
+            filterPlaceholder="Filter projects…"
+            testIdPrefix="eaos-projects"
+          />
           {buckets.map((bucket) => (
             <RoadmapBucketSection
               key={bucket.id}
               bucket={bucket}
               referenceNow={referenceNow}
+              isOperator={isOperator}
+              viewMode={viewMode}
               defaultEmpty={
                 bucket.id === "in_progress"
                   ? "No projects in progress."
@@ -204,10 +229,14 @@ function RoadmapBucketSection({
   bucket,
   referenceNow,
   defaultEmpty,
+  isOperator,
+  viewMode,
 }: {
   bucket: ProjectRoadmapBucket;
   referenceNow: Date;
   defaultEmpty: string;
+  isOperator: boolean;
+  viewMode: EaosViewMode;
 }) {
   return (
     <section
@@ -230,11 +259,22 @@ function RoadmapBucketSection({
         </p>
       ) : (
         <ul
-          className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
+          className={
+            viewMode === "list"
+              ? "flex flex-col gap-1.5"
+              : "grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
+          }
           data-testid={`eaos-projects-bucket-${bucket.id}-rows`}
+          data-eaos-view-mode={viewMode}
         >
           {bucket.rows.map((row) => (
-            <ProjectRow key={row.id} row={row} referenceNow={referenceNow} />
+            <ProjectRow
+              key={row.id}
+              row={row}
+              referenceNow={referenceNow}
+              isOperator={isOperator}
+              viewMode={viewMode}
+            />
           ))}
         </ul>
       )}
@@ -242,13 +282,27 @@ function RoadmapBucketSection({
   );
 }
 
-function ProjectRow({ row, referenceNow }: { row: ProjectRoadmapRow; referenceNow: Date }) {
+function ProjectRow({
+  row,
+  referenceNow,
+  isOperator,
+  viewMode,
+}: {
+  row: ProjectRoadmapRow;
+  referenceNow: Date;
+  isOperator: boolean;
+  viewMode: EaosViewMode;
+}) {
+  if (viewMode === "list") {
+    return <ProjectRowList row={row} isOperator={isOperator} />;
+  }
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid="eaos-projects-row"
       data-project-id={row.id}
       data-project-status={row.status}
+      data-eaos-view-mode="cards"
     >
       <div className="flex flex-wrap items-center gap-2">
         <EaosStateChip
@@ -325,15 +379,92 @@ function ProjectRow({ row, referenceNow }: { row: ProjectRoadmapRow; referenceNo
           ) : null}
         </ul>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3 text-xs">
+      {/*
+        LET-513 §6 — `row.kernelRoute` points at the legacy Paperclip
+        project detail (`/projects/:id`), which leaves the EAOS shell. Only
+        operator-class viewers see the escape hatch, and it is explicitly
+        labeled "Open in admin →" so the route change is intentional.
+        Customer viewers see no operator-only nav from this row.
+      */}
+      {isOperator ? (
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <Link
+            to={row.kernelRoute}
+            className="font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-projects-row-kernel-link"
+          >
+            Open in admin →
+          </Link>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function ProjectRowList({
+  row,
+  isOperator,
+}: {
+  row: ProjectRoadmapRow;
+  isOperator: boolean;
+}) {
+  return (
+    <li
+      className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-[12px]"
+      data-testid="eaos-projects-row"
+      data-project-id={row.id}
+      data-project-status={row.status}
+      data-eaos-view-mode="list"
+    >
+      <EaosStateChip
+        label={statusChipLabel(row.status)}
+        prefix="Status"
+        title={`Status: ${row.status}`}
+      />
+      <div className="min-w-0 flex-1">
+        <p
+          className="truncate font-medium text-foreground"
+          data-testid="eaos-projects-row-name"
+        >
+          {redactSecretLikeText(row.name)}
+        </p>
+        {row.description ? (
+          <p
+            className="truncate text-[11px] text-muted-foreground"
+            data-testid="eaos-projects-row-description"
+          >
+            {redactSecretLikeText(row.description)}
+          </p>
+        ) : null}
+      </div>
+      <div className="hidden flex-col text-[11px] text-muted-foreground sm:flex sm:flex-row sm:items-center sm:gap-3">
+        <span
+          className="tabular-nums"
+          data-testid="eaos-projects-row-goals-list"
+          title={`${row.goalCount} active goals`}
+        >
+          {row.goalCount} goals
+        </span>
+        <span
+          className="tabular-nums"
+          data-testid="eaos-projects-row-workspaces-list"
+          title={`${row.workspaceCount} execution workspaces`}
+        >
+          {row.workspaceCount} ws
+        </span>
+        <span data-testid="eaos-projects-row-target-list">
+          {row.targetDate ?? "—"}
+        </span>
+      </div>
+      {isOperator ? (
         <Link
           to={row.kernelRoute}
-          className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-projects-row-kernel-link"
         >
-          Open project →
+          Open in admin →
         </Link>
-      </div>
+      ) : null}
     </li>
   );
 }

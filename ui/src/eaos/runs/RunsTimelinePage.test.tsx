@@ -197,7 +197,7 @@ describe("RunsTimelinePage (LET-484 working-product slice)", () => {
     });
   });
 
-  it("does NOT render any live action buttons", async () => {
+  it("does NOT render any mutating row controls", async () => {
     activityListMock.mockResolvedValue([
       makeEvent({ id: "1", runId: "run-a", action: "run.started" }),
     ]);
@@ -205,7 +205,13 @@ describe("RunsTimelinePage (LET-484 working-product slice)", () => {
     await waitForMicrotaskAssertion(() => {
       expect(container?.querySelector('[data-testid="eaos-runs-row"]')).not.toBeNull();
     });
-    expect(container?.querySelectorAll("button").length).toBe(0);
+    // LET-513 §5 — the toolbar view-mode toggle adds two presentational
+    // buttons (Cards / List). Mutating actions (replay, kill, etc.) still
+    // must not exist on a row.
+    const rowButtons = container?.querySelectorAll(
+      '[data-testid="eaos-runs-row"] button',
+    );
+    expect(rowButtons?.length ?? 0).toBe(0);
   });
 
   it("hides the admin escape hatch and renders only human-readable action labels for customer viewers", async () => {
