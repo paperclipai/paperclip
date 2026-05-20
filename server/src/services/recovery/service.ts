@@ -3214,36 +3214,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function loadRecentFailedRunsForIssue(
     companyId: string,
-    agentId: string,
+    agentId: string | null,
     issueId: string,
-  ): Promise<Array<{ errorCode: string | null }>> {
+  ): Promise<Array<{ errorCode: string | null; agentId: string }>> {
     const cutoff = new Date(Date.now() - STORM_CAP_WINDOW_MS);
+    const conditions = [
+      eq(heartbeatRuns.companyId, companyId),
+      inArray(heartbeatRuns.status, ["failed", "timed_out", "cancelled"]),
+      gt(heartbeatRuns.createdAt, cutoff),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+    ] as const;
     return db
-      .select({ errorCode: heartbeatRuns.errorCode })
+      .select({ errorCode: heartbeatRuns.errorCode, agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
       .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          eq(heartbeatRuns.agentId, agentId),
-          inArray(heartbeatRuns.status, ["failed", "timed_out", "cancelled"]),
-          gt(heartbeatRuns.createdAt, cutoff),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-        ),
+        agentId
+          ? and(...conditions, eq(heartbeatRuns.agentId, agentId))
+          : and(...conditions),
       )
       .limit(50);
   }
 
   function detectStormCapHit(
-    runs: Array<{ errorCode: string | null }>,
-  ): { hit: false } | { hit: true; errorClass: AdapterErrorClass; count: number } {
-    const countByClass = new Map<AdapterErrorClass, number>();
+    runs: Array<{ errorCode: string | null; agentId: string }>,
+  ): { hit: false } | { hit: true; errorClass: AdapterErrorClass; count: number; hitAgentId: string } {
+    // Group by (agentId, errorClass) so a single agent's repeat failures trigger the cap.
+    const countByKey = new Map<string, { cls: AdapterErrorClass; count: number; agentId: string }>();
     for (const run of runs) {
       const cls = classifyAdapterErrorClass(run.errorCode);
-      countByClass.set(cls, (countByClass.get(cls) ?? 0) + 1);
+      const key = `${run.agentId}:${cls}`;
+      const existing = countByKey.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        countByKey.set(key, { cls, count: 1, agentId: run.agentId });
+      }
     }
-    for (const [cls, count] of countByClass.entries()) {
+    for (const { cls, count, agentId } of countByKey.values()) {
       if (count >= STORM_CAP_MAX_FAILS) {
-        return { hit: true, errorClass: cls, count };
+        return { hit: true, errorClass: cls, count, hitAgentId: agentId };
       }
     }
     return { hit: false };
@@ -3286,11 +3295,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function checkAndApplyStormCap(input: {
     issue: typeof issues.$inferSelect;
     recoveryIssue: typeof issues.$inferSelect;
-    assigneeAgentId: string;
+    assigneeAgentId: string | null;
     runId: string | null | undefined;
   }): Promise<{ kind: "not_hit" } | { kind: "already_parked" } | { kind: "parked"; errorClass: AdapterErrorClass }> {
-    // Guard: command_line_too_long bulk adapter swap path is disabled.
-    // For ALL classes: if ≥2 failures in last 1h with same error class → park.
+    // For ALL error classes: if ≥2 failures in last 1h with same (agentId, errorClass) → park.
+    // When assigneeAgentId is null (unassigned blocker), check all agents' runs for the issue.
     const recentRuns = await loadRecentFailedRunsForIssue(
       input.issue.companyId,
       input.assigneeAgentId,
@@ -3299,16 +3308,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const cap = detectStormCapHit(recentRuns);
     if (!cap.hit) return { kind: "not_hit" };
 
-    // Idempotency: if agent is already parked by a previous storm cap, skip comment.
+    const effectiveAgentId = cap.hitAgentId;
+
+    // Idempotency: if the offending agent is already parked by a previous storm cap, skip comment.
     const agent = await db
       .select({ status: agents.status, pauseReason: agents.pauseReason })
       .from(agents)
-      .where(eq(agents.id, input.assigneeAgentId))
+      .where(eq(agents.id, effectiveAgentId))
       .then((rows) => rows[0] ?? null);
 
     if (agent?.pauseReason === "recovery_park") {
       logger.info(
-        { agentId: input.assigneeAgentId, issueId: input.recoveryIssue.id, errorClass: cap.errorClass },
+        { agentId: effectiveAgentId, issueId: input.recoveryIssue.id, errorClass: cap.errorClass },
         "storm cap: agent already parked, skipping duplicate comment",
       );
       return { kind: "already_parked" };
@@ -3316,7 +3327,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const parkedComment = buildStormCapParkedComment({
-      agentId: input.assigneeAgentId,
+      agentId: effectiveAgentId,
       recoveryIssue: input.recoveryIssue,
       errorClass: cap.errorClass,
       failCount: cap.count,
@@ -3332,11 +3343,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     await db
       .update(agents)
       .set({ status: "paused", pauseReason: "recovery_park", pausedAt: new Date(), updatedAt: new Date() })
-      .where(eq(agents.id, input.assigneeAgentId));
+      .where(eq(agents.id, effectiveAgentId));
 
     logger.warn(
       {
-        agentId: input.assigneeAgentId,
+        agentId: effectiveAgentId,
         issueId: input.recoveryIssue.id,
         sourceIssueId: input.issue.id,
         errorClass: cap.errorClass,
