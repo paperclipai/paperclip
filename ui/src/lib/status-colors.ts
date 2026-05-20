@@ -18,6 +18,8 @@ export const issueStatusIcon: Record<string, string> = {
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
+  verification_missing: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  test_failed: "text-rose-600 border-rose-600 dark:text-rose-400 dark:border-rose-400",
 };
 
 export const issueStatusIconDefault = "text-muted-foreground border-muted-foreground";
@@ -31,6 +33,8 @@ export const issueStatusText: Record<string, string> = {
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
+  verification_missing: "text-amber-600 dark:text-amber-400",
+  test_failed: "text-rose-600 dark:text-rose-400",
 };
 
 export const issueStatusTextDefault = "text-muted-foreground";
@@ -78,6 +82,8 @@ export const statusBadge: Record<string, string> = {
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
+  verification_missing: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  test_failed: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";

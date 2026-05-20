@@ -40,6 +40,7 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  doneEvidenceSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -3353,6 +3354,23 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+
+    // QG-4: enforce doneEvidence when an agent sets status='done'
+    if (updateFields.status === "done" && req.actor.type === "agent") {
+      const evidence = req.body.doneEvidence;
+      const parsed = doneEvidenceSchema.safeParse(evidence);
+      if (!parsed.success || !parsed.data.testServerHealthGreen) {
+        const missing = !parsed.success
+          ? parsed.error.issues.map((i) => i.path.join(".")).join(", ")
+          : "testServerHealthGreen=false";
+        res.status(422).json({
+          error: "QG-4: doneEvidence required to mark issue done",
+          details: `Missing or invalid fields: ${missing}. Set status to 'verification_missing' if evidence is incomplete.`,
+        });
+        return;
+      }
+    }
+
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -3444,6 +3462,37 @@ export function issueRoutes(
             details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
           });
         }
+      }
+    }
+
+    // QG-4 DoD enforcement: agents must provide doneEvidence when marking status=done.
+    // Board users can bypass to allow manual overrides.
+    if (actor.actorType === "agent" && updateFields.status === "done" && existing.status !== "done") {
+      const evidence = req.body.doneEvidence;
+      if (!evidence) {
+        res.status(422).json({
+          error: "doneEvidence required",
+          message: "Agents must provide doneEvidence (8-criterion QG-4 DoD) when setting status to done. Required fields: prLink, releaseSha, deployRunId, testServerHealthGreen, smokeReportLinks, consoleErrors, networkErrors, evidenceLinks",
+        });
+        return;
+      }
+      const missing: string[] = [];
+      if (!evidence.prLink) missing.push("prLink");
+      if (!evidence.releaseSha) missing.push("releaseSha");
+      if (!evidence.deployRunId) missing.push("deployRunId");
+      if (evidence.testServerHealthGreen === undefined || evidence.testServerHealthGreen === null) missing.push("testServerHealthGreen");
+      if (!Array.isArray(evidence.smokeReportLinks)) missing.push("smokeReportLinks");
+      if (typeof evidence.consoleErrors !== "number") missing.push("consoleErrors");
+      if (typeof evidence.networkErrors !== "number") missing.push("networkErrors");
+      if (!Array.isArray(evidence.evidenceLinks)) missing.push("evidenceLinks");
+      if (evidence.testServerHealthGreen === false) missing.push("testServerHealthGreen=false (must be true)");
+      if (missing.length > 0) {
+        res.status(422).json({
+          error: "doneEvidence incomplete",
+          message: `QG-4 DoD: missing or failing criteria: ${missing.join(", ")}`,
+          missing,
+        });
+        return;
       }
     }
 
