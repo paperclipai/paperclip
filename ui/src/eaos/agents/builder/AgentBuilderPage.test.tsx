@@ -183,7 +183,7 @@ describe("AgentBuilderPage summary updates", () => {
 });
 
 describe("AgentBuilderPage truthful unavailable labels", () => {
-  it("labels Slack as Connect, Email as Backend gap, and Webhook as Save agent first", async () => {
+  it("labels Slack as Connect, Email as Coming soon, and Webhook as After create", async () => {
     await renderBuilder();
     await act(async () => click("eaos-agent-builder-step-invocations"));
     await waitForAssertion(() => {
@@ -193,11 +193,13 @@ describe("AgentBuilderPage truthful unavailable labels", () => {
       expect(slack?.getAttribute("data-availability")).toBe("connect");
       expect(email?.getAttribute("data-availability")).toBe("backend-gap");
       expect(webhook?.getAttribute("data-availability")).toBe("save-first");
-      // Live integration count must stay 0 — fake-success forbidden.
+      // Live integration count must stay 0 — fake-success forbidden. The summary
+      // labels this as "None connected" rather than implementation jargon.
       const integrations = container?.querySelector(
         '[data-testid="eaos-agent-builder-summary-integrations"]',
       );
-      expect(integrations?.textContent?.toLowerCase()).toContain("backend gap");
+      expect(integrations?.textContent?.toLowerCase()).toContain("none connected");
+      expect(integrations?.textContent?.toLowerCase()).not.toContain("backend gap");
     });
   });
 

@@ -235,7 +235,11 @@ describe("OrgPage (LET-503)", () => {
     await renderOrg();
     await waitForAssertion(() => {
       const gapNote = container?.querySelector('[data-testid="eaos-org-gap-note"]');
-      expect(gapNote?.textContent ?? "").toMatch(/reporting-graph endpoint is not wired/);
+      const text = gapNote?.textContent ?? "";
+      // Customer-friendly copy: no "endpoint not wired" implementation jargon.
+      expect(text).toMatch(/inferred from agent roles/i);
+      expect(text).toMatch(/coming soon/i);
+      expect(text.toLowerCase()).not.toMatch(/not wired|endpoint/);
     });
   });
 

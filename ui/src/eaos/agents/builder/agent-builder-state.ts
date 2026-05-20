@@ -120,16 +120,16 @@ export const KNOWLEDGE_ACCESS_MODES = [
   {
     id: "team",
     label: "Team learning",
-    tagline: "Cross-mission KB index across the org.",
+    tagline: "Cross-mission knowledge shared across the team.",
     backendReady: false,
-    backendGapReason: "Cross-mission KB index endpoint not yet wired.",
+    backendGapReason: "Coming soon.",
   },
   {
     id: "custom",
     label: "Custom",
     tagline: "Hand-pick collections, packs, and citations.",
     backendReady: false,
-    backendGapReason: "Custom collection wiring not yet wired.",
+    backendGapReason: "Coming soon.",
   },
 ] as const;
 
@@ -170,28 +170,28 @@ export function getInvocationChannelRows(
     {
       id: "webhook",
       label: "Webhook",
-      description: "POST endpoint that wakes this agent.",
+      description: "Wake this agent from an HTTP endpoint.",
       availability: context.agentSaved
-        ? { kind: "backend-gap", reason: "Per-agent webhook endpoint not yet wired." }
-        : { kind: "save-first", reason: "Save agent first to mint webhook URL." },
+        ? { kind: "backend-gap", reason: "Coming soon." }
+        : { kind: "save-first", reason: "Available after the agent is created." },
     },
     {
       id: "slack",
       label: "Slack",
-      description: "DMs and channel mentions through Slack app.",
-      availability: { kind: "connect", reason: "Connect Slack workspace from Admin → Integrations." },
+      description: "DMs and channel mentions through Slack.",
+      availability: { kind: "connect", reason: "Connect a Slack workspace from Admin → Integrations." },
     },
     {
       id: "telegram",
       label: "Telegram",
       description: "Bot replies in Telegram groups and DMs.",
-      availability: { kind: "connect", reason: "Connect Telegram bot from Admin → Integrations." },
+      availability: { kind: "connect", reason: "Connect a Telegram bot from Admin → Integrations." },
     },
     {
       id: "email",
       label: "Email",
-      description: "Inbound email → run; outbound email is a final-delivery action.",
-      availability: { kind: "backend-gap", reason: "Inbound email routing not yet wired." },
+      description: "Reply to inbound email threads.",
+      availability: { kind: "backend-gap", reason: "Coming soon." },
     },
   ];
 }
@@ -210,7 +210,7 @@ export function getToolGroupCards(
 ): readonly ToolGroupCard[] {
   const saveFirst = (reason: string): InvocationAvailability =>
     context.agentSaved
-      ? { kind: "backend-gap", reason: "Per-agent capability apply endpoint not yet exposed here." }
+      ? { kind: "backend-gap", reason: "Coming soon." }
       : { kind: "save-first", reason };
   return [
     {
@@ -223,9 +223,9 @@ export function getToolGroupCards(
     {
       id: "browser",
       title: "Headless browser",
-      description: "Playwright / WebFetch for live web tasks.",
+      description: "Drive websites and fetch live pages.",
       group: "execution",
-      availability: saveFirst("Save agent first to attach browser runtime."),
+      availability: saveFirst("Available after the agent is created."),
     },
     {
       id: "web-search",
@@ -244,9 +244,9 @@ export function getToolGroupCards(
     {
       id: "warehouse",
       title: "Data warehouse",
-      description: "Read-only query against company warehouse.",
+      description: "Read-only query against the company warehouse.",
       group: "data",
-      availability: saveFirst("Save agent first to attach warehouse credentials."),
+      availability: saveFirst("Available after the agent is created."),
     },
     {
       id: "kb",
@@ -282,9 +282,9 @@ export function getKnowledgeRows(): readonly KnowledgeRow[] {
     },
     {
       id: "kb-index",
-      label: "Cross-mission KB index",
+      label: "Cross-mission knowledge",
       description: "Searchable index across past missions.",
-      availability: { kind: "backend-gap", reason: "Cross-mission KB index endpoint not yet wired." },
+      availability: { kind: "backend-gap", reason: "Coming soon." },
     },
   ];
 }
@@ -379,9 +379,9 @@ export function summarizeAgentBuilder(state: AgentBuilderState): AgentBuilderSum
   const invocationCount = 1 + (state.scheduledEnabled ? 1 : 0);
   const invocationLabel = invocationCount === 1 ? "1 invocation" : `${invocationCount} invocations`;
 
-  // Integrations = channels not yet connected. Always 0 until backend lands.
+  // Integrations = channels connected from Admin → Integrations. None today.
   const integrationCount = 0;
-  const integrationLabel = "0 integrations (backend gap)";
+  const integrationLabel = "None connected";
 
   const toolCount = state.selectedToolIds.length;
   const toolLabel = toolCount === 1 ? "1 tool selected" : `${toolCount} tools selected`;
@@ -452,9 +452,9 @@ export function availabilityBadgeText(availability: InvocationAvailability): str
     case "available":
       return "Available";
     case "save-first":
-      return "Save agent first";
+      return "After create";
     case "backend-gap":
-      return "Backend gap";
+      return "Coming soon";
     case "connect":
       return "Connect";
   }

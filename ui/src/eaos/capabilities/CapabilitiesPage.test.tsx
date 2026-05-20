@@ -137,7 +137,8 @@ describe("CapabilitiesPage (LET-484 working-product slice)", () => {
       const text = posture?.textContent ?? "";
       expect(text).toContain("Shell · BACKEND-BACKED");
       expect(text).toContain("Roster · BACKEND-BACKED");
-      expect(text).toContain("MCP-registry · PREVIEW");
+      // Server registry gap stays truthful, in customer-friendly copy.
+      expect(text).toContain("Server registry · PREVIEW");
     });
   });
 

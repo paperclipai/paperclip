@@ -612,8 +612,7 @@ function ModelStep({
           placeholder="claude-opus-4-7"
         />
         <p className="text-[11px] text-muted-foreground">
-          Adapter-specific model picker stays in the operator form (/agents/new). Use the
-          provider/model id here.
+          Enter a provider model id, for example <code className="font-mono">claude-opus-4-7</code>.
         </p>
       </div>
 
@@ -819,15 +818,14 @@ function ToolsStep({
   return (
     <PanelShell
       title="Tools"
-      description="Integrations and grouped tool cards. Disabled cards name the backend gap."
+      description="Choose the tools this agent can use."
       testId="eaos-agent-builder-panel-tools"
     >
       <div
         className="rounded-md border border-dashed border-border bg-background px-3 py-2 text-[12px] text-muted-foreground"
         data-testid="eaos-agent-builder-integrations-gap"
       >
-        Integrations live in Admin → Integrations once a workspace integration is connected. No
-        per-agent integration controls until the integrations registry endpoint lands.
+        Workspace integrations are managed in Admin → Integrations.
       </div>
       {(["execution", "research", "data"] as const).map((groupId) => {
         const list = groups.get(groupId) ?? [];
@@ -1056,7 +1054,7 @@ function KnowledgeStep({
                   <AvailabilityBadge
                     availability={{
                       kind: "backend-gap",
-                      reason: mode.backendGapReason ?? "Backend gap.",
+                      reason: mode.backendGapReason ?? "Coming soon.",
                     }}
                   />
                 ) : null}

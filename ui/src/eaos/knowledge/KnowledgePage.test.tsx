@@ -134,8 +134,8 @@ describe("KnowledgePage (LET-484 working-product slice)", () => {
       const text = posture?.textContent ?? "";
       expect(text).toContain("Shell · BACKEND-BACKED");
       expect(text).toContain("Playbooks · BACKEND-BACKED");
-      // KB index gap stays truthful.
-      expect(text).toContain("KB-index · PREVIEW");
+      // Cross-mission search gap stays truthful, in customer-friendly copy.
+      expect(text).toContain("Cross-mission search · PREVIEW");
     });
   });
 

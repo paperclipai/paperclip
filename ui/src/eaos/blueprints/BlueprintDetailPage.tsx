@@ -605,9 +605,8 @@ function VersionsTab({
           <p className="font-medium">No matching version row.</p>
           <p className="mt-1">
             URL requested version <code>{redactSecretLikeText(requestedVersionParam ?? "")}</code>,
-            but the catalog only exposes <code>v{redactSecretLikeText(detail.version)}</code>.
-            This is a backend gap, not a leak —
-            the LET-501 D / E lanes will expose multi-version history.
+            but the catalog currently exposes <code>v{redactSecretLikeText(detail.version)}</code>.
+            Multi-version history is coming soon.
           </p>
         </div>
       ) : null}

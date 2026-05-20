@@ -266,13 +266,12 @@ function GapNote({ source }: { source: "backend" | "derived" | "empty" }) {
   let body: string;
   if (source === "backend") {
     body =
-      "Reporting lines are read from the backend org tree. Workload and runtime relationships beyond direct reports are not wired yet.";
+      "Reporting lines come from the company org. Workload-based connections are coming soon.";
   } else if (source === "derived") {
     body =
-      "Reporting lines are derived from agent roles because the dedicated team / reporting-graph endpoint is not wired yet.";
+      "Reporting lines are inferred from agent roles. A dedicated team graph is coming soon.";
   } else {
-    body =
-      "A dedicated team / reporting-graph endpoint is not wired yet, so this surface depends entirely on the agents list.";
+    body = "This view will populate as agents are onboarded.";
   }
   return (
     <p

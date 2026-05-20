@@ -91,10 +91,11 @@ describe("summarizeAgentBuilder", () => {
     expect(on.invocationLabel).toBe("2 invocations");
   });
 
-  it("never claims real integrations until the backend lands", () => {
+  it("never claims real integrations until any are connected", () => {
     const summary = summarizeAgentBuilder(DEFAULT_AGENT_BUILDER_STATE);
     expect(summary.integrationCount).toBe(0);
-    expect(summary.integrationLabel.toLowerCase()).toContain("backend gap");
+    expect(summary.integrationLabel.toLowerCase()).toContain("none connected");
+    expect(summary.integrationLabel.toLowerCase()).not.toContain("backend gap");
   });
 
   it("reflects selected tools and pinned skills counts", () => {

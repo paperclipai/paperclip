@@ -63,8 +63,8 @@ export function KnowledgePage() {
           )}
           <EaosStateChip
             label="PREVIEW"
-            prefix="KB-index"
-            title="Cross-mission knowledge index is not wired in this slice. Backend gap: GET /api/companies/:companyId/knowledge — pending."
+            prefix="Cross-mission search"
+            title="Cross-mission knowledge search is coming soon."
           />
           <span
             className="text-[11px] uppercase tracking-wide text-muted-foreground"

@@ -85,8 +85,8 @@ export function CapabilitiesPage() {
           )}
           <EaosStateChip
             label="PREVIEW"
-            prefix="MCP-registry"
-            title="Company-wide MCP server registry is not wired in this slice. Backend gap: GET /api/companies/:companyId/capabilities — pending."
+            prefix="Server registry"
+            title="Company-wide capability server registry is coming soon."
           />
           <span
             className="text-[11px] uppercase tracking-wide text-muted-foreground"
