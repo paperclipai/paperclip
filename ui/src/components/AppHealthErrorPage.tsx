@@ -32,7 +32,7 @@ const IMPORTANT_RECOVERY_LOCATIONS = [
   { label: "Office 頁面", value: "http://localhost:5173/AI/office" },
   { label: "後端 health", value: "http://127.0.0.1:3100/api/health" },
   { label: "復原 SOP", value: "docs/virtual-office-startup-sop.zh-TW.md" },
-  { label: "資料庫鎖檔", value: "C:\\Users\\blue_\\.paperclip\\instances\\default\\db\\postmaster.pid" },
+  { label: "資料庫鎖檔", value: "C:\\Users\\<you>\\.paperclip\\instances\\default\\db\\postmaster.pid" },
 ];
 
 const SHUTDOWN_CHECKS = ["確認沒有正在建立、同步、保存或停用", "關掉不需要的預覽頁面", "保留這份狀態摘要，方便下次接續"];
