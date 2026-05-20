@@ -67,6 +67,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     monitorPolicy: row.monitorPolicy,
     attemptCount: row.attemptCount,
     maxAttempts: row.maxAttempts,
+    stale: row.stale,
     timeoutAt: row.timeoutAt,
     lastAttemptAt: row.lastAttemptAt,
     outcome: row.outcome as IssueRecoveryAction["outcome"],
@@ -189,6 +190,9 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      const newAttemptCount = existing.attemptCount + 1;
+      const effectiveMaxAttempts = input.maxAttempts ?? existing.maxAttempts;
+      const isNowStale = effectiveMaxAttempts !== null && newAttemptCount >= effectiveMaxAttempts;
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -206,8 +210,9 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
-          maxAttempts: input.maxAttempts ?? null,
+          attemptCount: newAttemptCount,
+          maxAttempts: effectiveMaxAttempts,
+          stale: existing.stale || isNowStale,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,
           outcome: null,
@@ -296,10 +301,31 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function listStale(
+    companyId: string,
+    options: { assigneeAgentId?: string } = {},
+  ): Promise<IssueRecoveryAction[]> {
+    const predicates = [
+      eq(issueRecoveryActions.companyId, companyId),
+      eq(issueRecoveryActions.stale, true),
+      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+    ];
+    if (options.assigneeAgentId) {
+      predicates.push(eq(issueRecoveryActions.ownerAgentId, options.assigneeAgentId));
+    }
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(...predicates))
+      .orderBy(desc(issueRecoveryActions.updatedAt));
+    return rows.map(toReadModel);
+  }
+
   return {
     getById,
     getActiveForIssue,
     listActiveForIssues,
+    listStale,
     resolveActiveForIssue,
     upsertSourceScoped,
   };

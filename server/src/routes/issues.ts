@@ -2559,6 +2559,19 @@ export function issueRoutes(
     res.json({ count });
   });
 
+  router.get("/companies/:companyId/recovery-actions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const staleOnly = req.query.stale === "true";
+    const assigneeAgentId = typeof req.query.assigneeAgentId === "string" ? req.query.assigneeAgentId : undefined;
+    if (!staleOnly) {
+      res.status(400).json({ error: "Query param 'stale=true' is required" });
+      return;
+    }
+    const actions = await recoveryActionsSvc.listStale(companyId, { assigneeAgentId });
+    res.json({ actions });
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
