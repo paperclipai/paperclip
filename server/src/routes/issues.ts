@@ -1266,10 +1266,17 @@ export function issueRoutes(
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
+      if (input.blockersChanged && readiness.unresolvedBlockerCount === 0) {
+        return "Recovery action became stale because the source issue is now blocked with resolved first-class blockers (valid disposition).";
+      }
       if (input.assigneeChanged && (issue.assigneeAgentId || issue.assigneeUserId)) {
         return "Recovery action became stale because the source issue now has a new owner while blocked.";
       }
       return null;
+    }
+
+    if (input.assigneeChanged && (issue.assigneeAgentId || issue.assigneeUserId)) {
+      return "Recovery action became stale because the source issue now has a new owner (stranded assignment resolved).";
     }
 
     if (issue.assigneeUserId && issue.status !== "done" && issue.status !== "cancelled") {
