@@ -37,6 +37,11 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/company/export/files/agents/ceo.md", "PAP")).toBe(
       "/PAP/company/export/files/agents/ceo.md",
     );
+    expect(toCompanyRelativePath("/PAP/company/import")).toBe("/company/import");
+    expect(toCompanyRelativePath("/PAP/company/export")).toBe("/company/export");
+    expect(toCompanyRelativePath("/PAP/company/export/files/agents/ceo.md")).toBe(
+      "/company/export/files/agents/ceo.md",
+    );
   });
 
   it("treats /search as a board route that needs a company prefix", () => {
