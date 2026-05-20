@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
@@ -141,79 +142,6 @@ async function waitForValue<T>(
   return latest ?? null;
 }
 
-async function waitForHeartbeatIdle(
-  db: ReturnType<typeof createDb>,
-  timeoutMs = 3_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const runs = await db
-      .select({
-        status: heartbeatRuns.status,
-      })
-      .from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-async function cancelActiveRunsForCleanup(
-  db: ReturnType<typeof createDb>,
-  timeoutMs = 3_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const activeRuns = await db
-      .select({
-        id: heartbeatRuns.id,
-        wakeupRequestId: heartbeatRuns.wakeupRequestId,
-      })
-      .from(heartbeatRuns)
-      .where(
-        or(
-          eq(heartbeatRuns.status, "queued"),
-          eq(heartbeatRuns.status, "running"),
-        ),
-      );
-
-    if (activeRuns.length === 0) return;
-
-    const now = new Date();
-    const runIds = activeRuns.map((run) => run.id);
-    const wakeupRequestIds = activeRuns
-      .map((run) => run.wakeupRequestId)
-      .filter((value): value is string => typeof value === "string" && value.length > 0);
-
-    await db
-      .update(heartbeatRuns)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        updatedAt: now,
-        errorCode: "test_cleanup",
-        error: "Cancelled by heartbeat-process-recovery test cleanup",
-        processPid: null,
-        processGroupId: null,
-      })
-      .where(inArray(heartbeatRuns.id, runIds));
-
-    if (wakeupRequestIds.length > 0) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: "cancelled",
-          finishedAt: now,
-          error: "Cancelled by heartbeat-process-recovery test cleanup",
-        })
-        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 async function spawnOrphanedProcessGroup() {
   const leader = spawn(
     process.execPath,
@@ -256,6 +184,7 @@ async function spawnOrphanedProcessGroup() {
 
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
@@ -263,6 +192,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
   });
 
   afterEach(async () => {
@@ -289,99 +219,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }
     cleanupPids.clear();
-    await cancelActiveRunsForCleanup(db, 5_000);
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({
-          status: heartbeatRuns.status,
-          processPid: heartbeatRuns.processPid,
-          processGroupId: heartbeatRuns.processGroupId,
-        })
-        .from(heartbeatRuns);
-      const managedExecutionStillActive = runs.some(
-        (run) =>
-          (run.status === "queued" || run.status === "running") &&
-          !run.processPid &&
-          !run.processGroupId,
-      );
-      if (!managedExecutionStillActive) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await waitForHeartbeatIdle(db, 5_000);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await db.delete(activityLog);
-    await db.delete(agentRuntimeState);
-    await db.delete(companySkills);
-    await db.delete(costEvents);
-    await db.delete(issueComments);
-    await db.delete(issueDocuments);
-    await db.delete(documentRevisions);
-    await db.delete(documents);
-    await db.delete(issueRelations);
-    await db.delete(issueTreeHoldMembers);
-    await db.delete(issueTreeHolds);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(issueComments);
-      await db.delete(issueDocuments);
-      try {
-        await db.delete(issues);
-        break;
-      } catch (error) {
-        if (attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(activityLog);
-      await db.delete(heartbeatRunEvents);
-      try {
-        await db.delete(heartbeatRuns);
-        break;
-      } catch (error) {
-        if (attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    await db.delete(agentWakeupRequests);
-    await db.delete(budgetPolicies);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(agentRuntimeState);
-      try {
-        await db.delete(agents);
-        break;
-      } catch (error) {
-        if (attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await db.delete(companySkills);
-      // Re-delete documentRevisions + documents inside the retry loop: a
-      // fire-and-forget background wake from the previous test (e.g.,
-      // handleSuccessfulRunHandoff queueing a continuation-summary document)
-      // can race the cleanup and re-insert document_revisions rows AFTER
-      // the bulk delete higher up. Without this re-delete the companies
-      // delete below trips document_revisions_company_id_companies_id_fk
-      // and the retry loop keeps failing on the orphan row. Same shape as
-      // the issueDocuments re-delete inside the issues loop above.
-      await db.delete(issueDocuments);
-      await db.delete(documentRevisions);
-      await db.delete(documents);
-      try {
-        await db.delete(companies);
-        break;
-      } catch (error) {
-        if (attempt === 4) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
+    await cleanupHeartbeatTestState(db, heartbeat);
   });
 
   afterAll(async () => {
@@ -887,7 +725,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: child.pid ?? null,
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(0);
@@ -913,7 +750,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       includeIssue: false,
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
-    const heartbeat = heartbeatService(db);
 
     const startupResult = await heartbeat.reapOrphanedRuns();
     expect(startupResult.reaped).toBe(0);
@@ -934,7 +770,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       includeIssue: false,
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(0);
@@ -958,7 +793,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(0);
@@ -986,7 +820,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1011,7 +844,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1031,7 +863,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1052,7 +883,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       lastOutputAt: stale,
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1083,7 +913,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
-    const heartbeat = heartbeatService(db);
     heartbeat.__test_unsafelyTrackActiveRunExecution(runId);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -1109,7 +938,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       lastOutputAt: stale,
     });
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
-    const heartbeat = heartbeatService(db);
     heartbeat.__test_unsafelyTrackActiveRunExecution(runId);
 
     const result = await heartbeat.reapOrphanedRuns();
@@ -1125,7 +953,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processGroupId: null,
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1151,7 +978,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1196,7 +1022,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1251,7 +1076,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       relatedIssueId: issueId,
       type: "blocks",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1343,7 +1167,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       relatedIssueId: sourceIssueId,
       type: "blocks",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1403,7 +1226,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       reason: "pause immediate recovery subtree",
       releasePolicy: { strategy: "manual" },
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
     expect(result.reaped).toBe(1);
@@ -1448,7 +1270,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
-    const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId);
@@ -1489,7 +1310,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "process_detached",
       runError: "Lost in-memory process handle, but child pid 123 is still alive",
     });
-    const heartbeat = heartbeatService(db);
 
     const updated = await heartbeat.reportRunActivity(runId);
     expect(updated?.errorCode).toBeNull();
@@ -1505,7 +1325,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     await heartbeat.cancelRun(runId);
 
@@ -1523,7 +1342,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     const cancelled = await heartbeat.cancelRun(runId);
     expect(cancelled?.status).toBe("cancelled");
@@ -1547,7 +1365,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     const cancelled = await heartbeat.cancelRun(runId);
     expect(cancelled?.status).toBe("cancelled");
@@ -1560,7 +1377,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
-    const heartbeat = heartbeatService(db);
 
     const cancelled = await heartbeat.cancelRun(runId);
     expect(cancelled?.status).toBe("cancelled");
@@ -1569,7 +1385,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("dispatches assigned todo work with no prior run as a normal assignment wake", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(1);
@@ -1632,7 +1447,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { issueId, mutation: "assigned_todo_liveness_dispatch" },
       status: "queued",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(0);
@@ -1712,7 +1526,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     ]);
 
-    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, olderRunId);
 
@@ -1784,7 +1597,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       costCents: 1,
       occurredAt: new Date(),
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(1);
@@ -1833,7 +1645,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("does not dispatch assigned todo work with no prior run when the agent is paused", async () => {
     const { agentId, issueId } = await seedAssignedTodoNoRunFixture({ agentStatus: "paused" });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(0);
@@ -1854,7 +1665,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "todo",
       runStatus: "failed",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(0);
@@ -1889,8 +1699,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runStatus,
         runErrorCode,
       });
-      const heartbeat = heartbeatService(db);
-
+  
       const result = await heartbeat.reconcileStrandedAssignedIssues();
       expect(result.dispatchRequeued).toBe(0);
       expect(result.continuationRequeued).toBe(1);
@@ -1944,7 +1753,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { issueId },
       status: "queued",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.assignmentDispatched).toBe(0);
@@ -1974,7 +1782,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "process_lost",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2076,7 +1883,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       type: "blocks",
       createdByAgentId: creatorAgentId,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
@@ -2116,7 +1922,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_progress",
       runStatus: "failed",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2173,7 +1978,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       identifier: `${issuePrefix}-1`,
       startedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2203,7 +2007,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_progress",
       runStatus: "failed",
     });
-    const heartbeat = heartbeatService(db);
 
     await heartbeat.reconcileStrandedAssignedIssues();
 
@@ -2279,7 +2082,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         resultJson: { summary: "Plan:\n- Inspect files\n- Implement fix" },
       };
     });
-    const heartbeat = heartbeatService(db);
 
     await heartbeat.reconcileStrandedAssignedIssues();
 
@@ -2301,7 +2103,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -2344,7 +2145,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "workspace_import_conflict",
       runError: "Workspace import into /srv/paperclip/workspace hit 1 path conflict: release-eng-tmp/magma-blo-1475/orc8r/cloud/go/serde/doc.go",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -2386,7 +2186,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "workspace_import_conflict",
       runError: "Workspace import into /srv/paperclip/workspace hit 1 path conflict",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2429,7 +2228,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runError: "Context window exceeded before first model turn",
       runUsageJson: { inputTokens: 0, outputTokens: 0 },
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -2477,7 +2275,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "startup_error_pre_model",
       runError: "Adapter crashed before the first model turn",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2520,7 +2317,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runError: "Provider rate limit exhausted",
       runUsageJson: { inputTokens: 0, outputTokens: 0 },
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);
@@ -2550,7 +2346,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "adapter_exit_code",
       runError: null,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);
@@ -2604,7 +2399,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(agents.id, agentId));
 
-    const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);
 
@@ -2630,7 +2424,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
     });
-    const heartbeat = heartbeatService(db);
 
     const results = await Promise.allSettled(
       Array.from({ length: 8 }, () => heartbeat.reconcileStrandedAssignedIssues()),
@@ -2679,7 +2472,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       relatedIssueId: sourceIssueId,
       type: "blocks",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2745,7 +2537,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       relatedIssueId: sourceIssueId,
       type: "blocks",
     });
-    const heartbeat = heartbeatService(db);
 
     const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
     expect(firstResult.escalated).toBe(1);
@@ -2812,7 +2603,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       activePauseHold: true,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
@@ -2857,7 +2647,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       livenessState: "advanced",
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -2917,7 +2706,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.escalated).toBe(1);
@@ -2971,7 +2759,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.escalated).toBe(1);
@@ -3012,7 +2799,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     }
 
-    const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.escalated).toBe(0);
@@ -3029,7 +2815,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       assignToUser: true,
     });
-    const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.dispatchRequeued).toBe(0);
