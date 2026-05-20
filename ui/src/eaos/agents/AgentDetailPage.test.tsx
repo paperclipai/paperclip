@@ -230,15 +230,17 @@ describe("AgentDetailPage (LET-506)", () => {
     });
 
     expect(agentsGetMock).toHaveBeenCalledWith("frontend-builder", "company-1");
-    const visibleText = container?.querySelector('[data-testid="eaos-agent-detail-page"]')?.textContent ?? "";
-    expect(visibleText).toContain("Frontend Builder token=[REDACTED]");
-    expect(visibleText).toContain("Running");
-    expect(visibleText).toContain("Claude Local");
-    expect(visibleText).toContain("Andrii");
-    expect(visibleText).toContain("GitHub PR workflow");
-    expect(visibleText).toContain("LET-506");
-    expect(visibleText).not.toContain("claude_local");
-    expect(visibleText).not.toContain("SHOULD_NOT_RENDER");
+    await waitForMicrotaskAssertion(() => {
+      const visibleText = container?.querySelector('[data-testid="eaos-agent-detail-page"]')?.textContent ?? "";
+      expect(visibleText).toContain("Frontend Builder token=[REDACTED]");
+      expect(visibleText).toContain("Running");
+      expect(visibleText).toContain("Claude Local");
+      expect(visibleText).toContain("Andrii");
+      expect(visibleText).toContain("GitHub PR workflow");
+      expect(visibleText).toContain("LET-506");
+      expect(visibleText).not.toContain("claude_local");
+      expect(visibleText).not.toContain("SHOULD_NOT_RENDER");
+    });
   });
 
   it("keeps the EAOS detail page read-only and exposes Kernel as the only action escape hatch", async () => {
