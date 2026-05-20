@@ -80,10 +80,21 @@ async function main() {
     process.exit(1);
   }
 
+  // Sanitize inputs before use in URL construction (prevents SSRF)
+  const prNumber = parseInt(PR_NUMBER, 10);
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    console.error('ERROR: PR_NUMBER must be a positive integer');
+    process.exit(1);
+  }
+  if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(GH_REPO)) {
+    console.error('ERROR: GH_REPO must be in owner/repo format');
+    process.exit(1);
+  }
+
   // Fetch PR data once — gates use this, no redundant API calls
   const [pr, files] = await Promise.all([
-    ghFetch(`/repos/${GH_REPO}/pulls/${PR_NUMBER}`, GH_TOKEN),
-    ghFetch(`/repos/${GH_REPO}/pulls/${PR_NUMBER}/files?per_page=100`, GH_TOKEN),
+    ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`, GH_TOKEN),
+    ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}/files?per_page=100`, GH_TOKEN),
   ]);
 
   const prBody = pr.body ?? '';
@@ -97,7 +108,7 @@ async function main() {
       Promise.resolve(checkLinkedIssue(prBody)),
       Promise.resolve(checkTestCoverage(files)),
       Promise.resolve(checkLockfile(files, author, branch)),
-      checkDependencies(files, GH_TOKEN, GH_REPO, PR_NUMBER),
+      checkDependencies(files, GH_TOKEN, GH_REPO, prNumber),
     ]);
 
   const allFailures = [
@@ -112,9 +123,9 @@ async function main() {
   const commentBody = buildComment(author, allFailures, informational);
 
   // Post comment if there are failures/informational, or update existing comment
-  const existing = await findExistingComment(GH_TOKEN, GH_REPO, PR_NUMBER);
+  const existing = await findExistingComment(GH_TOKEN, GH_REPO, prNumber);
   if (allFailures.length > 0 || informational.length > 0 || existing) {
-    await upsertComment(GH_TOKEN, GH_REPO, PR_NUMBER, commentBody, existing);
+    await upsertComment(GH_TOKEN, GH_REPO, prNumber, commentBody, existing);
   }
 
   console.log(JSON.stringify({ passed: allPassed, failures: allFailures, informational }));
