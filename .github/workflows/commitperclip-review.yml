@@ -10,6 +10,7 @@ on:
 permissions:
   pull-requests: write
   security-events: write
+  checks: write
 
 jobs:
   review:

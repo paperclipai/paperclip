@@ -169,6 +169,31 @@ async function createAdvisory(token, repo, prNumber, prTitle, flags) {
   });
 }
 
+async function postSecurityCheckRun(token, repo, headSha, hasFlags) {
+  await ghFetch(`/repos/${repo}/check-runs`, token, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(hasFlags ? {
+      name: 'security-review',
+      head_sha: headSha,
+      status: 'in_progress',
+      output: {
+        title: 'Security Review Pending',
+        summary: 'This PR has been flagged for manual security review by a maintainer. No action needed from you.',
+      },
+    } : {
+      name: 'security-review',
+      head_sha: headSha,
+      status: 'completed',
+      conclusion: 'success',
+      output: {
+        title: 'Security Review Passed',
+        summary: 'No security concerns detected.',
+      },
+    }),
+  });
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -194,10 +219,14 @@ async function main() {
   ];
 
   if (allFlags.length > 0) {
-    console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory`);
-    await createAdvisory(GH_TOKEN, GH_REPO, PR_NUMBER, pr.title, allFlags);
+    console.error(`[security] ${allFlags.length} flag(s) detected — creating draft advisory and pending check run`);
+    await Promise.all([
+      createAdvisory(GH_TOKEN, GH_REPO, PR_NUMBER, pr.title, allFlags),
+      postSecurityCheckRun(GH_TOKEN, GH_REPO, pr.head.sha, true),
+    ]);
   } else {
     console.log('[security] all clear');
+    await postSecurityCheckRun(GH_TOKEN, GH_REPO, pr.head.sha, false);
   }
 
   // Always exit 0 — security flags are silent, never block the PR publicly
