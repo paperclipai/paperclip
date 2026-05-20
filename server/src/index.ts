@@ -46,6 +46,7 @@ import { createApiTierPluginWorkerManagerStub } from "./services/plugin-worker-m
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { logShutdownSignal } from "./shutdown-log.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { plugins } from "@paperclipai/db";
 import {
@@ -1185,6 +1186,9 @@ export async function startServer(): Promise<StartedServer> {
 
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Synchronous stderr breadcrumb FIRST — survives pino's async transport
+      // dropping logs across process.exit. See BLO-4137 post-merge gap.
+      logShutdownSignal(signal);
       logger.info({ signal }, "Shutdown signal received — beginning graceful drain");
 
       // 1. Drain SSE bridge streams FIRST — emit `event: shutdown` on each,

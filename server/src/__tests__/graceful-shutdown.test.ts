@@ -1,10 +1,11 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Response } from "express";
 
 import { sseRegistry } from "../services/sse-registry.js";
+import { logShutdownSignal } from "../shutdown-log.js";
 
 interface FakeRes extends EventEmitter {
   _written: string[];
@@ -240,4 +241,64 @@ describe("sseRegistry", () => {
     },
     10_000,
   );
+});
+
+describe("logShutdownSignal", () => {
+  // Capture process.stderr.write while the test runs. We can't replace pino
+  // (and don't want to), but stderr.write is the only path that's guaranteed
+  // synchronous on Linux when stdio is piped to kubelet — that's the whole
+  // point of this module.
+  let captured: string[];
+  let originalWrite: typeof process.stderr.write;
+
+  beforeEach(() => {
+    captured = [];
+    originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+      const s = typeof chunk === "string" ? chunk : (chunk as Buffer).toString();
+      captured.push(s);
+      // Don't actually forward to stderr — the test output stays clean.
+      // Returning true is correct for non-flushed writes.
+      const cb = rest.find((arg) => typeof arg === "function") as
+        | ((err?: Error) => void)
+        | undefined;
+      if (cb) cb();
+      return true;
+    }) as typeof process.stderr.write;
+  });
+
+  afterEach(() => {
+    process.stderr.write = originalWrite;
+  });
+
+  it("writes a single line containing the signal name to process.stderr", () => {
+    logShutdownSignal("SIGTERM");
+    expect(captured.length).toBeGreaterThan(0);
+    const joined = captured.join("");
+    expect(joined).toContain("SIGTERM");
+    // The line is a meaningful breadcrumb — must mention shutdown.
+    expect(joined.toLowerCase()).toContain("shutdown");
+    // And it must end with a newline so it's a complete log line, not a
+    // partial that some downstream reader could fail to flush.
+    expect(joined.endsWith("\n")).toBe(true);
+  });
+
+  it("writes synchronously — the line is in stderr BEFORE the function returns", () => {
+    // This is the load-bearing guarantee. pino's async transport drops logs
+    // on process.exit; this module must not. Calling write must produce a
+    // captured entry before the next synchronous statement runs — no
+    // setImmediate / setTimeout / await tricks allowed in the implementation.
+    expect(captured).toHaveLength(0);
+    logShutdownSignal("SIGINT");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toContain("SIGINT");
+  });
+
+  it("escapes nothing — signal name appears verbatim", () => {
+    logShutdownSignal("SIGTERM");
+    // Easy regression: if someone wraps in JSON.stringify or adds quoting
+    // later, the kubectl logs grep `Shutdown signal received | grep SIGTERM`
+    // recipe in BLO-4137 stops matching.
+    expect(captured[0]).toMatch(/(^|[\s\W])SIGTERM([\s\W]|$)/);
+  });
 });
