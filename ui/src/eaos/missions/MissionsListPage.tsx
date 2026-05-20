@@ -28,6 +28,7 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
+import { useEaosViewerRole } from "../useEaosViewerRole";
 import {
   bucketMissions,
   resolveMissionRow,
@@ -48,6 +49,7 @@ interface MissionsListPageProps {
 
 export function MissionsListPage({ now }: MissionsListPageProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { isOperator } = useEaosViewerRole();
 
   const issuesQuery = useQuery({
     queryKey: selectedCompanyId
@@ -108,30 +110,35 @@ export function MissionsListPage({ now }: MissionsListPageProps = {}) {
             title="Active"
             description="In progress, or queued with an owner."
             rows={buckets.active}
+            isOperator={isOperator}
           />
           <MissionBucket
             id="blocked"
             title="Blocked"
             description="Waiting on a dependency or external unblock."
             rows={buckets.blocked}
+            isOperator={isOperator}
           />
           <MissionBucket
             id="in-review"
             title="In review"
             description="Awaiting reviewer or approval owner."
             rows={buckets.inReview}
+            isOperator={isOperator}
           />
           <MissionBucket
             id="done-with-evidence"
             title="Done"
             description="Closed with a plan or work product attached."
             rows={buckets.doneWithEvidence}
+            isOperator={isOperator}
           />
           <MissionBucket
             id="other"
             title="Other"
             description="Cancelled, stale, or needing a next owner."
             rows={buckets.other}
+            isOperator={isOperator}
             allowEmpty
           />
         </>
@@ -233,10 +240,11 @@ interface MissionBucketProps {
   title: string;
   description: string;
   rows: readonly MissionRow[];
+  isOperator: boolean;
   allowEmpty?: boolean;
 }
 
-function MissionBucket({ id, title, description, rows, allowEmpty }: MissionBucketProps) {
+function MissionBucket({ id, title, description, rows, isOperator, allowEmpty }: MissionBucketProps) {
   if (rows.length === 0 && !allowEmpty) return null;
   return (
     <section
@@ -264,7 +272,7 @@ function MissionBucket({ id, title, description, rows, allowEmpty }: MissionBuck
       ) : (
         <ul className="flex flex-col gap-2" data-testid={`eaos-missions-bucket-${id}-rows`}>
           {rows.map((row) => (
-            <MissionRowCard key={row.id} row={row} />
+            <MissionRowCard key={row.id} row={row} isOperator={isOperator} />
           ))}
         </ul>
       )}
@@ -272,7 +280,7 @@ function MissionBucket({ id, title, description, rows, allowEmpty }: MissionBuck
   );
 }
 
-function MissionRowCard({ row }: { row: MissionRow }) {
+function MissionRowCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
@@ -283,13 +291,15 @@ function MissionRowCard({ row }: { row: MissionRow }) {
     >
       <div className="flex flex-wrap items-center gap-2">
         <PrimaryStateChip state={row.primaryState} reason={row.primaryStateReason} />
-        <TruthChip truth={row.truthLabel} />
-        <FreshnessChip freshness={row.freshness} updatedAt={row.updatedAt} />
+        {isOperator ? <TruthChip truth={row.truthLabel} /> : null}
+        {isOperator || row.freshness === "Stale" ? (
+          <FreshnessChip freshness={row.freshness} updatedAt={row.updatedAt} />
+        ) : null}
         {row.riskSummary.liveActionMentioned ? (
           <EaosStateChip
             label="APPROVAL REQUIRED"
             prefix="Risk"
-            title="Issue title mentions a live-action category (deploy, restart, prod, etc). Read-only advisory; no live control is rendered here."
+            title="Mentions a live-action category (deploy, restart, prod, etc). Read-only advisory; no live control is rendered here."
           />
         ) : null}
       </div>
@@ -308,10 +318,11 @@ function MissionRowCard({ row }: { row: MissionRow }) {
       </div>
       <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
         <Field
-          label="Current owner"
+          label="Owner"
           value={row.ownerSummary.currentLabel}
           truth={row.ownerSummary.currentTruth}
           reason={row.ownerSummary.currentReason}
+          showTruth={isOperator}
         />
         <Field
           label="Evidence"
@@ -326,17 +337,20 @@ function MissionRowCard({ row }: { row: MissionRow }) {
               : "None attached"
           }
           truth={row.evidenceSummary.truth}
+          showTruth={isOperator}
         />
         <Field
-          label="Next gate"
+          label="Next step"
           value={row.nextGateSummary.label}
           truth={row.nextGateSummary.truth}
-          reason={row.nextGateSummary.requiresHuman ? "Requires human action" : undefined}
+          reason={row.nextGateSummary.requiresHuman ? "Needs a human" : undefined}
+          showTruth={isOperator}
         />
         <Field
-          label="Tree"
+          label="Dependencies"
           value={`Blocks ${row.treeSummary.blocksCount} · Blocked by ${row.treeSummary.blockedByCount}`}
           truth={row.treeSummary.truth}
+          showTruth={isOperator}
         />
       </dl>
       <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -358,17 +372,19 @@ function Field({
   value,
   truth,
   reason,
+  showTruth,
 }: {
   label: string;
   value: string;
   truth: MissionTruthLabel;
   reason?: string;
+  showTruth: boolean;
 }) {
   return (
     <div className="flex flex-col gap-0.5" data-testid={`eaos-missions-row-field-${label.toLowerCase().replace(/\s+/g, "-")}`}>
       <dt className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
         {label}
-        <TruthInlineMark truth={truth} />
+        {showTruth ? <TruthInlineMark truth={truth} /> : null}
       </dt>
       <dd className="text-foreground">{value}</dd>
       {reason ? <p className="text-[11px] text-muted-foreground">{reason}</p> : null}
@@ -452,21 +468,22 @@ function PrimaryStateChip({
 }
 
 function TruthChip({ truth }: { truth: MissionTruthLabel }) {
-  if (truth === "Backend-backed") {
-    return (
-      <EaosStateChip
-        label="BACKEND-BACKED"
-        prefix="Row"
-        title="Row identity and status mirror canonical Issue fields."
-      />
-    );
-  }
+  // Operator-only provenance hint — soft tone, plain language, no
+  // BACKEND-BACKED / PREVIEW jargon for non-operators (caller gates it).
+  const tip =
+    truth === "Backend-backed"
+      ? "Row identity and status mirror canonical Issue fields."
+      : "Row is derived from canonical Issue fields by the LET-424 resolver.";
+  const label = truth === "Backend-backed" ? "Live data" : "Derived";
   return (
-    <EaosStateChip
-      label="PREVIEW"
-      prefix="Row · derived"
-      title="Row is derived from canonical Issue fields by the LET-424 resolver."
-    />
+    <span
+      data-testid={`eaos-missions-truth-${truth.toLowerCase().replace(/[^a-z]+/g, "-")}`}
+      title={tip}
+      className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-60" />
+      {label}
+    </span>
   );
 }
 
@@ -489,19 +506,27 @@ function FreshnessChip({
   updatedAt: Date | null;
 }) {
   const tip = updatedAt
-    ? `Last updated ${updatedAt.toISOString()} (backend updatedAt).`
-    : "No backend updatedAt available.";
+    ? `Last updated ${updatedAt.toISOString()}.`
+    : "No recent activity recorded.";
+  const label =
+    freshness === "Fresh"
+      ? "Fresh"
+      : freshness === "Aging"
+        ? "Aging"
+        : freshness === "Stale"
+          ? "Stale"
+          : "Unknown activity";
   return (
     <span
       data-testid={`eaos-missions-freshness-${freshness.toLowerCase()}`}
       title={tip}
       className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide " +
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium " +
         FRESHNESS_TONE[freshness]
       }
     >
       <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
-      Freshness · {freshness}
+      {label}
     </span>
   );
 }

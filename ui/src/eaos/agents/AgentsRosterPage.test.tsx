@@ -169,6 +169,31 @@ describe("AgentsRosterPage (LET-503 cleanup)", () => {
     });
   });
 
+  it("humanizes raw adapter and status enums (no CLAUDE_LOCAL / Backend status)", async () => {
+    agentsListMock.mockResolvedValue([
+      makeAgent({ id: "agent-x", adapterType: "claude_local", status: "pending_approval" }),
+    ]);
+    await renderRoster();
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-agents-row"]')).not.toBeNull();
+    });
+    const adapterCell = container?.querySelector('[data-testid="eaos-agents-row-adapter"]');
+    expect(adapterCell?.textContent).toBe("Claude Local");
+    // Walk every text node + tooltip on the rendered page; raw machine
+    // enums must not surface as user-visible copy. Data-attributes are
+    // OK — those are debug hooks, not displayed text.
+    const visibleText = container?.querySelector('[data-testid="eaos-agents-page"]')?.textContent ?? "";
+    expect(visibleText).not.toContain("CLAUDE_LOCAL");
+    expect(visibleText).not.toContain("claude_local");
+    expect(visibleText).not.toContain("Backend status");
+    expect(visibleText).not.toContain("pending_approval");
+    const statusBadge = container?.querySelector('[data-testid="eaos-agents-row"] [title]') as HTMLElement | null;
+    expect(statusBadge?.getAttribute("title") ?? "").not.toContain("Backend status");
+    expect(statusBadge?.getAttribute("title") ?? "").not.toContain("pending_approval");
+    // Friendly status label is present.
+    expect(visibleText.toLowerCase()).toContain("pending approval");
+  });
+
   it("does not render any live action controls", async () => {
     agentsListMock.mockResolvedValue([makeAgent({ status: "running" })]);
     await renderRoster();

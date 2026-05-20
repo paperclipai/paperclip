@@ -1,6 +1,6 @@
 # LET-503 — Role-gating audit (ordinary user surfaces)
 
-Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → this resubmission's mock-API + copy-cleanup commit.
+Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → this resubmission's customer-path cleanup commit (kernel-link gating on `/eaos/runs`, friendly action labels, adapter humanization, missions provenance gating).
 
 Scope: every primary `/eaos/*` route the ordinary user can reach via the left rail or in-page CTAs. For each surface, this audit walks the rendered controls and confirms that no operator-/admin-only control is exposed.
 
@@ -33,7 +33,7 @@ Verdict: **PASS**.
 | Forbidden category | Found? | Notes |
 | --- | --- | --- |
 | Secrets / proxies / connection strings | No | Per-row name, title, capabilities text run through `redactSecretLikeText` before render. |
-| Raw provider config | No | `adapter` column shows only the typed `adapterType` value (e.g. `claude_local`), not adapter config or tokens. |
+| Raw provider config | No | The Runtime column displays a humanized adapter label via `humanizeAdapterType` (`claude_local` → `Claude Local`); raw enum strings like `CLAUDE_LOCAL` no longer reach the DOM. Status badges use `humanizeAgentStatus` (`pending_approval` → `Pending approval`) and the tooltip drops the `Backend status:` prefix. |
 | Deploy / restart / prod-migration / spend / live-vendor controls | No | No control beyond `Open →` (link to kernel agent detail). Pause / resume / approve / terminate explicitly remain in the kernel page (file comment §1). |
 | Debug / admin internals | No | No internal IDs, no debug toggles. Monetary budget is shown as USD (`$0` / `$X`), never as raw cents in a way that would expose internal numbers. |
 
@@ -68,7 +68,7 @@ Verdict: **PASS — escape hatch only**.
 | Secrets / proxies / connection strings | No | Row titles pass through redaction. |
 | Raw provider config | No | None. |
 | Deploy / restart / prod-migration / spend / live-vendor controls | No | The page explicitly states "No live action controls are rendered here". The `APPROVAL REQUIRED` chip is advisory only. `disableIssueQuicklook` is set on the kernel-issue link so a quicklook can't surface unexpected internals. |
-| Debug / admin internals | No | Only mission rows + truth/freshness labels. |
+| Debug / admin internals | No | The `BACKEND-BACKED` / `Backed` / `Derived` provenance chips and the `FRESHNESS · Unknown` chip are gated behind `useEaosViewerRole().isOperator` — they only render for instance admins or `owner`/`admin`/`operator` company members. Customer viewers see plain status chips, friendly state copy (`In progress`, `Awaiting reviewer or approval`, `No owner assigned yet`), and clean field labels (`Owner`, `Next step`, `Dependencies`). Raw `issue.assigneeAgentId` / `issue.assigneeUserId` / `issue.executionAgentNameKey` reasons were rewritten as `Assigned to an agent` etc. |
 
 Verdict: **PASS — escape hatch only** (`Open kernel issue →` link).
 
@@ -78,7 +78,7 @@ PASS. Reads `projectsApi.list` + `goalsApi.list`; no operator controls in the su
 
 ## `/eaos/runs` (`RunsTimelinePage`)
 
-PASS. Reads `activityApi.list`; renders activity rows. No restart / cancel / retry controls.
+PASS. Reads `activityApi.list`; renders activity rows. The per-row `Open in admin →` deep link is gated behind `useEaosViewerRole().isOperator` — customer viewers only see the `Open mission →` link. Raw activity action enums (`test_completed`, `comment_posted`, `document_updated`, `blocked_on_dependency`) are humanized via `humanizeActivityAction` before they reach the DOM, and the actor row no longer prints `agent · agent 00000000`-style debug ids (it shows just `Agent` / `User` / `System`).
 
 ## `/eaos/approvals` (`ApprovalsQueuePage`)
 

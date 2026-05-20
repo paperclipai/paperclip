@@ -43,19 +43,24 @@ These two changes are implemented by `useEaosViewerRole` (`ui/src/eaos/useEaosVi
 **9.4 / 10 average across the populated-operator set.** All P0 review blockers from 2026-05-20 are addressed:
 
 1. **Populated surfaces proven**: 42 anchor-hit captures in each of `populated-operator/` and `populated-customer/` cover agents list rows, org graph nodes/edges, missions board+list, runs activity, approvals, and the dashboard populated state.
-2. **Role-gating proven**: the parallel `populated-customer/` set captures the customer viewer at the same routes with the operator chrome gated off.
-3. **Builder validation/CTA**: Step 1 Name field is required with inline validation, `Next` is disabled with a visible reason, and `Create agent` on the final step shows the exact disabled reason next to it.
-4. **Copy polish**: `Sources and labels advanced` → `Sources and labels`; `run-time` → `when this agent runs` / `when this agent runs`; `Heartbeat / cron / routine entry-points` → `Run on a recurring schedule you define`.
+2. **Role-gating proven**: the parallel `populated-customer/` set captures the customer viewer at the same routes with the operator chrome gated off — including the per-row `Open in admin →` link on `/eaos/runs` and the `BACKEND-BACKED` / `Backed` / `Derived` / `Freshness · Unknown` provenance chips on `/eaos/missions`. Confirmed by `evidence/LET-503/customer-string-audit.json` (`findings: 0` over 9 routes).
+3. **Builder validation/CTA**: Step 1 Name field is required with inline validation, `Next` is disabled with a visible reason, and `Create agent` on the final step shows the exact disabled reason next to it. The disabled-reason text waits for the field to be touched, so a pristine pageload no longer shouts `Name is required`. The footer is sticky to the bottom of the main column so Back/Next stay visible at 720px viewport.
+4. **Copy polish**: `Sources and labels advanced` → `Sources and labels`; `run-time` → `when this agent runs`; `Heartbeat / cron / routine entry-points` → `Run on a recurring schedule you define`. `claude_local` → `Claude Local`; `pending_approval` → `Pending approval`; activity enums (`test_completed`, `comment_posted`, `document_updated`, `blocked_on_dependency`) → title-cased English; `Last heartbeat` column → `Last seen`; `Adapter` column → `Runtime`.
 
 ## What changed since the previous resubmission
 
-| Previously flagged (2026-05-20 design review) | Fix landed in this resubmission |
+| Previously flagged | Fix landed in this resubmission |
 | --- | --- |
-| All-empty fixtures could not prove populated agents list, org graph nodes, missions rows, or runs. | `--mode populated` fixture mode adds 6 agents (with status mix), 10 issues (status + priority mix), 3 projects, an org tree with root + 5 reports, 6 activity events, and 2 approvals — all backend-shaped and clearly synthetic. |
-| Operator chrome (`Kernel`, `Audit · n/a`, `Operator session`) leaked to the customer path. | `useEaosViewerRole` hook + `EaosTopBar` / `EaosPostureStrip` gating; `populated-customer/` evidence captures the customer view. |
-| Builder Step 1 allowed empty Name through Next; final `Create agent` was disabled with no visible reason. | Identity step shows required-field marker + inline error after first touch; `Next` is disabled until Name is filled; final `Create agent` shows `Add a name on Identity to enable.` next to the button. |
-| Copy: `Sources and labels (advanced)`, `at run-time`. | Updated to `Sources and labels`, `when this agent runs`. Also updated scheduled invocation row from `Heartbeat / cron / routine entry-points.` to `Run on a recurring schedule you define.` |
-| Evidence anchor and docs were stale. | README enumerates the full commit stack including this resubmission; the three capture modes are documented and re-runnable. |
+| `Open in Kernel/Admin →` link on every run card (customer-visible). | Per-row admin link is gated by `useEaosViewerRole().isOperator`; customers only see `Open mission →`. Confirmed by the new `populated-customer` capture + the customer-string audit. |
+| Raw activity enums on `/eaos/runs` (`TEST_COMPLETED`, `COMMENT_POSTED`, `DOCUMENT_UPDATED`, `BLOCKED_ON_DEPENDENCY`). | New `humanizeActivityAction` helper renders `Test completed`, `Comment posted`, `Document updated`, `Blocked on dependency`. Run-row badge is a rounded pill (not a debug dashed box). |
+| `agent · agent 00000000` debug-id suffix in the run-row actor line. | Removed; the actor line now reads `Agent` / `User` / `System` via `humanizeActorType`. |
+| `BACKEND-BACKED` / `Backed` / `Derived` / `FRESHNESS · UNKNOWN` chips on populated `/eaos/missions`. | Provenance chips are operator-gated via `useEaosViewerRole`; customers see only the primary state chip plus a `Stale` chip when applicable. The TruthChip now renders `Live data` / `Derived` in a muted tone instead of full BACKEND-BACKED colour for operators. |
+| Customer-visible `issue.assigneeAgentId` / `issue.assigneeUserId` / `issue.executionAgentNameKey` reasons on mission rows. | `resolveOwner` rewritten to emit `Assigned to a human teammate` / `Assigned to an agent` / `Picked up by a role-based agent` / `No owner assigned yet`. Field labels: `TREE` → `Dependencies`; `NEXT GATE` → `Next step`; `CURRENT OWNER` → `Owner`. `primaryStateReason` rewritten to drop `Backend status is …`. |
+| Raw `CLAUDE_LOCAL` adapter enum on `/eaos/agents`. | New `humanizeAdapterType` helper renders `Claude Local`. Column header renamed `Adapter` → `Runtime`. `Last heartbeat` → `Last seen`. Status badge tooltip drops the `Backend status:` prefix; status text uses `humanizeAgentStatus` (`pending_approval` → `Pending approval`). |
+| Builder Step 1 surfaced `Name is required` on a pristine pageload. | `nameTouched` is lifted into the parent so both the inline error and the footer disabled-reason wait for first touch. The button itself stays disabled while empty — only the explanation is delayed until touch. |
+| Builder footer (`Back` / `Next` / `Cancel`) could fall below the fold at 720px. | StepperFooter is now `sticky bottom-0` with backdrop blur, so Back/Next stay visible inside the main column. |
+| `Decide in Kernel/Admin →` / `Open decision in Kernel/Admin →` copy on `/eaos/approvals`. | Replaced with `Open to decide →` / `Open decision →`; secondary helper says `Approve / reject lives on the detail page.` instead of `No live action on this surface.` |
+| `Backend status: in_progress` tooltip on dashboard mission row chips. | Tooltip now uses the chip label itself. |
 
 ## Hard gates
 

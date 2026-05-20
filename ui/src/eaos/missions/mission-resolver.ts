@@ -134,7 +134,7 @@ function resolvePrimaryState(
   freshness: MissionFreshnessLabel,
 ): { state: MissionPrimaryState; reason: string } {
   if (issue.status === "cancelled") {
-    return { state: "cancelled", reason: "Backend status is cancelled" };
+    return { state: "cancelled", reason: "Cancelled" };
   }
   const blockerCount = issue.blockedBy?.length ?? 0;
   if (issue.status === "blocked" || blockerCount > 0) {
@@ -143,11 +143,11 @@ function resolvePrimaryState(
       reason:
         blockerCount > 0
           ? `Blocked by ${blockerCount} dependency issue${blockerCount === 1 ? "" : "s"}`
-          : "Backend status is blocked",
+          : "Waiting on an external unblock",
     };
   }
   if (issue.status === "in_review") {
-    return { state: "in-review", reason: "Backend status is in_review" };
+    return { state: "in-review", reason: "Awaiting reviewer or approval" };
   }
   if (issue.status === "done") {
     const hasEvidence =
@@ -155,22 +155,22 @@ function resolvePrimaryState(
       (issue.documentSummaries?.length ?? 0) > 0 ||
       (issue.workProducts?.length ?? 0) > 0;
     return hasEvidence
-      ? { state: "done-with-evidence", reason: "Backend status done with attached evidence" }
-      : { state: "done-evidence-incomplete", reason: "Backend status done; no evidence attached" };
+      ? { state: "done-with-evidence", reason: "Closed with evidence attached" }
+      : { state: "done-evidence-incomplete", reason: "Closed; no evidence attached yet" };
   }
   if (issue.status === "in_progress") {
-    return { state: "active", reason: "Backend status is in_progress" };
+    return { state: "active", reason: "In progress" };
   }
   if (issue.status === "todo" || issue.status === "backlog") {
     if (!issue.assigneeAgentId && !issue.assigneeUserId) {
-      return { state: "needs-next-owner", reason: "No assignee on a todo/backlog issue" };
+      return { state: "needs-next-owner", reason: "No owner assigned yet" };
     }
     return { state: "active", reason: "Assigned and queued" };
   }
   if (freshness === "Stale") {
-    return { state: "stale", reason: "No backend activity within stale threshold" };
+    return { state: "stale", reason: "No recent activity" };
   }
-  return { state: "active", reason: `Backend status is ${issue.status}` };
+  return { state: "active", reason: "In progress" };
 }
 
 function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
@@ -178,27 +178,27 @@ function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
     return {
       currentLabel: "User assignee",
       currentTruth: "Backend-backed",
-      currentReason: "issue.assigneeUserId",
+      currentReason: "Assigned to a human teammate",
     };
   }
   if (issue.assigneeAgentId) {
     return {
       currentLabel: "Agent assignee",
       currentTruth: "Backend-backed",
-      currentReason: "issue.assigneeAgentId",
+      currentReason: "Assigned to an agent",
     };
   }
   if (issue.executionAgentNameKey) {
     return {
       currentLabel: "Executing agent role",
       currentTruth: "Backend-backed",
-      currentReason: "issue.executionAgentNameKey",
+      currentReason: "Picked up by a role-based agent",
     };
   }
   return {
     currentLabel: "No current owner",
     currentTruth: "Backend-derived",
-    currentReason: "No assignee or execution lock on issue",
+    currentReason: "No owner assigned yet",
   };
 }
 

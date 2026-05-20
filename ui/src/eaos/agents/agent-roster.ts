@@ -190,6 +190,47 @@ function compareRow(a: AgentRosterRow, b: AgentRosterRow): number {
   return a.name.localeCompare(b.name);
 }
 
+// LET-503 — Customer-facing label helpers for adapter/status enums.
+// The raw `agent.adapterType` and `agent.status` values are machine
+// identifiers like `claude_local` or `pending_approval`. Customer screens
+// must not surface those raw enums; they need readable English.
+
+const ADAPTER_OVERRIDES: Record<string, string> = {
+  claude_local: "Claude Local",
+  claude_remote: "Claude Remote",
+  hermes_local: "Hermes Local",
+  droid_local: "Droid Local",
+  codex_local: "Codex Local",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+};
+
+export function humanizeAdapterType(adapterType: string | null | undefined): string {
+  if (!adapterType) return "Local runtime";
+  const direct = ADAPTER_OVERRIDES[adapterType.toLowerCase()];
+  if (direct) return direct;
+  // Snake/kebab → Title Case: "claude_local" -> "Claude Local".
+  return adapterType
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(" ");
+}
+
+const STATUS_LABELS: Record<AgentStatus, string> = {
+  active: "Active",
+  idle: "Idle",
+  running: "Running",
+  paused: "Paused",
+  error: "Error",
+  pending_approval: "Pending approval",
+  terminated: "Terminated",
+};
+
+export function humanizeAgentStatus(status: AgentStatus): string {
+  return STATUS_LABELS[status] ?? status.replace(/_/g, " ");
+}
+
 // Test-only helpers — exported so the vitest suite can lock the rollups
 // without depending on JSX.
 export const AGENT_ROSTER_TEST_HELPERS = {

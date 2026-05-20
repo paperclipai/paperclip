@@ -1,6 +1,6 @@
 {
   "schema": "eaos-screenshots/v1",
-  "generatedAt": "2026-05-20T02:58:58.094Z",
+  "generatedAt": "2026-05-20T03:50:20.609Z",
   "base": "http://localhost:5173",
   "theme": "light",
   "cookieApplied": false,
@@ -8,7 +8,7 @@
   "fixtureMode": "populated",
   "viewerRole": "customer-member",
   "seededCompanyId": "00000000-0000-0000-0000-000000000eaa",
-  "anchorTimeoutMs": 8000,
+  "anchorTimeoutMs": 10000,
   "captures": [
     {
       "viewport": "1440",

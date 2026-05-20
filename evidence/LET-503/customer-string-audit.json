@@ -1,0 +1,74 @@
+{
+  "base": "http://localhost:5173",
+  "companyId": "00000000-0000-0000-0000-000000000eaa",
+  "generatedAt": "2026-05-20T04:04:38.896Z",
+  "viewer": "customer-member",
+  "mode": "populated",
+  "forbidden": [
+    "Kernel/Admin",
+    "Kernel / Admin",
+    "BACKEND-BACKED",
+    "BACKEND-DERIVED",
+    "FRESHNESS · UNKNOWN",
+    "Backend status:",
+    "Backend status is",
+    "issue.assigneeAgentId",
+    "issue.assigneeUserId",
+    "issue.executionAgentNameKey",
+    "CLAUDE_LOCAL",
+    "TEST_COMPLETED",
+    "COMMENT_POSTED",
+    "DOCUMENT_UPDATED",
+    "BLOCKED_ON_DEPENDENCY",
+    "pending_approval"
+  ],
+  "routes": [
+    {
+      "route": "eaos-dashboard",
+      "ok": true,
+      "bytes": 445947
+    },
+    {
+      "route": "eaos-missions",
+      "ok": true,
+      "bytes": 464839
+    },
+    {
+      "route": "eaos-agents",
+      "ok": true,
+      "bytes": 445728
+    },
+    {
+      "route": "eaos-agents-new",
+      "ok": true,
+      "bytes": 450044
+    },
+    {
+      "route": "eaos-org",
+      "ok": true,
+      "bytes": 443433
+    },
+    {
+      "route": "eaos-projects",
+      "ok": true,
+      "bytes": 436591
+    },
+    {
+      "route": "eaos-runs",
+      "ok": true,
+      "bytes": 449001
+    },
+    {
+      "route": "eaos-approvals",
+      "ok": true,
+      "bytes": 441574
+    },
+    {
+      "route": "eaos-knowledge",
+      "ok": true,
+      "bytes": 435444
+    }
+  ],
+  "findings": [],
+  "pass": true
+}

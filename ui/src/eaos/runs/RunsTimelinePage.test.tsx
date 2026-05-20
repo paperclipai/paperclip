@@ -30,6 +30,12 @@ vi.mock("@/api/activity", () => ({
   },
 }));
 
+const viewerRoleMock = vi.fn<() => { isOperator: boolean; isInstanceAdmin: boolean; membershipRole: string | null; loading: boolean }>();
+
+vi.mock("../useEaosViewerRole", () => ({
+  useEaosViewerRole: () => viewerRoleMock(),
+}));
+
 import { RunsTimelinePage } from "./RunsTimelinePage";
 
 function makeEvent(overrides: Partial<ActivityEvent> & { id: string }): ActivityEvent {
@@ -53,6 +59,10 @@ let queryClient: QueryClient;
 
 beforeEach(() => {
   activityListMock.mockReset();
+  viewerRoleMock.mockReset();
+  // Default to operator viewer so existing assertions about the Kernel
+  // link still hold. Customer-gating is asserted in a dedicated test.
+  viewerRoleMock.mockReturnValue({ isOperator: true, isInstanceAdmin: true, membershipRole: "owner", loading: false });
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
@@ -196,6 +206,39 @@ describe("RunsTimelinePage (LET-484 working-product slice)", () => {
       expect(container?.querySelector('[data-testid="eaos-runs-row"]')).not.toBeNull();
     });
     expect(container?.querySelectorAll("button").length).toBe(0);
+  });
+
+  it("hides the admin escape hatch and renders only human-readable action labels for customer viewers", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    activityListMock.mockResolvedValue([
+      makeEvent({
+        id: "1",
+        runId: "run-c",
+        agentId: "agent-eng",
+        entityType: "issue",
+        entityId: "issue-50",
+        action: "test_completed",
+        createdAt: new Date("2026-05-19T14:00:00Z"),
+        details: { identifier: "LET-50", title: "Run regression" },
+      }),
+    ]);
+    await renderRuns();
+    await waitForMicrotaskAssertion(() => {
+      expect(container?.querySelector('[data-testid="eaos-runs-row"]')).not.toBeNull();
+    });
+    // Customer-path: no admin/kernel escape on rows.
+    expect(container?.querySelector('[data-testid="eaos-runs-row-kernel-link"]')).toBeNull();
+    const html = container?.innerHTML ?? "";
+    // No raw enum surfaces in customer view.
+    expect(html).not.toContain("Kernel/Admin");
+    expect(html).not.toContain("TEST_COMPLETED");
+    expect(html).not.toContain("test_completed");
+    // Humanized label is present.
+    const actionEl = container?.querySelector('[data-testid="eaos-runs-row-action"]');
+    expect(actionEl?.textContent).toContain("Test completed");
+    // Actor row does not expose raw debug ids like `agent · agent 00000000`.
+    const actor = container?.querySelector('[data-testid="eaos-runs-row-actor"]');
+    expect(actor?.textContent ?? "").not.toMatch(/agent \w{6,}/i);
   });
 
   it("redacts secret-looking text in row titles", async () => {

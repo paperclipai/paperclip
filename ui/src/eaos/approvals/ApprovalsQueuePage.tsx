@@ -293,9 +293,9 @@ function ApprovalRow({ row, referenceNow }: { row: ApprovalQueueRow; referenceNo
           className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-approvals-row-kernel-link"
         >
-          {isOpen ? "Decide in Kernel/Admin →" : "Open decision in Kernel/Admin →"}
+          {isOpen ? "Open to decide →" : "Open decision →"}
         </Link>
-        <span className="text-muted-foreground">No live action on this surface.</span>
+        <span className="text-muted-foreground">Approve / reject lives on the detail page.</span>
       </div>
     </li>
   );

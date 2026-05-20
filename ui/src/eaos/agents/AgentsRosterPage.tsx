@@ -14,6 +14,8 @@ import { Link } from "@/lib/router";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   buildAgentRosterRow,
+  humanizeAdapterType,
+  humanizeAgentStatus,
   summarizeAgents,
   type AgentRosterCounts,
   type AgentRosterRow,
@@ -193,8 +195,8 @@ function AgentTable({
             <th scope="col" className="px-3 py-2 font-medium">Agent</th>
             <th scope="col" className="px-3 py-2 font-medium">Role</th>
             <th scope="col" className="px-3 py-2 font-medium">Status</th>
-            <th scope="col" className="px-3 py-2 font-medium">Adapter</th>
-            <th scope="col" className="px-3 py-2 font-medium">Last heartbeat</th>
+            <th scope="col" className="px-3 py-2 font-medium">Runtime</th>
+            <th scope="col" className="px-3 py-2 font-medium">Last seen</th>
             <th scope="col" className="px-3 py-2 font-medium">Budget</th>
             <th scope="col" className="px-3 py-2 font-medium text-right"><span className="sr-only">Open</span></th>
           </tr>
@@ -237,8 +239,11 @@ function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Da
         <StatusBadge row={row} />
       </td>
       <td className="px-3 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">
-          {row.adapterType}
+        <span
+          className="text-[12px] text-muted-foreground"
+          data-testid="eaos-agents-row-adapter"
+        >
+          {humanizeAdapterType(row.adapterType)}
         </span>
       </td>
       <td className="px-3 py-2 text-muted-foreground tabular-nums" data-testid="eaos-agents-row-heartbeat">
@@ -274,12 +279,12 @@ function StatusBadge({ row }: { row: AgentRosterRow }) {
   return (
     <span
       className={
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize " +
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium " +
         tone
       }
       title={statusTitle(row)}
     >
-      {row.status.replace(/_/g, " ")}
+      {humanizeAgentStatus(row.status)}
       {row.status === "paused" && row.pauseReason ? (
         <ShieldAlert
           aria-hidden="true"
@@ -292,9 +297,9 @@ function StatusBadge({ row }: { row: AgentRosterRow }) {
 }
 
 function statusTitle(row: AgentRosterRow): string {
-  const base = `Backend status: ${row.status}.`;
+  const base = humanizeAgentStatus(row.status);
   if (row.status === "paused" && row.pauseReason) {
-    return `${base} Pause reason: ${row.pauseReason}.`;
+    return `${base} — paused: ${row.pauseReason}.`;
   }
   return base;
 }

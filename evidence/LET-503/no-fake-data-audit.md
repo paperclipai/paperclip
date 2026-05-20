@@ -1,6 +1,6 @@
 # LET-503 — No-fake-data audit
 
-Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → this resubmission's mock-API + copy-cleanup commit.
+Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → `ce877d21` → `d3ffaedd` → this resubmission's customer-friendly copy + role-gated provenance cleanup commit.
 
 Each row walks the on-screen counts/cards/rows for a route and classifies the source. Verdict legend:
 
@@ -29,9 +29,9 @@ Each row walks the on-screen counts/cards/rows for a route and classifies the so
 | Element | Source | Verdict |
 | --- | --- | --- |
 | Summary strip (Total/Active/Running/Idle/Paused/Error/Pending/Terminated) | `summarizeAgents(agentsQuery.data)` over `agentsApi.list` | PASS — derived |
-| Per-row Name, Title, Role, Status, Adapter, Heartbeat, Budget | `buildAgentRosterRow(agent)` directly off `agentsApi.list` row | PASS — real |
-| Status badge title | `statusTitle(row)` (`Backend status: …` text) | PASS — real |
-| `Last heartbeat` `Never` text | Renders only when `lastHeartbeatAt` is `null` | PASS — truthful gap |
+| Per-row Name, Title, Role, Status, Runtime (humanized adapter), Last seen, Budget | `buildAgentRosterRow(agent)` directly off `agentsApi.list` row; raw enums humanized via `humanizeAdapterType` + `humanizeAgentStatus` before render | PASS — real |
+| Status badge title | `statusTitle(row)` (humanized status; "paused — paused: <reason>" when applicable) | PASS — real |
+| `Last seen` `Never` text | Renders only when `lastHeartbeatAt` is `null` | PASS — truthful gap |
 | Empty / Loading / Error / NoCompany states | Discrete components; no count rendered | PASS — truthful gap |
 
 ## `/eaos/agents/new` — Manual builder (`AgentBuilderPage`)
@@ -67,18 +67,28 @@ Each row walks the on-screen counts/cards/rows for a route and classifies the so
 
 | Element | Source | Verdict |
 | --- | --- | --- |
-| Posture chip `BACKEND-BACKED` vs `PREVIEW · Not connected` | Reflects `dataConnected` derived from React Query state | PASS — truthful |
 | Summary strip (Total/Active/Blocked/InReview/DoneWithEvidence/Stale) | `summarizeMissionList(rows)` over canonical Issue records | PASS — derived |
-| Mission row cards | `resolveMissionRow(issue)` (LET-424 resolver) | PASS — derived |
-| Per-row Truth chip `Backend-backed` / `Backend-derived` | Explicit per-field truth labels | PASS — truthful labelling |
-| `Open kernel issue →` link | Generated from `row.kernelRoute`; no inferred URLs | PASS — real |
+| Mission row cards | `resolveMissionRow(issue)` (LET-424 resolver) — primary state reasons now render as customer-friendly copy (`In progress`, `Awaiting reviewer or approval`, `No owner assigned yet`) instead of `Backend status is …`; owner reasons no longer surface raw field names like `issue.assigneeAgentId`. | PASS — derived |
+| Per-row `Live data` / `Derived` provenance chip | Operator-gated via `useEaosViewerRole().isOperator`; never rendered to customer-class viewers. Tone is muted (border-only) instead of full BACKEND-BACKED colour. | PASS — truthful labelling (operator-only) |
+| Per-row Freshness chip | Operator-gated; for customers the chip only appears when `freshness === "Stale"`. Label is plain English (`Fresh` / `Aging` / `Stale` / `Unknown activity`) — no `Freshness · UNKNOWN` jargon. | PASS — truthful labelling (operator + stale-customer) |
+| Per-row field labels (`Owner` / `Evidence` / `Next step` / `Dependencies`) | Static strings; the inline `Backed`/`Derived` corner marks are operator-gated by `showTruth`. | PASS — truthful labelling |
+| `Open details →` link | Generated from `row.kernelRoute`; no inferred URLs | PASS — real |
 | `APPROVAL REQUIRED` chip | Renders only when `row.riskSummary.liveActionMentioned` is `true` | PASS — derived |
 
-> Follow-up flagged in handoff: this surface retains the older LET-424 dual-chip posture row instead of the leaner LET-502 §3 single chip.
+## `/eaos/runs` — Run timeline (`RunsTimelinePage`)
 
-## `/eaos/projects`, `/eaos/runs`, `/eaos/approvals`, `/eaos/knowledge`, `/eaos/admin`, `/eaos/capabilities`, `/eaos/blueprints`
+| Element | Source | Verdict |
+| --- | --- | --- |
+| Summary strip (Runs/Events/Agents/Missions/Last event) | `summarizeRunTimeline(events)` over real activity rows | PASS — derived |
+| Per-row action badge | `humanizeActivityAction(row.latestAction)` translates raw enums (`test_completed`, `comment_posted`, `document_updated`, `blocked_on_dependency`) into title-cased English; no raw enum reaches the DOM | PASS — derived |
+| Per-row actor line | `humanizeActorType(row.latestActorType)` (`Agent` / `User` / `System`); the legacy `agent · agent 00000000` debug-id suffix has been removed entirely | PASS — derived |
+| Per-row identifier badge | `row.issueIdentifier` from activity `details.identifier` only | PASS — real |
+| `Open mission →` link | Routes to `/eaos/missions/:identifier` (or row.issueId) | PASS — real |
+| `Open in admin →` link | Operator-gated via `useEaosViewerRole().isOperator`; never rendered to customer-class viewers | PASS — escape hatch only |
 
-All rows on these surfaces come from typed API clients (`projectsApi.list`, `goalsApi.list`, `activityApi.list`, `approvalsApi.list`, `companySkillsApi.list`, `accessApi.listMembers`, `agentsApi.list`, `blueprintsApi.list/get`). No tile/row is constructed from a constant. Empty / loading / error states are explicit components rendered in lieu of counts. Verdict: PASS — real.
+## `/eaos/projects`, `/eaos/approvals`, `/eaos/knowledge`, `/eaos/admin`, `/eaos/capabilities`, `/eaos/blueprints`
+
+All rows on these surfaces come from typed API clients (`projectsApi.list`, `goalsApi.list`, `approvalsApi.list`, `companySkillsApi.list`, `accessApi.listMembers`, `agentsApi.list`, `blueprintsApi.list/get`). No tile/row is constructed from a constant. Empty / loading / error states are explicit components rendered in lieu of counts. Verdict: PASS — real.
 
 ## Static guards in the shell
 

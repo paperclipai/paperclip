@@ -30,6 +30,12 @@ vi.mock("@/api/issues", () => ({
   },
 }));
 
+const viewerRoleMock = vi.fn<() => { isOperator: boolean; isInstanceAdmin: boolean; membershipRole: string | null; loading: boolean }>();
+
+vi.mock("../useEaosViewerRole", () => ({
+  useEaosViewerRole: () => viewerRoleMock(),
+}));
+
 // IssueLinkQuicklook pulls in heavy popover machinery. Stub it to a plain
 // anchor so we can still inspect the kernel backlink href without dragging in
 // the quicklook query tree.
@@ -133,6 +139,10 @@ async function render() {
 
 beforeEach(() => {
   listMock.mockReset();
+  viewerRoleMock.mockReset();
+  // Default to customer (non-operator) so the existing "no posture chip"
+  // assertions reflect the strictest viewer.
+  viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
 });
 
 afterEach(() => {
@@ -158,6 +168,51 @@ describe("MissionsListPage", () => {
     expect(html).not.toContain("BACKEND-BACKED");
     expect(html).not.toContain("LET-409");
     expect(html).not.toContain("task-object");
+  });
+
+  it("hides BACKEND-BACKED/derived chips and raw field-name reasons for customer viewers when rows are populated", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    listMock.mockResolvedValueOnce([
+      makeIssue({
+        id: "active-pop",
+        identifier: "LET-A",
+        status: "in_progress",
+        title: "Active populated mission",
+        assigneeAgentId: "agent-1",
+      }),
+    ]);
+    await render();
+
+    const html = container?.innerHTML ?? "";
+    expect(html).not.toContain("BACKEND-BACKED");
+    expect(html).not.toContain("BACKED");
+    expect(html).not.toContain("DERIVED");
+    expect(html).not.toContain("FRESHNESS");
+    expect(html).not.toContain("Backend status");
+    expect(html).not.toContain("issue.assigneeAgentId");
+    expect(html).not.toContain("issue.assigneeUserId");
+    expect(html).not.toContain("issue.executionAgentNameKey");
+    expect(html).not.toContain("NEXT GATE");
+    // Customer-friendly labels are present.
+    expect(html).toContain("Next step");
+    expect(html).toContain("Dependencies");
+  });
+
+  it("surfaces operator provenance chips when viewer is operator-class", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: true, isInstanceAdmin: true, membershipRole: "owner", loading: false });
+    listMock.mockResolvedValueOnce([
+      makeIssue({
+        id: "active-ops",
+        identifier: "LET-OPS",
+        status: "in_progress",
+        title: "Operator-visible mission",
+        assigneeAgentId: "agent-1",
+      }),
+    ]);
+    await render();
+    expect(
+      container?.querySelector('[data-testid="eaos-missions-truth-backend-backed"]'),
+    ).not.toBeNull();
   });
 
   it("shows the empty state when the backend returns zero issues", async () => {

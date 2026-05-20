@@ -19,8 +19,9 @@ import { activityApi } from "@/api/activity";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
-import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
+import { useEaosViewerRole } from "../useEaosViewerRole";
+import { humanizeActivityAction, humanizeActorType } from "./activity-labels";
 import {
   collapseEventsToRuns,
   summarizeRunTimeline,
@@ -36,6 +37,7 @@ export interface RunsTimelinePageProps {
 
 export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { isOperator } = useEaosViewerRole();
 
   const activityQuery = useQuery({
     queryKey: selectedCompanyId
@@ -88,7 +90,7 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
       ) : (
         <>
           <SummaryStrip counts={counts} referenceNow={referenceNow} />
-          <RunsTable rows={rows} referenceNow={referenceNow} />
+          <RunsTable rows={rows} referenceNow={referenceNow} isOperator={isOperator} />
         </>
       )}
     </section>
@@ -136,8 +138,7 @@ function ErrorState({ message }: { message: string }) {
       <p className="font-medium">Could not load runs.</p>
       <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
       <p className="mt-1 text-xs">
-        Rows and counts are hidden because no backend-backed timeline is available. Retry by
-        refreshing or use the Kernel/Admin activity log.
+        Refresh to try again.
       </p>
     </div>
   );
@@ -192,7 +193,15 @@ function SummaryStrip({
   );
 }
 
-function RunsTable({ rows, referenceNow }: { rows: readonly RunTimelineRow[]; referenceNow: Date }) {
+function RunsTable({
+  rows,
+  referenceNow,
+  isOperator,
+}: {
+  rows: readonly RunTimelineRow[];
+  referenceNow: Date;
+  isOperator: boolean;
+}) {
   return (
     <section
       aria-label="Recent runs"
@@ -210,15 +219,29 @@ function RunsTable({ rows, referenceNow }: { rows: readonly RunTimelineRow[]; re
         data-testid="eaos-runs-rows"
       >
         {rows.map((row) => (
-          <RunRow key={row.runId} row={row} referenceNow={referenceNow} />
+          <RunRow
+            key={row.runId}
+            row={row}
+            referenceNow={referenceNow}
+            isOperator={isOperator}
+          />
         ))}
       </ul>
     </section>
   );
 }
 
-function RunRow({ row, referenceNow }: { row: RunTimelineRow; referenceNow: Date }) {
+function RunRow({
+  row,
+  referenceNow,
+  isOperator,
+}: {
+  row: RunTimelineRow;
+  referenceNow: Date;
+  isOperator: boolean;
+}) {
   const missionRef = row.issueIdentifier ?? row.issueId;
+  const actorLabel = humanizeActorType(row.latestActorType);
   return (
     <li
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
@@ -227,15 +250,15 @@ function RunRow({ row, referenceNow }: { row: RunTimelineRow; referenceNow: Date
     >
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
           data-testid="eaos-runs-row-action"
         >
-          {row.latestAction}
+          {humanizeActivityAction(row.latestAction)}
         </span>
         {row.issueIdentifier ? (
           <span
             data-testid="eaos-runs-row-identifier"
-            className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+            className="rounded-full border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
           >
             {row.issueIdentifier}
           </span>
@@ -245,11 +268,10 @@ function RunRow({ row, referenceNow }: { row: RunTimelineRow; referenceNow: Date
         <ActivityIcon aria-hidden="true" className="mt-0.5 h-4 w-4 text-foreground" />
         <div className="flex min-w-0 flex-1 flex-col">
           <p className="truncate text-sm font-medium text-foreground" data-testid="eaos-runs-row-title">
-            {redactSecretLikeText(row.issueTitle ?? `Run ${shortRunId(row.runId)}`)}
+            {redactSecretLikeText(row.issueTitle ?? `Recent run`)}
           </p>
           <p className="text-xs text-muted-foreground" data-testid="eaos-runs-row-actor">
-            {row.latestActorType}
-            {row.agentId ? <> · agent {shortAgentId(row.agentId)}</> : null}
+            {actorLabel}
           </p>
         </div>
       </div>
@@ -271,29 +293,21 @@ function RunRow({ row, referenceNow }: { row: RunTimelineRow; referenceNow: Date
             data-testid="eaos-runs-row-mission-link"
           >
             <History aria-hidden="true" className="mr-1 inline h-3 w-3" />
-            Open mission detail →
+            Open mission →
           </Link>
         ) : null}
-        {row.issueId ? (
+        {isOperator && row.issueId ? (
           <Link
             to={`/issues/${row.issueId}`}
-            className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className="font-medium text-muted-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             data-testid="eaos-runs-row-kernel-link"
           >
-            Open in Kernel/Admin →
+            Open in admin →
           </Link>
         ) : null}
       </div>
     </li>
   );
-}
-
-function shortRunId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id;
-}
-
-function shortAgentId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id;
 }
 
 function relativeOrNever(when: Date | null, now: Date): string {

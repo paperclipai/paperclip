@@ -405,7 +405,7 @@ function ActivityRow({
           "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide " +
           chip.tone
         }
-        title={`Backend status: ${issue.status}`}
+        title={chip.label}
       >
         {chip.label}
       </span>

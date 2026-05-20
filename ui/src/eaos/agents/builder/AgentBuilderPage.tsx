@@ -62,6 +62,11 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
   );
   const [state, setState] = useState<AgentBuilderState>(DEFAULT_AGENT_BUILDER_STATE);
   const [formError, setFormError] = useState<string | null>(null);
+  // Lifted "have we touched Name yet" flag — keeps the disabled-reason
+  // and red inline error from shouting on a pristine pageload. Flips to
+  // true on first edit/blur AND once we've already advanced past
+  // Identity (since by then the user has either filled it or come back).
+  const [nameTouched, setNameTouched] = useState(false);
 
   // Skills query — real backend data when a company is selected.
   const skillsQuery = useQuery({
@@ -101,24 +106,42 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
   // must finish each step's required fields before advancing — empty
   // Name on Identity should not silently let them walk to the end and
   // then encounter a disabled Create button with no explanation.
+  // The footer reason waits for `nameTouched` so a pristine pageload
+  // does not start out shouting "Name is required" at the user.
   const stepBlockedReason: string | null = (() => {
     switch (currentStep) {
       case "identity":
-        return summary.nameError ? summary.nameError : null;
+        return summary.nameError && nameTouched ? summary.nameError : null;
       case "model":
         return summary.modelError ? summary.modelError : null;
       default:
         return null;
     }
   })();
-  const canAdvance = stepBlockedReason === null;
+  // The button itself stays disabled until the field is filled — only
+  // the explanatory reason waits for touch.
+  const canAdvance = (() => {
+    switch (currentStep) {
+      case "identity":
+        return !summary.nameError;
+      case "model":
+        return !summary.modelError;
+      default:
+        return true;
+    }
+  })();
 
   function patch(next: Partial<AgentBuilderState>) {
     setState((prev) => ({ ...prev, ...next }));
   }
 
+  function markNameTouched() {
+    if (!nameTouched) setNameTouched(true);
+  }
+
   function goNext() {
     if (finalStep || !canAdvance) return;
+    if (currentStep === "identity") markNameTouched();
     setCurrentStep((s) => nextStep(s));
   }
 
@@ -194,6 +217,8 @@ export function AgentBuilderPage({ initialStep }: AgentBuilderPageProps = {}) {
               patch={patch}
               skills={availableSkills}
               skillsLoading={Boolean(selectedCompanyId) && skillsQuery.isLoading}
+              nameTouched={nameTouched}
+              onMarkNameTouched={markNameTouched}
             />
             {formError ? (
               <div
@@ -303,7 +328,7 @@ function StepperFooter({
   return (
     <div
       data-testid="eaos-agent-builder-footer"
-      className="mt-6 flex flex-col gap-2 border-t border-border pt-4"
+      className="sticky bottom-0 z-10 mt-6 flex flex-col gap-2 border-t border-border bg-background/95 pt-4 pb-2 backdrop-blur supports-[backdrop-filter]:bg-background/80"
     >
       {buttonReason ? (
         <p
@@ -461,16 +486,27 @@ function StepPanel({
   patch,
   skills,
   skillsLoading,
+  nameTouched,
+  onMarkNameTouched,
 }: {
   step: AgentBuilderStepId;
   state: AgentBuilderState;
   patch: (next: Partial<AgentBuilderState>) => void;
   skills: ReadonlyArray<{ id: string; key: string; name: string; description: string | null }>;
   skillsLoading: boolean;
+  nameTouched: boolean;
+  onMarkNameTouched: () => void;
 }) {
   switch (step) {
     case "identity":
-      return <IdentityStep state={state} patch={patch} />;
+      return (
+        <IdentityStep
+          state={state}
+          patch={patch}
+          nameTouched={nameTouched}
+          onMarkNameTouched={onMarkNameTouched}
+        />
+      );
     case "model":
       return <ModelStep state={state} patch={patch} />;
     case "invocations":
@@ -523,15 +559,16 @@ function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?
 function IdentityStep({
   state,
   patch,
+  nameTouched,
+  onMarkNameTouched,
 }: {
   state: AgentBuilderState;
   patch: (next: Partial<AgentBuilderState>) => void;
+  nameTouched: boolean;
+  onMarkNameTouched: () => void;
 }) {
-  // Track whether the user has interacted with the Name field so we
-  // don't shout `Name is required` on a pristine pageload. Once
-  // touched, the inline error stays sticky on empty so clearing a
-  // previously-typed name still surfaces the validation message.
-  const [nameTouched, setNameTouched] = useState(state.name.length > 0);
+  // `nameTouched` is lifted into the parent so the footer disabled-
+  // reason and the inline error both stay quiet on a pristine pageload.
   const nameMissing = state.name.trim().length === 0;
   const showNameError = nameTouched && nameMissing;
   return (
@@ -551,9 +588,9 @@ function IdentityStep({
           value={state.name}
           onChange={(event) => {
             patch({ name: event.target.value });
-            if (!nameTouched) setNameTouched(true);
+            onMarkNameTouched();
           }}
-          onBlur={() => setNameTouched(true)}
+          onBlur={onMarkNameTouched}
           className={
             "w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring "
             + (showNameError ? "border-red-500" : "border-border")
