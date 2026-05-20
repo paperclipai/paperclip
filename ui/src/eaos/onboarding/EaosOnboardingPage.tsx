@@ -24,13 +24,14 @@
 // "Connect later" affordance.
 
 import { useMemo, useState, type FormEvent } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, MessageSquare, Plug, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
 import { ApiError } from "@/api/client";
+import { eaosOnboardingApi, type SlackInstallPreviewResponse } from "@/api/eaosOnboarding";
 import { queryKeys } from "@/lib/queryKeys";
-import { useNavigate } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { EaosPageHeader } from "../EaosPageHeader";
 import { redactSecretLikeText } from "../secret-redact";
 
@@ -55,7 +56,7 @@ function deriveAssistantDefault(companyName: string): string {
 }
 
 export function EaosOnboardingPage() {
-  const { createCompany, companies } = useCompany();
+  const { createCompany, companies, selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<FormState>({
@@ -127,6 +128,7 @@ export function EaosOnboardingPage() {
           <NextStepsPanel
             assistantName={effectiveAssistantName}
             onContinue={goToDashboard}
+            companyId={selectedCompanyId}
           />
         )}
       </div>
@@ -272,7 +274,7 @@ interface NextStepCard {
   readonly title: string;
   readonly description: string;
   readonly icon: typeof MessageSquare;
-  readonly status: "pending-backend" | "queued-stub";
+  readonly status: "pending-backend" | "queued-stub" | "preview-ready";
   readonly ctaLabel: string;
   readonly testId: string;
 }
@@ -280,9 +282,11 @@ interface NextStepCard {
 function NextStepsPanel({
   assistantName,
   onContinue,
+  companyId,
 }: {
   assistantName: string;
   onContinue: () => void;
+  companyId: string | null;
 }) {
   const cards = useMemo<readonly NextStepCard[]>(
     () => [
@@ -290,10 +294,10 @@ function NextStepsPanel({
         id: "slack-connect",
         title: "Connect Slack",
         description:
-          "Give your assistant a place to listen and respond. We’ll use a safe install preview — no raw tokens enter the UI; the wiring lands behind an approval card.",
+          "Give your assistant a place to listen and respond. We’ll run a safe install preview — no raw tokens enter the UI; the install is gated behind the canonical approval card.",
         icon: MessageSquare,
-        status: "pending-backend",
-        ctaLabel: "Connect later",
+        status: "preview-ready",
+        ctaLabel: "Preview Slack install",
         testId: "eaos-onboarding-next-step-slack",
       },
       {
@@ -360,22 +364,157 @@ function NextStepsPanel({
           </Button>
         </header>
         <ul className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          {cards.map((card) => (
-            <NextStepCardItem key={card.id} card={card} />
-          ))}
+          {cards.map((card) =>
+            card.id === "slack-connect" ? (
+              <SlackConnectCard key={card.id} card={card} companyId={companyId} />
+            ) : (
+              <NextStepCardItem key={card.id} card={card} />
+            ),
+          )}
         </ul>
         <p
           className="rounded-md border border-dashed border-border bg-background p-3 text-[11px] text-muted-foreground"
           data-testid="eaos-onboarding-backend-gap"
         >
           <span className="font-medium text-foreground">Backend gap:</span>{" "}
-          Live Slack/MCP install paths and the auto-created &quot;Personal CEO
-          recommendations&quot; mission are tracked as follow-ups. Until they
-          land each card stays preview-only with no destructive external side
-          effects.
+          Slack runs a fail-closed safe-install preview through the canonical
+          approval card. MCP picker and the auto-created &quot;Personal CEO
+          recommendations&quot; mission are tracked as follow-ups; each card
+          stays preview-only with no destructive external side effects.
         </p>
       </section>
     </div>
+  );
+}
+
+function SlackConnectCard({
+  card,
+  companyId,
+}: {
+  card: NextStepCard;
+  companyId: string | null;
+}) {
+  const Icon = card.icon;
+  const [preview, setPreview] = useState<SlackInstallPreviewResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const previewMutation = useMutation({
+    mutationFn: async (cid: string) => eaosOnboardingApi.slackInstallPreview(cid),
+    onSuccess: (data) => {
+      setPreview(data);
+      setError(null);
+    },
+    onError: (err: unknown) => {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not load Slack install preview.";
+      setError(redactSecretLikeText(message));
+    },
+  });
+
+  const handlePreview = () => {
+    if (!companyId) return;
+    previewMutation.mutate(companyId);
+  };
+
+  const slackConnected = Boolean(preview);
+
+  return (
+    <li
+      className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
+      data-testid={card.testId}
+      data-eaos-onboarding-card-status={slackConnected ? "preview-ready" : card.status}
+      data-eaos-onboarding-slack-connected={slackConnected ? "true" : "false"}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <p className="text-sm font-medium text-foreground">{card.title}</p>
+        </div>
+        {slackConnected ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-green-900 dark:border-green-700 dark:bg-green-950 dark:text-green-100"
+            data-testid="eaos-onboarding-next-step-slack-pill"
+          >
+            <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+            Slack connected
+          </span>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">{card.description}</p>
+
+      {preview ? (
+        <div
+          className="rounded-md border border-dashed border-border bg-background p-2 text-[11px] text-muted-foreground"
+          data-testid="eaos-onboarding-next-step-slack-preview"
+        >
+          <p className="font-medium text-foreground">
+            {redactSecretLikeText(preview.preview.displayName)} preview
+          </p>
+          <p className="mt-0.5">{redactSecretLikeText(preview.preview.summary)}</p>
+          <p className="mt-1">
+            <span className="font-medium text-foreground">Scopes:</span>{" "}
+            {preview.preview.scopeSummary.join(", ")}
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Named secrets:</span>{" "}
+            {preview.preview.requiredSecretNames.join(", ")}
+          </p>
+        </div>
+      ) : null}
+
+      {error ? (
+        <p
+          role="alert"
+          data-testid="eaos-onboarding-next-step-slack-error"
+          className="rounded-md border border-red-200 bg-red-50 p-2 text-[11px] text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      <div className="flex items-center justify-between gap-2 pt-1">
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+          data-testid={`${card.testId}-status`}
+        >
+          {slackConnected ? "Preview ready" : "Safe install preview"}
+        </span>
+        <div className="flex items-center gap-2">
+          {preview?.approvalCardPath ? (
+            <Link
+              to={preview.approvalCardPath}
+              data-testid="eaos-onboarding-next-step-slack-approval-link"
+              className="text-[11px] font-medium text-primary hover:underline"
+            >
+              Open approval card →
+            </Link>
+          ) : null}
+          <Button
+            type="button"
+            variant={slackConnected ? "ghost" : "default"}
+            size="sm"
+            onClick={handlePreview}
+            disabled={!companyId || previewMutation.isPending}
+            data-testid={`${card.testId}-cta`}
+            title={
+              !companyId
+                ? "Workspace not ready yet."
+                : "Loads a safe Slack install preview — no tokens are submitted."
+            }
+          >
+            {previewMutation.isPending
+              ? "Loading preview…"
+              : slackConnected
+                ? "Refresh preview"
+                : card.ctaLabel}
+          </Button>
+        </div>
+      </div>
+    </li>
   );
 }
 

@@ -200,18 +200,189 @@ describe("EaosOnboardingPage (LET-513 §1)", () => {
       expect(
         container?.querySelector('[data-testid="eaos-onboarding-next-steps"]'),
       ).not.toBeNull();
-      // Next-step CTAs must remain disabled until backend connectors land.
-      const ctaButtons = container?.querySelectorAll(
-        '[data-testid$="-cta"]',
-      ) as NodeListOf<HTMLButtonElement> | undefined;
-      expect((ctaButtons?.length ?? 0) >= 3).toBe(true);
-      ctaButtons?.forEach((button) => {
-        expect(button.disabled).toBe(true);
-      });
+      // LET-514: the Slack CTA is now interactive (safe install preview).
+      // MCP picker + CEO recommendations remain disabled placeholders.
+      const slackCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-slack-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(slackCta).not.toBeNull();
+      expect(slackCta?.disabled).toBe(false);
+      const mcpCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-mcp-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(mcpCta?.disabled).toBe(true);
+      const ceoCta = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-ceo-cta"]',
+      ) as HTMLButtonElement | null;
+      expect(ceoCta?.disabled).toBe(true);
       // Backend-gap label is visible.
       expect(
         container?.querySelector('[data-testid="eaos-onboarding-backend-gap"]'),
       ).not.toBeNull();
+    });
+  });
+
+  describe("LET-514 — Slack safe install preview", () => {
+    const SLACK_PREVIEW_PATH =
+      "/api/companies/c-1/eaos/onboarding/slack-install-preview";
+    const SLACK_PREVIEW_RESPONSE = {
+      preview: {
+        catalogId: "verified/slack-app",
+        displayName: "Slack",
+        summary:
+          "Preview only — installs the verified Slack capability. No tokens are collected here; the approval card resolves the named secret references from your vault before the install is applied.",
+        scopeSummary: ["chat:write", "channels:read", "channels:history", "users:read"],
+        requiredSecretNames: [
+          "SLACK_APP_CLIENT_ID",
+          "SLACK_APP_CLIENT_SECRET",
+          "SLACK_APP_SIGNING_SECRET",
+        ],
+        riskClass: "external-write" as const,
+        liveApply: false as const,
+        applyPath: "preview_only" as const,
+        mcpServerChange: {
+          kind: "add" as const,
+          serverId: "slack",
+          displayName: "Slack",
+          catalogId: "verified/slack-app" as const,
+          transport: "stdio" as const,
+          riskClass: "external-write" as const,
+          requiredSecretNames: [
+            "SLACK_APP_CLIENT_ID",
+            "SLACK_APP_CLIENT_SECRET",
+            "SLACK_APP_SIGNING_SECRET",
+          ],
+          readOnlyHint: false as const,
+          destructiveHint: false as const,
+          openWorldHint: true as const,
+        },
+      },
+      allowlistedCatalogId: "verified/slack-app" as const,
+      approvalCardPath: "/companies/c-1/agents/agent-xyz/capability-apply",
+      approvalCardAgentId: "agent-xyz",
+      liveApplyEnabled: false as const,
+    };
+
+    async function renderOnboardingPostCreate() {
+      companiesRef.current = [{ id: "c-1", name: "Acme" }];
+      return renderOnboarding();
+    }
+
+    async function clickSlackCta() {
+      const button = container?.querySelector(
+        '[data-testid="eaos-onboarding-next-step-slack-cta"]',
+      ) as HTMLButtonElement | null;
+      await act(async () => {
+        button?.click();
+      });
+    }
+
+    it("fetches the safe install preview and shows the Slack-connected pill", async () => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        if (url.endsWith(SLACK_PREVIEW_PATH)) {
+          return new Response(JSON.stringify(SLACK_PREVIEW_RESPONSE), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        await renderOnboardingPostCreate();
+        await clickSlackCta();
+        await waitForAssertion(() => {
+          expect(fetchMock).toHaveBeenCalled();
+          const pill = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack-pill"]',
+          );
+          expect(pill?.textContent ?? "").toContain("Slack connected");
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("renders the approval card link from the preview response (round-trip)", async () => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        if (url.endsWith(SLACK_PREVIEW_PATH)) {
+          return new Response(JSON.stringify(SLACK_PREVIEW_RESPONSE), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        await renderOnboardingPostCreate();
+        await clickSlackCta();
+        await waitForAssertion(() => {
+          const link = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack-approval-link"]',
+          ) as HTMLAnchorElement | null;
+          expect(link).not.toBeNull();
+          // The approval card link must match the server-issued path verbatim.
+          expect(link?.getAttribute("href")).toBe(
+            SLACK_PREVIEW_RESPONSE.approvalCardPath,
+          );
+          // Round-trip: the link points at the canonical capability-apply
+          // surface for the bootstrap agent the server resolved for us.
+          expect(link?.getAttribute("href")).toMatch(
+            /^\/companies\/[^/]+\/agents\/[^/]+\/capability-apply$/,
+          );
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("redacts secret-shaped tokens that leak into the preview response copy", async () => {
+      const tainted = {
+        ...SLACK_PREVIEW_RESPONSE,
+        preview: {
+          ...SLACK_PREVIEW_RESPONSE.preview,
+          // Simulated upstream regression: a Bearer token in the customer-
+          // visible summary. The UI must redact it before render.
+          summary:
+            "Preview only — installs the verified Slack capability. Authorization: Bearer xoxb-deadbeef-deadbeef-1234567890 must not survive into the DOM.",
+          displayName: "Slack (xoxb-deadbeef-deadbeef-1234567890)",
+        },
+      };
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        if (url.endsWith(SLACK_PREVIEW_PATH)) {
+          return new Response(JSON.stringify(tainted), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        await renderOnboardingPostCreate();
+        await clickSlackCta();
+        await waitForAssertion(() => {
+          const previewCard = container?.querySelector(
+            '[data-testid="eaos-onboarding-next-step-slack-preview"]',
+          );
+          expect(previewCard).not.toBeNull();
+          const text = previewCard?.textContent ?? "";
+          // The raw Bearer-prefixed value and the xoxb- Slack token shape must
+          // be redacted before they hit the DOM.
+          expect(text).not.toMatch(/Bearer\s+xoxb-/);
+          expect(text).not.toMatch(/xoxb-deadbeef/);
+          expect(text).toMatch(/\[REDACTED\]/);
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 

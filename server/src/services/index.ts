@@ -95,3 +95,11 @@ export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  SLACK_OAUTH_SCOPES,
+  SLACK_REQUIRED_SECRET_NAMES,
+  SLACK_VERIFIED_CATALOG_ID,
+  buildSlackInstallPreview,
+  type SlackInstallPreview,
+  type SlackInstallPreviewMcpChange,
+} from "./slack-install-preview.js";
