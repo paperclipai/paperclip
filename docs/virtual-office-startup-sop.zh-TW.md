@@ -108,6 +108,43 @@ pnpm run office:restart
 
 `-CheckOnly` 和 `-Restart` 不要一起使用；一個是只看狀態，一個是明確重啟。
 
+## 本地 AI 一鍵啟動與檢查
+
+如果你要測 Virtual Office 搭配 Hermes / Ollama，本地 AI stack 需要同時確認：
+
+- Virtual Office backend / frontend 可用。
+- Windows Ollama 已啟動。
+- `qwen2.5:14b` 模型存在。
+- Hermes Ollama bridge 可從 WSL 讀到 `/v1/models`。
+- Eve 仍是 `paused/manual`。
+- 測試 issue 沒有 active run 或 live run。
+
+可以使用：
+
+```powershell
+pnpm run office:local-ai-start
+```
+
+這會啟動或檢查 Office preview、Ollama 與 Hermes Ollama bridge，並更新本機狀態報告：
+
+```text
+.virtual-office-local-ai-status.json
+```
+
+只檢查、不啟動服務：
+
+```powershell
+pnpm run office:local-ai-check
+```
+
+明確需要重啟 preview 與 bridge 時：
+
+```powershell
+pnpm run office:local-ai-restart
+```
+
+這些指令不會喚醒 Eve 或任何 Hermes agent，不會 Run now，不會開 schedule trigger，也不會打開 heartbeat scheduler。若本地 AI stack 顯示 READY，仍然只代表環境可用；真正 Hermes/local model wake-up 仍需要新的逐字一次性授權。
+
 如果畫面出現 `Restart Required`，代表後端偵測到檔案已更新但目前服務仍是舊版本。這時使用 `pnpm run office:restart`，helper 會清理 Paperclip 後端殘留程序並強制重新啟動，不會只因 health 還有回應就沿用舊後端。
 
 ## 預覽狀態報告
