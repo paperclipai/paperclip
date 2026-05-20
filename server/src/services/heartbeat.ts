@@ -2647,6 +2647,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // Tracks the promises spawned by `void executeRun(...)` calls in the
+  // dispatcher (startNextQueuedRunForAgent) so tests can await
+  // fire-and-forget chains before TRUNCATE-based cleanup. Without this
+  // hook, postRun lifecycle work writes mid-cleanup and deadlocks with
+  // TRUNCATE's AccessExclusiveLock (the v513 saga). Production code
+  // ignores this set; it self-cleans via `.finally`. Drained via
+  // `drainInFlightExecutions()` exposed on the service public API.
+  const inFlightExecutions = new Set<Promise<void>>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -7466,8 +7474,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        });
+        inFlightExecutions.add(execution);
+        void execution.finally(() => {
+          inFlightExecutions.delete(execution);
         });
       }
       return claimedRuns;
@@ -10892,6 +10904,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    /**
+     * Test-only hook: await all fire-and-forget `executeRun` promises spawned
+     * by the dispatcher (startNextQueuedRunForAgent, heartbeat.ts ~7469).
+     *
+     * Production code does NOT need to call this; the dispatcher returns as
+     * soon as it has spawned the background chain, which is the desired
+     * production behavior (callers don't block on per-run work).
+     *
+     * Tests that exercise the dispatcher and then TRUNCATE the database in
+     * afterEach (heartbeat-stale-queue-invalidation.test.ts, etc.) MUST
+     * await this before TRUNCATE — otherwise the in-flight chain races
+     * cleanup and the postRun lifecycle hook's SELECT FOR UPDATE deadlocks
+     * with TRUNCATE's AccessExclusiveLock chain (v513 saga, see project
+     * memory `paperclip_release_verify_canary_test_infra.md`).
+     *
+     * The loop covers recursive dispatches: executeRun → finalize →
+     * startNextQueuedRunForAgent → executeRun. We re-snapshot each
+     * iteration so promises added DURING `Promise.allSettled` are caught.
+     */
+    drainInFlightExecutions: async (timeoutMs = 10_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (inFlightExecutions.size > 0 && Date.now() < deadline) {
+        await Promise.allSettled([...inFlightExecutions]);
+      }
     },
   };
 }
