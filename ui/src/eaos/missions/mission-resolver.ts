@@ -83,20 +83,30 @@ export interface MissionRow {
   readonly kernelRoute: string;
 }
 
+// LET-503 round-6: the bucket/summary fan-in covers every MissionPrimaryState
+// so the board, list summary, and header counts can never drift apart.
+//   - `active` includes `active`, `needs-next-owner`, and `stale` (all "in
+//     flight" missions without a blocker / review gate).
+//   - `inReview` includes `in-review` and `release-held` (both wait on a
+//     human review/approval gate).
+//   - `done` collapses `done-with-evidence` and `done-evidence-incomplete`
+//     so a row whose status row reads "Done" is always counted as done.
+//   - `cancelled` is its own bucket so it can render an explicit column.
 export interface MissionListBuckets {
   readonly active: MissionRow[];
   readonly blocked: MissionRow[];
   readonly inReview: MissionRow[];
-  readonly doneWithEvidence: MissionRow[];
-  readonly other: MissionRow[];
+  readonly done: MissionRow[];
+  readonly cancelled: MissionRow[];
 }
 
 export interface MissionListSummary {
-  readonly totalBackendBacked: number;
+  readonly total: number;
   readonly active: number;
   readonly blocked: number;
   readonly inReview: number;
-  readonly doneWithEvidence: number;
+  readonly done: number;
+  readonly cancelled: number;
   readonly stale: number;
 }
 
@@ -314,48 +324,48 @@ export function bucketMissions(rows: readonly MissionRow[]): MissionListBuckets 
   const active: MissionRow[] = [];
   const blocked: MissionRow[] = [];
   const inReview: MissionRow[] = [];
-  const doneWithEvidence: MissionRow[] = [];
-  const other: MissionRow[] = [];
+  const done: MissionRow[] = [];
+  const cancelled: MissionRow[] = [];
   for (const row of rows) {
     switch (row.primaryState) {
       case "blocked":
         blocked.push(row);
         break;
       case "in-review":
+      case "release-held":
         inReview.push(row);
         break;
       case "done-with-evidence":
-        doneWithEvidence.push(row);
+      case "done-evidence-incomplete":
+        done.push(row);
+        break;
+      case "cancelled":
+        cancelled.push(row);
         break;
       case "active":
+      case "needs-next-owner":
+      case "stale":
+      default:
         active.push(row);
         break;
-      default:
-        other.push(row);
     }
   }
-  return { active, blocked, inReview, doneWithEvidence, other };
+  return { active, blocked, inReview, done, cancelled };
 }
 
 export function summarizeMissionList(rows: readonly MissionRow[]): MissionListSummary {
-  let active = 0;
-  let blocked = 0;
-  let inReview = 0;
-  let doneWithEvidence = 0;
+  const buckets = bucketMissions(rows);
   let stale = 0;
   for (const row of rows) {
-    if (row.primaryState === "active") active += 1;
-    if (row.primaryState === "blocked") blocked += 1;
-    if (row.primaryState === "in-review") inReview += 1;
-    if (row.primaryState === "done-with-evidence") doneWithEvidence += 1;
     if (row.freshness === "Stale") stale += 1;
   }
   return {
-    totalBackendBacked: rows.length,
-    active,
-    blocked,
-    inReview,
-    doneWithEvidence,
+    total: rows.length,
+    active: buckets.active.length,
+    blocked: buckets.blocked.length,
+    inReview: buckets.inReview.length,
+    done: buckets.done.length,
+    cancelled: buckets.cancelled.length,
     stale,
   };
 }

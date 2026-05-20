@@ -403,20 +403,30 @@ function MissionBoard({
   isOperator,
   agentLookup,
 }: {
-  buckets: { active: MissionRow[]; blocked: MissionRow[]; inReview: MissionRow[]; doneWithEvidence: MissionRow[]; other: MissionRow[] };
+  buckets: { active: MissionRow[]; blocked: MissionRow[]; inReview: MissionRow[]; done: MissionRow[]; cancelled: MissionRow[] };
   isOperator: boolean;
   agentLookup: AgentLookup;
 }) {
+  // LET-503 round-6: render Cancelled only when it has rows so the empty
+  // column does not show on the typical, non-cancelled board, but the sum
+  // of column counts is always equal to the header `Missions {N}` count.
   const columns: Array<{ id: string; title: string; rows: MissionRow[] }> = [
     { id: "active", title: "Active", rows: buckets.active },
     { id: "blocked", title: "Blocked", rows: buckets.blocked },
     { id: "in-review", title: "In review", rows: buckets.inReview },
-    { id: "done", title: "Done", rows: buckets.doneWithEvidence },
+    { id: "done", title: "Done", rows: buckets.done },
   ];
+  if (buckets.cancelled.length > 0) {
+    columns.push({ id: "cancelled", title: "Cancelled", rows: buckets.cancelled });
+  }
+  const gridCols =
+    columns.length >= 5
+      ? "sm:grid-cols-2 lg:grid-cols-5"
+      : "sm:grid-cols-2 lg:grid-cols-4";
   return (
     <div
       data-testid="eaos-missions-board"
-      className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto sm:grid-cols-2 lg:grid-cols-4"
+      className={`grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto ${gridCols}`}
     >
       {columns.map((column) => (
         <BoardColumn key={column.id} {...column} isOperator={isOperator} agentLookup={agentLookup} />
@@ -550,7 +560,6 @@ const PRIORITY_SHORTHAND: Record<IssuePriority, { code: string; label: string; t
   high: { code: "P1", label: "High", tone: "text-orange-600 bg-orange-50 border-orange-200" },
   medium: { code: "P2", label: "Medium", tone: "text-muted-foreground bg-background border-border" },
   low: { code: "P3", label: "Low", tone: "text-muted-foreground bg-background border-border" },
-  none: { code: "—", label: "No priority", tone: "text-muted-foreground/70 bg-background border-border" },
 };
 
 function PriorityCell({ priority, compact }: { priority: IssuePriority; compact?: boolean }) {
@@ -779,7 +788,8 @@ function FilterSummary({ summary }: { summary: ReturnType<typeof summarizeMissio
       data-testid="eaos-missions-filter-summary"
       className="px-1 text-[11px] text-muted-foreground"
     >
-      {summary.active} active · {summary.blocked} blocked · {summary.inReview} in review · {summary.doneWithEvidence} done
+      {summary.active} active · {summary.blocked} blocked · {summary.inReview} in review · {summary.done} done
+      {summary.cancelled > 0 ? ` · ${summary.cancelled} cancelled` : ""}
       {summary.stale > 0 ? ` · ${summary.stale} stale` : ""}
     </p>
   );

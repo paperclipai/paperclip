@@ -1,7 +1,7 @@
 {
   "base": "http://localhost:5173",
   "companyId": "00000000-0000-0000-0000-000000000eaa",
-  "generatedAt": "2026-05-20T06:35:11.752Z",
+  "generatedAt": "2026-05-20T07:20:29.742Z",
   "viewer": "customer-member",
   "mode": "populated",
   "forbidden": [
@@ -55,7 +55,7 @@
     {
       "route": "eaos-agents",
       "ok": true,
-      "bytes": 451946
+      "bytes": 451944
     },
     {
       "route": "eaos-agents-new",
@@ -95,7 +95,7 @@
     {
       "route": "eaos-mission-detail",
       "ok": true,
-      "bytes": 444173
+      "bytes": 444177
     }
   ],
   "findings": [],

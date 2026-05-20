@@ -4,10 +4,35 @@
 // posture, and a single demoted Kernel/Admin link. No mutating controls.
 
 import { Link } from "@/lib/router";
-import type { Approval, Issue } from "@paperclipai/shared";
+import type { Approval, Issue, IssuePriority, IssueStatus, IssueWorkMode } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import { useEaosViewerRole } from "../useEaosViewerRole";
+
+// LET-503 round-6: customer-facing inspector never surfaces raw enum tokens.
+// Status / Priority / Work mode are normalized to product copy so the right
+// rail reads like enterprise product UI, not an issue-tracker dump.
+const STATUS_LABEL: Record<IssueStatus, string> = {
+  backlog: "Backlog",
+  todo: "Queued",
+  in_progress: "In progress",
+  in_review: "In review",
+  done: "Done",
+  blocked: "Blocked",
+  cancelled: "Cancelled",
+};
+
+const PRIORITY_LABEL: Record<IssuePriority, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+const WORK_MODE_LABEL: Record<IssueWorkMode, string> = {
+  standard: "Standard",
+  planning: "Planning",
+};
 
 interface MissionDetailInspectorProps {
   issue: Issue;
@@ -63,9 +88,9 @@ export function MissionDetailInspector({
           Properties
         </h2>
         <dl className="grid grid-cols-1 gap-y-1 text-xs">
-          <PropRow label="Status" value={issue.status} />
-          <PropRow label="Priority" value={issue.priority} />
-          <PropRow label="Work mode" value={issue.workMode} />
+          <PropRow label="Status" value={STATUS_LABEL[issue.status] ?? issue.status} />
+          <PropRow label="Priority" value={PRIORITY_LABEL[issue.priority] ?? issue.priority} />
+          <PropRow label="Work mode" value={WORK_MODE_LABEL[issue.workMode] ?? issue.workMode} />
           <PropRow label="Owner" value={owner} />
           <PropRow label="Project" value={issue.project?.name ?? "—"} />
           <PropRow label="Parent" value={issue.parentId ? "Linked" : "—"} />

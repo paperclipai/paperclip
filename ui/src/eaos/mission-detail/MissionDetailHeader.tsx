@@ -4,10 +4,18 @@
 // summary, and a demoted Kernel/Admin escape hatch. No mutating controls.
 
 import { Link } from "@/lib/router";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, Issue, IssuePriority } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
 import { useEaosViewerRole } from "../useEaosViewerRole";
+
+// LET-503 round-6: customer-facing header never surfaces raw enum tokens.
+const PRIORITY_LABEL: Record<IssuePriority, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
 
 interface MissionDetailHeaderProps {
   issue: Issue;
@@ -17,6 +25,9 @@ interface MissionDetailHeaderProps {
 }
 
 function statusChip(status: Issue["status"]): { label: string; copy: string } {
+  // LET-503 round-6: customer-facing `copy` matches the inspector's
+  // STATUS_LABEL so a reader never sees two different words for the same
+  // status (e.g. header "Active" + inspector "In progress").
   switch (status) {
     case "in_review":
       return { label: "IN REVIEW", copy: "In review" };
@@ -27,7 +38,7 @@ function statusChip(status: Issue["status"]): { label: string; copy: string } {
     case "cancelled":
       return { label: "CANCELLED", copy: "Cancelled" };
     case "in_progress":
-      return { label: "ACTIVE", copy: "Active" };
+      return { label: "IN PROGRESS", copy: "In progress" };
     case "todo":
       return { label: "QUEUED", copy: "Queued" };
     case "backlog":
@@ -37,11 +48,12 @@ function statusChip(status: Issue["status"]): { label: string; copy: string } {
 }
 
 function describeBlockers(issue: Issue): string {
+  // LET-503 round-6: keep the header blocker copy in lockstep with the
+  // inspector's "No unresolved blockers." default — when the issue has no
+  // `blockerAttention` payload we treat it as "none" rather than "unknown"
+  // so the two surfaces never contradict each other for a customer reader.
   const attn = issue.blockerAttention;
-  if (!attn) {
-    return "Blockers · unknown";
-  }
-  if (attn.state === "none" || attn.unresolvedBlockerCount === 0) {
+  if (!attn || attn.state === "none" || attn.unresolvedBlockerCount === 0) {
     return "Blockers · none";
   }
   if (attn.state === "needs_attention") {
@@ -163,7 +175,7 @@ export function MissionDetailHeader({
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">Priority</dt>
-          <dd className="text-xs text-foreground">{issue.priority}</dd>
+          <dd className="text-xs text-foreground">{PRIORITY_LABEL[issue.priority] ?? issue.priority}</dd>
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">Last activity</dt>

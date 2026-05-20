@@ -132,43 +132,55 @@ describe("bucketMissions / summarizeMissionList", () => {
     return resolveMissionRow(makeIssue(overrides), NOW);
   }
 
-  it("partitions rows by primary state and counts backend-backed totals", () => {
+  it("partitions rows by primary state across every supported state", () => {
     const rows: MissionRow[] = [
       rowFor({ id: "a", status: "in_progress" }),
       rowFor({ id: "b", status: "blocked" }),
-      rowFor({
-        id: "c",
-        status: "in_review",
-      }),
+      rowFor({ id: "c", status: "in_review" }),
       rowFor({
         id: "d",
         status: "done",
         workProducts: [{ id: "wp" } as unknown as NonNullable<Issue["workProducts"]>[number]],
       }),
+      rowFor({ id: "d2", status: "done" }), // done-evidence-incomplete
       rowFor({ id: "e", status: "cancelled" }),
+      rowFor({
+        id: "f",
+        status: "todo",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }), // needs-next-owner
     ];
     const buckets = bucketMissions(rows);
-    expect(buckets.active.map((r) => r.id)).toEqual(["a"]);
+    expect(buckets.active.map((r) => r.id)).toEqual(["a", "f"]);
     expect(buckets.blocked.map((r) => r.id)).toEqual(["b"]);
     expect(buckets.inReview.map((r) => r.id)).toEqual(["c"]);
-    expect(buckets.doneWithEvidence.map((r) => r.id)).toEqual(["d"]);
-    expect(buckets.other.map((r) => r.id)).toEqual(["e"]);
+    // LET-503 round-6: both `done-with-evidence` and `done-evidence-incomplete`
+    // count as Done so visible "Done" rows match the done count.
+    expect(buckets.done.map((r) => r.id)).toEqual(["d", "d2"]);
+    expect(buckets.cancelled.map((r) => r.id)).toEqual(["e"]);
 
     const summary = summarizeMissionList(rows);
-    expect(summary.totalBackendBacked).toBe(5);
-    expect(summary.active).toBe(1);
+    expect(summary.total).toBe(7);
+    expect(summary.active).toBe(2);
     expect(summary.blocked).toBe(1);
     expect(summary.inReview).toBe(1);
-    expect(summary.doneWithEvidence).toBe(1);
+    expect(summary.done).toBe(2);
+    expect(summary.cancelled).toBe(1);
+    // Column totals always sum to the input length — no rows can hide.
+    expect(
+      summary.active + summary.blocked + summary.inReview + summary.done + summary.cancelled,
+    ).toBe(rows.length);
   });
 
   it("never inflates counts from preview data — empty input means zero counts", () => {
     expect(summarizeMissionList([])).toEqual({
-      totalBackendBacked: 0,
+      total: 0,
       active: 0,
       blocked: 0,
       inReview: 0,
-      doneWithEvidence: 0,
+      done: 0,
+      cancelled: 0,
       stale: 0,
     });
   });
