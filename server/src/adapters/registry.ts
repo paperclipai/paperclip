@@ -137,6 +137,7 @@ import {
   listHermesSkillsWrapper,
   syncHermesSkillsWrapper,
   detectModelFromHermesWrapper,
+  prepareHermesPaperclipSkills,
 } from "./hermes-wrapper.js";
 import { resolveHermesRuntimeConfig } from "./hermes-runtime-config.js";
 import {
@@ -256,14 +257,15 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
-function withRequiredHermesPaperclipSkillArgs(value: unknown): string[] {
+function withHermesPaperclipSkillArgs(value: unknown, preloadedSkillNames: string[]): string[] {
   const args = Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     : [];
   const joined = args.join(" ");
   const hasSkillsArg = /(?:^|\s)(?:--skills|-s)(?:\s|=|$)/.test(joined);
   if (hasSkillsArg) return args;
-  return [...args, "--skills", "paperclip,paperclip-create-agent"];
+  if (preloadedSkillNames.length === 0) return args;
+  return [...args, "--skills", preloadedSkillNames.join(",")];
 }
 
 function buildHermesNativePaperclipPrompt(input: {
@@ -272,7 +274,12 @@ function buildHermesNativePaperclipPrompt(input: {
   customPrompt: string | null;
   taskMarkdown: string | null;
   wakePrompt: string | null;
+  preloadedSkillNames: string[];
+  missingSkillNames: string[];
 }): string {
+  const skillStatus = input.missingSkillNames.length === 0
+    ? `Hermes preloaded these Paperclip skills for this run: ${input.preloadedSkillNames.join(", ")}. Use them for Paperclip coordination when useful.`
+    : `Hermes skill preload is not active for this run because these skills were not discoverable: ${input.missingSkillNames.join(", ")}. Follow the native API workflow in this prompt directly instead of trying to invoke missing slash commands.`;
   const nativeContract = [
     `You are ${input.agentName}, a Paperclip ${input.agentRole || "agent"} powered by Hermes.`,
     "You are not a generic chat assistant. You are running inside a Paperclip heartbeat and must operate the Paperclip control plane when asked.",
@@ -311,7 +318,8 @@ function buildHermesNativePaperclipPrompt(input: {
     "- A correct response to 'hire employees' is an API-created hire request or agent plus a Paperclip comment/summary, not a local report in HERMES_HOME.",
     "",
     "Skills:",
-    "- The paperclip and paperclip-create-agent skills are available for Paperclip coordination. Use them for API workflow, task management, delegation, skills, and hiring.",
+    `- ${skillStatus}`,
+    "- When the paperclip-create-agent skill is available and the request is about hiring, use it. Otherwise, use the hiring API workflow in this prompt directly.",
     "- Do not create Hermes-only skills as a substitute for Paperclip company skills or agents. Use the Paperclip company skills API when the user asks to install/assign company skills.",
     "",
     "Final disposition:",
@@ -606,7 +614,6 @@ const hermesLocalAdapter: ServerAdapterModule = {
       hermesHome: sharedHermesHome,
       ...(resolvedHermesModel ? { model: resolvedHermesModel } : {}),
       ...(resolvedHermesProvider ? { provider: resolvedHermesProvider } : {}),
-      extraArgs: withRequiredHermesPaperclipSkillArgs(configSource.extraArgs ?? existingConfig.extraArgs),
       paperclipApiUrl,
       env: {
         ...existingEnv,
@@ -626,6 +633,30 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
+    const preparedSkills = await prepareHermesPaperclipSkills(patchedConfig).catch(async (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      await normalizedCtx.onLog("stderr", `[adapter:hermes_local] Paperclip skill preload disabled: ${message}\n`);
+      return null;
+    });
+    const preloadedSkillNames = preparedSkills && preparedSkills.missingSkillNames.length === 0
+      ? preparedSkills.preloadedSkillNames
+      : [];
+    patchedConfig.extraArgs = withHermesPaperclipSkillArgs(
+      configSource.extraArgs ?? existingConfig.extraArgs,
+      preloadedSkillNames,
+    );
+    if (preparedSkills) {
+      for (const warning of preparedSkills.warnings) {
+        await normalizedCtx.onLog("stderr", `[adapter:hermes_local] ${warning}\n`);
+      }
+      if (preparedSkills.missingSkillNames.length > 0) {
+        await normalizedCtx.onLog(
+          "stdout",
+          `[adapter:hermes_local] Running without Hermes skill preload; missing skills: ${preparedSkills.missingSkillNames.join(", ")}. Falling back to native Paperclip prompt instructions.\n`,
+        );
+      }
+    }
+
     if (taskCtx.taskId) {
       patchedConfig.taskId = taskCtx.taskId;
       if (taskCtx.taskTitle) patchedConfig.taskTitle = taskCtx.taskTitle;
@@ -641,6 +672,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
       customPrompt: hasCustomPrompt ? configSource.promptTemplate as string : null,
       wakePrompt: wakePrompt || null,
       taskMarkdown: taskMarkdown || null,
+      preloadedSkillNames,
+      missingSkillNames: preparedSkills?.missingSkillNames ?? ["paperclip", "paperclip-create-agent"],
     });
 
     const runtimeConfig = resolveHermesRuntimeConfig(normalizedCtx.agent.companyId, normalizedCtx.agent.id, patchedConfig);
@@ -652,6 +685,9 @@ const hermesLocalAdapter: ServerAdapterModule = {
       capabilities: runtimeConfig.capabilities,
       configHash: runtimeConfig.configHash,
       hermesHome: sharedHermesHome,
+      hermesSkillsHome: preparedSkills?.skillsHome ?? null,
+      preloadedSkills: preloadedSkillNames,
+      missingSkills: preparedSkills?.missingSkillNames ?? [],
       resolvedAt: runtimeConfig.resolvedAt,
       cacheState: runtimeConfig.cacheState,
     });

@@ -1,11 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const PAPERCLIP_SKILLS_ROOT = path.resolve(__moduleDir, "../../../skills");
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -31,6 +35,7 @@ export async function testEnvironment(
   const configPath = path.join(hermesHome, "config.yaml");
   const envPath = path.join(hermesHome, ".env");
   const skillsPath = path.join(hermesHome, "skills");
+  const paperclipSkillsPath = path.join(skillsPath, "paperclip");
   const mcpServerPath = typeof config.mcpServerPath === "string" && config.mcpServerPath.trim()
     ? config.mcpServerPath.trim()
     : "/usr/local/bin/paperclip-mcp-server";
@@ -52,14 +57,14 @@ export async function testEnvironment(
     code: "hermes_mcp_server_binary",
     level: "info",
     message: `MCP server binary: ${mcpServerPath}`,
-    detail: "Paperclip MCP tools require paperclip-mcp-server to be installed.",
+    detail: "Optional only. Hermes Paperclip integration uses the native API contract first.",
   });
 
   checks.push({
     code: "hermes_mcp_python_dep",
     level: "info",
     message: "Python 'mcp' package required for MCP tool support",
-    detail: "Install with: uv pip install mcp (or pip install mcp)",
+    detail: "Optional only. Native Paperclip API operation does not require MCP.",
   });
 
   checks.push({
@@ -107,6 +112,10 @@ export async function testEnvironment(
   });
 
   const skillDirs = await fs.readdir(skillsPath, { withFileTypes: true }).catch(() => []);
+  const bundledSkillChecks = await Promise.all([
+    fs.stat(path.join(PAPERCLIP_SKILLS_ROOT, "paperclip", "SKILL.md")).then(() => true).catch(() => false),
+    fs.stat(path.join(PAPERCLIP_SKILLS_ROOT, "paperclip-create-agent", "SKILL.md")).then(() => true).catch(() => false),
+  ]);
   checks.push({
     code: "hermes_shared_skills",
     level: "info",
@@ -114,6 +123,29 @@ export async function testEnvironment(
     detail: skillDirs.length > 0
       ? `${skillDirs.filter((entry) => entry.isDirectory()).length} skill categories/directories detected.`
       : "No Hermes skills detected yet. Paperclip-managed skills will be linked under skills/paperclip when synced.",
+  });
+  checks.push({
+    code: "hermes_paperclip_skill_sources",
+    level: bundledSkillChecks.every(Boolean) ? "info" : "warn",
+    message: bundledSkillChecks.every(Boolean)
+      ? "Bundled Paperclip skills found"
+      : "Bundled Paperclip skills incomplete",
+    detail: `Source root: ${PAPERCLIP_SKILLS_ROOT}; paperclip=${bundledSkillChecks[0] ? "yes" : "missing"}; paperclip-create-agent=${bundledSkillChecks[1] ? "yes" : "missing"}`,
+  });
+
+  const linkedSkillChecks = await Promise.all([
+    fs.stat(path.join(paperclipSkillsPath, "paperclip", "SKILL.md")).then(() => true).catch(() => false),
+    fs.stat(path.join(paperclipSkillsPath, "paperclip-create-agent", "SKILL.md")).then(() => true).catch(() => false),
+  ]);
+  checks.push({
+    code: "hermes_paperclip_skill_links",
+    level: linkedSkillChecks.every(Boolean) ? "info" : "warn",
+    message: linkedSkillChecks.every(Boolean)
+      ? "Paperclip skills are linked into Hermes home"
+      : "Paperclip skills are not linked into Hermes home yet",
+    detail: linkedSkillChecks.every(Boolean)
+      ? `Preload can use: paperclip,paperclip-create-agent from ${paperclipSkillsPath}`
+      : `Expected links under ${paperclipSkillsPath}. They are created automatically before Hermes runs; if missing at runtime, Paperclip falls back to prompt-only native API instructions instead of failing the adapter.`,
   });
 
   return {
