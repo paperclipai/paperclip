@@ -16,14 +16,28 @@ import {
   models as hermesModels,
 } from "hermes-paperclip-adapter";
 
+type HermesExecutionContext = Parameters<typeof hermesExecute>[0];
+
 export async function executeHermesWrapper(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
-  const wrappedCtx: AdapterExecutionContext = {
-    ...ctx,
+  const wrappedCtx: HermesExecutionContext = {
+    runId: ctx.runId,
+    agent: ctx.agent,
+    runtime: ctx.runtime,
+    config: ctx.config,
+    context: ctx.context,
+    onLog: ctx.onLog,
+    onMeta: ctx.onMeta,
     onSpawn: ctx.onSpawn
-      ? (meta) => ctx.onSpawn!({ pid: meta.pid, processGroupId: null, startedAt: meta.startedAt })
+      ? (meta) =>
+          ctx.onSpawn!({
+            pid: meta.pid,
+            processGroupId: null,
+            startedAt: meta.startedAt,
+          })
       : undefined,
+    authToken: ctx.authToken,
   };
   return hermesExecute(wrappedCtx);
 }
