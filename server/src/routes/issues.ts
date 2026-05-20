@@ -5657,7 +5657,7 @@ export function issueRoutes(
 
   // Escape-hatch: agent marks a recovery action resolved by its own ID (no source issue required in URL).
   // Auth: issue assignee, recovery action owner, or agent with checkout-management override for either.
-  const resolveRecoveryActionByIdSchema = z.object({ reason: z.string().max(2000) }).strict();
+  const resolveRecoveryActionByIdSchema = z.object({ reason: z.string().min(1).max(2000) }).strict();
   const TERMINAL_RECOVERY_STATUSES = ["resolved", "cancelled"] as const;
 
   router.post("/recovery-actions/:id/resolve", validate(resolveRecoveryActionByIdSchema), async (req, res) => {
