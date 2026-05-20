@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray, or, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -14,6 +14,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
@@ -75,43 +76,6 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
-async function cancelActiveRunsForCleanup(db: ReturnType<typeof createDb>, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const activeRuns = await db
-      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
-      .from(heartbeatRuns)
-      .where(or(eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.status, "running")));
-    if (activeRuns.length === 0) return;
-    const now = new Date();
-    const runIds = activeRuns.map((run) => run.id);
-    const wakeupRequestIds = activeRuns
-      .map((run) => run.wakeupRequestId)
-      .filter((value): value is string => typeof value === "string" && value.length > 0);
-    await db
-      .update(heartbeatRuns)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        updatedAt: now,
-        errorCode: "test_cleanup",
-        error: "Cancelled by stale-queue invalidation test cleanup",
-      })
-      .where(inArray(heartbeatRuns.id, runIds));
-    if (wakeupRequestIds.length > 0) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: "cancelled",
-          finishedAt: now,
-          error: "Cancelled by stale-queue invalidation test cleanup",
-        })
-        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 type SeedOptions = {
   agentName?: string;
   agentRole?: string;
@@ -135,23 +99,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await ensureIssueRelationsTable(db);
   });
 
-  // Root-cause cleanup. The v513-saga TRUNCATE deadlock comes from the
-  // dispatcher's `void executeRun(...)` spawn (heartbeat.ts:7469): the
-  // dispatcher returns the moment runs are claimed, but executeRun keeps
-  // running async, calling postRun lifecycle hooks that hold
-  // RowShareLocks via SELECT FOR UPDATE — exactly the locks that deadlock
-  // with TRUNCATE's AccessExclusiveLock chain.
-  //
-  // Prior attempts (PR #72 single-confirm + kill-idle-in-tx + retry,
-  // PR #92 watchdog-port and 4-layer cancel+terminate+retry) all worked
-  // around symptoms; the deadlock kept resurfacing on verify_canary, and
-  // pg_cancel_backend introduced ECONNRESET noise on postgres-js's
-  // connection-init query (PR #94 reverted).
-  //
-  // Root-cause fix (this commit): heartbeatService now tracks the
-  // spawned executeRun promises and exposes `drainInFlightExecutions()`.
-  // Awaiting it here lets all postRun lifecycle work settle BEFORE
-  // TRUNCATE — no race, no kill, no retry needed.
   afterEach(async () => {
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
@@ -165,9 +112,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       resultJson: { summary: "Stale-queue invalidation test run." },
     }));
     runningProcesses.clear();
-    await cancelActiveRunsForCleanup(db, 5_000);
-    await heartbeat.drainInFlightExecutions();
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    await cleanupHeartbeatTestState(db, heartbeat);
   });
 
   afterAll(async () => {
