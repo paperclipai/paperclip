@@ -95,6 +95,11 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import {
+  enforceWorkspaceBranchPreflight,
+  expectedBranchForPersistence,
+  WorkspaceBranchPreflightError,
+} from "./workspace-branch-preflight.js";
 import { issueService } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
@@ -7472,6 +7477,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ]
         : []),
     ];
+    const branchPreflight = issueId
+      ? await enforceWorkspaceBranchPreflight(db, {
+      companyId: agent.companyId,
+      issueId,
+      issueIdentifier: issueRef?.identifier ?? null,
+      issueNumber: null,
+      issueTitle: issueRef?.title ?? null,
+      issueDescription: issueContext?.description ?? null,
+      workspaceCwd: executionWorkspace.cwd,
+      workspaceSource: executionWorkspace.source,
+      persistedBranchName: executionWorkspace.branchName ?? persistedExecutionWorkspace?.branchName ?? null,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueWorkspaceSettings: (issueExecutionWorkspaceSettings ?? null) as Record<string, unknown> | null,
+      projectId: resolvedProjectId,
+      repoRef: executionWorkspace.repoRef,
+      issue: issueRef
+        ? {
+            id: issueRef.id,
+            identifier: issueRef.identifier,
+            title: issueRef.title,
+            workMode: issueRef.workMode,
+          }
+        : null,
+    })
+      : {
+          expectedBranch: executionWorkspace.branchName,
+          expectedSpec: null,
+          currentBranch: null,
+          autoCheckedOut: false,
+          warnings: [],
+        };
+    if (branchPreflight.warnings.length > 0) {
+      runtimeWorkspaceWarnings.push(...branchPreflight.warnings);
+    }
+    const resolvedBranchName =
+      branchPreflight.expectedSpec
+        ? expectedBranchForPersistence(branchPreflight.expectedSpec) ?? branchPreflight.currentBranch
+        : executionWorkspace.branchName ?? branchPreflight.currentBranch;
+    if (resolvedBranchName && executionWorkspace.branchName !== resolvedBranchName) {
+      executionWorkspace.branchName = resolvedBranchName;
+    }
+    const expectedBranchLabel =
+      branchPreflight.expectedSpec?.label ?? branchPreflight.expectedBranch ?? resolvedBranchName ?? null;
     context.paperclipWorkspace = {
       cwd: executionWorkspace.cwd,
       source: executionWorkspace.source,
@@ -7482,6 +7530,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: executionWorkspace.repoUrl,
       repoRef: executionWorkspace.repoRef,
       branchName: executionWorkspace.branchName,
+      expectedBranch: expectedBranchLabel,
       worktreePath: executionWorkspace.worktreePath,
       realization: workspaceRealization,
       agentHome: await (async () => {
@@ -7490,6 +7539,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return home;
       })(),
     };
+    if (expectedBranchLabel) {
+      context.paperclipExpectedBranch = expectedBranchLabel;
+    } else {
+      delete context.paperclipExpectedBranch;
+    }
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
@@ -8161,11 +8215,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const setupErrorCode =
+            outerErr instanceof WorkspaceBranchPreflightError
+              ? outerErr.code
+              : "adapter_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "adapter_failed",
+            errorCode: setupErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
