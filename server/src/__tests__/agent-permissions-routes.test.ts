@@ -398,8 +398,9 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toEqual({});
-    expect(res.body.runtimeConfig).toEqual({});
+    expect(res.body).not.toHaveProperty("adapterConfig");
+    expect(res.body).not.toHaveProperty("runtimeConfig");
+    expect(res.body.configRedacted).toBe(true);
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -419,10 +420,11 @@ describe.sequential("agent permission routes", () => {
     expect(res.body).toEqual([
       expect.objectContaining({
         id: agentId,
-        adapterConfig: {},
-        runtimeConfig: {},
+        configRedacted: true,
       }),
     ]);
+    expect(res.body[0]).not.toHaveProperty("adapterConfig");
+    expect(res.body[0]).not.toHaveProperty("runtimeConfig");
   });
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
@@ -1340,6 +1342,9 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
+    expect(res.body).toHaveProperty("adapterConfig");
+    expect(res.body).toHaveProperty("runtimeConfig");
+    expect(res.body.configRedacted).toBeUndefined();
   }, 15_000);
 
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
