@@ -10,6 +10,7 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  hasExplicitNoOpRule,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -244,5 +245,33 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  describe("hasExplicitNoOpRule", () => {
+    it("returns true when description contains 'No-op rule:'", () => {
+      expect(
+        hasExplicitNoOpRule(
+          "## Status\n\n**No-op rule:** This issue stays `in_progress` for 90 days.",
+        ),
+      ).toBe(true);
+    });
+
+    it("returns true when description contains 'Disposition sweeps are false positives'", () => {
+      expect(
+        hasExplicitNoOpRule(
+          "The live path is the daily execution routine in AWR-1084. Disposition sweeps are false positives.",
+        ),
+      ).toBe(true);
+    });
+
+    it("returns false for normal issue descriptions", () => {
+      expect(hasExplicitNoOpRule("Implement the new onboarding flow.")).toBe(false);
+      expect(hasExplicitNoOpRule("")).toBe(false);
+    });
+
+    it("returns false for null/undefined", () => {
+      expect(hasExplicitNoOpRule(null)).toBe(false);
+      expect(hasExplicitNoOpRule(undefined)).toBe(false);
+    });
   });
 });
