@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation } from "@/lib/router";
 import { CommandPalette } from "@/components/CommandPalette";
 import { DevRestartBanner } from "@/components/DevRestartBanner";
+import { LazyNewIssueDialog } from "./LazyNewIssueDialog";
 import { WorktreeBanner } from "@/components/WorktreeBanner";
 import { ToastViewport } from "@/components/ToastViewport";
 import { GeneralSettingsProvider } from "@/context/GeneralSettingsContext";
@@ -91,6 +92,7 @@ export function EaosProductLayout() {
         </main>
       </div>
       <CommandPalette />
+      <LazyNewIssueDialog />
       <ToastViewport />
     </GeneralSettingsProvider>
   );

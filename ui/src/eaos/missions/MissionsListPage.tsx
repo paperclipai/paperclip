@@ -41,6 +41,7 @@ import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { useEaosViewerRole } from "../useEaosViewerRole";
+import { EaosPageHeader } from "../EaosPageHeader";
 import { AgentAvatar } from "../agents/AgentAvatar";
 import type { AvatarSubject } from "../agents/agent-avatar";
 import {
@@ -122,33 +123,33 @@ export function MissionsListPage({ now, initialMode = "list" }: MissionsListPage
   return (
     <section
       aria-labelledby="eaos-missions-title"
-      className="flex min-h-0 flex-1 flex-col gap-3"
+      className="-mx-4 -my-5 flex min-h-0 flex-1 flex-col sm:-mx-6 lg:-mx-8"
       data-testid="eaos-missions-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
       data-eaos-missions-mode={mode}
     >
-      <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-        <div className="flex items-baseline gap-2">
-          <h1
-            id="eaos-missions-title"
-            className="text-xl font-semibold tracking-tight text-foreground"
-            data-testid="eaos-missions-title"
-          >
-            Missions
-          </h1>
-          {rows.length > 0 ? (
-            <span
-              className="text-xs font-normal tabular-nums text-muted-foreground"
-              data-testid="eaos-missions-count"
-            >
-              {rows.length}
-            </span>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <ViewModeToggle mode={mode} onChange={setMode} />
-        </div>
-      </header>
+      <EaosPageHeader
+        title="Missions"
+        testId="eaos-missions-page-header"
+        actions={
+          <>
+            {rows.length > 0 ? (
+              <span
+                className="text-xs font-normal tabular-nums text-muted-foreground"
+                data-testid="eaos-missions-count"
+              >
+                {rows.length}
+              </span>
+            ) : null}
+            <ViewModeToggle mode={mode} onChange={setMode} />
+          </>
+        }
+      />
+      <h1 id="eaos-missions-title" className="sr-only" data-testid="eaos-missions-title">
+        Missions
+      </h1>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
 
       {!selectedCompanyId ? (
         <NoCompanyState />
@@ -165,6 +166,7 @@ export function MissionsListPage({ now, initialMode = "list" }: MissionsListPage
       )}
 
       {hasData && rows.length > 0 ? <FilterSummary summary={summary} /> : null}
+      </div>
     </section>
   );
 }

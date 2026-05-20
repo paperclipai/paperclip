@@ -1,0 +1,103 @@
+{
+  "base": "http://localhost:5174",
+  "companyId": "00000000-0000-0000-0000-000000000eaa",
+  "generatedAt": "2026-05-20T08:52:03.266Z",
+  "viewer": "customer-member",
+  "mode": "populated",
+  "forbidden": [
+    "Kernel/Admin",
+    "Kernel / Admin",
+    "Open in admin",
+    "Open in Admin",
+    "Open in kernel",
+    "Open in Kernel",
+    "Legacy kernel",
+    "Decide in kernel",
+    "Decide in admin",
+    "BACKEND-BACKED",
+    "BACKEND-DERIVED",
+    "FRESHNESS · UNKNOWN",
+    "Backend status:",
+    "Backend status is",
+    "issue.assigneeAgentId",
+    "issue.assigneeUserId",
+    "issue.executionAgentNameKey",
+    "CLAUDE_LOCAL",
+    "TEST_COMPLETED",
+    "COMMENT_POSTED",
+    "DOCUMENT_UPDATED",
+    "BLOCKED_ON_DEPENDENCY",
+    "pending_approval",
+    "adapter_managed",
+    "operator_branch",
+    "adapterConfig",
+    "runtimeConfig",
+    "executionWorkspace",
+    "Stage participant",
+    "Latest run id",
+    "executionRunId"
+  ],
+  "adminNav": {
+    "checkedAt": "eaos-dashboard",
+    "present": false
+  },
+  "routes": [
+    {
+      "route": "eaos-dashboard",
+      "ok": true,
+      "bytes": 456750
+    },
+    {
+      "route": "eaos-missions",
+      "ok": true,
+      "bytes": 484639
+    },
+    {
+      "route": "eaos-agents",
+      "ok": true,
+      "bytes": 458575
+    },
+    {
+      "route": "eaos-agents-new",
+      "ok": true,
+      "bytes": 459424
+    },
+    {
+      "route": "eaos-org",
+      "ok": true,
+      "bytes": 458859
+    },
+    {
+      "route": "eaos-projects",
+      "ok": true,
+      "bytes": 444447
+    },
+    {
+      "route": "eaos-runs",
+      "ok": true,
+      "bytes": 458767
+    },
+    {
+      "route": "eaos-approvals",
+      "ok": true,
+      "bytes": 449430
+    },
+    {
+      "route": "eaos-knowledge",
+      "ok": true,
+      "bytes": 443300
+    },
+    {
+      "route": "eaos-blueprints",
+      "ok": true,
+      "bytes": 440659
+    },
+    {
+      "route": "eaos-mission-detail",
+      "ok": true,
+      "bytes": 450808
+    }
+  ],
+  "findings": [],
+  "pass": true
+}

@@ -22,6 +22,7 @@ vi.hoisted(() => {
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { DialogProvider } from "@/context/DialogContext";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosShell } from "./EaosShell";
 import { actSync, flushReactQuery } from "./test-helpers";
@@ -72,13 +73,15 @@ function renderEaosPath(initialPath = "/eaos") {
   actSync(() => {
     root.render(
       <QueryClientProvider client={makeQueryClient()}>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path="eaos/*" element={<EaosShell />}>
-              <Route index element={<CommandCenterLanding />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <DialogProvider>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path="eaos/*" element={<EaosShell />}>
+                <Route index element={<CommandCenterLanding />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </DialogProvider>
       </QueryClientProvider>,
     );
   });

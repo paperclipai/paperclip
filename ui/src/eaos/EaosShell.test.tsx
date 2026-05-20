@@ -18,6 +18,7 @@ vi.hoisted(() => {
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DialogProvider } from "@/context/DialogContext";
 import { EaosShell } from "./EaosShell";
 import { actSync, flushReactQuery } from "./test-helpers";
 
@@ -62,17 +63,19 @@ function renderAt(initialPath: string, variant: "eaos" | "kernel" = "eaos") {
   actSync(() => {
     root.render(
       <QueryClientProvider client={makeQueryClient()}>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path={variant === "kernel" ? "k/*" : "eaos/*"} element={<EaosShell variant={variant} />}>
-              <Route index element={<div data-testid="child-content">EAOS child content</div>} />
-              <Route
-                path="other"
-                element={<div data-testid="child-content-other">Other content</div>}
-              />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <DialogProvider>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path={variant === "kernel" ? "k/*" : "eaos/*"} element={<EaosShell variant={variant} />}>
+                <Route index element={<div data-testid="child-content">EAOS child content</div>} />
+                <Route
+                  path="other"
+                  element={<div data-testid="child-content-other">Other content</div>}
+                />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </DialogProvider>
       </QueryClientProvider>,
     );
   });
@@ -106,7 +109,7 @@ describe("EaosShell", () => {
     expect(section?.getAttribute("id")).toBe("eaos-section-content");
   });
 
-  it("renders the LET-503 single-noun primary rail in contract order (operator)", async () => {
+  it("renders the LET-506 grouped Multica-style rail in contract order (operator)", async () => {
     renderAt("/eaos");
     // The Admin entry is operator-gated and the access query resolves
     // asynchronously, so flush the query microtasks before asserting on
@@ -116,12 +119,16 @@ describe("EaosShell", () => {
     const links = Array.from(
       container?.querySelectorAll('[data-testid^="eaos-primary-nav-label-"]') ?? [],
     ).map((node) => node.textContent?.trim());
+    // LET-506 (Multica adaptation): Dashboard sits in the unlabeled
+    // Personal section, the Workspace group lists work surfaces in mission
+    // priority order, and Configure trails with Agent Builder + the
+    // operator-only Admin entry.
     expect(links).toEqual([
       "Dashboard",
       "Missions",
+      "Projects",
       "Agents",
       "Org",
-      "Projects",
       "Runs",
       "Approvals",
       "Knowledge",
@@ -149,19 +156,22 @@ describe("EaosShell", () => {
     }));
     vi.resetModules();
     const { EaosShell: CustomerShell } = await import("./EaosShell");
+    const { DialogProvider: ResetDialogProvider } = await import("@/context/DialogContext");
     container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
     actSync(() => {
       root.render(
         <QueryClientProvider client={makeQueryClient()}>
-          <MemoryRouter initialEntries={["/eaos"]}>
-            <Routes>
-              <Route path="eaos/*" element={<CustomerShell variant="eaos" />}>
-                <Route index element={<div data-testid="child-content">EAOS child content</div>} />
-              </Route>
-            </Routes>
-          </MemoryRouter>
+          <ResetDialogProvider>
+            <MemoryRouter initialEntries={["/eaos"]}>
+              <Routes>
+                <Route path="eaos/*" element={<CustomerShell variant="eaos" />}>
+                  <Route index element={<div data-testid="child-content">EAOS child content</div>} />
+                </Route>
+              </Routes>
+            </MemoryRouter>
+          </ResetDialogProvider>
         </QueryClientProvider>,
       );
     });
@@ -178,16 +188,43 @@ describe("EaosShell", () => {
     root.unmount();
   });
 
-  it("renders the rail as a single group (no Operator/Build-Admin headers)", () => {
+  it("renders the LET-506 Multica-style group structure (Personal unlabeled, Workspace, Configure)", () => {
     renderAt("/eaos");
-    const primaryGroup = container?.querySelector(
-      '[data-testid="eaos-primary-nav-group-primary"]',
+    // Multica's sidebar groups Personal/Workspace/Configure; the EAOS
+    // adaptation renders the Personal section unlabeled (Dashboard sits
+    // flush below the search/new-mission header) and labels the Workspace
+    // + Configure groups for screen readers and the visual hierarchy.
+    expect(
+      container?.querySelector('[data-testid="eaos-primary-nav-group-personal"]'),
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="eaos-primary-nav-group-workspace"]'),
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="eaos-primary-nav-group-configure"]'),
+    ).not.toBeNull();
+    // Legacy single-group testid from LET-503 is gone — guard against
+    // resurrection.
+    expect(
+      container?.querySelector('[data-testid="eaos-primary-nav-group-primary"]'),
+    ).toBeNull();
+    expect(
+      container?.querySelector('[data-testid="eaos-primary-nav-group-secondary"]'),
+    ).toBeNull();
+  });
+
+  it("renders the Multica-style Search + New mission header triggers in the sidebar", () => {
+    renderAt("/eaos");
+    const searchTrigger = container?.querySelector(
+      '[data-testid="eaos-primary-nav-search"]',
     );
-    const secondaryGroup = container?.querySelector(
-      '[data-testid="eaos-primary-nav-group-secondary"]',
+    const newMissionTrigger = container?.querySelector(
+      '[data-testid="eaos-primary-nav-new-mission"]',
     );
-    expect(primaryGroup).not.toBeNull();
-    expect(secondaryGroup).toBeNull();
+    expect(searchTrigger).not.toBeNull();
+    expect(newMissionTrigger).not.toBeNull();
+    expect(searchTrigger?.getAttribute("aria-label")).toContain("Search");
+    expect(newMissionTrigger?.getAttribute("aria-label")).toContain("New mission");
   });
 
   it("does not render dashed Stub count pills in the rail", () => {

@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { DialogProvider } from "@/context/DialogContext";
 import { EaosProductLayout } from "./EaosProductLayout";
 import { EaosShell } from "./EaosShell";
 import { CommandCenterLanding } from "./CommandCenterLanding";
@@ -106,16 +107,18 @@ async function renderAt(initialPath: string, child: ReactNode) {
   actSync(() => {
     root.render(
       <QueryClientProvider client={makeQueryClient()}>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path="eaos" element={<EaosProductLayout />}>
-              {child}
-            </Route>
-            <Route path="agent-os" element={<EaosProductLayout />}>
-              <Route index element={<div data-testid="agent-os-stub">Agent OS content</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <DialogProvider>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path="eaos" element={<EaosProductLayout />}>
+                {child}
+              </Route>
+              <Route path="agent-os" element={<EaosProductLayout />}>
+                <Route index element={<div data-testid="agent-os-stub">Agent OS content</div>} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </DialogProvider>
       </QueryClientProvider>,
     );
   });

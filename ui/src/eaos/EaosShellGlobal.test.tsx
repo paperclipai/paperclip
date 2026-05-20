@@ -13,6 +13,7 @@ vi.hoisted(() => {
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DialogProvider } from "@/context/DialogContext";
 import { EaosShell } from "./EaosShell";
 import { CommandCenterLanding } from "./CommandCenterLanding";
 import { EaosZonePlaceholder } from "./EaosZonePlaceholder";
@@ -73,27 +74,29 @@ async function renderShellAt(initialPath: string) {
   actSync(() => {
     root.render(
       <QueryClientProvider client={makeQueryClient()}>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path="eaos" element={<EaosShell variant="eaos" />}>
-              <Route index element={<CommandCenterLanding />} />
-              {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos").map((zone) => (
-                <Route
-                  key={zone.id}
-                  path={zone.path.replace(/^\/eaos\//, "")}
-                  element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
-                />
-              ))}
-              {EAOS_LEGACY_SECONDARY_PATHS.map((path) => (
-                <Route
-                  key={path}
-                  path={path.replace(/^\/eaos\//, "")}
-                  element={<EaosZonePlaceholder title={path} description="legacy secondary route" />}
-                />
-              ))}
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <DialogProvider>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path="eaos" element={<EaosShell variant="eaos" />}>
+                <Route index element={<CommandCenterLanding />} />
+                {EAOS_PRIMARY_NAV.filter((zone) => zone.path !== "/eaos").map((zone) => (
+                  <Route
+                    key={zone.id}
+                    path={zone.path.replace(/^\/eaos\//, "")}
+                    element={<EaosZonePlaceholder title={zone.label} description={zone.description} />}
+                  />
+                ))}
+                {EAOS_LEGACY_SECONDARY_PATHS.map((path) => (
+                  <Route
+                    key={path}
+                    path={path.replace(/^\/eaos\//, "")}
+                    element={<EaosZonePlaceholder title={path} description="legacy secondary route" />}
+                  />
+                ))}
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </DialogProvider>
       </QueryClientProvider>,
     );
   });
