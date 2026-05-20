@@ -35,6 +35,7 @@ vi.mock("../../context/ToastContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+import { secretImportPage } from "../../lib/i18n";
 import { ImportFromVaultDialog } from "./ImportFromVaultDialog";
 
 const awsVault: CompanySecretProviderConfig = {
@@ -186,7 +187,7 @@ describe("ImportFromVaultDialog", () => {
       stripeRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
-    expect(document.body.textContent).toContain("1 selected");
+    expect(document.body.textContent).toContain(secretImportPage.footerSelected(1));
 
     // Load more page
     const loadMore = document.querySelector('[data-testid="vault-load-more"]') as HTMLButtonElement | null;
@@ -199,7 +200,7 @@ describe("ImportFromVaultDialog", () => {
 
     expect(document.body.textContent).toContain("prod/sendgrid");
     // Selection persisted through pagination.
-    expect(document.body.textContent).toContain("1 selected");
+    expect(document.body.textContent).toContain(secretImportPage.footerSelected(1));
 
     await act(async () => {
       root.unmount();
@@ -261,7 +262,7 @@ describe("ImportFromVaultDialog", () => {
     ) as HTMLButtonElement | null;
     expect(duplicateCheckbox?.getAttribute("data-disabled")).not.toBeNull();
 
-    expect(document.body.textContent).toContain("Conflict");
+    expect(document.body.textContent).toContain(secretImportPage.statusConflict);
     expect(document.body.textContent).toContain("Name already in use");
 
     await act(async () => {
@@ -335,7 +336,7 @@ describe("ImportFromVaultDialog", () => {
 
     // Click "Continue → Review" button.
     const continueBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.includes("Continue"),
+      (btn) => btn.textContent?.includes(secretImportPage.stepReview),
     );
     expect(continueBtn).toBeTruthy();
     await act(async () => {
@@ -344,10 +345,10 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     // Review step: error message visible, Import button disabled.
-    expect(document.body.textContent?.toLowerCase()).toContain("a paperclip secret already uses this");
+    expect(document.body.textContent).toContain(secretImportPage.validationNameExists);
 
     const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
+      (btn) => btn.textContent?.startsWith("导入 "),
     ) as HTMLButtonElement | undefined;
     expect(importBtn).toBeTruthy();
     expect(importBtn?.disabled).toBe(true);
@@ -397,7 +398,7 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     const continueBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.includes("Continue"),
+      (btn) => btn.textContent?.includes(secretImportPage.stepReview),
     );
     await act(async () => {
       continueBtn!.click();
@@ -417,9 +418,9 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
-    expect(document.body.textContent).toContain("lowercase letters");
+    expect(document.body.textContent).toContain("小写字母");
     const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
+      (btn) => btn.textContent?.startsWith("导入 "),
     ) as HTMLButtonElement | undefined;
     expect(importBtn?.disabled).toBe(true);
 
@@ -489,7 +490,7 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     const continueBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.includes("Continue"),
+      (btn) => btn.textContent?.includes(secretImportPage.stepReview),
     );
     await act(async () => {
       continueBtn!.click();
@@ -511,7 +512,7 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
+      (btn) => btn.textContent?.startsWith("导入 "),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
       importBtn!.click();
@@ -629,7 +630,7 @@ describe("ImportFromVaultDialog", () => {
 
     // Continue
     const continueBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.includes("Continue"),
+      (btn) => btn.textContent?.includes(secretImportPage.stepReview),
     );
     await act(async () => {
       continueBtn!.click();
@@ -638,7 +639,7 @@ describe("ImportFromVaultDialog", () => {
 
     // Import
     const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
+      (btn) => btn.textContent?.startsWith("导入 "),
     ) as HTMLButtonElement | undefined;
     expect(importBtn).toBeTruthy();
     await act(async () => {
@@ -648,10 +649,10 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     expect(mockSecretsApi.remoteImport).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).toContain("Import complete");
-    expect(document.body.textContent).toContain("1 created");
-    expect(document.body.textContent).toContain("1 skipped");
-    expect(document.body.textContent).toContain("1 failed");
+    expect(document.body.textContent).toContain(secretImportPage.resultComplete);
+    expect(document.body.textContent).toContain(secretImportPage.summaryCreated(1));
+    expect(document.body.textContent).toContain(secretImportPage.summarySkipped(1));
+    expect(document.body.textContent).toContain(secretImportPage.summaryFailed(1));
     expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
     expect(document.body.textContent).not.toContain("AccessDeniedException");
     expect(document.body.textContent).not.toContain("123456789012");
@@ -716,7 +717,7 @@ describe("ImportFromVaultDialog", () => {
 
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("Could not load remote secrets");
+    expect(banner?.textContent).toContain(secretImportPage.couldNotLoadRemote);
 
     await act(async () => {
       root.unmount();
@@ -754,8 +755,8 @@ describe("ImportFromVaultDialog", () => {
 
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("AWS denied list access");
-    expect(banner?.textContent).toContain("missing secretsmanager:ListSecrets");
+    expect(banner?.textContent).toContain(secretImportPage.awsDeniedList);
+    expect(banner?.textContent).toContain("secretsmanager:ListSecrets");
     expect(banner?.textContent).not.toContain(rawProviderMessage);
     expect(banner?.textContent).not.toContain("arn:aws");
     expect(banner?.textContent).not.toContain("123456789012");

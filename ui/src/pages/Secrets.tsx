@@ -48,7 +48,16 @@ import {
 } from "../api/secrets";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { secretsPage } from "../lib/i18n";
+import {
+  formatSecretAccessConsumer,
+  formatSecretAccessOutcome,
+  formatSecretBindingTargetType,
+  formatSecretHealthStatus,
+  formatSecretProviderConfigStatus,
+  formatSecretProviderLabel,
+  formatSecretStatus,
+  secretsPage,
+} from "../lib/i18n";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,7 +190,8 @@ function statusTextTone(status: SecretStatus) {
 }
 
 function providerLabel(providers: SecretProviderDescriptor[] | undefined, id: SecretProvider) {
-  return providers?.find((p) => p.id === id)?.label ?? id.replaceAll("_", " ");
+  const descriptor = providers?.find((p) => p.id === id);
+  return formatSecretProviderLabel(id, descriptor?.label);
 }
 
 function normalizeSecretKeyForPreview(input: string) {
@@ -218,10 +228,10 @@ export function getCreateProviderBlockReason(
 ) {
   if (!provider) return secretsPage.blockSelectProvider;
   if (mode === "managed" && provider.supportsManagedValues === false) {
-    return `${provider.label} does not support Paperclip-managed secret values.`;
+    return secretsPage.providerNoManagedSupport(provider.label);
   }
   if (mode === "external" && provider.supportsExternalReferences === false) {
-    return `${provider.label} does not support linked external references.`;
+    return secretsPage.providerNoExternalSupport(provider.label);
   }
   if (provider.configured === false) {
     const healthEntry = healthEntryForProvider(health, provider.id);
@@ -280,7 +290,7 @@ export function getDefaultProviderConfigId(
 
 function providerVaultLabel(configs: CompanySecretProviderConfig[], id: string | null | undefined) {
   if (!id) return secretsPage.deploymentDefault;
-  return configs.find((config) => config.id === id)?.displayName ?? "Unknown vault";
+  return configs.find((config) => config.id === id)?.displayName ?? secretsPage.unknownVault;
 }
 
 function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unknown> {
@@ -541,7 +551,7 @@ export function Secrets() {
 
   const rotateMutation = useMutation({
     mutationFn: () => {
-      if (!selectedSecret) throw new Error("Select a secret first");
+      if (!selectedSecret) throw new Error(secretsPage.selectSecretFirst);
       if (selectedSecret.managedMode === "external_reference") {
         return secretsApi.rotate(selectedSecret.id, {
           externalRef: rotateExternalRef.trim() || selectedSecret.externalRef || undefined,
@@ -563,7 +573,7 @@ export function Secrets() {
       invalidateAll([updated.id]);
     },
     onError: (error) => {
-      setRotateError(error instanceof Error ? error.message : "Rotate failed");
+      setRotateError(error instanceof Error ? error.message : secretsPage.rotateFailed);
     },
   });
 
@@ -851,7 +861,7 @@ export function Secrets() {
                     </td>
                     <td className="px-2 py-2.5">
                       <span className={cn("text-xs font-medium", statusTextTone(secret.status))}>
-                        {secret.status}
+                        {formatSecretStatus(secret.status)}
                       </span>
                     </td>
                     <td className="px-2 py-2.5 text-xs font-mono">v{secret.latestVersion}</td>
@@ -935,7 +945,7 @@ export function Secrets() {
                   <KeyRound className="h-4 w-4" />
                   {selectedSecret.name}
                   <span className={cn("ml-2 text-sm font-normal", statusTextTone(selectedSecret.status))}>
-                    {selectedSecret.status}
+                    {formatSecretStatus(selectedSecret.status)}
                   </span>
                 </SheetTitle>
                 <SheetDescription>
@@ -1046,7 +1056,7 @@ export function Secrets() {
             <DialogTitle>{secretsPage.referencesTitle}</DialogTitle>
             <DialogDescription>
               {usageDialogSecret
-                ? `${usageDialogSecret.name} ${secretsPage.referencesDesc(usageDialogSecret.name, usageDialogSecret.referenceCount ?? 0)}`
+                ? secretsPage.referencesDesc(usageDialogSecret.name, usageDialogSecret.referenceCount ?? 0)
                 : null}
             </DialogDescription>
           </DialogHeader>
@@ -1308,7 +1318,7 @@ export function Secrets() {
                   onChange={(event) =>
                     setVaultForm((current) => ({ ...current, displayName: event.target.value }))
                   }
-                  placeholder="Production local vault"
+                  placeholder={secretsPage.vaultDisplayPlaceholder}
                 />
               </div>
               <div>
@@ -1505,16 +1515,15 @@ function SecretsHowToUse() {
     <div className="flex items-start gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
       <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
       <div className="space-y-1">
-        <p className="font-medium text-foreground">Use secrets by binding them to runtime environment variables.</p>
+        <p className="font-medium text-foreground">{secretsPage.howToUseTitle}</p>
         <p>
-          Create or link a secret here, then open an agent&apos;s Environment variables or a project&apos;s Env field.
-          Add the env key the process expects, for example <code className="font-mono">GH_TOKEN</code>, choose{" "}
-          <span className="font-medium text-foreground">Secret</span>, and select the stored secret version.
+          {secretsPage.howToUseP1Before}{" "}
+          <code className="font-mono">GH_TOKEN</code>
+          {secretsPage.howToUseP1After}{" "}
+          <span className="font-medium text-foreground">{secretsPage.howToUseSecretKind}</span>
+          {secretsPage.howToUseP1End}
         </p>
-        <p>
-          Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env
-          applies to every issue in the project and overrides agent env on matching keys.
-        </p>
+        <p>{secretsPage.howToUseP2}</p>
       </div>
     </div>
   );
@@ -1663,7 +1672,7 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
   if (!message) {
     return (
       <p className="mt-1 text-[11px] text-muted-foreground">
-        {config.isDefault ? secretsPage.defaultBadge : secretsPage.vaultLabel} · {config.status.replace("_", " ")}
+        {config.isDefault ? secretsPage.defaultBadge : secretsPage.vaultLabel} · {formatSecretProviderConfigStatus(config.status)}
       </p>
     );
   }
@@ -1790,7 +1799,7 @@ export function ProviderVaultsTab({
               className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             >
               <Icon className="h-4 w-4" />
-              <span className="truncate">{provider?.label ?? id.replaceAll("_", " ")}</span>
+              <span className="truncate">{formatSecretProviderLabel(id, provider?.label)}</span>
             </a>
           ))}
         </nav>
@@ -1801,7 +1810,7 @@ export function ProviderVaultsTab({
           <section key={id} id={`provider-vaults-${id}`} className={cn("scroll-mt-6 space-y-2", isComingSoonFamily && "opacity-50")}>
             <div className="flex flex-wrap items-center gap-2">
               <Icon className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
+              <h2 className="text-sm font-semibold">{formatSecretProviderLabel(id, provider?.label)}</h2>
               {isComingSoonFamily ? (
                 <span className="ml-auto text-xs text-muted-foreground">{secretsPage.vaultStatusComingSoon}</span>
               ) : (
@@ -1865,17 +1874,20 @@ function ProviderVaultCard({
             {config.isDefault ? (
               <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
                 <Star className="h-3 w-3 fill-current" />
-                Default
+                {secretsPage.defaultBadge}
               </span>
             ) : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <Badge variant="outline" className={cn("font-medium", providerConfigStatusTone(config.status))}>
-              {config.status.replace("_", " ")}
+              {formatSecretProviderConfigStatus(config.status)}
             </Badge>
             {config.healthStatus ? (
               <span className="text-xs text-muted-foreground">
-                Health {config.healthStatus.replace("_", " ")} · {formatRelative(config.healthCheckedAt)}
+                {secretsPage.healthLine(
+                  formatSecretHealthStatus(config.healthStatus),
+                  formatRelative(config.healthCheckedAt),
+                )}
               </span>
             ) : (
               <span className="text-xs text-muted-foreground">{secretsPage.healthNotChecked}</span>
@@ -2026,7 +2038,7 @@ function SecretDetailsTab({
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
       <DetailRow label={secretsPage.custodyField}>{modeLabel(secret.managedMode)}</DetailRow>
-      <DetailRow label={secretsPage.providerField}>{secret.provider.replaceAll("_", " ")}</DetailRow>
+      <DetailRow label={secretsPage.providerField}>{formatSecretProviderLabel(secret.provider)}</DetailRow>
       <DetailRow label={secretsPage.providerVaultLabel}>{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>
       <DetailRow label={secretsPage.latestVersionField}>v{secret.latestVersion}</DetailRow>
       <DetailRow label={secretsPage.createdField}>{formatRelative(secret.createdAt)}</DetailRow>
@@ -2078,7 +2090,7 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
           className="rounded-md border border-border bg-muted/30 p-2 text-xs"
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="font-medium capitalize">{binding.target.type}</span>
+            <span className="font-medium">{formatSecretBindingTargetType(binding.target.type)}</span>
             <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-2">
@@ -2091,7 +2103,7 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
             )}
             {binding.target.status ? (
               <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
-                {binding.target.status.replaceAll("_", " ")}
+                {formatSecretStatus(binding.target.status)}
               </Badge>
             ) : null}
           </div>
@@ -2123,8 +2135,8 @@ function SecretEventsTab({ loading, events }: { loading: boolean; events: Secret
       {events.map((event) => (
         <div key={event.id} className="rounded border border-border px-2 py-1.5 text-xs">
           <div className="flex items-center justify-between">
-            <span className="capitalize">
-              {event.consumerType} · {event.outcome}
+            <span>
+              {formatSecretAccessConsumer(event.consumerType)} · {formatSecretAccessOutcome(event.outcome)}
             </span>
             <span className="text-[11px] text-muted-foreground">{formatRelative(event.createdAt)}</span>
           </div>

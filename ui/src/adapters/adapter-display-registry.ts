@@ -15,6 +15,7 @@ import {
   Terminal,
   Cpu,
 } from "lucide-react";
+import { formatCommonApiSlugZh } from "@/lib/i18n";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { HermesIcon } from "@/components/HermesIcon";
 
@@ -34,8 +35,15 @@ function getTypeSuffix(type: string): string | null {
   return null;
 }
 
+const TYPE_SUFFIX_DISPLAY_ZH: Record<string, string> = {
+  local: "本地",
+  gateway: "网关",
+};
+
 function withSuffix(label: string, suffix: string | null): string {
-  return suffix ? `${label} (${suffix})` : label;
+  if (!suffix) return label;
+  const zh = TYPE_SUFFIX_DISPLAY_ZH[suffix] ?? suffix;
+  return `${label}（${zh}）`;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,8 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
 // ---------------------------------------------------------------------------
 
 function humanizeType(type: string): string {
+  const mapped = formatCommonApiSlugZh(type);
+  if (mapped !== type) return mapped;
   // Strip known type suffixes so "droid_local" → "Droid", not "Droid Local"
   let base = type;
   for (const suffix of Object.keys(TYPE_SUFFIXES)) {

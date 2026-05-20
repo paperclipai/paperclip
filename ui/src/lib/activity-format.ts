@@ -6,6 +6,7 @@ import {
   activityChangeLabels,
   formatIssueStatus,
   formatPriorityLabel,
+  formatCommonApiSlugZh,
 } from "./i18n";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
@@ -43,6 +44,8 @@ function humanizeActivityField(field: "status" | "priority" | "generic", value: 
   }
   if (field === "status") return formatIssueStatus(value);
   if (field === "priority") return formatPriorityLabel(value);
+  const mapped = formatCommonApiSlugZh(value);
+  if (mapped !== value) return mapped;
   return value.replace(/_/g, " ");
 }
 

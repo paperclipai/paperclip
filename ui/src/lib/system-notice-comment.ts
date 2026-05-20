@@ -9,7 +9,7 @@ import type {
   SystemNoticeProps,
   SystemNoticeTone,
 } from "../components/SystemNotice";
-import { systemNoticeLabels, systemNoticeMetaLabels } from "../lib/i18n";
+import { systemNoticeLabels, systemNoticeMetaLabels, activityRowLabels } from "../lib/i18n";
 
 function translateLabel(label: string | undefined | null): string {
   if (!label) return "";
@@ -35,7 +35,7 @@ function mapMetadataRow(
     case "issue_link": {
       const identifier = row.identifier ?? null;
       if (!identifier) {
-        return { kind: "text", label: translateLabel(row.label), value: row.title ?? "unknown" };
+        return { kind: "text", label: translateLabel(row.label), value: row.title ?? activityRowLabels.unknown };
       }
       return {
         kind: "issue",

@@ -8,6 +8,7 @@ import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
+import { issueDocumentsUi } from "../lib/i18n";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -360,18 +361,20 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).not.toContain("Restored plan body");
 
     const revisionButtons = Array.from(container.querySelectorAll("button"));
-    const historicalRevisionButton = revisionButtons.find((button) => button.textContent?.includes("rev 3"));
+    const historicalRevisionButton = revisionButtons.find((button) =>
+      button.textContent?.includes(issueDocumentsUi.revisionLabel(3)),
+    );
     expect(historicalRevisionButton).toBeTruthy();
 
     await act(async () => {
       historicalRevisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Viewing revision 3");
+    expect(container.textContent).toContain(issueDocumentsUi.viewingRevision(3));
     expect(container.textContent).toContain("Restored plan body");
 
     const restoreButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Restore this revision"));
+      .find((button) => button.textContent?.includes(issueDocumentsUi.restoreThisRevision));
     expect(restoreButton).toBeTruthy();
 
     await act(async () => {
@@ -380,7 +383,7 @@ describe("IssueDocumentsSection", () => {
 
     expect(mockIssuesApi.restoreDocumentRevision).toHaveBeenCalledWith("issue-1", "plan", "revision-3");
     expect(container.textContent).toContain("Restored plan body");
-    expect(container.textContent).not.toContain("Viewing revision 3");
+    expect(container.textContent).not.toContain(issueDocumentsUi.viewingRevision(3));
 
     pendingDocuments.resolve([restoredDocument]);
     await flush();
@@ -436,25 +439,27 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).toContain("Current plan body");
 
     const revisionButtons = Array.from(container.querySelectorAll("button"));
-    const historicalRevisionButton = revisionButtons.find((button) => button.textContent?.includes("rev 3"));
+    const historicalRevisionButton = revisionButtons.find((button) =>
+      button.textContent?.includes(issueDocumentsUi.revisionLabel(3)),
+    );
     expect(historicalRevisionButton).toBeTruthy();
 
     await act(async () => {
       historicalRevisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Viewing revision 3");
+    expect(container.textContent).toContain(issueDocumentsUi.viewingRevision(3));
     expect(container.textContent).toContain("Historical plan body");
 
     const currentRevisionButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("rev 4"));
+      .find((button) => button.textContent?.includes(issueDocumentsUi.revisionLabel(4)));
     expect(currentRevisionButton).toBeTruthy();
 
     await act(async () => {
       currentRevisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).not.toContain("Viewing revision 3");
+    expect(container.textContent).not.toContain(issueDocumentsUi.viewingRevision(3));
     expect(container.textContent).toContain("Current plan body");
 
     await act(async () => {
@@ -515,25 +520,27 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).toContain("Current plan body");
 
     const revisionButtons = Array.from(container.querySelectorAll("button"));
-    const historicalRevisionButton = revisionButtons.find((button) => button.textContent?.includes("rev 2"));
+    const historicalRevisionButton = revisionButtons.find((button) =>
+      button.textContent?.includes(issueDocumentsUi.revisionLabel(2)),
+    );
     expect(historicalRevisionButton).toBeTruthy();
 
     await act(async () => {
       historicalRevisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Viewing revision 2");
+    expect(container.textContent).toContain(issueDocumentsUi.viewingRevision(2));
     expect(container.textContent).toContain("Original plan body");
 
     const currentRevisionButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("rev 3"));
+      .find((button) => button.textContent?.includes(issueDocumentsUi.revisionLabel(3)));
     expect(currentRevisionButton).toBeTruthy();
 
     await act(async () => {
       currentRevisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).not.toContain("Viewing revision 2");
+    expect(container.textContent).not.toContain(issueDocumentsUi.viewingRevision(2));
     expect(container.textContent).toContain("Current plan body");
 
     await act(async () => {
@@ -575,7 +582,7 @@ describe("IssueDocumentsSection", () => {
     await flush();
 
     expect(container.textContent).toContain("Loaded plan body");
-    expect(container.textContent).not.toContain("Markdown body");
+    expect(container.textContent).not.toContain(issueDocumentsUi.markdownBodyPlaceholder);
 
     await act(async () => {
       root.unmount();

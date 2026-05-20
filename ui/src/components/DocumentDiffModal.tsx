@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { DocumentRevision } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
+import { issueDocumentsUi } from "../lib/i18n";
 import { queryKeys } from "../lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { relativeTime } from "../lib/utils";
@@ -19,13 +20,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+function getRevisionActorLabel(revision: DocumentRevision): string {
+  if (revision.createdByUserId) return issueDocumentsUi.revisionActor("board");
+  if (revision.createdByAgentId) return issueDocumentsUi.revisionActor("agent");
+  return issueDocumentsUi.revisionActor("system");
+}
+
 function getRevisionLabel(revision: DocumentRevision) {
-  const actor = revision.createdByUserId
-    ? "board"
-    : revision.createdByAgentId
-      ? "agent"
-      : "system";
-  return `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)} • ${actor}`;
+  return issueDocumentsUi.diffRevisionOption(
+    revision.revisionNumber,
+    relativeTime(revision.createdAt),
+    getRevisionActorLabel(revision),
+  );
 }
 
 export function DocumentDiffModal({
@@ -89,19 +95,19 @@ export function DocumentDiffModal({
         <div className="flex items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>
-              Diff — <span className="font-mono text-sm">{documentKey}</span>
+              {issueDocumentsUi.diffTitle(documentKey)}
             </DialogTitle>
           </DialogHeader>
 
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">Old</span>
+              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">{issueDocumentsUi.diffOld}</span>
               <Select
                 value={effectiveLeftId ?? ""}
                 onValueChange={(value) => setLeftRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={issueDocumentsUi.diffSelectRevision} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -113,13 +119,13 @@ export function DocumentDiffModal({
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">New</span>
+              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">{issueDocumentsUi.diffNew}</span>
               <Select
                 value={effectiveRightId ?? ""}
                 onValueChange={(value) => setRightRevisionId(value)}
               >
                 <SelectTrigger className="h-7 w-60 text-xs border-border/60">
-                  <SelectValue placeholder="Select revision" />
+                  <SelectValue placeholder={issueDocumentsUi.diffSelectRevision} />
                 </SelectTrigger>
                 <SelectContent>
                   {sortedRevisions.map((revision) => (
@@ -135,18 +141,18 @@ export function DocumentDiffModal({
 
         <div className="overflow-auto flex-1 rounded-md border border-border text-xs">
           {!revisions ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Loading revisions...</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{issueDocumentsUi.diffLoadingRevisions}</div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Select two revisions to compare.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{issueDocumentsUi.diffSelectTwoRevisions}</div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
+            <div className="p-6 text-center text-muted-foreground text-sm">{issueDocumentsUi.diffSameRevision}</div>
           ) : (
             <div className="font-mono text-[12px] leading-6">
               <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <span>Old</span>
-                <span>New</span>
+                <span>{issueDocumentsUi.diffColumnOld}</span>
+                <span>{issueDocumentsUi.diffColumnNew}</span>
                 <span />
-                <span>Content</span>
+                <span>{issueDocumentsUi.diffColumnContent}</span>
               </div>
               {diffRows.map((row, index) => (
                 <div

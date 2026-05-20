@@ -10,6 +10,7 @@ import {
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { formatCommonApiSlugZh } from "@/lib/i18n";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -354,7 +355,7 @@ function CommandSection({
                           ? "border-destructive/30 bg-destructive/10 text-destructive"
                           : "border-border text-muted-foreground",
                     )}>
-                      {item.healthStatus}
+                      {formatCommonApiSlugZh(item.healthStatus)}
                     </span>
                   </div>
                 ) : null}

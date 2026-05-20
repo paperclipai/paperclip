@@ -522,7 +522,6 @@ export function buildSchemaAdapterConfig(
   const ac: Record<string, unknown> = {};
 
   if (values.model?.trim()) ac.model = values.model.trim();
-  if (values.cwd) ac.cwd = values.cwd;
   if (values.command) ac.command = values.command;
   if (values.instructionsFilePath) ac.instructionsFilePath = values.instructionsFilePath;
   if (values.thinkingEffort) ac.thinkingEffort = values.thinkingEffort;

@@ -192,6 +192,35 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("strips deprecated adapterConfig.cwd on save", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      ...(agent.adapterConfig as Record<string, unknown>),
+      cwd: "/legacy/paperclip",
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: {
+          model: "claude-sonnet-4-6",
+        },
+      }),
+    );
+
+    expect(patch.adapterConfig).toEqual({
+      model: "claude-sonnet-4-6",
+      env: {
+        OPENAI_API_KEY: {
+          type: "plain",
+          value: "secret",
+        },
+      },
+      promptTemplate: "Work the issue.",
+    });
+    expect((patch.adapterConfig as Record<string, unknown>).cwd).toBeUndefined();
+  });
+
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

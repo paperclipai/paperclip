@@ -61,7 +61,21 @@ const OTHER_ENTITY_STATUS: Record<string, string> = {
   revision_requested: "需修改",
 };
 
+/** 常见 API 枚举 slug → 界面中文（值仍为英文） */
+const COMMON_API_SLUG_ZH: Record<string, string> = {
+  unknown: "未知",
+  invoke: "调用",
+  "adapter.invoke": "适配器调用",
+};
+
+export function formatCommonApiSlugZh(slug: string): string {
+  const key = slug.trim().toLowerCase();
+  return COMMON_API_SLUG_ZH[key] ?? slug;
+}
+
 function titleCaseUnderscores(status: string): string {
+  const mapped = COMMON_API_SLUG_ZH[status.trim().toLowerCase()];
+  if (mapped) return mapped;
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -363,14 +377,14 @@ export const orchestrationInjectionPage = {
   startedAt: "开始时间",
   createdAt: "创建时间",
   promptUnavailable: "这次运行没有上报最终提示词。适配器可能不是提示词型运行，或运行发生在该事件记录之前。",
-  eventUnavailable: "这次运行没有 adapter.invoke 事件。",
+  eventUnavailable: "这次运行没有适配器调用事件（adapter.invoke）。",
   finalPromptMarkdownHint:
     "以下为完整一段提示词原文，按 Markdown 排版展示（#、##、列表 - 等）。空行只是版面，不等于服务端分块；若仅上报了分块数组而没有整段字符串，会用双换行拼成一段再渲染。",
-  promptCacheCorrelationTitle: "提示词与缓存对齐（invoke 语义）",
-  promptCacheModeCold: "冷启动：stdin 按拼装块完整下发；模型侧 token 缓存是否命中以计费/用量回执为准。",
-  promptCacheModeResumed: "续会话：此前缀多由模型或 CLI 会话承接；下列块本次未再随 stdin 下发（不等同于 KV 命中计数）。",
+  promptCacheCorrelationTitle: "提示词与缓存对齐（调用语义）",
+  promptCacheModeCold: "冷启动：标准输入按拼装块完整下发；模型侧 token 缓存是否命中以计费/用量回执为准。",
+  promptCacheModeResumed: "续会话：此前缀多由模型或 CLI 会话承接；下列块本次未再随标准输入下发（不等同于 KV 命中计数）。",
   promptCacheStabilityKeyLabel: "稳定键（materialization）",
-  promptCacheSuppressedLabel: "本轮 stdin 省略的拼装块",
+  promptCacheSuppressedLabel: "本轮标准输入省略的拼装块",
   promptSectionTitles: {
     agent_instructions: "智能体说明（instructions）",
     bootstrap: "首轮引导（bootstrap）",
@@ -396,7 +410,7 @@ export const orchestrationInjectionPage = {
   promptMetrics: "提示词指标",
   /** adapter.invoke `promptMetrics` keys → 运行详情「输入编排」指标胶囊标签（中文在前，英文键名保留便于对照日志） */
   promptMetricLabels: {
-    promptChars: "stdin 合计（promptChars）",
+    promptChars: "标准输入合计（promptChars）",
     bootstrapPromptChars: "首轮引导（bootstrapPromptChars）",
     wakePromptChars: "唤醒上下文（wakePromptChars）",
     sessionHandoffChars: "会话交接（sessionHandoffChars）",
@@ -432,12 +446,50 @@ export const orchestrationInjectionPage = {
     issue_assigned: "分配交办",
     issue_execution_same_name: "同链执行合并",
   } as const,
+  /** WAKEUP_TRIGGER_DETAILS — API 值仍为英文 */
+  wakeupTriggerDetailLabels: {
+    manual: "手动",
+    ping: "探测",
+    callback: "回调",
+    system: "系统",
+  } as const,
   commandNotes: "调用说明",
   command: "命令",
   cwd: "工作目录",
   adapterType: "适配器",
   noSelection: "选择一条运行查看详情。",
   noData: "无",
+  pendingBackendNote: "暂无数据 · 等待后端开发",
+  pendingBackendCliCatalog: "CLI 参数中文清单尚未接入（cli-arg-catalog · M2）",
+  copyRunId: "复制运行 ID",
+  copyRunIdDone: "已复制",
+  runDurationLabel: "运行时长",
+  inputTokensLabel: "输入 Token",
+  outputTokensLabel: "输出 Token",
+  cachedTokensLabel: "缓存读取 Token",
+  exitCodeLabel: "退出码",
+  resultSummaryLabel: "结构化回传摘要",
+  transcriptPreviewLabel: "转写预览（友好）",
+  executionBlurbPending: "执行摘要 · 等待后端完善",
+  sourceSectionTitle: "运行来源",
+  sourceSectionDescription: "本轮运行如何产生 — 调整唤醒与派工策略时查阅",
+  inputSectionTitle: "输入编排",
+  inputSectionDescription: "控制面如何组装本轮输入 — 提示词段清单",
+  executionSectionTitle: "执行与回传",
+  executionSectionDescription: "适配器如何执行、输出如何回来 — 含结构化回传摘要",
+  overviewTitle: "运行概览",
+  expertTechnicalData: "技术数据",
+  openIssue: "打开事务",
+  openAgentRuns: "智能体运行页",
+  viewFullPrompt: "查看最终提示词全文",
+  viewFriendlyTranscript: "查看完整友好转写",
+  viewRawStream: "原始流",
+  viewFullCommand: "完整命令行",
+  dispatchReasonLabel: "派工原因",
+  relatedIssueLabel: "关联事务",
+  startTimeLabel: "开始",
+  endTimeLabel: "结束",
+  runningLabel: "运行中",
   chars: (count: number) => `${count.toLocaleString()} 字符`,
 } as const;
 
@@ -1056,7 +1108,87 @@ export const issueTreeControl = {
 export const issueDetailActors = {
   system: "系统",
   board: "董事会",
+  agent: "智能体",
   unknown: "未知",
+} as const;
+
+/** 事务详情 · 文档区块（IssueDocumentsSection） */
+export const issueDocumentsUi = {
+  sectionTitle: "文档",
+  newDocument: "新建文档",
+  newDocumentShort: "新建",
+  documentKeyPlaceholder: "文档键",
+  optionalTitlePlaceholder: "可选标题",
+  markdownBodyPlaceholder: "Markdown 正文",
+  cancel: "取消",
+  createDocument: "创建文档",
+  saving: "保存中…",
+  delete: "删除",
+  deleting: "删除中…",
+  documentKeyInvalid:
+    "仅用小写字母、数字、- 或 _，且以字母或数字开头。",
+  documentKeyAndBodyRequired: "文档键与正文均为必填",
+  documentBodyEmpty: "文档正文不能为空",
+  documentKeyFormatInvalid:
+    "文档键须以字母或数字开头，且仅含小写字母、数字、- 或 _。",
+  deleteDocumentFailed: "删除文档失败",
+  restoreRevisionFailed: "恢复文档修订失败",
+  remoteChangedLoadFailed: "文档已在远端更新，但未能加载最新版本",
+  saveDocumentFailed: "保存文档失败",
+  copyDocumentFailed: "无法复制文档",
+  saveBeforeOlderRevision: "请先保存或取消本地修改，再查看较早修订。",
+  revisionHistory: "修订历史",
+  loadingRevisions: "正在加载修订…",
+  revisionLabel: (n: number) => `修订 ${n}`,
+  revisionShortLabel: (n: number) => `rev ${n}`,
+  currentRevision: "当前",
+  noRevisionsYet: "暂无修订",
+  updatedAt: (when: string) => `更新于 ${when}`,
+  copiedDocument: "已复制",
+  copyDocument: "复制文档",
+  documentActions: "文档操作",
+  editDocument: "编辑文档",
+  downloadDocument: "下载文档",
+  viewDiff: "查看差异",
+  deleteDocument: "删除文档",
+  viewingRevision: (n: number) => `正在查看修订 ${n}`,
+  historicalPreviewHint:
+    "这是历史预览。恢复后将生成新的最新修订，历史仍仅追加。",
+  returnToLatest: "返回最新",
+  restoring: "恢复中…",
+  restoreThisRevision: "恢复此修订",
+  outOfDate: "已过期",
+  conflictHint:
+    "编辑期间文档已在别处更新。本地草稿已保留，自动保存已暂停。",
+  hideRemote: "隐藏远端",
+  reviewRemote: "查看远端",
+  keepMyDraft: "保留我的草稿",
+  reloadRemote: "重新加载远端",
+  overwriteRemote: "覆盖远端",
+  remoteRevision: (n: number) => `远端修订 ${n}`,
+  remoteUpdatedAt: (when: string) => `更新于 ${when}`,
+  viewingHistoricalRevision: "正在查看历史修订",
+  autosaving: "自动保存中…",
+  saved: "已保存",
+  couldNotSave: "无法保存",
+  deleteConfirm: "确定删除此文档？此操作不可撤销。",
+  expandDocumentAria: (key: string) => `展开文档 ${key}`,
+  collapseDocumentAria: (key: string) => `折叠文档 ${key}`,
+  revisionActor: (actor: "board" | "agent" | "system") => issueDetailActors[actor],
+  legacyPlanBadge: "计划",
+  // DocumentDiffModal
+  diffTitle: (key: string) => `差异 — ${key}`,
+  diffOld: "旧版",
+  diffNew: "新版",
+  diffSelectRevision: "选择修订",
+  diffLoadingRevisions: "正在加载修订…",
+  diffSelectTwoRevisions: "请选择两个修订进行比较。",
+  diffSameRevision: "两侧为同一修订。",
+  diffColumnOld: "旧版行",
+  diffColumnNew: "新版行",
+  diffColumnContent: "内容",
+  diffRevisionOption: (n: number, when: string, actor: string) =>
+    `修订 ${n} — ${when} · ${actor}`,
 } as const;
 
 /** Issue detail page: chrome, banners, cost summary, tree controls, common toasts */
@@ -1492,8 +1624,9 @@ export const agentDetailUi = {
       stdout: "标准输出",
       stderr: "标准错误",
       system: "系统",
+      unknown: "未知",
     };
-    return `[${labels[stream] ?? stream}]`;
+    return `[${labels[stream] ?? formatCommonApiSlugZh(stream)}]`;
   },
   /** 运行详情「事件」里 lifecycle 短句 → 界面中文（库内旧英文经 legacy 映射） */
   runLifecycleMessageDisplay: (message: string) => {
@@ -1520,8 +1653,9 @@ export const agentDetailUi = {
       system: "系统",
       stdout: "标准输出",
       diff: "代码差异",
+      unknown: "未知",
     };
-    return labels[kind] ?? kind;
+    return labels[kind] ?? formatCommonApiSlugZh(kind);
   },
   /** 友好转写里事件条的小标题（init / result） */
   transcriptEventRowLabel: (label: string) => {
@@ -1648,8 +1782,6 @@ export const agentConfigHelp: Record<string, string> = {
     "说明该智能体能承担的工作范围；会在组织图中展示，并参与任务分发相关逻辑。",
   adapterType:
     "运行载体：本地 CLI（Claude / Codex / OpenCode 等）、OpenClaw 网关、派生子进程或通用 HTTP Webhook。",
-  cwd:
-    "已弃用的遗留「工作目录」兜底项。存量智能体可能仍带此项；新建配置请优先使用项目工作区。",
   promptTemplate:
     "每次心跳都会附带发送的动态提示。宜保持短小、偏任务语境，不要用其承载大块静态说明书。可使用 {{ agent.id }}、{{ agent.name }}、{{ agent.role }} 等模板变量。",
   model: "覆盖适配器默认选用的模型标识。",
@@ -1736,9 +1868,6 @@ export const agentConfigUi = {
   testingEnvironmentEllipsis: "测试中…",
 
   envTestFailedGeneric: "环境探测未通过",
-
-  fieldWorkingDirDeprecated: "工作目录（已弃用）",
-  placeholderProjectPathUnix: "/path/to/project",
 
   fieldCommandLine: "启动命令",
 
@@ -1943,6 +2072,11 @@ export function formatBudgetWindowKindLabel(windowKind: string): string {
 
 export function formatBudgetPauseReasonZh(reason: string): string {
   return BUDGET_PAUSE_REASON_ZH[reason] ?? reason;
+}
+
+export function formatWakeupTriggerDetailZh(detail: string): string {
+  const labels = orchestrationInjectionPage.wakeupTriggerDetailLabels;
+  return detail in labels ? labels[detail as keyof typeof labels] : detail;
 }
 
 export function formatBudgetPolicyStatusBadge(paused: boolean, status: string): string {
@@ -3164,6 +3298,195 @@ export const secretsPage = {
   blockSelectProvider: "选择一个供应商。",
   blockNotConfigured: "在此部署中未配置。",
   blockHealthFailed: "健康检查失败：",
+  providerNoManagedSupport: (label: string) => `${label} 不支持 Paperclip 托管密钥值。`,
+  providerNoExternalSupport: (label: string) => `${label} 不支持链接外部引用。`,
+  unknownVault: "未知保险库",
+  selectSecretFirst: "请先选择密钥",
+  rotateFailed: "轮换失败",
+  healthLine: (status: string, checkedAt: string) => `健康 ${status} · ${checkedAt}`,
+  vaultDisplayPlaceholder: "例如：生产环境本地保险库",
+  howToUseTitle: "通过绑定运行时环境变量使用密钥。",
+  howToUseP1Before: "在此创建或链接密钥后，打开智能体的「环境变量」或项目的「环境」字段。添加进程所需的环境变量名（例如",
+  howToUseP1After: "），选择",
+  howToUseSecretKind: "密钥",
+  howToUseP1End: "并选中已存储的版本。",
+  howToUseP2:
+    "Paperclip 在运行启动时在服务端解析值，并作为该环境变量注入。项目级环境对该项目中所有事务生效，同名键会覆盖智能体环境。",
+} as const;
+
+const SECRET_PROVIDER_LABEL_ZH: Record<string, string> = {
+  local_encrypted: "本地加密（默认）",
+  aws_secrets_manager: "AWS Secrets Manager",
+  gcp_secret_manager: "GCP Secret Manager",
+  vault: "HashiCorp Vault",
+};
+
+const SECRET_STATUS_ZH: Record<string, string> = {
+  active: "活跃",
+  disabled: "已禁用",
+  archived: "已归档",
+  deleted: "已删除",
+};
+
+const SECRET_PROVIDER_CONFIG_STATUS_ZH: Record<string, string> = {
+  ready: "就绪",
+  warning: "警告",
+  coming_soon: "即将上线",
+  disabled: "已禁用",
+};
+
+const SECRET_HEALTH_STATUS_ZH: Record<string, string> = {
+  ok: "正常",
+  healthy: "正常",
+  error: "错误",
+  degraded: "降级",
+  unknown: "未知",
+};
+
+const SECRET_BINDING_TARGET_ZH: Record<string, string> = {
+  agent: "智能体",
+  project: "项目",
+  environment: "环境",
+  plugin: "插件",
+  company: "公司",
+  issue: "事务",
+};
+
+const SECRET_ACCESS_CONSUMER_ZH: Record<string, string> = {
+  agent: "智能体",
+  heartbeat: "心跳",
+  plugin: "插件",
+  system: "系统",
+};
+
+const SECRET_ACCESS_OUTCOME_ZH: Record<string, string> = {
+  resolved: "已解析",
+  failed: "失败",
+  denied: "拒绝",
+};
+
+export function formatSecretProviderLabel(providerId: string, apiLabel?: string): string {
+  return SECRET_PROVIDER_LABEL_ZH[providerId] ?? apiLabel ?? providerId.replaceAll("_", " ");
+}
+
+export function formatSecretStatus(status: string): string {
+  return SECRET_STATUS_ZH[status] ?? status.replaceAll("_", " ");
+}
+
+export function formatSecretProviderConfigStatus(status: string): string {
+  return SECRET_PROVIDER_CONFIG_STATUS_ZH[status] ?? status.replaceAll("_", " ");
+}
+
+export function formatSecretHealthStatus(status: string): string {
+  return SECRET_HEALTH_STATUS_ZH[status] ?? status.replaceAll("_", " ");
+}
+
+export function formatSecretBindingTargetType(type: string): string {
+  return SECRET_BINDING_TARGET_ZH[type] ?? type.replaceAll("_", " ");
+}
+
+export function formatSecretAccessConsumer(type: string): string {
+  return SECRET_ACCESS_CONSUMER_ZH[type] ?? type.replaceAll("_", " ");
+}
+
+export function formatSecretAccessOutcome(outcome: string): string {
+  return SECRET_ACCESS_OUTCOME_ZH[outcome] ?? outcome.replaceAll("_", " ");
+}
+
+/** AWS 保险库导入对话框 */
+export const secretImportPage = {
+  title: "从 AWS Secrets Manager 导入",
+  description: "将 AWS 托管的密钥作为外部引用导入 Paperclip。",
+  closeAria: "关闭导入对话框",
+  stepSelect: "选择",
+  stepReview: "审查",
+  stepResult: "结果",
+  cancel: "取消",
+  back: "返回",
+  continueReview: "继续 → 审查",
+  importing: "导入中…",
+  importCount: (n: number) => `导入 ${n} 条`,
+  done: "完成",
+  toastImportFailed: "导入失败",
+  toastImportComplete: "导入完成",
+  toastImportWithErrors: "导入完成（含错误）",
+  toastImportNoneBody: (vault: string) => `未从 ${vault} 导入任何密钥。`,
+  toastImportSummaryBody: (created: number, skipped: number, failed: number) =>
+    `${created} 已创建 · ${skipped} 已跳过 · ${failed} 失败`,
+  toastLoadMoreFailed: "无法加载更多结果",
+  statusImported: "已导入",
+  statusConflict: "冲突",
+  statusReady: "就绪",
+  rowCreated: "已创建",
+  rowSkipped: "已跳过",
+  rowFailed: "失败",
+  unexpectedError: "意外错误",
+  requestFailed: (status: number) => `请求失败：${status}`,
+  noAwsVault: "未配置 AWS 供应商保险库。请先添加后再导入密钥。",
+  manageVaults: "管理保险库",
+  vaultLabel: "保险库",
+  selectVaultAria: "选择 AWS 保险库",
+  selectVaultPlaceholder: "选择 AWS 保险库",
+  badgeDefault: "默认",
+  badgeWarning: "警告",
+  badgeComingSoon: "即将上线",
+  searchPlaceholder: "按名称、ARN、标签搜索",
+  searchAria: "搜索远程密钥",
+  refreshAria: "刷新远程密钥列表",
+  selectedNotVisible: (selected: number, hidden: number) =>
+    `已选 ${selected} 条 · 当前搜索下不可见 ${hidden} 条`,
+  showAll: "显示全部",
+  showSelected: "仅显示已选",
+  selectAllLoadedAria: (n: number) => `全选已加载项（${n}）`,
+  thRemoteName: "远程名称",
+  thReference: "引用",
+  thLastChanged: "上次变更",
+  thSuggestedName: "建议名称",
+  thState: "状态",
+  alreadyImported: "已导入",
+  loadedCount: (n: number) => `已加载 ${n} 条`,
+  selectableCount: (n: number) => ` · 可选 ${n} 条`,
+  loadMore: (n: number) => `再加载 ${n} 条`,
+  loading: "加载中…",
+  awsDeniedList: "AWS 拒绝列出密钥",
+  awsThrottled: "AWS 限流了列表请求",
+  couldNotLoadRemote: "无法加载远程密钥",
+  awsDeniedHint: "此保险库背后的 AWS 主体缺少 secretsmanager:ListSecrets 权限。请更新 IAM 后重试。",
+  retry: "重试",
+  iamReference: "IAM 参考",
+  noMatchQuery: (q: string) => `没有与「${q}」匹配的远程密钥。`,
+  noSecretsVisible: "此保险库看不到任何密钥。",
+  noSelectionReview: "未选择密钥。请返回上一步选择要导入的远程密钥。",
+  readyToImport: (n: number) => `${n} 条密钥可导入`,
+  needAttention: (n: number) => `${n} 条需处理后才能导入`,
+  paperclipName: "Paperclip 名称",
+  keyLabel: "键",
+  descriptionOptional: "描述（可选）",
+  removeRowAria: (name: string) => `移除 ${name}`,
+  resultAllFailed: "导入失败",
+  resultAllImported: (n: number) => `全部 ${n} 条密钥已导入`,
+  resultComplete: "导入完成",
+  summaryCreated: (n: number) => `✓ ${n} 已创建`,
+  summarySkipped: (n: number) => `⊘ ${n} 已跳过`,
+  summaryFailed: (n: number) => `⨯ ${n} 失败`,
+  groupCreated: "已创建",
+  groupSkipped: "已跳过",
+  groupFailed: "失败",
+  footerSelectEmpty: "选择要导入的远程密钥",
+  footerSelected: (n: number) => `已选 ${n} 条`,
+  footerReady: (n: number) => `${n} 条就绪`,
+  footerBlocked: (n: number) => ` · ${n} 条受阻`,
+  validationNameRequired: "名称为必填。",
+  validationNameMax: "名称不能超过 160 个字符。",
+  validationKeyRequired: "键为必填。",
+  validationKeyPattern: "键只能包含小写字母、数字、点、下划线或连字符。",
+  validationKeyMax: "键不能超过 120 个字符。",
+  validationDescriptionMax: "描述不能超过 500 个字符。",
+  validationNameExists: "已有 Paperclip 密钥使用该名称。",
+  validationKeyExists: "已有 Paperclip 密钥使用该键。",
+  validationNameBatchDup: "本批次中另有行使用了该名称。",
+  validationKeyBatchDup: "本批次中另有行使用了该键。",
+  selectRowAria: (name: string) => `选择 ${name}`,
 } as const;
 
 /** Company skills page (`/skills`) */
@@ -3512,13 +3835,16 @@ export const pluginSettingsPage = {
 // ——— Adapter Manager page ———
 
 export const adapterManagerPage = {
+  breadcrumbSettings: "设置",
   breadcrumbAdapters: "适配器",
   title: "适配器",
-  alphaBadge: "Alpha",
+  alphaBadge: "测试版",
+  loadingAdapters: "正在加载适配器…",
 
   installAdapter: "安装适配器",
   installDialogTitle: "安装外部适配器",
-  installDialogDesc: "从 npm 或本地路径添加适配器。适配器包必须导出 <code>createServerAdapter()</code>。",
+  installDialogDescBefore: "从 npm 或本地路径添加适配器。适配器包必须导出",
+  installDialogDescAfter: "。",
   npmPackage: "npm 包",
   localPath: "本地路径",
   pathLabel: "适配器包路径",
@@ -3554,6 +3880,9 @@ export const adapterManagerPage = {
   removeAdapter: "移除适配器",
   reinstallAdapter: "重新安装适配器",
   reloadAdapter: "重新加载适配器",
+  modelsCount: (n: number) => `${n} 个模型`,
+  installedFromLocalPath: "从本地路径安装",
+  installedFromNpm: "从 npm 安装",
 
   // Reinstall dialog
   reinstallTitle: "重新安装适配器",
@@ -3570,7 +3899,8 @@ export const adapterManagerPage = {
 
   // Remove dialog
   removeTitle: "移除适配器",
-  removeDesc: "确定要移除此适配器吗？它将被注销并从适配器存储中移除。",
+  removeDesc: (type: string) =>
+    `确定要移除「${type}」适配器吗？它将被注销并从适配器存储中移除。`,
   removeDescNpmCleanup: "npm 包将从磁盘清理。",
   removeDescCannotUndo: "此操作不可撤销。",
   removing: "移除中…",
@@ -3578,12 +3908,20 @@ export const adapterManagerPage = {
 
   // Toasts
   toastInstalled: "适配器已安装",
+  toastInstalledBody: (type: string, version?: string) =>
+    `类型「${type}」已注册成功。${version ? `（v${version}）` : ""}`,
   toastInstallFailed: "安装失败",
   toastRemoved: "适配器已移除",
   toastRemovalFailed: "移除失败",
+  toastToggleFailed: "切换失败",
+  toastOverrideToggleFailed: "覆盖切换失败",
   toastReloaded: "适配器已重新加载",
+  toastReloadedBody: (type: string, version?: string) =>
+    `类型「${type}」已重新加载。${version ? `（v${version}）` : ""}`,
   toastReloadFailed: "重新加载失败",
   toastReinstalled: "适配器已重新安装",
+  toastReinstalledBody: (type: string, version?: string) =>
+    `类型「${type}」已从 npm 更新。${version ? `（v${version}）` : ""}`,
   toastReinstallFailed: "重新安装失败",
 
   // Titles
@@ -3646,11 +3984,65 @@ export const systemNoticeMetaLabels: Record<string, string> = {
 const SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_EN =
   " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
 const SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_ZH = "最新重试失败详情未写入事务讨论串，请查看关联运行取证。";
+const SYSTEM_NOTICE_MOVE_BLOCKED_EN =
+  " Moving it to blocked so it is visible for intervention.";
+const SYSTEM_NOTICE_MOVE_BLOCKED_EN_BACKTICK =
+  " Moving it to `blocked` so it is visible for intervention.";
 const SYSTEM_NOTICE_MOVE_BLOCKED_ZH = "已将该事务标为阻塞（`blocked`），便于人工介入。";
 
-function assembleStrandedRecoveryNotice(mainZh: string, withheldSuffix: boolean): string {
-  const mid = withheldSuffix ? SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_ZH : "";
-  return `${mainZh}${mid}${SYSTEM_NOTICE_MOVE_BLOCKED_ZH}`;
+function translateLatestRetryFailureClause(clause: string): string {
+  const trimmed = clause.trim();
+  if (trimmed === "details were withheld from the issue thread; inspect the linked run for evidence.") {
+    return SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_ZH;
+  }
+  const codeAndSummary = /^`?([\w.-]+)`?\s*-\s*(.+)$/.exec(trimmed);
+  if (codeAndSummary) {
+    const code = codeAndSummary[1]!;
+    const summary = codeAndSummary[2]!.trim();
+    const codeZh = RETRY_REASON_ZH[code] ?? code;
+    const summaryZh = translateLegacyRunLifecycleMessage(summary) ?? summary;
+    if (summaryZh.startsWith(codeZh) || (code === "process_lost" && summaryZh.startsWith("进程丢失"))) {
+      return `最新重试失败：${summaryZh}。`;
+    }
+    return `最新重试失败：${codeZh} — ${summaryZh}。`;
+  }
+  const codeOnly = /^`?([\w.-]+)`?$/.exec(trimmed);
+  if (codeOnly) {
+    const code = codeOnly[1]!;
+    return `最新重试失败：${RETRY_REASON_ZH[code] ?? code}。`;
+  }
+  const summaryZh = translateLegacyRunLifecycleMessage(trimmed) ?? trimmed;
+  return `最新重试失败：${summaryZh}。`;
+}
+
+/** 剥离「Moving it to blocked」与可选的 Latest retry failure 段，供模板匹配 */
+function parseStrandedRecoveryHead(headPart: string): { mainCore: string; failureMiddleZh: string } {
+  let s = headPart.trim();
+  let failureMiddleZh = "";
+
+  for (const suffix of [SYSTEM_NOTICE_MOVE_BLOCKED_EN_BACKTICK, SYSTEM_NOTICE_MOVE_BLOCKED_EN]) {
+    if (s.endsWith(suffix)) {
+      s = s.slice(0, -suffix.length).trim();
+      break;
+    }
+  }
+
+  if (s.includes(SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_EN)) {
+    s = s.replace(SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_EN, "").trim();
+    failureMiddleZh = SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_ZH;
+  } else {
+    const failureMatch = / Latest retry failure: (.+)\.$/.exec(s);
+    if (failureMatch) {
+      s = s.slice(0, failureMatch.index).trim();
+      failureMiddleZh = translateLatestRetryFailureClause(failureMatch[1]!);
+    }
+  }
+
+  return { mainCore: normalizeSystemNoticeStatusBackticks(s), failureMiddleZh };
+}
+
+function assembleStrandedRecoveryNotice(mainZh: string, failureMiddleZh: string): string {
+  return `${mainZh}${failureMiddleZh}${SYSTEM_NOTICE_MOVE_BLOCKED_ZH}`;
 }
 
 /** Markdown 或链路处理可能去掉状态码反引号；匹配时用统一形态 */
@@ -3680,6 +4072,18 @@ function translateStrandedEscalationTail(tail: string): string {
     "a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
     "看板操作者应指定可用的恢复负责人、修复智能体或运行时状态，或记录有意的人工处理结论。",
   );
+  x = x.replace(
+    /none created — automatic stranded-issue recovery is disabled for this server instance \(`?PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED=false`?\)\./g,
+    "未创建 — 本实例已关闭自动滞留事务恢复（`PAPERCLIP_STRANDED_ISSUE_RECOVERY_ENABLED=false`）。",
+  );
+  x = x.replace(
+    "handle this issue manually, or set the env var to `true` and restart the server.",
+    "请人工处理该事务，或将环境变量设为 `true` 并重启服务端。",
+  );
+  x = x.replace(
+    "handle this issue manually, or set the env var to true and restart the server.",
+    "请人工处理该事务，或将环境变量设为 `true` 并重启服务端。",
+  );
   return x;
 }
 
@@ -3706,70 +4110,66 @@ export const dispositionNotice = {
     const headPart = recoveryTailIdx >= 0 ? t.slice(0, recoveryTailIdx).trim() : t;
     const recoveryTailPart = recoveryTailIdx >= 0 ? t.slice(recoveryTailIdx) : "";
 
-    const withheldSuffix = headPart.includes(SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_EN);
-    const core = withheldSuffix
-      ? headPart.replace(SYSTEM_NOTICE_RUN_FAILURE_WITHHELD_EN, "").trim()
-      : headPart;
-    const coreNorm = normalizeSystemNoticeStatusBackticks(core);
+    const { mainCore, failureMiddleZh } = parseStrandedRecoveryHead(headPart);
 
     const attachTail = (zh: string) => zh + translateStrandedEscalationTail(recoveryTailPart);
 
     if (
-      coreNorm ===
-      "Paperclip automatically retried continuation for this assigned in_progress issue and the retry made progress, but it still has no live execution path. Moving it to blocked so it is visible for intervention."
+      mainCore ===
+      "Paperclip automatically retried continuation for this assigned in_progress issue and the retry made progress, but it still has no live execution path."
     ) {
       return attachTail(
         assembleStrandedRecoveryNotice(
           "回形针对该 `in_progress` 经办事务自动重试了延续执行，重试有进展但仍无在线执行路径。",
-          false,
+          failureMiddleZh,
         ),
       );
     }
 
-    const continuationDisappearedPrefix =
-      "Paperclip automatically retried continuation for this assigned in_progress issue after its live execution disappeared, but it still has no live execution path.";
-    const continuationDisappearedSuffix = " Moving it to blocked so it is visible for intervention.";
-    if (coreNorm.startsWith(continuationDisappearedPrefix) && coreNorm.endsWith(continuationDisappearedSuffix)) {
+    if (
+      mainCore ===
+      "Paperclip automatically retried continuation for this assigned in_progress issue after its live execution disappeared, but it still has no live execution path."
+    ) {
       return attachTail(
         assembleStrandedRecoveryNotice(
           "回形针对该 `in_progress` 经办事务在其在线执行路径消失后自动重试了延续执行，但仍无在线执行路径。",
-          withheldSuffix,
+          failureMiddleZh,
         ),
       );
     }
 
-    const todoLostWakePrefix =
-      "Paperclip automatically retried dispatch for this assigned todo issue after a lost wake/run, but it still has no live execution path.";
-    const todoLostWakeSuffix = " Moving it to blocked so it is visible for intervention.";
-    if (coreNorm.startsWith(todoLostWakePrefix) && coreNorm.endsWith(todoLostWakeSuffix)) {
+    if (
+      mainCore ===
+      "Paperclip automatically retried dispatch for this assigned todo issue after a lost wake/run, but it still has no live execution path."
+    ) {
       return attachTail(
         assembleStrandedRecoveryNotice(
           "回形针对该 `todo` 待办事务在唤醒或运行丢失后自动重试了派发，但仍无在线执行路径。",
-          withheldSuffix,
+          failureMiddleZh,
         ),
       );
     }
 
-    const todoTerminalPrefix =
-      "Paperclip automatically retried dispatch for this assigned todo issue during terminal run recovery, but it still has no live execution path.";
-    const todoTerminalSuffix = " Moving it to blocked so it is visible for intervention.";
-    if (coreNorm.startsWith(todoTerminalPrefix) && coreNorm.endsWith(todoTerminalSuffix)) {
+    if (
+      mainCore ===
+      "Paperclip automatically retried dispatch for this assigned todo issue during terminal run recovery, but it still has no live execution path."
+    ) {
       return attachTail(
         assembleStrandedRecoveryNotice(
           "回形针对该 `todo` 待办事务在终端运行恢复流程中自动重试了派发，但仍无在线执行路径。",
-          withheldSuffix,
+          failureMiddleZh,
         ),
       );
     }
 
-    const inProgressTerminalPrefix =
-      "Paperclip automatically retried continuation for this assigned in_progress issue during terminal run recovery, but it still has no live execution path.";
-    const inProgressTerminalSuffix = " Moving it to blocked so it is visible for intervention.";
-    if (coreNorm.startsWith(inProgressTerminalPrefix) && coreNorm.endsWith(inProgressTerminalSuffix)) {
+    if (
+      mainCore ===
+      "Paperclip automatically retried continuation for this assigned in_progress issue during terminal run recovery, but it still has no live execution path."
+    ) {
       return attachTail(
         assembleStrandedRecoveryNotice(
           "回形针对该 `in_progress` 经办事务在终端运行恢复流程中自动重试了延续执行，但仍无在线执行路径。",
-          withheldSuffix,
+          failureMiddleZh,
         ),
       );
     }

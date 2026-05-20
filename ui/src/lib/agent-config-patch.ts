@@ -23,11 +23,23 @@ const ADAPTER_AGNOSTIC_KEYS = [
   "env",
   "promptTemplate",
   "instructionsFilePath",
-  "cwd",
   "timeoutSec",
   "graceSec",
   "bootstrapPromptTemplate",
 ] as const;
+
+/** Legacy adapterConfig.cwd — use project workspace instead. */
+const DEPRECATED_ADAPTER_CONFIG_KEYS = ["cwd"] as const;
+
+function stripDeprecatedAdapterConfigKeys(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...config };
+  for (const key of DEPRECATED_ADAPTER_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
 
 function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
@@ -63,7 +75,9 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
             ...overlay.adapterConfig,
           };
 
-    patch.adapterConfig = omitUndefinedEntries(nextAdapterConfig);
+    patch.adapterConfig = omitUndefinedEntries(
+      stripDeprecatedAdapterConfigKeys(nextAdapterConfig),
+    );
     patch.replaceAdapterConfig = true;
   }
 

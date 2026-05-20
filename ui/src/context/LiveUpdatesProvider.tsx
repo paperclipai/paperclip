@@ -12,6 +12,7 @@ import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
+import { formatWakeupTriggerDetailZh } from "../lib/i18n";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 
@@ -597,7 +598,7 @@ function buildRunStatusToast(
   if (error) {
     body = truncate(error, 100);
   } else if (triggerDetail) {
-    body = `Trigger: ${triggerDetail}`;
+    body = `触发：${formatWakeupTriggerDetailZh(triggerDetail)}`;
   }
 
   return {
