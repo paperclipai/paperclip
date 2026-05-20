@@ -157,6 +157,15 @@ const ROUTES: readonly RouteSpec[] = [
     waitForSelector: '[data-testid="eaos-command-center-landing"]',
   },
   {
+    // LET-513 §1 — EAOS-native onboarding screen. Renders the
+    // create-workspace form when no company exists; if the fixture
+    // already provides a company, the page surfaces the "Next steps"
+    // panel (also acceptable for evidence).
+    id: "eaos-onboarding",
+    path: "/eaos/onboarding",
+    waitForSelector: '[data-testid="eaos-onboarding-page"]',
+  },
+  {
     id: "eaos-missions",
     path: "/eaos/missions",
     waitForSelector: '[data-testid="eaos-missions-page"]',
