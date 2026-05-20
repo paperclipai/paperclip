@@ -13,6 +13,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueThreadInteractions,
   issueInboxArchives,
   issueRelations,
   issues,
@@ -2224,6 +2225,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -2814,6 +2816,30 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
           assigneeAgentId: ctx.assigneeAgentId,
         }),
       ]);
+    });
+
+    it("suppresses the sweep while a blocked issue has a pending request_confirmation", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.insert(issueThreadInteractions).values({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: ctx.assigneeAgentId,
+        payload: {
+          version: 1,
+          prompt: "Wait for human PR review?",
+          target: {
+            type: "custom",
+            key: "github-pr-review",
+            label: "PR review",
+            href: "https://github.com/Blockcast/paperclip/pull/188",
+          },
+        },
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
     });
   });
 

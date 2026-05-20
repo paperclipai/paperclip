@@ -1736,6 +1736,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(loserWakeup?.status).toBe("skipped");
   });
 
+  it("reaps orphaned k8s runs before dispatching queued work for the same issue", async () => {
+    const { companyId, agentId, issueId, runId: orphanRunId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      agentStatus: "running",
+      includeIssue: true,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId: orphanRunId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const queuedWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: queuedWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      createdAt: new Date("2026-03-19T00:10:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:10:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const run = await heartbeat.getRun(queuedRunId);
+      return run && run.status !== "queued" ? run : null;
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const orphanRun = runs.find((run) => run.id === orphanRunId);
+    const queuedRun = runs.find((run) => run.id === queuedRunId);
+    expect(orphanRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(queuedRun?.status).not.toBe("queued");
+    expect(queuedRun?.errorCode).not.toBe("duplicate_dispatch_suppressed");
+    await heartbeat.cancelRun(queuedRunId);
+  });
+
   it("skips budget-blocked assigned todo work with no prior run and continues the sweep", async () => {
     const blocked = await seedAssignedTodoNoRunFixture();
     const unblocked = await seedAssignedTodoNoRunFixture();

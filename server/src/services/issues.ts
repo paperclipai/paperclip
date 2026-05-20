@@ -4234,6 +4234,16 @@ export function issueService(db: Db) {
         .map((r) => r.id);
       if (blockedResultIds.length === 0) return results;
 
+      const pendingConfirmationRows = await db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(and(
+          inArray(issueThreadInteractions.issueId, blockedResultIds),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+      const suppressedIssueIds = new Set<string>(pendingConfirmationRows.map((row) => row.issueId));
+
       const commentRows = await db
         .select({
           id: issueComments.id,
@@ -4255,7 +4265,6 @@ export function issueService(db: Db) {
       }
 
       const now = new Date();
-      const suppressedIssueIds = new Set<string>();
       for (const issueId of blockedResultIds) {
         const candidateComments = commentsByIssueId.get(issueId) ?? [];
         const hold = findActiveExecutiveHold(candidateComments, now);

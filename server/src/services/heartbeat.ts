@@ -6851,7 +6851,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; suppressDispatchAfterReap?: boolean }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
@@ -7038,7 +7038,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      if (!opts?.suppressDispatchAfterReap) {
+        await startNextQueuedRunForAgent(run.agentId);
+      }
       runningProcesses.delete(run.id);
       // For external-lifecycle adapters, also clear the in-process await
       // tracking. If we just reaped a run that the local executor was still
@@ -7289,6 +7291,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
+      if (hasExternalLifecycle(agent.adapterType)) {
+        await reapOrphanedRuns({ suppressDispatchAfterReap: true });
+      }
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
