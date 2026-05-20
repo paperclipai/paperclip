@@ -680,6 +680,13 @@
       "when": 1778442660000,
       "tag": "0096_web_push_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1778442720000,
+      "tag": "0097_heartbeat_runs_hot_path_indexes",
+      "breakpoints": true
     }
   ]
 }
