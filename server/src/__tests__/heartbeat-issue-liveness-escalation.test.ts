@@ -603,6 +603,137 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
+  // GOV-4 scenario (c): gemini cmd-too-long 3 times → 0 debris tickets, 1 park comment
+  it("parks the recovery issue when the same error class hits the 2-strike cap (scenario c: gemini cmd-too-long x3)", async () => {
+    await enableAutoRecovery();
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const geminiAgentId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: false } },
+        permissions: {},
+      },
+      {
+        id: geminiAgentId,
+        companyId,
+        name: "GeminiCoder",
+        role: "engineer",
+        // paused → blocked_by_uninvokable_assignee finding fires for blockerIssue
+        status: "paused",
+        pauseReason: "manual",
+        reportsTo: managerId,
+        adapterType: "gemini_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: false } },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work item",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: managerId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Gemini recovery issue stalled with cmd-too-long",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: geminiAgentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Seed 3 failed runs with command_line_too_long for the gemini agent on the blocker issue.
+    const runBase = { companyId, agentId: geminiAgentId, invocationSource: "assignment", triggerDetail: "system" } as const;
+    for (let i = 0; i < 3; i++) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        ...runBase,
+        status: "failed",
+        errorCode: "command_line_too_long",
+        error: "gemini: E2BIG — argument list too long",
+        contextSnapshot: { issueId: blockerIssueId, taskId: blockerIssueId },
+        startedAt: new Date(Date.now() - (30 - i * 5) * 60 * 1000),
+        finishedAt: new Date(Date.now() - (25 - i * 5) * 60 * 1000),
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile: storm cap fires → 0 escalation issues, 1 park comment
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.stormCapped).toBe(1);
+    expect(first.escalationsCreated).toBe(0);
+
+    const escalationsAfterFirst = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalationsAfterFirst).toHaveLength(0);
+
+    const commentsAfterFirst = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockerIssueId));
+    expect(commentsAfterFirst).toHaveLength(1);
+    expect(commentsAfterFirst[0]?.body).toContain("Recovery storm cap applied");
+    expect(commentsAfterFirst[0]?.body).toContain("command_line_too_long");
+    expect(commentsAfterFirst[0]?.body).toContain("PARKED");
+    expect(commentsAfterFirst[0]?.body).toContain("Bulk adapter swap: **disabled**");
+
+    const parkedAgent = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, geminiAgentId))
+      .then((rows) => rows[0] ?? null);
+    expect(parkedAgent?.pauseReason).toBe("recovery_park");
+
+    // Second reconcile: idempotency guard → still 0 escalation issues, still 1 comment
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.escalationsCreated).toBe(0);
+
+    const commentsAfterSecond = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockerIssueId));
+    expect(commentsAfterSecond).toHaveLength(1);
+  });
+
   it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
@@ -659,5 +790,68 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+  });
+
+  // GOV-4 scenario (c): storm cap — same error class 3 times → debris=0, 1 park comment
+  it("storm cap: cmd-too-long 3 runs → 0 escalation tickets, 1 park comment, agent paused", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+
+    // Simulate 3 failed heartbeat runs for coderId on blockerIssueId with command_line_too_long
+    const now = new Date();
+    const runIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const runId of runIds) {
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: coderId,
+        status: "failed",
+        errorCode: "command_line_too_long",
+        error: "E2BIG: argument list too long",
+        contextSnapshot: { issueId: blockerIssueId },
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    // Storm cap should fire: no new escalation tickets created
+    expect(result.escalationsCreated).toBe(0);
+    expect(result.stormCapped).toBe(1);
+
+    // No escalation issues should exist
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+
+    // Exactly 1 park comment should be on the blocker (recovery) issue
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockerIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("Recovery storm cap applied");
+    expect(comments[0]!.body).toContain("command_line_too_long");
+
+    // Agent should be paused with recovery_park reason
+    const agent = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, coderId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("paused");
+    expect(agent?.pauseReason).toBe("recovery_park");
+
+    // Second reconciliation should NOT add another park comment (idempotent)
+    await heartbeat.reconcileIssueGraphLiveness();
+    const commentsAfterSecondRun = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, blockerIssueId));
+    expect(commentsAfterSecondRun).toHaveLength(1);
   });
 });
