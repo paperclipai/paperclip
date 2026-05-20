@@ -937,6 +937,56 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function findOpenExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function isOpenRoutineExecutionConflict(error: unknown) {
+    let current: unknown = error;
+    for (let depth = 0; depth < 3; depth += 1) {
+      if (!current || typeof current !== "object") return false;
+      const maybe = current as {
+        cause?: unknown;
+        code?: string;
+        constraint?: string;
+        constraint_name?: string;
+      };
+      if (
+        maybe.code === "23505" &&
+        (maybe.constraint === "issues_open_routine_execution_uq" ||
+          maybe.constraint_name === "issues_open_routine_execution_uq")
+      ) {
+        return true;
+      }
+      current = maybe.cause;
+    }
+    return false;
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1191,12 +1241,51 @@ export function routineService(
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
-      try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+      const coalesceIntoExistingExecutionIssue = async () => {
+        const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          kind: issueOriginKind,
+          id: issueOriginId,
+        }) ?? await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+        if (!existingIssue) return null;
+        const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+        if (manualRunnerUserId) {
+          await touchIssueForUserInbox(txDb, {
+            companyId: input.routine.companyId,
+            issueId: existingIssue.id,
+            userId: manualRunnerUserId,
+            touchedAt: triggeredAt,
+          });
+        }
+        const updated = await finalizeRun(createdRun.id, {
+          status,
+          linkedIssueId: existingIssue.id,
+          coalescedIntoRunId: existingIssue.originRunId,
+          completedAt: triggeredAt,
+        }, txDb);
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt,
+          status,
+          issueId: existingIssue.id,
+          nextRunAt,
+        }, txDb);
+        return updated ?? createdRun;
+      };
+      try {
+        const activeIssue = input.routine.concurrencyPolicy === "always_enqueue"
+          ? null
+          : await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+            kind: issueOriginKind,
+            id: issueOriginId,
+          }) ?? await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+            kind: issueOriginKind,
+            id: issueOriginId,
+          });
+        if (activeIssue) {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
@@ -1245,58 +1334,39 @@ export function routineService(
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
+          const isOpenExecutionConflict = isOpenRoutineExecutionConflict(error);
           if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-            kind: issueOriginKind,
-            id: issueOriginId,
-          });
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          const coalescedRun = await coalesceIntoExistingExecutionIssue();
+          if (!coalescedRun) throw error;
+          return coalescedRun;
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
-        });
+        try {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.dispatch",
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            rethrowOnError: true,
+          });
+        } catch (error) {
+          const isOpenExecutionConflict = isOpenRoutineExecutionConflict(error);
+          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+            throw error;
+          }
+
+          await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+          createdIssue = null;
+          const coalescedRun = await coalesceIntoExistingExecutionIssue();
+          if (!coalescedRun) throw error;
+          return coalescedRun;
+        }
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
