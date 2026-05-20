@@ -234,6 +234,83 @@ const inputStyle: CSSProperties = {
   width: "100%",
 };
 
+// ─── skeleton placeholders (v0.8.0) ─────────────────────────────────────────
+//
+// Replaces the bare `loading…` text shown on first paint while the
+// snapshot fetch is in flight. The shimmer animation is injected once on
+// mount via a `<style>` tag because plugin UI runs in the host's React
+// tree with no separate CSS pipeline; the animation lives entirely in
+// this file. Components are sized so the skeleton roughly matches the
+// real content's layout — fewer layout shifts when data lands.
+
+let skeletonStyleInjected = false;
+function ensureSkeletonStyle() {
+  if (skeletonStyleInjected || typeof document === "undefined") return;
+  const tag = document.createElement("style");
+  tag.setAttribute("data-ccrotate-skeleton", "");
+  tag.textContent = `
+    @keyframes ccrotate-shimmer {
+      0%   { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .ccrotate-skeleton {
+      display: inline-block;
+      background: linear-gradient(
+        90deg,
+        var(--muted, #27272a) 0%,
+        var(--muted-foreground, #3f3f46) 50%,
+        var(--muted, #27272a) 100%
+      );
+      background-size: 200% 100%;
+      animation: ccrotate-shimmer 1.6s linear infinite;
+      border-radius: 4px;
+      vertical-align: middle;
+    }
+  `;
+  document.head.appendChild(tag);
+  skeletonStyleInjected = true;
+}
+
+function SkeletonBar({
+  width = "100%",
+  height = 12,
+  style,
+}: {
+  width?: number | string;
+  height?: number | string;
+  style?: CSSProperties;
+}) {
+  ensureSkeletonStyle();
+  return (
+    <span
+      className="ccrotate-skeleton"
+      style={{ width, height, ...style }}
+      aria-hidden
+    />
+  );
+}
+
+// Renders N table rows with skeleton cells matching the 9-column PoolTable
+// shape (star, email, tier, 5h, 7d, sonnet, opus, availability, actions).
+// Used inside the same <tbody> the real rows would occupy so column widths
+// don't jump when the data arrives.
+function PoolTableSkeletonRows({ rows = 4 }: { rows?: number }) {
+  const cellWidths: (number | string)[] = [12, 180, 64, 36, 36, 44, 44, 96, 80];
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <tr key={`skel-${i}`}>
+          {cellWidths.map((w, j) => (
+            <td key={j} style={tdStyle}>
+              <SkeletonBar width={w} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
 function tierDot(row: AccountRow): { color: string; label: string } {
   if (!row.isHealthy) return { color: "#ef4444", label: "stale" };
   const tier = (row.tier || "").toLowerCase();
@@ -316,11 +393,16 @@ function PoolTable({
   accounts,
   companyId,
   onMutated,
+  loading = false,
 }: {
   target: CcrotateTarget;
   accounts: AccountRow[];
   companyId: string | null;
   onMutated: () => void;
+  // v0.8.0: when true and there are no accounts yet, render skeleton
+  // rows in place of the empty-state message so the table chrome
+  // (column widths, card height) is stable on first paint.
+  loading?: boolean;
 }) {
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
   const [refreshingEmail, setRefreshingEmail] = useState<string | null>(null);
@@ -328,6 +410,28 @@ function PoolTable({
   const [rowError, setRowError] = useState<{ email: string; msg: string } | null>(null);
 
   if (!accounts.length) {
+    if (loading) {
+      return (
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              <th style={thStyle}>★</th>
+              <th style={thStyle}>account</th>
+              <th style={thStyle}>tier</th>
+              <th style={thStyle}>5h</th>
+              <th style={thStyle}>7d</th>
+              <th style={thStyle}>7d sonnet</th>
+              <th style={thStyle}>7d opus</th>
+              <th style={thStyle}>availability</th>
+              <th style={thStyle}></th>
+            </tr>
+          </thead>
+          <tbody>
+            <PoolTableSkeletonRows rows={4} />
+          </tbody>
+        </table>
+      );
+    }
     return <div style={subtleStyle}>(no {target} accounts in pool)</div>;
   }
 
@@ -470,11 +574,13 @@ export function CcrotatePage({ context }: PluginPageProps) {
         <div>
           <h2 style={{ ...headerTitleStyle, fontSize: "20px" }}>ccrotate pool</h2>
           <div style={subtleStyle}>
-            {data?.fetchedAt
-              ? `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}  ·  auto-refresh every ${AUTO_REFRESH_MS / 1000}s`
-              : loading
-                ? "loading…"
-                : "no data"}
+            {data?.fetchedAt ? (
+              `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}  ·  auto-refresh every ${AUTO_REFRESH_MS / 1000}s`
+            ) : loading ? (
+              <SkeletonBar width={280} height={11} />
+            ) : (
+              "no data"
+            )}
           </div>
         </div>
         <button
@@ -513,6 +619,7 @@ export function CcrotatePage({ context }: PluginPageProps) {
                 accounts={pool?.accounts ?? []}
                 companyId={companyId}
                 onMutated={() => void reload(false)}
+                loading={loading && !data}
               />
             )}
           </div>
@@ -538,7 +645,11 @@ export function CcrotateSidebarPanel({ context }: PluginSidebarProps) {
         ccrotate
       </div>
       {loading && !data ? (
-        <div style={subtleStyle}>loading…</div>
+        <div style={{ display: "grid", gap: "6px", fontSize: "12px" }}>
+          <SkeletonBar width="80%" height={10} />
+          <SkeletonBar width="60%" height={10} />
+          <SkeletonBar width="60%" height={10} />
+        </div>
       ) : error ? (
         <div style={{ ...subtleStyle, color: "#ef4444" }}>{error}</div>
       ) : !data ? (
@@ -642,11 +753,13 @@ export function CcrotateSettingsPage({ context }: PluginSettingsPageProps) {
         <div style={headerRowStyle}>
           <h3 style={headerTitleStyle}>Last persisted export</h3>
           <span style={subtleStyle}>
-            {persisted?.capturedAt
-              ? `captured ${new Date(persisted.capturedAt).toLocaleString()}`
-              : busy === "loading"
-                ? "loading…"
-                : "none yet"}
+            {persisted?.capturedAt ? (
+              `captured ${new Date(persisted.capturedAt).toLocaleString()}`
+            ) : busy === "loading" ? (
+              <SkeletonBar width={180} height={11} />
+            ) : (
+              "none yet"
+            )}
           </span>
         </div>
         <div style={subtleStyle}>
