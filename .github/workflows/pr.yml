@@ -172,6 +172,51 @@ jobs:
           git checkout -- pnpm-lock.yaml
           ./scripts/release.sh canary --skip-verify --dry-run
 
+  visual_regression:
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Build UI (required for Storybook)
+        run: pnpm --filter @paperclipai/ui build
+
+      - name: Build Storybook
+        run: pnpm build-storybook
+
+      - name: Run visual regression tests
+        run: pnpm test:visual-regression
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: visual-regression-report
+          path: |
+            tests/visual-regression/playwright-report/
+            tests/visual-regression/test-results/
+          retention-days: 14
+
   e2e:
     needs: [policy]
     runs-on: ubuntu-latest
