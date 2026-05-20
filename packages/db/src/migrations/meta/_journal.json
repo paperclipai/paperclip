@@ -610,6 +610,13 @@
       "when": 1779275294474,
       "tag": "0086_add_complexity_to_issues",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779275635415,
+      "tag": "0087_add_tier_preference_to_agents",
+      "breakpoints": true
     }
   ]
 }
