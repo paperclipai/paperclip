@@ -1,4 +1,20 @@
 #!/usr/bin/env node
+/**
+ * BLO-6151 R2 rollout (additive Wake Pre-flight backfill).
+ *
+ * Walks every non-CEO managed-mode agent in PAPERCLIP_COMPANY_ID. For each
+ * agent: GET the current AGENTS.md from the bundle endpoint. If the content
+ * does NOT already start with the Wake Pre-flight marker, PUT a new AGENTS.md
+ * whose value is `<wake-preflight>\n\n<existing content>`. If the content is
+ * already prefixed, skip with reason. Per-agent error isolation; idempotent
+ * across re-runs.
+ *
+ * The earlier shape of this script (PR #95) wrote a single generic AGENTS.md
+ * to every agent, which would have CLOBBERED each agent's per-agent role
+ * customization (Charter, repos lane, escalation paths). This version is
+ * strictly additive: it only ever ADDS the Wake Pre-flight prefix; it never
+ * replaces or removes existing content.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -22,6 +38,7 @@ const PAPERCLIP_COMPANY_ID =
   process.env.PAPERCLIP_COMPANY_ID ??
   "aaced805-3491-4ee5-9b14-cdf70cb81d47"; // Blockcast company default
 const DELAY_MS = 500;
+const WAKE_PREFLIGHT_MARKER = "## Wake Pre-flight";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,7 +70,7 @@ async function api<T>(
 
 async function backfillOne(
   agent: Agent,
-  content: string,
+  preflight: string,
 ): Promise<BackfillResult> {
   if (agent.role === "ceo") {
     return {
@@ -78,10 +95,26 @@ async function backfillOne(
       };
     }
 
+    const file = await api<{ content: string }>(
+      "GET",
+      `/api/agents/${agent.id}/instructions-bundle/file?path=AGENTS.md`,
+    );
+    const existingContent = file.content ?? "";
+
+    if (existingContent.trimStart().startsWith(WAKE_PREFLIGHT_MARKER)) {
+      return {
+        agentId: agent.id,
+        agentName: agent.name,
+        status: "skipped",
+        reason: "already has Wake Pre-flight",
+      };
+    }
+
+    const newContent = `${preflight.trimEnd()}\n\n${existingContent}`;
     await api(
       "PUT",
       `/api/agents/${agent.id}/instructions-bundle/file`,
-      { path: "AGENTS.md", content },
+      { path: "AGENTS.md", content: newContent },
     );
     return {
       agentId: agent.id,
@@ -100,11 +133,11 @@ async function backfillOne(
 
 export async function backfillAgentBundles(
   agents: Agent[],
-  content: string,
+  preflight: string,
 ): Promise<BackfillResult[]> {
   const results: BackfillResult[] = [];
   for (const agent of agents) {
-    const result = await backfillOne(agent, content);
+    const result = await backfillOne(agent, preflight);
     results.push(result);
     console.log(JSON.stringify(result));
     await sleep(DELAY_MS);
@@ -112,14 +145,14 @@ export async function backfillAgentBundles(
   return results;
 }
 
-async function readSourceAgentsMd(): Promise<string> {
+async function readWakePreflight(): Promise<string> {
   const scriptDir = path.dirname(new URL(import.meta.url).pathname);
   const sourcePath = path.resolve(
     scriptDir,
     "..",
     "onboarding-assets",
-    "default",
-    "AGENTS.md",
+    "_shared",
+    "WAKE-PREFLIGHT.md",
   );
   return fs.readFile(sourcePath, "utf8");
 }
@@ -130,9 +163,9 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const content = await readSourceAgentsMd();
+  const preflight = await readWakePreflight();
   console.log(
-    `Read fresh AGENTS.md (${content.length} bytes) from local source`,
+    `Read Wake Pre-flight source (${preflight.length} bytes) from _shared/`,
   );
 
   const agents = await api<Agent[]>(
@@ -143,7 +176,7 @@ async function main(): Promise<void> {
     `Found ${agents.length} agents in company ${PAPERCLIP_COMPANY_ID}`,
   );
 
-  const results = await backfillAgentBundles(agents, content);
+  const results = await backfillAgentBundles(agents, preflight);
 
   const counts = {
     succeeded: results.filter((r) => r.status === "succeeded").length,
