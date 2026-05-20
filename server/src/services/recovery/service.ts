@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -273,6 +273,9 @@ function isOperatorResolvedInteractionKind(kind: string) {
   return kind === "ask_user_questions" || kind === "request_confirmation";
 }
 
+const EXTERNAL_UNBLOCK_COMMENT_PATTERN =
+  "(telegram|\\bdm\\b|direct message|external channel|external owner|source owner|outreach|pinged|messaged|slack|teams)";
+
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
@@ -493,6 +496,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function hasRecentExternalUnblockEvidence(input: {
+    companyId: string;
+    issueId: string;
+    windowStart: Date;
+    now: Date;
+  }) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueId),
+          gte(issueComments.createdAt, input.windowStart),
+          lte(issueComments.createdAt, input.now),
+          sql`(
+            ${issueComments.authorUserId} is not null
+            or lower(${issueComments.body}) ~ ${EXTERNAL_UNBLOCK_COMMENT_PATTERN}
+          )`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function isSelfCreatedInteractionWithExternalUnblockInFlight(input: {
+    interaction: {
+      companyId: string;
+      issueId: string;
+      createdByAgentId: string | null;
+      assigneeAgentId: string | null;
+    };
+    windowStart: Date;
+    now: Date;
+  }) {
+    if (!input.interaction.createdByAgentId) return false;
+    if (input.interaction.createdByAgentId !== input.interaction.assigneeAgentId) return false;
+
+    return hasRecentExternalUnblockEvidence({
+      companyId: input.interaction.companyId,
+      issueId: input.interaction.issueId,
+      windowStart: input.windowStart,
+      now: input.now,
+    });
+  }
+
   async function reconcileStalledIssueThreadInteractions(opts?: {
     now?: Date;
     thresholdMs?: number;
@@ -548,6 +597,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (!seenIssues.has(interaction.issueId)) {
         seenIssues.add(interaction.issueId);
         result.issueIds.push(interaction.issueId);
+      }
+
+      if (
+        await isSelfCreatedInteractionWithExternalUnblockInFlight({
+          interaction,
+          windowStart: cutoff,
+          now,
+        })
+      ) {
+        result.skipped += 1;
+        continue;
       }
 
       if (isOperatorResolvedInteractionKind(interaction.kind)) {

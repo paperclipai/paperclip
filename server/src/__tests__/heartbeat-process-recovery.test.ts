@@ -599,6 +599,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
+  it("skips self-created pending interactions when recent external unblock evidence is in flight", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs external source",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, questions: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "External source unblock is in flight: pinged source owner via Telegram for the ESX file.",
+      createdAt: new Date("2026-05-15T20:05:00.000Z"),
+      updatedAt: new Date("2026-05-15T20:05:00.000Z"),
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(0);
+  });
+
   it("wakes stale agent-owned issue interactions through the system recovery actor", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
