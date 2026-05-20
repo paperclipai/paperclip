@@ -1266,6 +1266,9 @@ export function issueRoutes(
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
+      if (input.assigneeChanged && (issue.assigneeAgentId || issue.assigneeUserId)) {
+        return "Recovery action became stale because the source issue now has a new owner while blocked.";
+      }
       return null;
     }
 
