@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   definePlugin,
   runWorker,
@@ -384,6 +387,155 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
   };
 }
 
+function tierCachePathForTarget(target: CcrotateTarget): string {
+  // Mirrors ccrotate's own resolution (see lib/ccrotate.js:226-231):
+  //   claude → ~/.ccrotate/tier-cache.json
+  //   codex  → ~/.ccrotate/tier-cache.codex.json
+  // In the paperclip pod HOME=/paperclip, so this resolves to
+  // /paperclip/.ccrotate/tier-cache*.json (the shared cephfs volume).
+  if (target === "claude") {
+    return path.join(os.homedir(), ".ccrotate", "tier-cache.json");
+  }
+  return path.join(os.homedir(), ".ccrotate", `tier-cache.${target}.json`);
+}
+
+async function handleBulkClearTiers(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  // Clear `serviceTier:"extra"` labels on tier-cache so the next freshness
+  // probe re-classifies. Motivating use case: kkroo PR #55 ("require positive
+  // monthly_limit before labeling tier 'extra'") flipped accounts that had
+  // monthly_limit=0 out of the extra tier, but pre-#55 cache entries kept
+  // their stale `extra` label until each per-account Usage-API probe ran —
+  // which can take hours due to per-token cooldowns.
+  //
+  // `serviceTier: null` is the canonical "unknown — please re-probe" state
+  // per ccrotate/lib/state-helpers.js:250-258. We zero out the tier label and
+  // also clear the stored `response` string so the UI doesn't keep showing
+  // stale 'extra (...)' text until the re-probe lands.
+  //
+  // After writing, shell `ccrotate refresh` to trigger the re-probe — same
+  // command handleRefresh runs, just scoped to the requested target.
+  const body = (input.body ?? {}) as { target?: unknown };
+  const target = typeof body.target === "string" ? body.target.trim() : "claude";
+  if (target !== "claude" && target !== "codex") {
+    return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
+  }
+  const tierCacheFile = tierCachePathForTarget(target);
+  let raw: string;
+  try {
+    raw = await fs.readFile(tierCacheFile, "utf-8");
+  } catch (e: unknown) {
+    return {
+      status: 502,
+      body: { ok: false, error: `cannot read ${tierCacheFile}: ${describeError(e)}` },
+    };
+  }
+  let cache: { accounts?: Array<Record<string, unknown>>; updatedAt?: string };
+  try {
+    cache = JSON.parse(raw);
+  } catch (e: unknown) {
+    return {
+      status: 502,
+      body: { ok: false, error: `tier-cache JSON parse failed: ${describeError(e)}` },
+    };
+  }
+  if (!Array.isArray(cache.accounts)) {
+    return { status: 502, body: { ok: false, error: "tier-cache has no accounts array" } };
+  }
+  const cleared: string[] = [];
+  for (const entry of cache.accounts) {
+    if (entry && typeof entry === "object" && entry.serviceTier === "extra") {
+      const email = typeof entry.email === "string" ? entry.email : "(unknown)";
+      entry.serviceTier = null;
+      // Drop the stored response string so the UI/parser doesn't keep showing
+      // 'extra (...)' until the re-probe writes a fresh one. Leaving
+      // rateLimits intact so the operator still sees the last-known
+      // utilization numbers; refresh will overwrite them.
+      delete entry.response;
+      cleared.push(email);
+    }
+  }
+  if (cleared.length === 0) {
+    return { status: 200, body: { ok: true, cleared: 0, emails: [] } };
+  }
+  cache.updatedAt = new Date().toISOString();
+  // Atomic write: tmp + rename, same shape ccrotate's own writers use.
+  const tmp = `${tierCacheFile}.tmp.${process.pid}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(cache, null, 2), "utf-8");
+    await fs.rename(tmp, tierCacheFile);
+  } catch (e: unknown) {
+    return {
+      status: 502,
+      body: { ok: false, error: `tier-cache write failed: ${describeError(e)}` },
+    };
+  }
+  // Kick a refresh on this target — best-effort. If refresh fails we still
+  // report what we cleared; the freshness-loop will eventually re-probe.
+  let refreshError: string | null = null;
+  try {
+    const result = await runProcess("ccrotate", ["--target", target, "refresh"], 30_000);
+    if (result.code !== 0) {
+      refreshError = result.stderr.trim() || result.stdout.trim() || `ccrotate refresh exit ${result.code}`;
+    }
+  } catch (e: unknown) {
+    refreshError = describeError(e);
+  }
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      cleared: cleared.length,
+      emails: cleared,
+      ...(refreshError ? { refreshError } : {}),
+    },
+  };
+}
+
+async function handleRefreshOne(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  // Force a single-account re-probe via `ccrotate refresh-one <email>`. The
+  // freshness-loop already probes accounts on its own cadence, but per-token
+  // cooldowns can stretch wall-clock time to hours; this gives the operator
+  // a one-click override when they need an account re-classified now.
+  //
+  // 60s timeout: refresh-one can take 30-50s on slow accounts (Anthropic
+  // Usage-API + Claude/Codex tokens) — covers worst-case without leaving the
+  // request hung.
+  const body = (input.body ?? {}) as { email?: unknown; target?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const target = typeof body.target === "string" ? body.target.trim() : "claude";
+  if (!email || !email.includes("@")) {
+    return { status: 400, body: { error: "email (with @) required" } };
+  }
+  if (target !== "claude" && target !== "codex") {
+    return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
+  }
+  const result = await runProcess(
+    "ccrotate",
+    ["--target", target, "refresh-one", email],
+    60_000,
+  );
+  if (result.code !== 0) {
+    return {
+      status: 502,
+      body: {
+        ok: false,
+        error:
+          result.stderr.trim() ||
+          result.stdout.trim() ||
+          `ccrotate refresh-one exit ${result.code}`,
+      },
+    };
+  }
+  // Truncate stdout — refresh-one can emit a few lines of probe detail and
+  // the UI only needs the tail for confirmation/debug.
+  const combined = (result.stdout + result.stderr).trim();
+  const output = combined.length > 200 ? `…${combined.slice(-200)}` : combined;
+  return {
+    status: 200,
+    body: { ok: true, email, target, output },
+  };
+}
+
 async function handleImport(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (!ctxRef) return { status: 503, body: { error: "plugin not initialized" } };
   const body = (input.body ?? {}) as { blob?: unknown };
@@ -491,6 +643,10 @@ const plugin: PaperclipPlugin = definePlugin({
           return await handleSwitch(input);
         case "set-session":
           return await handleSetSession(input);
+        case "clear-stale-tiers":
+          return await handleBulkClearTiers(input);
+        case "refresh-one":
+          return await handleRefreshOne(input);
         default:
           return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
       }
