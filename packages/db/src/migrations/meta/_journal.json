@@ -617,6 +617,13 @@
       "when": 1779275635415,
       "tag": "0087_add_tier_preference_to_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779275711672,
+      "tag": "0088_extend_heartbeat_runs_for_routing",
+      "breakpoints": true
     }
   ]
 }

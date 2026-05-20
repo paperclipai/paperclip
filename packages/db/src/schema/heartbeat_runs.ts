@@ -1,4 +1,4 @@
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean, real } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -20,6 +20,10 @@ export const heartbeatRuns = pgTable(
     signal: text("signal"),
     usageJson: jsonb("usage_json").$type<Record<string, unknown>>(),
     resultJson: jsonb("result_json").$type<Record<string, unknown>>(),
+    tierChosen: text("tier_chosen", { enum: ["local", "fast", "default", "heavy"] }),
+    modelUsed: text("model_used"),
+    totalCostUsd: real("total_cost_usd"),
+    escalationCount: integer("escalation_count").notNull().default(0),
     sessionIdBefore: text("session_id_before"),
     sessionIdAfter: text("session_id_after"),
     logStore: text("log_store"),
