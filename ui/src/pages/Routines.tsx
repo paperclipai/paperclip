@@ -676,97 +676,95 @@ export function Routines() {
             </div>
 
             <div className="px-5 pb-3">
-              <div className="overflow-x-auto overscroll-x-contain">
-                <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-                  <span>For</span>
-                  <InlineEntitySelector
-                    ref={assigneeSelectorRef}
-                    value={draft.assigneeAgentId}
-                    options={assigneeOptions}
-                    recentOptionIds={recentAssigneeIds}
-                    placeholder="Assignee"
-                    noneLabel="No assignee"
-                    searchPlaceholder="Search assignees..."
-                    emptyMessage="No assignees found."
-                    onChange={(assigneeAgentId) => {
-                      if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
-                      setDraft((current) => ({ ...current, assigneeAgentId }));
-                    }}
-                    onConfirm={() => {
-                      if (draft.projectId) {
-                        descriptionEditorRef.current?.focus();
-                      } else {
-                        projectSelectorRef.current?.focus();
-                      }
-                    }}
-                    renderTriggerValue={(option) =>
-                      option ? (
-                        currentAssignee ? (
-                          <>
-                            <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate">{option.label}</span>
-                          </>
-                        ) : (
-                          <span className="truncate">{option.label}</span>
-                        )
-                      ) : (
-                        <span className="text-muted-foreground">Assignee</span>
-                      )
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                <span>For</span>
+                <InlineEntitySelector
+                  ref={assigneeSelectorRef}
+                  value={draft.assigneeAgentId}
+                  options={assigneeOptions}
+                  recentOptionIds={recentAssigneeIds}
+                  placeholder="Assignee"
+                  noneLabel="No assignee"
+                  searchPlaceholder="Search assignees..."
+                  emptyMessage="No assignees found."
+                  onChange={(assigneeAgentId) => {
+                    if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
+                    setDraft((current) => ({ ...current, assigneeAgentId }));
+                  }}
+                  onConfirm={() => {
+                    if (draft.projectId) {
+                      descriptionEditorRef.current?.focus();
+                    } else {
+                      projectSelectorRef.current?.focus();
                     }
-                    renderOption={(option) => {
-                      if (!option.id) return <span className="truncate">{option.label}</span>;
-                      const assignee = agentById.get(option.id);
-                      return (
+                  }}
+                  renderTriggerValue={(option) =>
+                    option ? (
+                      currentAssignee ? (
                         <>
-                          {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                          <span className="truncate">{option.label}</span>
-                        </>
-                      );
-                    }}
-                  />
-                  <span>in</span>
-                  <InlineEntitySelector
-                    ref={projectSelectorRef}
-                    value={draft.projectId}
-                    options={projectOptions}
-                    recentOptionIds={recentProjectIds}
-                    placeholder="Project"
-                    noneLabel="No project"
-                    searchPlaceholder="Search projects..."
-                    emptyMessage="No projects found."
-                    onChange={(projectId) => {
-                      if (projectId) trackRecentProject(projectId);
-                      setDraft((current) => ({ ...current, projectId }));
-                    }}
-                    onConfirm={() => descriptionEditorRef.current?.focus()}
-                    renderTriggerValue={(option) =>
-                      option && currentProject ? (
-                        <>
-                          <span
-                            className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                            style={{ backgroundColor: currentProject.color ?? "#64748b" }}
-                          />
+                          <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Project</span>
+                        <span className="truncate">{option.label}</span>
                       )
-                    }
-                    renderOption={(option) => {
-                      if (!option.id) return <span className="truncate">{option.label}</span>;
-                      const project = projectById.get(option.id);
-                      return (
-                        <>
-                          <span
-                            className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                            style={{ backgroundColor: project?.color ?? "#64748b" }}
-                          />
-                          <span className="truncate">{option.label}</span>
-                        </>
-                      );
-                    }}
-                  />
-                </div>
+                    ) : (
+                      <span className="text-muted-foreground">Assignee</span>
+                    )
+                  }
+                  renderOption={(option) => {
+                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    const assignee = agentById.get(option.id);
+                    return (
+                      <>
+                        {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
+                <span>in</span>
+                <InlineEntitySelector
+                  ref={projectSelectorRef}
+                  value={draft.projectId}
+                  options={projectOptions}
+                  recentOptionIds={recentProjectIds}
+                  placeholder="Project"
+                  noneLabel="No project"
+                  searchPlaceholder="Search projects..."
+                  emptyMessage="No projects found."
+                  onChange={(projectId) => {
+                    if (projectId) trackRecentProject(projectId);
+                    setDraft((current) => ({ ...current, projectId }));
+                  }}
+                  onConfirm={() => descriptionEditorRef.current?.focus()}
+                  renderTriggerValue={(option) =>
+                    option && currentProject ? (
+                      <>
+                        <span
+                          className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                          style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                        />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">Project</span>
+                    )
+                  }
+                  renderOption={(option) => {
+                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    const project = projectById.get(option.id);
+                    return (
+                      <>
+                        <span
+                          className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                          style={{ backgroundColor: project?.color ?? "#64748b" }}
+                        />
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
               </div>
             </div>
 
