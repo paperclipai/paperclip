@@ -367,20 +367,6 @@ export function decideSuccessfulRunHandoff(input: {
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }
-  // Successful runs that produced visible progress (comments / work products
-  // captured as detectedProgressSummary) leave evidence the board operator can
-  // act on directly. Surfacing a `MISSING DISPOSITION` recovery card on top of
-  // that evidence creates a second-tier escalation that the operator must
-  // manually dismiss, even though they can see the agent's output and the run
-  // succeeded cleanly. We keep recovery active only for the truly silent-stall
-  // case: liveness claims advanced/completed/blocked/needs_followup but the run
-  // produced no visible artifact (no detectedProgressSummary).
-  if (input.detectedProgressSummary && input.detectedProgressSummary.trim().length > 0) {
-    return {
-      kind: "skip",
-      reason: "successful run produced visible progress; awaiting operator disposition without auto-escalation",
-    };
-  }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
@@ -395,6 +381,20 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
+  }
+  // Successful runs that produced visible progress (comments / work products
+  // captured as detectedProgressSummary) leave evidence the board operator can
+  // act on directly. Surfacing a `MISSING DISPOSITION` recovery card on top of
+  // that evidence creates a second-tier escalation that the operator must
+  // manually dismiss. Skip only AFTER existing owners (queued wake, pending
+  // interaction, blocker path, etc.) have had a chance to claim the next
+  // action — their reasons are higher-priority and the original tests expect
+  // them to surface unchanged.
+  if (input.detectedProgressSummary && input.detectedProgressSummary.trim().length > 0) {
+    return {
+      kind: "skip",
+      reason: "successful run produced visible progress; awaiting operator disposition without auto-escalation",
+    };
   }
 
   const instruction = buildSuccessfulRunHandoffInstruction({

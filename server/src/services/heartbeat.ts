@@ -8288,14 +8288,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       // If the issue reached a terminal state during the run (e.g. agent marked
       // it done and then posted a comment which queued a deferred wakeup), skip
-      // all deferred wakeups — there is no work left to promote.
+      // agent-self-triggered deferred wakeups — those are the loop. User- or
+      // system-triggered wakes (operator comments, mentions) must still promote
+      // so an operator can re-open the issue by commenting on a done issue.
       if (issue.status === "done" || issue.status === "cancelled") {
         await tx
           .update(agentWakeupRequests)
           .set({
             status: "skipped",
             finishedAt: new Date(),
-            error: "Issue already in terminal state; deferred promotion skipped",
+            error: "Issue already in terminal state; agent-self deferred promotion skipped",
             updatedAt: new Date(),
           })
           .where(
@@ -8303,9 +8305,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.status, "deferred_issue_execution"),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              eq(agentWakeupRequests.requestedByActorType, "agent"),
+              eq(agentWakeupRequests.requestedByActorId, run.agentId),
             ),
           );
-        return null;
       }
 
       while (true) {
