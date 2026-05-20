@@ -1,32 +1,35 @@
 import type { TranscriptEntry } from "../../adapters";
+import { agentDetailUi } from "../i18n.js";
 
 const MAX_PREVIEW_LINES = 8;
 const MAX_LINE_CHARS = 140;
 
 function entryPreviewLine(entry: TranscriptEntry): string | null {
+  const kindLabel = agentDetailUi.transcriptEntryKindLabel(entry.kind === "tool_call" ? "tool_call" : entry.kind === "tool_result" ? "tool_result" : entry.kind);
+  
   switch (entry.kind) {
     case "stdout":
-      return `[stdout] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "stderr":
-      return `[stderr] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "system":
-      return `[lifecycle] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "assistant":
-      return `[assistant] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "user":
-      return `[user] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "thinking":
-      return `[thinking] ${entry.text.trim()}`;
+      return `[${kindLabel}] ${entry.text.trim()}`;
     case "tool_call":
-      return `[tool] ${entry.name}`;
+      return `[${kindLabel}] ${entry.name}`;
     case "tool_result":
-      return `[tool-result] ${entry.isError ? "error" : "ok"}`;
+      return `[${kindLabel}] ${entry.isError ? "错误" : "正常"}`;
     case "init":
-      return `[init] ${entry.model}`;
+      return `[${kindLabel}] ${entry.model}`;
     case "result":
-      return `[result] ${entry.text?.trim() ?? ""}`;
+      return `[${kindLabel}] ${entry.text?.trim() ?? ""}`;
     case "diff":
-      return `[diff] ${entry.changeType}`;
+      return `[${kindLabel}] ${entry.changeType}`;
     default:
       return null;
   }
