@@ -16,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { relativeTime } from "../lib/utils";
 import { useToastActions } from "../context/ToastContext";
+import { routineHistoryTab } from "../lib/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -111,10 +112,10 @@ export function RoutineHistoryTab({
       const restoredFromNumber = data.restoredFromRevisionNumber;
       const newNumber = data.revision.revisionNumber;
       pushToast({
-        title: `Restored revision ${restoredFromNumber} as revision ${newNumber}`,
+        title: `已还原修订版本 ${restoredFromNumber} 为新修订版本 ${newNumber}`,
         body: data.secretMaterials.length > 0
-          ? "Trigger enabled state was restored from the snapshot. New webhook secrets are available in the banner above."
-          : "Trigger enabled state was restored from the snapshot.",
+          ? "触发器启用状态已从快照还原。新 Webhook 密钥可在上方横幅查看。"
+          : "触发器启用状态已从快照还原。",
         tone: "success",
       });
       onRestoreSecretMaterials(data);
@@ -140,8 +141,8 @@ export function RoutineHistoryTab({
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        title: routineHistoryTab.restoreFailed,
+        body: error instanceof Error ? error.message : routineHistoryTab.unknownErrorRestore,
         tone: "error",
       });
     },
@@ -187,15 +188,15 @@ export function RoutineHistoryTab({
     return (
       <div className="rounded-md border border-l-2 border-l-destructive border-border p-4 space-y-3">
         <div>
-          <p className="text-sm font-medium">Could not load revisions</p>
+          <p className="text-sm font-medium">{routineHistoryTab.couldNotLoadRevisions}</p>
           <p className="text-xs text-muted-foreground">
             {revisionsQuery.error instanceof Error
               ? revisionsQuery.error.message
-              : "Unknown error loading revisions."}
+              : routineHistoryTab.unknownError}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => revisionsQuery.refetch()}>
-          Retry
+          {routineHistoryTab.retry}
         </Button>
       </div>
     );
@@ -228,11 +229,10 @@ export function RoutineHistoryTab({
           <div className="space-y-2">
             <EmptyState
               icon={HistoryIcon}
-              message="No edits yet"
+              message={routineHistoryTab.noEditsYet}
             />
             <p className="text-center text-xs text-muted-foreground">
-              Revision 1 is the only history this routine has. Saving an edit creates the first
-              additional revision.
+              {routineHistoryTab.firstRevisionHint}
             </p>
           </div>
         ) : (
@@ -319,20 +319,19 @@ function HistoricalPreviewBanner({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <p className="text-sm font-medium text-amber-200">
-            Viewing revision {revisionNumber} (read-only)
+            {routineHistoryTab.viewingHistorical(revisionNumber)}
           </p>
           <p className="text-xs text-muted-foreground">
-            Restoring this revision creates a new revision {nextRevisionNumber} with the same content.
-            History stays append-only.
+            {routineHistoryTab.restoreCreatesNew(nextRevisionNumber)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={onReturn} disabled={pending}>
-            Return to current
+            {routineHistoryTab.returnToCurrent}
           </Button>
           <Button size="sm" onClick={onRestore} disabled={pending}>
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            Restore as new revision
+            {routineHistoryTab.restoreAsNew}
           </Button>
         </div>
       </div>
@@ -351,24 +350,23 @@ function ConflictBanner({
 }) {
   const labels = dirtyFields.length > 0
     ? dirtyFields.map((field) => field.label)
-    : ["the routine"];
+    : [routineHistoryTab.theRoutine];
   const fieldsText = formatDirtyFieldList(labels);
   return (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
+          <p className="text-sm font-medium text-amber-200">{routineHistoryTab.unsavedEdits}</p>
           <p className="text-xs text-muted-foreground">
-            You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
-            restoring an older revision.
+            {routineHistoryTab.unsavedEditsHint(fieldsText)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={onDiscard}>
-            Discard changes
+            {routineHistoryTab.discardChanges}
           </Button>
           <Button size="sm" onClick={onSave}>
-            Save and continue
+            {routineHistoryTab.saveAndContinue}
           </Button>
         </div>
       </div>
@@ -411,9 +409,9 @@ function RevisionList({
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-          Revisions
+          {routineHistoryTab.revisions}
         </p>
-        <span className="text-[11px] text-muted-foreground">{totalRevisions} total</span>
+        <span className="text-[11px] text-muted-foreground">{routineHistoryTab.totalRevisions(totalRevisions)}</span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -444,12 +442,12 @@ function RevisionList({
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && (
                 <span className="rounded-full border border-border px-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                  Current
+                  {routineHistoryTab.current}
                 </span>
               )}
               {revision.restoredFromRevisionId && (
                 <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
-                  Restored
+                  {routineHistoryTab.restored}
                 </span>
               )}
             </div>
@@ -462,7 +460,7 @@ function RevisionList({
       })}
       {totalRevisions > revisions.length && !showOlder && (
         <Button variant="ghost" size="sm" className="w-full" onClick={onShowOlder}>
-          Show {totalRevisions - revisions.length} older…
+          {routineHistoryTab.showOlder(totalRevisions - revisions.length)}
         </Button>
       )}
     </aside>
@@ -493,7 +491,7 @@ function RevisionPreview({
   const snapshot = revision.snapshot.routine;
   const triggers = revision.snapshot.triggers;
   const currentSnapshot = currentRevision?.snapshot.routine ?? null;
-  const restoreLabel = isHistorical ? "Restore this revision" : "Restore this revision";
+  const restoreLabel = routineHistoryTab.restoreThisVersion;
   const cardWrapper = `rounded-md border transition-colors duration-1000 ${
     highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
   }`;
@@ -501,43 +499,43 @@ function RevisionPreview({
   const fieldRows: Array<{ key: string; label: string; value: string; differs: boolean }> = [
     {
       key: "title",
-      label: "Title",
+      label: routineHistoryTab.fieldTitle,
       value: snapshot.title,
       differs: !!currentSnapshot && currentSnapshot.title !== snapshot.title,
     },
     {
       key: "priority",
-      label: "Priority",
+      label: routineHistoryTab.fieldPriority,
       value: snapshot.priority,
       differs: !!currentSnapshot && currentSnapshot.priority !== snapshot.priority,
     },
     {
       key: "status",
-      label: "Status",
+      label: routineHistoryTab.fieldStatus,
       value: snapshot.status,
       differs: !!currentSnapshot && currentSnapshot.status !== snapshot.status,
     },
     {
       key: "assigneeAgentId",
-      label: "Default agent",
+      label: routineHistoryTab.fieldDefaultAgent,
       value: resolveAgentName(snapshot.assigneeAgentId, agents),
       differs: !!currentSnapshot && currentSnapshot.assigneeAgentId !== snapshot.assigneeAgentId,
     },
     {
       key: "projectId",
-      label: "Project",
+      label: routineHistoryTab.fieldProject,
       value: resolveProjectName(snapshot.projectId, projects),
       differs: !!currentSnapshot && currentSnapshot.projectId !== snapshot.projectId,
     },
     {
       key: "concurrencyPolicy",
-      label: "Concurrency",
+      label: routineHistoryTab.fieldConcurrency,
       value: snapshot.concurrencyPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.concurrencyPolicy !== snapshot.concurrencyPolicy,
     },
     {
       key: "catchUpPolicy",
-      label: "Catch-up",
+      label: routineHistoryTab.fieldCatchUp,
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.catchUpPolicy !== snapshot.catchUpPolicy,
     },
@@ -550,14 +548,14 @@ function RevisionPreview({
           <div className="space-y-1 min-w-0">
             <p className="text-sm font-medium">rev {revision.revisionNumber}</p>
             <p className="text-xs text-muted-foreground truncate">
-              Saved {relativeTime(revision.createdAt)} by {getActorLabel(revision)}
+              {routineHistoryTab.savedBy(getActorLabel(revision))} {relativeTime(revision.createdAt)}
               {revision.changeSummary ? ` · ${revision.changeSummary}` : ""}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={onCompare}>
               <Search className="mr-1.5 h-3.5 w-3.5" />
-              Compare with current
+              {routineHistoryTab.compareWithCurrent}
             </Button>
             <Button
               size="sm"
@@ -575,7 +573,7 @@ function RevisionPreview({
 
       <div className={`${cardWrapper} p-3`}>
         <p className="pb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-          Structured fields
+          {routineHistoryTab.structuredFields}
         </p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
@@ -585,7 +583,7 @@ function RevisionPreview({
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
                   <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
-                    differs from current
+                    {routineHistoryTab.differsFromCurrent}
                   </span>
                 )}
               </p>
@@ -596,23 +594,23 @@ function RevisionPreview({
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-          Description
+          {routineHistoryTab.description}
         </p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
           {snapshot.description ? (
             <MarkdownBody>{snapshot.description}</MarkdownBody>
           ) : (
-            <span className="text-muted-foreground">No description</span>
+            <span className="text-muted-foreground">{routineHistoryTab.noDescription}</span>
           )}
         </div>
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-          Triggers ({triggers.length})
+          {routineHistoryTab.triggers(triggers.length)}
         </p>
         {triggers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No triggers in this revision.</p>
+          <p className="text-sm text-muted-foreground">{routineHistoryTab.noTriggers}</p>
         ) : (
           <ul className="divide-y divide-border">
             {triggers.map((trigger) => (
@@ -627,22 +625,21 @@ function RevisionPreview({
                 <span
                   className={`ml-auto text-xs ${trigger.enabled ? "text-emerald-400" : "text-muted-foreground"}`}
                 >
-                  {trigger.enabled ? "enabled" : "disabled"}
+                  {trigger.enabled ? routineHistoryTab.enabled : routineHistoryTab.disabled}
                 </span>
               </li>
             ))}
           </ul>
         )}
         <p className="text-xs text-muted-foreground">
-          Webhook secrets are not stored in revisions. If a restored webhook trigger needs re-creation,
-          Paperclip mints fresh secret material at restore time.
+          {routineHistoryTab.webhookSecretsHint}
         </p>
       </div>
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-            Variables ({snapshot.variables.length})
+            {routineHistoryTab.variables(snapshot.variables.length)}
           </p>
           <ul className="divide-y divide-border">
             {snapshot.variables.map((variable) => (
@@ -686,48 +683,45 @@ function RestoreConfirmDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Restore revision {target.revisionNumber}?</DialogTitle>
+          <DialogTitle>{routineHistoryTab.restoreConfirmTitle(target.revisionNumber)}</DialogTitle>
           <DialogDescription>
-            This creates a new revision {newRevisionNumber} with the same content as revision{" "}
-            {target.revisionNumber}. Revisions {target.revisionNumber}–{currentRevisionNumber} stay
-            in history and are not modified.
+            {routineHistoryTab.restoreConfirmDescription(target.revisionNumber, currentRevisionNumber, newRevisionNumber)}
           </DialogDescription>
         </DialogHeader>
         <ul className="space-y-2 text-sm">
           <li className="flex items-start gap-2">
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Routine field values, variables, and schedule cron will revert.
+            {routineHistoryTab.confirmRestoreFieldValuesRevert}
           </li>
           <li className="flex items-start gap-2">
             <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Previous run history is preserved.
+            {routineHistoryTab.confirmRestoreHistoryPreserved}
           </li>
           {recreatedWebhookLabels.map((label) => (
             <li key={label} className="flex items-start gap-2 text-amber-200">
               <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
-              The webhook trigger {label} will be recreated with a new URL and secret. Paperclip will
-              show the secret once after restore — copy it before closing.
+              {routineHistoryTab.confirmRestoreWebhookRecreated(label)}
             </li>
           ))}
         </ul>
         <div className="space-y-1.5">
           <Label htmlFor="restore-change-summary" className="text-xs">
-            Change summary (optional)
+            {routineHistoryTab.changeSummary}
           </Label>
           <Input
             id="restore-change-summary"
             value={changeSummary}
-            placeholder="Why are you restoring? Visible in history."
+            placeholder={routineHistoryTab.changeSummaryHint}
             onChange={(event) => onChangeSummaryChange(event.target.value)}
           />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-            Cancel
+            {routineHistoryTab.cancel}
           </Button>
           <Button onClick={onConfirm} disabled={pending}>
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {pending ? "Restoring…" : `Restore as revision ${newRevisionNumber}`}
+            {pending ? routineHistoryTab.restoring : routineHistoryTab.restoreAsRevision(newRevisionNumber)}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -783,18 +777,18 @@ function RoutineRevisionDiffModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Compare routine revisions</DialogTitle>
+          <DialogTitle>{routineHistoryTab.compareRevisionsTitle}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-3">
           <RevisionPicker
-            label="Old"
+            label={routineHistoryTab.diffOldLabel}
             value={leftId}
             onChange={setLeftId}
             revisions={revisions}
             tone="red"
           />
           <RevisionPicker
-            label="New"
+            label={routineHistoryTab.diffNewLabel}
             value={rightId}
             onChange={setRightId}
             revisions={revisions}
@@ -804,17 +798,17 @@ function RoutineRevisionDiffModal({
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Field changes
+              {routineHistoryTab.fieldChangesHeader}
             </p>
             {fieldChanges.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No structural field changes.</p>
+              <p className="text-sm text-muted-foreground">{routineHistoryTab.noFieldChanges}</p>
             ) : (
               <table className="w-full text-sm border border-border rounded-md overflow-hidden">
                 <thead>
                   <tr className="text-xs uppercase tracking-wide bg-muted/30 text-muted-foreground">
-                    <th className="px-3 py-2 text-left">Field</th>
-                    <th className="px-3 py-2 text-left">Old value</th>
-                    <th className="px-3 py-2 text-left">New value</th>
+                    <th className="px-3 py-2 text-left">{routineHistoryTab.diffTableField}</th>
+                    <th className="px-3 py-2 text-left">{routineHistoryTab.diffTableOldValue}</th>
+                    <th className="px-3 py-2 text-left">{routineHistoryTab.diffTableNewValue}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -835,19 +829,19 @@ function RoutineRevisionDiffModal({
           </section>
           <section className="space-y-2">
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Description diff
+              {routineHistoryTab.descriptionDiffHeader}
             </p>
             <DiffTable rows={descriptionDiff} />
           </section>
         </div>
         <DialogFooter className="justify-between sm:justify-between">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
+            {routineHistoryTab.close}
           </Button>
           {leftIsHistorical && left && (
             <Button onClick={() => onRestore(left)}>
               <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              Restore rev {left.revisionNumber} as new revision
+              {routineHistoryTab.restoreRevAsNew(left.revisionNumber)}
             </Button>
           )}
         </DialogFooter>
@@ -897,10 +891,10 @@ function RevisionPicker({
 
 function DiffTable({ rows }: { rows: DiffRow[] }) {
   if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No description on either revision.</p>;
+    return <p className="text-sm text-muted-foreground">{routineHistoryTab.noDescriptionEitherRevision}</p>;
   }
   if (rows.every((row) => row.kind === "context")) {
-    return <p className="text-sm text-muted-foreground">Descriptions are identical.</p>;
+    return <p className="text-sm text-muted-foreground">{routineHistoryTab.descriptionsIdentical}</p>;
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
@@ -915,10 +909,10 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
       <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-        <span>Old</span>
-        <span>New</span>
+        <span>{routineHistoryTab.diffTableOldValue}</span>
+        <span>{routineHistoryTab.diffTableNewValue}</span>
         <span />
-        <span>Content</span>
+        <span>{routineHistoryTab.diffContentHeader}</span>
       </div>
       {rows.map((row, index) => (
         <div
@@ -944,18 +938,18 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
 }
 
 function getActorLabel(revision: RoutineRevision): string {
-  if (revision.createdByUserId) return "board";
-  if (revision.createdByAgentId) return "agent";
-  return "system";
+  if (revision.createdByUserId) return routineHistoryTab.actorBoard;
+  if (revision.createdByAgentId) return routineHistoryTab.actorAgent;
+  return routineHistoryTab.actorSystem;
 }
 
 function resolveAgentName(agentId: string | null, lookup: AgentLookup) {
-  if (!agentId) return "Unassigned";
+  if (!agentId) return routineHistoryTab.unassigned;
   return lookup.get(agentId)?.name ?? agentId;
 }
 
 function resolveProjectName(projectId: string | null, lookup: ProjectLookup) {
-  if (!projectId) return "No project";
+  if (!projectId) return routineHistoryTab.noProject;
   return lookup.get(projectId)?.name ?? projectId;
 }
 
@@ -976,10 +970,10 @@ function formatVariableDefault(variable: RoutineVariable): string {
 }
 
 function formatDirtyFieldList(labels: string[]): string {
-  if (labels.length === 0) return "the routine";
+  if (labels.length === 0) return routineHistoryTab.theRoutine;
   if (labels.length === 1) return labels[0];
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+  if (labels.length === 2) return `${labels[0]} 和 ${labels[1]}`;
+  return `${labels.slice(0, -1).join("，")}和 ${labels[labels.length - 1]}`;
 }
 
 function collectWebhookTriggerDifferences(
@@ -1018,26 +1012,26 @@ function computeFieldChanges(
       changes.push({ field: label, oldValue: transform(oldVal), newValue: transform(newVal) });
     }
   };
-  compareScalar("title", "Title", oldRoutine.title, newRoutine.title);
-  compareScalar("priority", "Priority", oldRoutine.priority, newRoutine.priority);
+  compareScalar("title", routineHistoryTab.fieldTitle, oldRoutine.title, newRoutine.title);
+  compareScalar("priority", routineHistoryTab.fieldPriority, oldRoutine.priority, newRoutine.priority);
   compareScalar(
     "assigneeAgentId",
-    "Default agent",
+    routineHistoryTab.fieldDefaultAgent,
     resolveAgentName(oldRoutine.assigneeAgentId, agents),
     resolveAgentName(newRoutine.assigneeAgentId, agents),
   );
   compareScalar(
     "projectId",
-    "Project",
+    routineHistoryTab.fieldProject,
     resolveProjectName(oldRoutine.projectId, projects),
     resolveProjectName(newRoutine.projectId, projects),
   );
-  compareScalar("concurrencyPolicy", "Concurrency", oldRoutine.concurrencyPolicy, newRoutine.concurrencyPolicy);
-  compareScalar("catchUpPolicy", "Catch-up", oldRoutine.catchUpPolicy, newRoutine.catchUpPolicy);
-  compareScalar("status", "Status", oldRoutine.status, newRoutine.status);
+  compareScalar("concurrencyPolicy", routineHistoryTab.fieldConcurrency, oldRoutine.concurrencyPolicy, newRoutine.concurrencyPolicy);
+  compareScalar("catchUpPolicy", routineHistoryTab.fieldCatchUp, oldRoutine.catchUpPolicy, newRoutine.catchUpPolicy);
+  compareScalar("status", routineHistoryTab.fieldStatus, oldRoutine.status, newRoutine.status);
   if (JSON.stringify(oldRoutine.variables) !== JSON.stringify(newRoutine.variables)) {
     changes.push({
-      field: "Variables",
+      field: routineHistoryTab.variables(oldRoutine.variables.length),
       oldValue: summarizeVariables(oldRoutine.variables),
       newValue: summarizeVariables(newRoutine.variables),
     });
@@ -1047,7 +1041,7 @@ function computeFieldChanges(
 }
 
 function summarizeVariables(variables: RoutineVariable[]): string {
-  if (variables.length === 0) return "(none)";
+  if (variables.length === 0) return routineHistoryTab.noVariables;
   return variables
     .map((variable) => `${variable.name}=${formatVariableDefault(variable)}`)
     .join(", ");
@@ -1067,13 +1061,13 @@ function compareTriggers(
   for (const [, pair] of byId) {
     if (pair.old && !pair.next) {
       changes.push({
-        field: `Trigger removed (${pair.old.label ?? pair.old.kind})`,
+        field: routineHistoryTab.triggerRemoved(pair.old.label ?? pair.old.kind),
         oldValue: summarizeTriggerSnapshot(pair.old),
         newValue: null,
       });
     } else if (!pair.old && pair.next) {
       changes.push({
-        field: `Trigger added (${pair.next.label ?? pair.next.kind})`,
+        field: routineHistoryTab.triggerAdded(pair.next.label ?? pair.next.kind),
         oldValue: null,
         newValue: summarizeTriggerSnapshot(pair.next),
       });
@@ -1082,9 +1076,9 @@ function compareTriggers(
       const newSummary = summarizeTriggerSnapshot(pair.next);
       if (oldSummary !== newSummary || pair.old.enabled !== pair.next.enabled) {
         changes.push({
-          field: `Trigger ${pair.next.label ?? pair.next.kind}`,
-          oldValue: `${oldSummary} (${pair.old.enabled ? "enabled" : "disabled"})`,
-          newValue: `${newSummary} (${pair.next.enabled ? "enabled" : "disabled"})`,
+          field: routineHistoryTab.triggerChanged(pair.next.label ?? pair.next.kind),
+          oldValue: `${oldSummary}（${pair.old.enabled ? routineHistoryTab.triggerEnabled : routineHistoryTab.triggerDisabled}）`,
+          newValue: `${newSummary}（${pair.next.enabled ? routineHistoryTab.triggerEnabled : routineHistoryTab.triggerDisabled}）`,
         });
       }
     }
