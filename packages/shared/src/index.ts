@@ -687,6 +687,24 @@ export {
 } from "./types/instance.js";
 
 export {
+  CLOUD_UPSTREAM_EXPORTER_VERSION,
+  CLOUD_UPSTREAM_SOURCE_SCHEMA_VERSION,
+  type CloudUpstreamConnectStartResponse,
+  type CloudUpstreamActivationDecision,
+  type CloudUpstreamActivationEntityType,
+  type CloudUpstreamConnection,
+  type CloudUpstreamConflict,
+  type CloudUpstreamPreview,
+  type CloudUpstreamRun,
+  type CloudUpstreamRunEvent,
+  type CloudUpstreamsState,
+  type CloudUpstreamStep,
+  type CloudUpstreamSummaryCount,
+  type CloudUpstreamTarget,
+  type CloudUpstreamWarning,
+} from "./types/cloud-upstream.js";
+
+export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";

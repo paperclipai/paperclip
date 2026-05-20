@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, CloudUpload, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -29,6 +30,11 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const showCloudUpstream = experimentalSettings?.enableCloudSync === true;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -60,6 +66,14 @@ export function CompanySettingsSidebar() {
             icon={MonitorCog}
             end
           />
+          {showCloudUpstream ? (
+            <SidebarNavItem
+              to="/company/settings/cloud-upstream"
+              label="Cloud upstream"
+              icon={CloudUpload}
+              end
+            />
+          ) : null}
           <SidebarNavItem
             to="/company/settings/access"
             label="Access"
