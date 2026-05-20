@@ -191,7 +191,7 @@ export function issueRecoveryActionService(db: Db) {
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
       const newAttemptCount = existing.attemptCount + 1;
-      const effectiveMaxAttempts = input.maxAttempts ?? existing.maxAttempts;
+      const effectiveMaxAttempts = input.maxAttempts !== undefined ? input.maxAttempts : existing.maxAttempts;
       const isNowStale = effectiveMaxAttempts !== null && newAttemptCount >= effectiveMaxAttempts;
       const [updated] = await db
         .update(issueRecoveryActions)
