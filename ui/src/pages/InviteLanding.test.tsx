@@ -41,6 +41,17 @@ vi.mock("../api/companies", () => ({
   companiesApi: {
     list: () => listCompaniesMock(),
   },
+  fetchCompanyListWithAuth: async () => {
+    try {
+      return { companies: await listCompaniesMock(), unauthorized: false };
+    } catch (err) {
+      const status = (err as { status?: unknown })?.status;
+      if (status === 401) {
+        return { companies: [], unauthorized: true };
+      }
+      throw err;
+    }
+  },
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -552,6 +563,54 @@ describe("InviteLandingPage", () => {
     expect(acceptInviteMock).not.toHaveBeenCalled();
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("accepts signed-in human invites without colliding with the shared CompanyContext cache shape", async () => {
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    listCompaniesMock.mockResolvedValue([]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "pending_approval",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(container.textContent).toContain("Request to join Acme Robotics");
+    const cached = queryClient.getQueryData(["companies"]);
+    expect(cached).toEqual({ companies: [], unauthorized: false });
 
     await act(async () => {
       root.unmount();

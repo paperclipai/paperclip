@@ -67,6 +67,7 @@ import {
 import {
   grantsForHumanRole,
   normalizeHumanRole,
+  parseExplicitHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
@@ -3384,6 +3385,12 @@ export function accessRoutes(
 
       const actorEmail =
         requestType === "human" ? await resolveActorEmail(db, req) : null;
+      const autoApproveHumanRole =
+        requestType === "human"
+          ? parseExplicitHumanRole(
+              invite.defaultsPayload as Record<string, unknown> | null
+            )
+          : null;
       const existingHumanJoinRequest =
         requestType === "human"
           ? findReusableHumanJoinRequest(
@@ -3403,7 +3410,7 @@ export function accessRoutes(
               }
             )
           : null;
-      const created = !inviteAlreadyAccepted
+      let created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
               await tx
@@ -3487,6 +3494,113 @@ export function accessRoutes(
 
       if (!created) {
         throw conflict("Join request not found");
+      }
+
+      let autoApprovedJoinRequest = false;
+      const requestingUserId =
+        req.actor.userId &&
+        created.requestingUserId === req.actor.userId
+          ? req.actor.userId
+          : null;
+
+      if (
+        requestType === "human" &&
+        autoApproveHumanRole &&
+        requestingUserId
+      ) {
+        const grants = humanJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          autoApproveHumanRole
+        );
+        const approvedByUserId = invite.invitedByUserId ?? req.actor.userId ?? null;
+        created = await db.transaction(async (tx) => {
+          const existingMembership = await tx
+            .select()
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.companyId, companyId),
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, requestingUserId)
+              )
+            )
+            .then((rows) => rows[0] ?? null);
+
+          if (existingMembership) {
+            if (
+              existingMembership.status !== "active" ||
+              existingMembership.membershipRole !== autoApproveHumanRole
+            ) {
+              await tx
+                .update(companyMemberships)
+                .set({
+                  status: "active",
+                  membershipRole: autoApproveHumanRole,
+                  updatedAt: new Date()
+                })
+                .where(eq(companyMemberships.id, existingMembership.id));
+            }
+          } else {
+            await tx.insert(companyMemberships).values({
+              companyId,
+              principalType: "user",
+              principalId: requestingUserId,
+              status: "active",
+              membershipRole: autoApproveHumanRole
+            });
+          }
+
+          await tx
+            .delete(principalPermissionGrants)
+            .where(
+              and(
+                eq(principalPermissionGrants.companyId, companyId),
+                eq(principalPermissionGrants.principalType, "user"),
+                eq(principalPermissionGrants.principalId, requestingUserId)
+              )
+            );
+          if (grants.length > 0) {
+            await tx.insert(principalPermissionGrants).values(
+              grants.map((grant) => ({
+                companyId,
+                principalType: "user" as const,
+                principalId: requestingUserId,
+                permissionKey: grant.permissionKey,
+                scope: grant.scope ?? null,
+                grantedByUserId: approvedByUserId,
+                createdAt: new Date(),
+                updatedAt: new Date()
+              }))
+            );
+          }
+
+          let nextCreated = created;
+          if (created.status !== "approved") {
+            nextCreated = await tx
+              .update(joinRequests)
+              .set({
+                status: "approved",
+                approvedByUserId,
+                approvedAt: new Date(),
+                updatedAt: new Date()
+              })
+              .where(eq(joinRequests.id, created.id))
+              .returning()
+              .then((rows) => rows[0] ?? created);
+          }
+          await logActivity(tx as unknown as Db, {
+            companyId,
+            actorType: "user",
+            actorId: approvedByUserId ?? "board",
+            action: "join.auto_approved",
+            entityType: "join_request",
+            entityId: nextCreated.id,
+            details: { requestType: "human", membershipRole: autoApproveHumanRole }
+          });
+
+          return nextCreated;
+        });
+        autoApprovedJoinRequest = true;
       }
 
       if (
@@ -3590,27 +3704,29 @@ export function accessRoutes(
         }
       }
 
-      await logActivity(db, {
-        companyId,
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId:
-          req.actor.type === "agent"
-            ? req.actor.agentId ?? "invite-agent"
-            : req.actor.userId ??
-              (requestType === "agent" ? "invite-anon" : "board"),
-        action: inviteAlreadyAccepted
-          ? "join.request_replayed"
-          : "join.requested",
-        entityType: "join_request",
-        entityId: created.id,
-        details: {
-          requestType,
-          requestIp: requestIp(req),
-          inviteReplay: inviteAlreadyAccepted,
-          reusedExistingJoinRequest:
-            Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
-        }
-      });
+      if (!autoApprovedJoinRequest) {
+        await logActivity(db, {
+          companyId,
+          actorType: req.actor.type === "agent" ? "agent" : "user",
+          actorId:
+            req.actor.type === "agent"
+              ? req.actor.agentId ?? "invite-agent"
+              : req.actor.userId ??
+                (requestType === "agent" ? "invite-anon" : "board"),
+          action: inviteAlreadyAccepted
+            ? "join.request_replayed"
+            : "join.requested",
+          entityType: "join_request",
+          entityId: created.id,
+          details: {
+            requestType,
+            requestIp: requestIp(req),
+            inviteReplay: inviteAlreadyAccepted,
+            reusedExistingJoinRequest:
+              Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
+          }
+        });
+      }
 
       const response = toJoinRequestResponse(created);
       if (claimSecret) {
