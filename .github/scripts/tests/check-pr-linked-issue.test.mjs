@@ -41,3 +41,8 @@ test('fails with issue reference from different repo', () => {
   const result = checkLinkedIssue('See https://github.com/other/repo/issues/123');
   assert.equal(result.passed, false);
 });
+
+test('fails when #NNN is part of a word (no space before)', () => {
+  const result = checkLinkedIssue('This is version#123 not an issue link');
+  assert.equal(result.passed, false);
+});
