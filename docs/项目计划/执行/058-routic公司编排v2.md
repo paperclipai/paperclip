@@ -5,7 +5,8 @@ updated: "2026-05-20"
 
 # 058-routic 公司编排 v2
 
-> 整理自 2026-05-19 对话记录：Token Bridge memory pipeline 消费断裂分析 → Paperclip 编排层精简决策 → 实施方案
+> 整理自 2026-05-19 对话记录：Token Bridge memory pipeline 消费断裂分析 → Paperclip 编排层精简决策 → 实施方案  
+> **默认编排关断（阶段 0）操作真源：** [025-实践-默认编排关闭与按需启用](../最佳实践/025-实践-默认编排关闭与按需启用.md)
 
 ---
 
@@ -126,7 +127,7 @@ CEO agent 在回形针里比较傻，编排层过度设计。决定做减法。
 | Plugin 系统 | **关** | 当前不需要 |
 | Issue + checkout + run | **留** | 核心任务载体 |
 | Adapter invoke | **留** | 执行入口 |
-| Recovery | **留** | 异常兜底 |
+| Recovery | **关（实例默认）** | 上游默认自愈链在中文/弱模型环境易造衍伸单；按需单开见 [025](../最佳实践/025-实践-默认编排关闭与按需启用.md) |
 | resultJson + run events | **留** | 结果和审计 |
 
 ### 保留组件的代码位置（大概）
@@ -168,17 +169,23 @@ Token Bridge 工程计划直接映射成 issue，不走公司目标链。
 - [x] 创建智能体（12 个，按映射的角色枚举）
 - [x] 只给 H1-H3 显式设置 `heartbeat.enabled = true`
 
-### 当前实例状态（2026-05-19 核实）
+### 当前实例状态（2026-05-20 · routic @ 4100）
+
+**环境变量：** 见 [025 §3.1](../最佳实践/025-实践-默认编排关闭与按需启用.md)（`STRANDED` / `PRODUCTIVITY` / `LIVENESS` / `WATCHDOG` / `ORPHAN` / `RETRY` 均为 `false`）。
 
 **实例设置 (experimental)：**
+
 ```
 enableTimerHeartbeatByDefaultForEligibleRoles: false
-timerHeartbeatEligibleAgentRoles: ["researcher", "devops"]
-defaultTimerHeartbeatIntervalSec: 1800
+timerHeartbeatEligibleAgentRoles: []
 enableIssueGraphLivenessAutoRecovery: false
 ```
 
-**智能体清单：**
+**智能体（4100 当前）：** 执行 / 快速探查 / 分析师 — 心跳 off；**质量** 已 PATCH 为 off（2026-05-20）。
+
+> **2026-05-19 核实**（已过时）：下列 H1–H3 定时心跳表仅作历史；**以 025 + 上表为准**。
+
+**历史（2026-05-19，勿再启用）：**
 
 | 序号 | 名称 | Paperclip 角色 | 心跳 | 间隔 | 分类 |
 |------|------|---------------|------|------|------|
@@ -218,6 +225,7 @@ enableIssueGraphLivenessAutoRecovery: false
 
 | 文件 | 内容 |
 |------|------|
+| [025-实践-默认编排关闭与按需启用](../最佳实践/025-实践-默认编排关闭与按需启用.md) | **阶段 0**：关断清单、按需启用顺序、4100 验证 |
 | `docs/项目计划/长期需求/08 编排规范-任务角色与执行协议.md` | 编排方法论、角色定义、执行协议 |
 | Paperclip instance experimental settings | 心跳、恢复、隔离区等开关 |
 | Paperclip AGENT_ROLES 枚举 | 固定角色名（ceo, cto, devops 等） |
