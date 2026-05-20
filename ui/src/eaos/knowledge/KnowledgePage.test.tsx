@@ -124,22 +124,22 @@ describe("KnowledgePage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels playbooks as backend-backed once the live read resolves", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     skillsListMock.mockResolvedValue([
       makeSkill({ id: "s-1", name: "Frontend QA playbook" }),
     ]);
     await renderKnowledge();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-knowledge-title"]');
+      expect(title?.textContent).toBe("Knowledge");
       const posture = container?.querySelector('[data-testid="eaos-knowledge-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Playbooks · BACKEND-BACKED");
-      // Cross-mission search gap stays truthful, in customer-friendly copy.
-      expect(text).toContain("Cross-mission search · PREVIEW");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
     });
   });
 
-  it("renders skill rows + names the unwired KB index gap as a truthful temporary gap", async () => {
+  it("renders skill rows + names the cross-mission gap in customer-friendly copy", async () => {
     skillsListMock.mockResolvedValue([
       makeSkill({ id: "s-1", name: "Frontend QA playbook", description: "Browser smoke flows" }),
       makeSkill({ id: "s-2", name: "Approvals SOP", attachedAgentCount: 3 }),
@@ -153,8 +153,9 @@ describe("KnowledgePage (LET-484 working-product slice)", () => {
       );
       const gap = container?.querySelector('[data-testid="eaos-knowledge-kb-index-gap"]');
       const gapText = gap?.textContent ?? "";
-      expect(gapText).toContain("Temporary gap");
-      expect(gapText).toContain("GET /api/companies/:companyId/knowledge");
+      expect(gapText).toContain("coming soon");
+      expect(gapText).not.toContain("Backend path pending");
+      expect(gapText).not.toContain("/api/companies/:companyId/knowledge");
     });
   });
 

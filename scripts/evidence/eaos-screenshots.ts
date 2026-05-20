@@ -21,24 +21,34 @@
  *
  *   # Terminal 2 — run the runner using the tsx copy that ships with the
  *   # paperclip CLI workspace (the workspace root does not list tsx as a
- *   # top-level devDep):
+ *   # top-level devDep). The default `--mock-api` flag intercepts every
+ *   # `/api/*` request with the canned empty-state fixtures in
+ *   # `scripts/evidence/eaos-screenshot-fixtures.ts`, which lets the EAOS
+ *   # product shell render its real React tree under `deploymentMode =
+ *   # local_trusted` without needing a session cookie or a second API
+ *   # server. The fixtures are intentionally empty/skeleton so no
+ *   # fake counts, no fake activity, no fake metrics leak into evidence:
  *   node cli/node_modules/.bin/tsx scripts/evidence/eaos-screenshots.ts \
  *     --base http://localhost:5173 \
  *     --theme light \
+ *     --mock-api \
  *     --out evidence/LET-503/screenshots
  *
- *   # Optional — supply a session cookie to capture the authenticated UI:
+ *   # Disable mocks to capture the real backend state — pages will render
+ *   # whatever the proxied API at /api/* returns (login wall, no-company
+ *   # page, or authenticated surface depending on the running instance):
  *   node cli/node_modules/.bin/tsx scripts/evidence/eaos-screenshots.ts \
  *     --base http://localhost:5173 \
+ *     --no-mock-api \
  *     --cookie 'paperclip-session=...' \
  *     --theme light \
  *     --out evidence/LET-503/screenshots
  *
  * The cookie is read once and re-applied per viewport so the auth state
- * does not bleed between runs. If `--cookie` is omitted the script still
- * completes successfully: pages render their no-company / loading / error
- * state and each shot is tagged `truthful-gap` in the manifest — which is
- * itself a valid form of evidence for the LET-505 audit.
+ * does not bleed between runs. If `--cookie` is omitted and `--mock-api`
+ * is disabled, the script still completes successfully: pages render
+ * their no-company / loading / error state and each shot is tagged
+ * `truthful-gap` in the manifest.
  *
  * `--theme light|dark` (default `light`) writes `paperclip.theme` into
  * `localStorage` via an init script before the React app mounts, so the
@@ -65,6 +75,11 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Browser, BrowserContext, Cookie } from "playwright";
+import {
+  SCREENSHOT_API_ROUTES,
+  SCREENSHOT_COMPANY_ID,
+  screenshotApiFallback,
+} from "./eaos-screenshot-fixtures";
 
 async function loadPlaywright(): Promise<typeof import("playwright")> {
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +103,7 @@ interface Args {
   readonly outDir: string;
   readonly theme: ThemeChoice;
   readonly anchorTimeoutMs: number;
+  readonly mockApi: boolean;
 }
 
 interface CaptureRecord {
@@ -196,6 +212,7 @@ function parseArgs(argv: readonly string[]): Args {
   let outDir = "evidence/LET-503/screenshots";
   let theme: ThemeChoice = "light";
   let anchorTimeoutMs = 8_000;
+  let mockApi = true;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--base" || arg === "-b") {
@@ -210,9 +227,13 @@ function parseArgs(argv: readonly string[]): Args {
     } else if (arg === "--anchor-timeout") {
       const next = Number.parseInt(argv[++i] ?? "", 10);
       if (Number.isFinite(next) && next > 0) anchorTimeoutMs = next;
+    } else if (arg === "--mock-api") {
+      mockApi = true;
+    } else if (arg === "--no-mock-api") {
+      mockApi = false;
     }
   }
-  return { base, cookie, outDir, theme, anchorTimeoutMs };
+  return { base, cookie, outDir, theme, anchorTimeoutMs, mockApi };
 }
 
 function cookieToPlaywright(raw: string, baseUrl: string): Cookie[] {
@@ -350,15 +371,53 @@ async function main(): Promise<void> {
   }
 
   // Pin the LET-502 light-first theme (or dark, if explicitly requested)
-  // before the React app mounts, regardless of the global ui/index.html
-  // fallback. addInitScript fires on every navigation in this context.
-  await context.addInitScript((theme: string) => {
-    try {
-      window.localStorage.setItem("paperclip.theme", theme);
-    } catch {
-      /* localStorage unavailable in some contexts — ignore. */
-    }
-  }, args.theme);
+  // and pre-seed the selected-company id before the React app mounts.
+  // The seed lets CompanyContext skip the auto-bootstrap fetch race so
+  // the EAOS pages can render their data-scoped chrome immediately.
+  // addInitScript fires on every navigation in this context.
+  await context.addInitScript(
+    (input: { theme: string; companyId: string }) => {
+      try {
+        window.localStorage.setItem("paperclip.theme", input.theme);
+        window.localStorage.setItem("paperclip.selectedCompanyId", input.companyId);
+      } catch {
+        /* localStorage unavailable in some contexts — ignore. */
+      }
+    },
+    { theme: args.theme, companyId: SCREENSHOT_COMPANY_ID },
+  );
+
+  // --mock-api intercepts every /api/* request with the canned empty-
+  // state fixtures so the EAOS React shell can render its real chrome
+  // without a session cookie or a second backend instance. The fixtures
+  // force `deploymentMode = local_trusted` (bypassing CloudAccessGate),
+  // surface one generic demo company, and return [] for every list
+  // endpoint — so the captured PNGs show authentic empty states without
+  // any fake counts/metrics/activity leaking in.
+  if (args.mockApi) {
+    // Match only URLs whose path begins with `/api/`. A plain glob like
+    // `**/api/**` also catches Vite source modules under `/src/api/...`
+    // and breaks the React app load — anchor the match with a RegExp.
+    await context.route(/^https?:\/\/[^/]+\/api\//, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const method = request.method();
+      const match = SCREENSHOT_API_ROUTES.find((spec) => {
+        if (spec.methodPattern && !spec.methodPattern.test(method)) return false;
+        return spec.pathPattern.test(url.pathname);
+      });
+      const result = match
+        ? typeof match.response === "function"
+          ? match.response(url, method)
+          : match.response
+        : screenshotApiFallback(url);
+      await route.fulfill({
+        status: result.status,
+        contentType: "application/json",
+        body: JSON.stringify(result.body),
+      });
+    });
+  }
 
   const records: CaptureRecord[] = [];
   for (const viewport of VIEWPORTS) {
@@ -394,6 +453,8 @@ async function main(): Promise<void> {
     base: args.base,
     theme: args.theme,
     cookieApplied: Boolean(args.cookie),
+    mockApi: args.mockApi,
+    seededCompanyId: args.mockApi ? SCREENSHOT_COMPANY_ID : null,
     anchorTimeoutMs: args.anchorTimeoutMs,
     captures: portableRecords,
   };
@@ -415,7 +476,7 @@ async function main(): Promise<void> {
       counts["anchor-hit"] ?? 0
     }, truthful-gap=${counts["truthful-gap"] ?? 0}, error=${counts.error ?? 0}). Theme=${
       args.theme
-    }; cookie ${args.cookie ? "applied" : "not supplied"}. Manifest: ${manifestPath}`,
+    }; cookie ${args.cookie ? "applied" : "not supplied"}; mockApi=${args.mockApi}. Manifest: ${manifestPath}`,
   );
 }
 

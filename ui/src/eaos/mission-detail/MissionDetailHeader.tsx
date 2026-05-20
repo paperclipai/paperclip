@@ -7,7 +7,6 @@ import { Link } from "@/lib/router";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
-import type { EaosStateLabel } from "../state-labels";
 
 interface MissionDetailHeaderProps {
   issue: Issue;
@@ -16,23 +15,23 @@ interface MissionDetailHeaderProps {
   hasActiveRun: boolean;
 }
 
-function statusChip(status: Issue["status"]): { label: EaosStateLabel; copy: string } {
+function statusChip(status: Issue["status"]): { label: string; copy: string } {
   switch (status) {
     case "in_review":
-      return { label: "APPROVAL REQUIRED", copy: "In review" };
+      return { label: "IN REVIEW", copy: "In review" };
     case "blocked":
-      return { label: "FAILED", copy: "Blocked" };
+      return { label: "BLOCKED", copy: "Blocked" };
     case "done":
-      return { label: "APPLIED", copy: "Done" };
+      return { label: "DONE", copy: "Done" };
     case "cancelled":
-      return { label: "PREVIEW", copy: "Cancelled" };
+      return { label: "CANCELLED", copy: "Cancelled" };
     case "in_progress":
-      return { label: "BACKEND-BACKED", copy: "Active" };
+      return { label: "ACTIVE", copy: "Active" };
     case "todo":
-      return { label: "BACKEND-BACKED", copy: "Queued" };
+      return { label: "QUEUED", copy: "Queued" };
     case "backlog":
     default:
-      return { label: "PREVIEW", copy: "Backlog" };
+      return { label: "BACKLOG", copy: "Backlog" };
   }
 }
 
@@ -89,11 +88,10 @@ export function MissionDetailHeader({
       data-testid="eaos-mission-detail-header"
     >
       <div className="flex flex-wrap items-center gap-2" data-testid="eaos-mission-detail-truth">
-        <EaosStateChip label="BACKEND-BACKED" prefix="Shell" />
         <EaosStateChip
           label={chip.label}
-          prefix="Mission"
-          title={`Derived from issue.status=${issue.status}`}
+          prefix="Status"
+          title={`Mission status: ${issue.status}`}
         />
         {isLive ? (
           <EaosStateChip

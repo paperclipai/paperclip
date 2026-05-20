@@ -143,16 +143,21 @@ afterEach(() => {
 });
 
 describe("MissionsListPage", () => {
-  it("renders the shell-backed posture chip and read-only header copy", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     listMock.mockResolvedValueOnce([]);
     await render();
 
     const title = container?.querySelector('[data-testid="eaos-missions-title"]');
     expect(title?.textContent).toBe("Missions");
 
+    // Customer-visible UI must not surface implementation posture chips or
+    // contract jargon (LET-503 §customer-friendly copy).
     const posture = container?.querySelector('[data-testid="eaos-missions-posture"]');
-    expect(posture?.textContent?.toLowerCase()).toContain("backend-backed");
-    expect(posture?.textContent?.toLowerCase()).toContain("shell");
+    expect(posture).toBeNull();
+    const html = container?.innerHTML ?? "";
+    expect(html).not.toContain("BACKEND-BACKED");
+    expect(html).not.toContain("LET-409");
+    expect(html).not.toContain("task-object");
   });
 
   it("shows the empty state when the backend returns zero issues", async () => {

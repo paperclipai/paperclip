@@ -176,63 +176,45 @@ describe("LET-484 — selected company name redaction across EAOS surfaces", () 
     expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("ApprovalsQueuePage redacts company name in the live-read posture note", async () => {
+  it("ApprovalsQueuePage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<ApprovalsQueuePage now={new Date("2026-05-19T16:00:00Z")} />);
-    const note = container!.querySelector('[data-testid="eaos-approvals-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("RunsTimelinePage redacts company name in the live-read posture note", async () => {
+  it("RunsTimelinePage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<RunsTimelinePage now={new Date("2026-05-19T16:00:00Z")} />);
-    const note = container!.querySelector('[data-testid="eaos-runs-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("ProjectsRoadmapPage redacts company name in the live-read posture note", async () => {
+  it("ProjectsRoadmapPage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<ProjectsRoadmapPage />);
-    const note = container!.querySelector('[data-testid="eaos-projects-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("CapabilitiesPage redacts company name in the live-read posture note", async () => {
+  it("CapabilitiesPage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<CapabilitiesPage />);
-    const note = container!.querySelector('[data-testid="eaos-capabilities-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("KnowledgePage redacts company name in posture note AND empty-state copy", async () => {
+  it("KnowledgePage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<KnowledgePage />);
-    const note = container!.querySelector('[data-testid="eaos-knowledge-posture-note"]');
-    expect(note).not.toBeNull();
-    const noteText = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(noteText);
-    expect(noteText).toContain("gh_[REDACTED]");
-
-    const emptyState = container!.querySelector('[data-testid="eaos-knowledge-playbooks-empty"]');
-    expect(emptyState).not.toBeNull();
-    const emptyText = emptyState!.textContent ?? "";
-    expectRedactedAndNoRawTokens(emptyText);
-    expect(emptyText).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 
-  it("AdminPage redacts company name in the live-read posture note", async () => {
+  it("AdminPage never leaks raw company-name secrets to the rendered DOM", async () => {
     await renderWith(<AdminPage />);
-    const note = container!.querySelector('[data-testid="eaos-admin-posture-note"]');
-    expect(note).not.toBeNull();
-    const text = note!.textContent ?? "";
-    expectRedactedAndNoRawTokens(text);
-    expect(text).toContain("gh_[REDACTED]");
+    const html = container!.innerHTML;
+    expect(html.includes(SECRET_TOKEN)).toBe(false);
+    expect(html.includes(SECRET_PREFIX)).toBe(false);
   });
 });

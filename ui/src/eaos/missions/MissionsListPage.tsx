@@ -29,13 +29,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
 import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
-import {
   bucketMissions,
   resolveMissionRow,
   summarizeMissionList,
@@ -89,39 +82,14 @@ export function MissionsListPage({ now }: MissionsListPageProps = {}) {
       data-testid="eaos-missions-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-missions-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Data"
-              title="Data sourced from canonical Issue records via /api/companies/:companyId/issues"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-missions-posture-note"
-          >
-            {dataConnected
-              ? "Read-only · No live actions · LET-409 §14/§15 contract"
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
         <h1
           id="eaos-missions-title"
-          className="text-2xl font-semibold tracking-tight"
+          className="text-xl font-semibold tracking-tight text-foreground"
           data-testid="eaos-missions-title"
         >
           Missions
         </h1>
-        <p className="max-w-2xl text-sm text-muted-foreground">
-          Mission-control task-object view derived read-only from canonical issue records. Rows
-          carry truth, freshness, and risk labels per LET-409 §15. No live action controls are
-          rendered here; use the linked kernel issue page for any approval, run, or restart.
-        </p>
       </header>
 
       {!selectedCompanyId ? (
@@ -138,31 +106,31 @@ export function MissionsListPage({ now }: MissionsListPageProps = {}) {
           <MissionBucket
             id="active"
             title="Active"
-            description="Issues with backend status in_progress, or queued todo/backlog with an owner."
+            description="In progress, or queued with an owner."
             rows={buckets.active}
           />
           <MissionBucket
             id="blocked"
             title="Blocked"
-            description="Backend status blocked, or has one or more blocking dependency issues."
+            description="Waiting on a dependency or external unblock."
             rows={buckets.blocked}
           />
           <MissionBucket
             id="in-review"
             title="In review"
-            description="Backend status in_review — review/approval owner action expected."
+            description="Awaiting reviewer or approval owner."
             rows={buckets.inReview}
           />
           <MissionBucket
             id="done-with-evidence"
-            title="Done with evidence"
-            description="Backend status done with a plan document or work product attached."
+            title="Done"
+            description="Closed with a plan or work product attached."
             rows={buckets.doneWithEvidence}
           />
           <MissionBucket
             id="other"
             title="Other"
-            description="Cancelled, stale, needs-next-owner, or done-without-evidence — partial/edge states."
+            description="Cancelled, stale, or needing a next owner."
             rows={buckets.other}
             allowEmpty
           />
@@ -184,8 +152,7 @@ function NoCompanyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-missions-no-company"
     >
-      Select a company scope from the top bar to load missions. This surface reads issues from the
-      currently selected company only.
+      Select a company from the top bar to see its missions.
     </div>
   );
 }
@@ -198,7 +165,7 @@ function LoadingState() {
       className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-missions-loading"
     >
-      Loading missions from canonical issue records…
+      Loading missions…
     </div>
   );
 }
@@ -212,10 +179,7 @@ function ErrorState({ message }: { message: string }) {
     >
       <p className="font-medium">Could not load missions.</p>
       <p className="mt-1 text-xs">{message}</p>
-      <p className="mt-1 text-xs">
-        Counts remain hidden because no backend-backed rows are available. Retry by refreshing the
-        page or check the kernel console.
-      </p>
+      <p className="mt-1 text-xs">Refresh to try again.</p>
     </div>
   );
 }
@@ -227,8 +191,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-missions-empty"
     >
-      No issues are visible in the current company scope yet. When backend records appear they will
-      render here as mission rows.
+      No missions yet. New work will show up here.
     </div>
   );
 }
@@ -239,11 +202,11 @@ interface SummaryStripProps {
 
 function SummaryStrip({ summary }: SummaryStripProps) {
   const items: Array<{ id: string; label: string; value: number }> = [
-    { id: "total", label: "Total (backend-backed)", value: summary.totalBackendBacked },
+    { id: "total", label: "Total", value: summary.totalBackendBacked },
     { id: "active", label: "Active", value: summary.active },
     { id: "blocked", label: "Blocked", value: summary.blocked },
     { id: "in-review", label: "In review", value: summary.inReview },
-    { id: "done-with-evidence", label: "Done w/ evidence", value: summary.doneWithEvidence },
+    { id: "done-with-evidence", label: "Done", value: summary.doneWithEvidence },
     { id: "stale", label: "Stale", value: summary.stale },
   ];
   return (
@@ -340,7 +303,7 @@ function MissionRowCard({ row }: { row: MissionRow }) {
           <span data-testid="eaos-missions-row-title">{row.title}</span>
         </p>
         <p className="text-xs text-muted-foreground" data-testid="eaos-missions-row-primary-reason">
-          {row.primaryStateReason}. Backend status: <code>{row.backendStatus}</code>.
+          {row.primaryStateReason}
         </p>
       </div>
       <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
@@ -383,11 +346,8 @@ function MissionRowCard({ row }: { row: MissionRow }) {
           data-testid="eaos-missions-row-kernel-link"
           disableIssueQuicklook
         >
-          Open kernel issue →
+          Open details →
         </Link>
-        <span className="text-muted-foreground">
-          Read-only mission view. No live actions on this surface.
-        </span>
       </div>
     </li>
   );

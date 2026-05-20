@@ -123,7 +123,7 @@ describe("AdminPage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels members backend-backed and surfaces APPROVAL REQUIRED for mutations", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     listMembersMock.mockResolvedValue({
       members: [makeMember({ id: "m-1", membershipRole: "owner" })],
       access: {
@@ -135,11 +135,13 @@ describe("AdminPage (LET-484 working-product slice)", () => {
     });
     await renderAdmin();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-admin-title"]');
+      expect(title?.textContent).toBe("Admin");
       const posture = container?.querySelector('[data-testid="eaos-admin-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Members · BACKEND-BACKED");
-      expect(text).toContain("Mutations · APPROVAL REQUIRED");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("APPROVAL REQUIRED");
+      expect(html).not.toContain("Mutations");
     });
   });
 
@@ -179,7 +181,7 @@ describe("AdminPage (LET-484 working-product slice)", () => {
     });
   });
 
-  it("names the audit log + secrets gaps as truthful temporary gaps", async () => {
+  it("links audit + secrets gaps to their canonical surfaces with customer-friendly copy", async () => {
     listMembersMock.mockResolvedValue({
       members: [],
       access: {
@@ -191,14 +193,17 @@ describe("AdminPage (LET-484 working-product slice)", () => {
     });
     await renderAdmin();
     await waitForMicrotaskAssertion(() => {
-      const audit = container?.querySelector('[data-testid="eaos-admin-audit-pointer"]');
-      expect(audit?.textContent).toContain("Backend path pending");
-      expect(audit?.textContent).toContain("/api/companies/:companyId/audit-log");
       const auditLink = container?.querySelector('[data-testid="eaos-admin-audit-runs-link"]');
       expect(auditLink?.getAttribute("href")).toBe("/eaos/runs");
 
-      const secrets = container?.querySelector('[data-testid="eaos-admin-secrets-pointer"]');
-      expect(secrets?.textContent).toContain("never renders raw secrets");
+      const secretsLink = container?.querySelector('[data-testid="eaos-admin-secrets-link"]');
+      expect(secretsLink).not.toBeNull();
+
+      // Customer-facing copy must not leak implementation jargon.
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("Backend path pending");
+      expect(html).not.toContain("never renders raw secrets");
+      expect(html).not.toContain("APPROVAL REQUIRED");
     });
   });
 

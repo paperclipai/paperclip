@@ -16,13 +16,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   groupApprovalsForQueue,
@@ -37,7 +30,7 @@ export interface ApprovalsQueuePageProps {
 }
 
 export function ApprovalsQueuePage({ now }: ApprovalsQueuePageProps = {}) {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const approvalsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -69,48 +62,14 @@ export function ApprovalsQueuePage({ now }: ApprovalsQueuePageProps = {}) {
       data-testid="eaos-approvals-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-approvals-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Data"
-              title="Approvals sourced from canonical records via /api/companies/:companyId/approvals"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <EaosStateChip
-            label="APPROVAL REQUIRED"
-            prefix="Decisions"
-            title="Decision controls (Approve / Reject / Request revision) live inside the kernel detail page; this surface is read-only."
-          />
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-approvals-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-approvals-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-approvals-title"
-            >
-              Approvals / Risk
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Pending approvals, revision-requested items, and recent decisions for the current
-              company scope. Decision controls remain inside the kernel approvals page; this
-              surface is read-only briefing and routing.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-approvals-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-approvals-title"
+        >
+          Approvals
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -184,10 +143,7 @@ function ErrorState({ message }: { message: string }) {
     >
       <p className="font-medium">Could not load approvals.</p>
       <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
-      <p className="mt-1 text-xs">
-        Counts and rows are hidden because no backend-backed queue is available. Retry by
-        refreshing or use the Kernel/Admin approvals tab.
-      </p>
+      <p className="mt-1 text-xs">Refresh to try again.</p>
     </div>
   );
 }
@@ -199,8 +155,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-approvals-empty"
     >
-      No approvals are visible in the current company scope yet. When agents or the board request
-      a decision it will appear here.
+      No approvals yet. Requests show up here when agents or the board need a decision.
     </div>
   );
 }

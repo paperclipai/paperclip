@@ -17,17 +17,10 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 
 export function AdminPage() {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const membersQuery = useQuery({
     queryKey: selectedCompanyId
@@ -54,48 +47,14 @@ export function AdminPage() {
       data-testid="eaos-admin-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-admin-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Members"
-              title="Member roster sourced from canonical /api/companies/:companyId/members"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <EaosStateChip
-            label="APPROVAL REQUIRED"
-            prefix="Mutations"
-            title="Invite / role / permission verbs live inside the Kernel/Admin access page. This surface is read-only."
-          />
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-admin-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-admin-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-admin-title"
-            >
-              Admin / Security
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Member roster, role posture, and admin verbs for the current company scope.
-              Invite / role / grant mutations stay inside the Kernel/Admin access page; this
-              surface is read-only briefing and routing.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-admin-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-admin-title"
+        >
+          Admin
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -172,7 +131,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-admin-empty"
     >
-      No members are visible in the current company scope yet.
+      No members yet. Invite teammates to get started.
     </div>
   );
 }
@@ -252,16 +211,9 @@ function AccessPostureCard({
       className="flex flex-col gap-2 rounded-md border border-border bg-card p-3"
       data-testid="eaos-admin-access-posture"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ShieldCheck aria-hidden="true" className="h-4 w-4 text-foreground" />
-          <h2 className="text-sm font-semibold text-foreground">Operator access</h2>
-        </div>
-        <EaosStateChip
-          label="BACKEND-BACKED"
-          prefix="Access"
-          title="Access posture derived from the live members endpoint."
-        />
+      <div className="flex items-center gap-2">
+        <ShieldCheck aria-hidden="true" className="h-4 w-4 text-foreground" />
+        <h2 className="text-sm font-semibold text-foreground">Your access</h2>
       </div>
       <dl className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground sm:grid-cols-4">
         <div className="flex flex-col" data-testid="eaos-admin-access-role">
@@ -358,9 +310,9 @@ function MembersList({
             >
               <div className="flex flex-wrap items-center gap-2">
                 <EaosStateChip
-                  label={roleChipLabel(member.membershipRole, member.status)}
+                  label={(member.membershipRole ?? "member").toUpperCase()}
                   prefix="Role"
-                  title={`Role from backend: ${member.membershipRole ?? "none"}, status: ${member.status ?? "unknown"}.`}
+                  title={`Role: ${member.membershipRole ?? "member"}`}
                 />
                 {member.status && member.status !== "active" ? (
                   <span
@@ -400,16 +352,6 @@ function MembersList({
   );
 }
 
-function roleChipLabel(
-  role: string | null | undefined,
-  status: string | undefined,
-): "BACKEND-BACKED" | "PREVIEW" | "FAILED" | "APPROVAL REQUIRED" {
-  if (status === "suspended") return "FAILED";
-  if (status === "pending") return "APPROVAL REQUIRED";
-  if (role === "owner" || role === "admin") return "BACKEND-BACKED";
-  return "PREVIEW";
-}
-
 function AuditPointer() {
   return (
     <section
@@ -417,30 +359,20 @@ function AuditPointer() {
       className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-card p-3"
       data-testid="eaos-admin-audit-pointer"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ShieldAlert aria-hidden="true" className="h-4 w-4 text-foreground" />
-          <h2 className="text-sm font-semibold text-foreground">Audit log</h2>
-        </div>
-        <EaosStateChip
-          label="PREVIEW"
-          prefix="Filter"
-          title="Dedicated audit-filter UI not wired in this slice. The raw activity feed is backend-backed."
-        />
+      <div className="flex items-center gap-2">
+        <ShieldAlert aria-hidden="true" className="h-4 w-4 text-foreground" />
+        <h2 className="text-sm font-semibold text-foreground">Audit log</h2>
       </div>
       <p className="text-xs text-muted-foreground">
-        The canonical activity feed is rendered under{" "}
+        The activity feed lives under{" "}
         <Link
           to="/eaos/runs"
           className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-admin-audit-runs-link"
         >
-          Runs / Observability
+          Runs
         </Link>
-        . A dedicated security-filtered audit view is a temporary gap.
-      </p>
-      <p className="text-[11px] text-muted-foreground">
-        Backend path pending: <code>GET /api/companies/:companyId/audit-log</code>
+        . A security-filtered audit view is coming soon.
       </p>
     </section>
   );
@@ -453,27 +385,20 @@ function SecretsPointer() {
       className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-card p-3"
       data-testid="eaos-admin-secrets-pointer"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ShieldCheck aria-hidden="true" className="h-4 w-4 text-foreground" />
-          <h2 className="text-sm font-semibold text-foreground">Secrets &amp; policies</h2>
-        </div>
-        <EaosStateChip
-          label="APPROVAL REQUIRED"
-          prefix="Secrets"
-          title="Secret-ref mutation and policy edits stay inside the Kernel/Admin secrets page. No raw secret values are ever rendered on this surface."
-        />
+      <div className="flex items-center gap-2">
+        <ShieldCheck aria-hidden="true" className="h-4 w-4 text-foreground" />
+        <h2 className="text-sm font-semibold text-foreground">Secrets &amp; policies</h2>
       </div>
       <p className="text-xs text-muted-foreground">
-        Secret refs (rotation, scope, redaction policy) live inside the Kernel/Admin{" "}
+        Secrets and policies are managed in{" "}
         <Link
           to="/company/settings/secrets"
           className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-admin-secrets-link"
         >
-          secrets page
+          Settings → Secrets
         </Link>
-        . This surface never renders raw secrets, tokens, or proxy values.
+        .
       </p>
     </section>
   );

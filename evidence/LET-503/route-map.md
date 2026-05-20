@@ -1,6 +1,6 @@
 # LET-503 — EAOS route map & backend data sources
 
-Anchored at branch `enterprise-agent-os/LET-504` head `b086033b` (LET-505 evidence-package commit on top of the LET-504 manual-builder commit `a3e640f4` and the LET-503 commits `421b70ba` + `6f05c9f1`). This map covers every primary-nav surface and every page mounted under `/eaos/*` in `ui/src/App.tsx`.
+Anchored at branch `enterprise-agent-os/LET-504` current head. Commit stack: `6f05c9f1` → `421b70ba` → `a3e640f4` → `b086033b` → `5e2f395a` → `0553b013` → this resubmission's mock-API + final copy-cleanup commit. This map covers every primary-nav surface and every page mounted under `/eaos/*` in `ui/src/App.tsx`.
 
 Conventions:
 - **API** column names the typed client function in `ui/src/api/*` (each function points at a documented `/api/...` endpoint scoped by `companyId`).
@@ -48,5 +48,4 @@ Conventions:
 
 ## Notes for the reviewer
 
-- The branch state at `b086033b` reflects the LET-503 cleanup (`6f05c9f1`), the first-class org graph (`421b70ba`), the LET-504 manual builder (`a3e640f4`), and the LET-505 evidence package (this commit).
-- `/eaos/missions` retains the older LET-424 dual-chip posture row (`SHELL_POSTURE_LABEL` + `NOT_CONNECTED_DATA_LABEL`). That predates the LET-502 contract §3 reduction and is flagged as a follow-up in the implementation handoff. Other primary surfaces (`/eaos`, `/eaos/agents`, `/eaos/org`, `/eaos/agents/new`) follow the cleaner LET-502 §3 posture.
+- The current branch state stacks the LET-503 shell (`6f05c9f1`), the first-class org graph (`421b70ba`), the LET-504 manual builder (`a3e640f4`), the LET-505 evidence package + light-first runner (`b086033b` + `5e2f395a`), the customer-friendly copy commit (`0553b013`), and this resubmission's two changes: (1) screenshot runner gains `--mock-api` so PNGs render the real product chrome without needing a session cookie, and (2) the customer-facing posture-chip strip + implementation-jargon copy was removed from every primary `/eaos/*` page (Missions, Approvals, Projects, Runs, Knowledge, Capabilities, Blueprints, Admin, MissionDetailHeader, BlueprintDetailPage) and from row chips. Tests updated to forbid regressions of `BACKEND-BACKED` / `APPROVAL REQUIRED` / `LET-409` etc. in customer surfaces.

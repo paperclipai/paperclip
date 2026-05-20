@@ -118,17 +118,18 @@ describe("RunsTimelinePage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels the timeline as backend-backed once the activity feed resolves", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     activityListMock.mockResolvedValue([
       makeEvent({ id: "1", runId: "run-a", action: "run.started" }),
     ]);
     await renderRuns();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-runs-title"]');
+      expect(title?.textContent).toBe("Runs");
       const posture = container?.querySelector('[data-testid="eaos-runs-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Timeline · BACKEND-BACKED");
-      expect(text).toContain("Replay · PREVIEW");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
     });
   });
 

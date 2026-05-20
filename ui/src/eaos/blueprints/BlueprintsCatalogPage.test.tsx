@@ -140,14 +140,16 @@ describe("BlueprintsCatalogPage (LET-501 C)", () => {
     });
   });
 
-  it("labels data BACKEND-BACKED only after a successful read", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     listMock.mockResolvedValue({ enabled: true, versions: [makeEntry()] });
     await renderCatalog();
     await waitFor(() => {
+      const title = container?.querySelector('[data-testid="eaos-blueprints-title"]');
+      expect(title?.textContent).toBe("Blueprints");
       const posture = container?.querySelector('[data-testid="eaos-blueprints-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Data · BACKEND-BACKED");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
     });
   });
 

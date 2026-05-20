@@ -15,13 +15,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   groupRoadmap,
@@ -36,7 +29,7 @@ export interface ProjectsRoadmapPageProps {
 }
 
 export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const projectsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -77,43 +70,14 @@ export function ProjectsRoadmapPage({ now }: ProjectsRoadmapPageProps = {}) {
       data-testid="eaos-projects-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-projects-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Roadmap"
-              title="Projects + goals derived from canonical /api/companies/:companyId/projects + /goals"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-projects-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-projects-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-projects-title"
-            >
-              Projects / Goals
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Strategic projects and linked goals for the current company scope. Each project
-              row shows lead agent, target date, workspace count, and the goals it advances.
-              Workspace start / archive / configure verbs stay inside the kernel project page.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-projects-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-projects-title"
+        >
+          Projects
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -190,12 +154,9 @@ function ErrorState({ message }: { message: string }) {
       className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-100"
       data-testid="eaos-projects-error"
     >
-      <p className="font-medium">Could not load projects + goals.</p>
+      <p className="font-medium">Could not load projects.</p>
       <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
-      <p className="mt-1 text-xs">
-        Rows and counts are hidden because no backend-backed roadmap is available. Retry by
-        refreshing or use the Kernel/Admin projects tab.
-      </p>
+      <p className="mt-1 text-xs">Refresh to try again.</p>
     </div>
   );
 }
@@ -207,7 +168,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-projects-empty"
     >
-      No projects are visible in the current company scope yet.
+      No projects yet.
     </div>
   );
 }
@@ -294,8 +255,8 @@ function ProjectRow({ row, referenceNow }: { row: ProjectRoadmapRow; referenceNo
       <div className="flex flex-wrap items-center gap-2">
         <EaosStateChip
           label={statusChipLabel(row.status)}
-          prefix="Project"
-          title={`Status from backend: ${row.status}.`}
+          prefix="Status"
+          title={`Status: ${row.status}`}
         />
         {row.archivedAt ? (
           <span
@@ -372,9 +333,8 @@ function ProjectRow({ row, referenceNow }: { row: ProjectRoadmapRow; referenceNo
           className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           data-testid="eaos-projects-row-kernel-link"
         >
-          Open in Kernel/Admin →
+          Open project →
         </Link>
-        <span className="text-muted-foreground">No live action on this surface.</span>
       </div>
     </li>
   );
@@ -382,16 +342,17 @@ function ProjectRow({ row, referenceNow }: { row: ProjectRoadmapRow; referenceNo
 
 function statusChipLabel(
   status: ProjectRoadmapRow["status"],
-): "APPLIED" | "BACKEND-BACKED" | "PREVIEW" | "FAILED" {
+): string {
   switch (status) {
     case "completed":
-      return "APPLIED";
+      return "SHIPPED";
     case "in_progress":
-      return "BACKEND-BACKED";
+      return "ACTIVE";
     case "planned":
+      return "PLANNED";
     case "backlog":
-      return "PREVIEW";
+      return "BACKLOG";
     case "cancelled":
-      return "FAILED";
+      return "STOPPED";
   }
 }

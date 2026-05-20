@@ -20,13 +20,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   collapseEventsToRuns,
@@ -42,7 +35,7 @@ export interface RunsTimelinePageProps {
 }
 
 export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const activityQuery = useQuery({
     queryKey: selectedCompanyId
@@ -74,48 +67,14 @@ export function RunsTimelinePage({ now }: RunsTimelinePageProps = {}) {
       data-testid="eaos-runs-page"
       data-eaos-data-connected={dataConnected ? "true" : "false"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-runs-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Timeline"
-              title="Run timeline sourced from canonical activity events via /api/companies/:companyId/activity"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <EaosStateChip
-            label="PREVIEW"
-            prefix="Replay"
-            title="Run transcript / tool-call / replay deep view lives inside Mission detail (/eaos/missions/:missionRef). This zone routes there rather than rendering a stub."
-          />
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-runs-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-runs-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-runs-title"
-            >
-              Runs / Observability
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Recent agent runs collapsed from the canonical activity feed for the current company
-              scope. Each row links into the mission detail timeline (transcript, tool calls,
-              replay) and the kernel issue view; this surface is read-only briefing only.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-runs-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-runs-title"
+        >
+          Runs
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -162,7 +121,7 @@ function LoadingState() {
       className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-runs-loading"
     >
-      Loading run timeline from the canonical activity feed…
+      Loading runs…
     </div>
   );
 }
@@ -191,8 +150,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-runs-empty"
     >
-      No runs are visible in the current company scope yet. When an agent wakes and starts a run
-      it will appear here.
+      No runs yet. Runs show up here when agents start working.
     </div>
   );
 }
@@ -241,16 +199,11 @@ function RunsTable({ rows, referenceNow }: { rows: readonly RunTimelineRow[]; re
       className="flex flex-col gap-2"
       data-testid="eaos-runs-table"
     >
-      <header className="flex items-center justify-between gap-2">
+      <header className="flex items-center gap-2">
         <h2 className="text-sm font-semibold text-foreground">
           Recent runs{" "}
           <span className="text-xs font-normal text-muted-foreground">({rows.length})</span>
         </h2>
-        <EaosStateChip
-          label="BACKEND-BACKED"
-          prefix="Rows"
-          title="Each row collapses one canonical run's activity-event breadcrumbs from the live feed."
-        />
       </header>
       <ul
         className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3"
@@ -273,11 +226,6 @@ function RunRow({ row, referenceNow }: { row: RunTimelineRow; referenceNow: Date
       data-run-id={row.runId}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <EaosStateChip
-          label="BACKEND-BACKED"
-          prefix="Run"
-          title="Row derived from canonical activity events. Run state is the latest event for this runId."
-        />
         <span
           className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
           data-testid="eaos-runs-row-action"

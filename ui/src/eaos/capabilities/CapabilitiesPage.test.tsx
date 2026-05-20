@@ -127,18 +127,18 @@ describe("CapabilitiesPage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels the roster as backend-backed and surfaces the MCP gap as PREVIEW", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     agentsListMock.mockResolvedValue([
       makeAgent({ id: "ag-1", adapterType: "claude_local", capabilities: "Frontend QA" }),
     ]);
     await renderCapabilities();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-capabilities-title"]');
+      expect(title?.textContent).toBe("Capabilities");
       const posture = container?.querySelector('[data-testid="eaos-capabilities-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Roster · BACKEND-BACKED");
-      // Server registry gap stays truthful, in customer-friendly copy.
-      expect(text).toContain("Server registry · PREVIEW");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
     });
   });
 
@@ -161,14 +161,16 @@ describe("CapabilitiesPage (LET-484 working-product slice)", () => {
     });
   });
 
-  it("names the MCP gap as a truthful temporary gap with the missing endpoint", async () => {
+  it("names the server-registry gap in customer-friendly copy (no jargon)", async () => {
     agentsListMock.mockResolvedValue([]);
     await renderCapabilities();
     await waitForMicrotaskAssertion(() => {
       const gap = container?.querySelector('[data-testid="eaos-capabilities-mcp-gap"]');
       const text = gap?.textContent ?? "";
-      expect(text).toContain("Temporary gap");
-      expect(text).toContain("GET /api/companies/:companyId/capabilities");
+      expect(text).toContain("Server registry");
+      expect(text).toContain("coming soon");
+      expect(text).not.toContain("Backend path pending");
+      expect(text).not.toContain("/api/companies/:companyId/capabilities");
     });
   });
 

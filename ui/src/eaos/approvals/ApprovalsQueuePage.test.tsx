@@ -118,17 +118,19 @@ describe("ApprovalsQueuePage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels the data layer as backend-backed once the live read succeeds", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     approvalsListMock.mockResolvedValue([
       makeApproval({ id: "a", status: "pending", type: "hire_agent" }),
     ]);
     await renderQueue();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-approvals-title"]');
+      expect(title?.textContent).toBe("Approvals");
       const posture = container?.querySelector('[data-testid="eaos-approvals-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Data · BACKEND-BACKED");
-      expect(text).toContain("Decisions · APPROVAL REQUIRED");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
+      expect(html).not.toContain("Decisions");
     });
   });
 

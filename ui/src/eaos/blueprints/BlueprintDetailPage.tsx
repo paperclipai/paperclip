@@ -28,13 +28,6 @@ import {
   type BlueprintCatalogDetail,
 } from "@/api/blueprints";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   BLUEPRINT_CATEGORY_LABEL,
@@ -75,7 +68,7 @@ export function resolveActiveTab(pathname: string): BlueprintDetailTab {
 export function BlueprintDetailPage() {
   const params = useParams<{ blueprintRef?: string; version?: string }>();
   const location = useLocation();
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
 
   const blueprintRef = params.blueprintRef ?? "";
   const requestedVersionParam = params.version ?? null;
@@ -105,48 +98,26 @@ export function BlueprintDetailPage() {
       data-active-tab={activeTab}
       data-blueprint-ref={redactSecretLikeText(blueprintRef)}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-blueprint-detail-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Data"
-              title="Detail sourced from /api/companies/:companyId/blueprints/:ref (LET-498)"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-blueprint-detail-posture-note"
+      <header className="flex flex-col gap-1">
+        <p className="text-xs text-muted-foreground">
+          <Link
+            to="/eaos/blueprints"
+            className="underline-offset-2 hover:underline"
+            data-testid="eaos-blueprint-detail-back-link"
           >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1">
-          <p className="text-xs text-muted-foreground">
-            <Link
-              to="/eaos/blueprints"
-              className="underline-offset-2 hover:underline"
-              data-testid="eaos-blueprint-detail-back-link"
-            >
-              ← Back to blueprint catalog
-            </Link>
-          </p>
-          <h1
-            id="eaos-blueprint-detail-title"
-            className="text-2xl font-semibold tracking-tight text-foreground"
-            data-testid="eaos-blueprint-detail-title"
-          >
-            {hasData && detail ? redactSecretLikeText(detail.title) : "Blueprint detail"}
-          </h1>
-          <p className="text-xs text-muted-foreground" data-testid="eaos-blueprint-detail-ref">
-            {blueprintRef ? redactSecretLikeText(blueprintRef) : "(no ref)"}
-          </p>
-        </div>
+            ← Back to Blueprints
+          </Link>
+        </p>
+        <h1
+          id="eaos-blueprint-detail-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-blueprint-detail-title"
+        >
+          {hasData && detail ? redactSecretLikeText(detail.title) : "Blueprint detail"}
+        </h1>
+        <p className="text-xs text-muted-foreground" data-testid="eaos-blueprint-detail-ref">
+          {blueprintRef ? redactSecretLikeText(blueprintRef) : "(no ref)"}
+        </p>
       </header>
 
       {!selectedCompanyId ? (
@@ -209,8 +180,7 @@ function ErrorState({ message }: { message: string }) {
       <p className="font-medium">Could not load this blueprint.</p>
       <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
       <p className="mt-1 text-xs">
-        The detail workbench is hidden because no backend-backed read is available. Retry by
-        refreshing or return to the catalog.
+        Refresh to try again, or return to Blueprints.
       </p>
     </div>
   );
@@ -269,9 +239,9 @@ function SummaryRow({
       data-testid="eaos-blueprint-detail-summary"
     >
       <EaosStateChip
-        label={detail.status === "published" ? "BACKEND-BACKED" : "PREVIEW"}
-        prefix={`Status · ${detail.status}`}
-        title={`Blueprint version status from backend: ${detail.status}`}
+        label={detail.status === "published" ? "PUBLISHED" : detail.status.toUpperCase()}
+        prefix="Status"
+        title={`Blueprint status: ${detail.status}`}
       />
       <span
         className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
@@ -569,9 +539,7 @@ function VersionsTab({
   return (
     <div className="flex flex-col gap-3" data-testid="eaos-blueprint-detail-versions">
       <p className="text-xs text-muted-foreground">
-        The catalog backend currently exposes one canonical version per blueprint ref.
-        Multi-version history is deferred to a later lane; this tab will surface a row per
-        version once the read model is wired.
+        One canonical version per blueprint. Multi-version history is coming soon.
       </p>
       <ul className="space-y-2">
         <li
@@ -581,18 +549,18 @@ function VersionsTab({
         >
           <div className="flex flex-wrap items-center gap-2">
             <EaosStateChip
-              label={detail.status === "published" ? "BACKEND-BACKED" : "PREVIEW"}
-              prefix={`Status · ${detail.status}`}
+              label={detail.status === "published" ? "PUBLISHED" : detail.status.toUpperCase()}
+              prefix="Status"
             />
             <span className="rounded-md border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
               v{redactSecretLikeText(detail.version)}
             </span>
             <span className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              canonical
+              Canonical
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Single canonical version published for this ref. No deprecated or draft history.
+            Single canonical version published for this blueprint.
           </p>
         </li>
       </ul>
@@ -621,15 +589,13 @@ function InstancesTab() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-blueprint-detail-instances-empty"
     >
-      <p className="font-medium text-foreground">No instance index available yet.</p>
+      <p className="font-medium text-foreground">No instances yet.</p>
       <p className="mt-1 text-xs">
-        The backend instance roster endpoint for this blueprint is deferred to a later LET-501
-        lane (D / E). Until it lands, this tab shows a truthful gap state rather than inventing
-        rows. Existing instantiate approvals can be reviewed in <Link
+        Existing instantiate requests can be reviewed in <Link
           to="/eaos/approvals"
           className="underline-offset-2 hover:underline"
           data-testid="eaos-blueprint-detail-instances-approvals-link"
-        >Approvals / Risk</Link>.
+        >Approvals</Link>.
       </p>
     </div>
   );
@@ -642,11 +608,9 @@ function AuditTab() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-blueprint-detail-audit-empty"
     >
-      <p className="font-medium text-foreground">No blueprint audit feed available yet.</p>
+      <p className="font-medium text-foreground">No audit entries yet.</p>
       <p className="mt-1 text-xs">
-        Per-blueprint audit entries (instantiate requests, decisions, deprecations) are deferred
-        to a later LET-501 lane. The activity stream remains accessible via the Kernel/Admin
-        activity page until this surface is wired.
+        Per-blueprint audit history is coming soon.
       </p>
     </div>
   );

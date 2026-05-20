@@ -152,7 +152,7 @@ describe("ProjectsRoadmapPage (LET-484 working-product slice)", () => {
     expect(container?.querySelector('[data-testid="eaos-zone-placeholder"]')).toBeNull();
   });
 
-  it("labels the roadmap as backend-backed once both reads resolve", async () => {
+  it("renders a clean single-word title and no internal posture chips", async () => {
     projectsListMock.mockResolvedValue([
       makeProject({ id: "p-1", name: "Alpha", status: "in_progress" }),
     ]);
@@ -161,10 +161,12 @@ describe("ProjectsRoadmapPage (LET-484 working-product slice)", () => {
     ]);
     await renderRoadmap();
     await waitForMicrotaskAssertion(() => {
+      const title = container?.querySelector('[data-testid="eaos-projects-title"]');
+      expect(title?.textContent).toBe("Projects");
       const posture = container?.querySelector('[data-testid="eaos-projects-posture"]');
-      const text = posture?.textContent ?? "";
-      expect(text).toContain("Shell · BACKEND-BACKED");
-      expect(text).toContain("Roadmap · BACKEND-BACKED");
+      expect(posture).toBeNull();
+      const html = container?.innerHTML ?? "";
+      expect(html).not.toContain("BACKEND-BACKED");
     });
   });
 

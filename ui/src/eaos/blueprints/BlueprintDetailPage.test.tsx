@@ -189,7 +189,7 @@ describe("BlueprintDetailPage (LET-501 C)", () => {
     expect(container?.querySelector('[data-testid="eaos-blueprint-detail-overview"]')).toBeNull();
   });
 
-  it("renders the Overview tab by default with backend-backed posture", async () => {
+  it("renders the Overview tab by default with no internal posture chip", async () => {
     getMock.mockResolvedValue(makeDetail());
     await renderDetail("/eaos/blueprints/code-implementer@1");
     await waitFor(() => {
@@ -200,8 +200,7 @@ describe("BlueprintDetailPage (LET-501 C)", () => {
     const posture = container?.querySelector(
       '[data-testid="eaos-blueprint-detail-posture"]',
     );
-    expect(posture?.textContent).toContain("Shell · BACKEND-BACKED");
-    expect(posture?.textContent).toContain("Data · BACKEND-BACKED");
+    expect(posture).toBeNull();
     const tabpanel = container?.querySelector('[data-testid="eaos-blueprint-detail-tabpanel"]');
     expect(tabpanel?.getAttribute("data-tab")).toBe("overview");
   });

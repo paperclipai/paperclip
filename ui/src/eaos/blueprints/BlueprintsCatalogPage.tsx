@@ -20,13 +20,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { blueprintsApi, type BlueprintCatalogEntry } from "@/api/blueprints";
 import { EaosStateChip } from "../EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "../state-labels";
 import { redactSecretLikeText } from "../secret-redact";
 import {
   BLUEPRINT_CATEGORY_LABEL,
@@ -41,7 +34,7 @@ import {
 } from "./blueprint-helpers";
 
 export function BlueprintsCatalogPage() {
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const [filters, setFilters] = useState<BlueprintCatalogFilters>(DEFAULT_FILTERS);
 
   const catalogQuery = useQuery({
@@ -74,48 +67,14 @@ export function BlueprintsCatalogPage() {
       data-eaos-data-connected={dataConnected ? "true" : "false"}
       data-eaos-catalog-enabled={hasData ? (enabled ? "true" : "false") : "unknown"}
     >
-      <header className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-blueprints-posture">
-          <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-          {dataConnected ? (
-            <EaosStateChip
-              label="BACKEND-BACKED"
-              prefix="Data"
-              title="Catalog sourced from /api/companies/:companyId/blueprints (LET-498)"
-            />
-          ) : (
-            <EaosStateChip label={NOT_CONNECTED_DATA_LABEL} prefix={NOT_CONNECTED_DATA_PREFIX} />
-          )}
-          <EaosStateChip
-            label="APPROVAL REQUIRED"
-            prefix="Action"
-            title="Instantiate path is the LET-501 D-lane wizard; this surface only reads catalog/detail."
-          />
-          <span
-            className="text-[11px] uppercase tracking-wide text-muted-foreground"
-            data-testid="eaos-blueprints-posture-note"
-          >
-            {dataConnected
-              ? `Live read · ${selectedCompany?.name ? redactSecretLikeText(selectedCompany.name) : "current company scope"}`
-              : NOT_CONNECTED_DATA_NOTE}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
-          <div className="flex flex-col gap-1">
-            <h1
-              id="eaos-blueprints-title"
-              className="text-2xl font-semibold tracking-tight text-foreground"
-              data-testid="eaos-blueprints-title"
-            >
-              Blueprints
-            </h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Read-only catalog of published agent blueprints scoped to the current company.
-              Instantiation, authoring, publish, and deprecate flows live in the LET-501 D-lane
-              wizard and admin pages; this surface only shows what the catalog declares.
-            </p>
-          </div>
-        </div>
+      <header className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <h1
+          id="eaos-blueprints-title"
+          className="text-xl font-semibold tracking-tight text-foreground"
+          data-testid="eaos-blueprints-title"
+        >
+          Blueprints
+        </h1>
       </header>
 
       {!selectedCompanyId ? (
@@ -181,9 +140,7 @@ function ErrorState({ message }: { message: string }) {
     >
       <p className="font-medium">Could not load blueprints.</p>
       <p className="mt-1 text-xs">{redactSecretLikeText(message)}</p>
-      <p className="mt-1 text-xs">
-        Catalog is hidden because no backend-backed read is available. Retry by refreshing.
-      </p>
+      <p className="mt-1 text-xs">Refresh to try again.</p>
     </div>
   );
 }
@@ -195,8 +152,7 @@ function EmptyState() {
       className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground"
       data-testid="eaos-blueprints-empty"
     >
-      No blueprints are published for the current company scope yet. When the catalog publishes
-      its first version it will appear here.
+      No blueprints yet. Published blueprints show up here.
     </div>
   );
 }
@@ -254,12 +210,8 @@ function CatalogBody({
           ))}
         </ul>
       )}
-      {/* read-only reference link to the upcoming D-lane wizard. The
-          wizard route is not implemented in this lane; we surface the
-          intent only and never trigger any live action here. */}
       <p className="text-[11px] text-muted-foreground" data-testid="eaos-blueprints-deferred-note">
-        Instantiate wizard, blueprint authoring, and deprecate / republish controls are deferred
-        to LET-501 follow-on D and the admin pages. Operator path is read-only.
+        Instantiate, author, and publish controls are coming soon.
       </p>
     </>
   );
@@ -373,9 +325,9 @@ function BlueprintCard({ entry }: { entry: BlueprintCatalogEntry }) {
     >
       <div className="flex flex-wrap items-center gap-2">
         <EaosStateChip
-          label={entry.status === "published" ? "BACKEND-BACKED" : "PREVIEW"}
-          prefix={`Status · ${entry.status}`}
-          title={`Blueprint version status from backend: ${entry.status}`}
+          label={entry.status === "published" ? "PUBLISHED" : entry.status.toUpperCase()}
+          prefix="Status"
+          title={`Blueprint status: ${entry.status}`}
         />
         <span
           className="rounded-md border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
@@ -387,7 +339,7 @@ function BlueprintCard({ entry }: { entry: BlueprintCatalogEntry }) {
           <EaosStateChip
             label="APPROVAL REQUIRED"
             prefix="Risk"
-            title="At least one permission policy gates a live-external-action capability."
+            title="At least one capability needs approval before live use."
           />
         ) : null}
       </div>
