@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 export const PLUGIN_ID = "kkroo.ccrotate";
-export const PLUGIN_VERSION = "0.7.0";
+export const PLUGIN_VERSION = "0.7.1";
 
 // Slot + launcher constants. Kept here so manifest + UI exports stay in sync.
 export const SLOT_IDS = {

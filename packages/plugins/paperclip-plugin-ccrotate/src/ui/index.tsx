@@ -27,7 +27,14 @@ import type { SnapshotResponse, AccountRow, CcrotateTarget } from "../types.js";
 // ─── fetch helpers ──────────────────────────────────────────────────────────
 
 function apiUrl(path: string): string {
-  return `/api/plugins/${PLUGIN_ID}${path}`;
+  // Plugin scoped api routes are mounted at /api/plugins/:pluginId/api/<path>
+  // (see server/src/routes/plugins.ts `router.use("/plugins/:pluginId/api", …)`
+  // and worker-tier-proxy.ts:69 splat route). The inner `/api/` segment is
+  // load-bearing — without it requests 404 at the api-tier router before
+  // the worker-tier-proxy ever sees them. Real incident 2026-05-20: the
+  // ccrotate UI was missing this segment and every snapshot/switch/etc.
+  // call returned `{"error":"API route not found"}`.
+  return `/api/plugins/${PLUGIN_ID}/api${path}`;
 }
 
 async function getJson<T>(path: string): Promise<T> {
