@@ -140,12 +140,13 @@ describe("buildRoutingOverrideEnv (Phase E1 dispatch wrap)", () => {
     });
   });
 
-  describe("dispatch integration shape (what heartbeat.ts will substitute onto runtimeConfig)", () => {
+  describe("dispatch integration shape (what heartbeat.ts will substitute onto agent.adapterConfig.env)", () => {
     it("returns both the resolution (for run-record persistence) and the wrapped env (for adapter)", () => {
       // The heartbeat dispatcher reads resolution.tier + resolution.entry.model
       // into heartbeat_runs.tier_chosen + heartbeat_runs.model_used, and
-      // substitutes env onto runtimeConfig.env so adapter.execute sees
-      // the override. Both fields must be present on the single call.
+      // builds a wrappedAgent whose adapterConfig.env is the returned
+      // env (deployed Patch 5.1 reads ctx.agent.adapterConfig.env, not
+      // ctx.config.env). Both fields must be present on the single call.
       const result = buildRoutingOverrideEnv({
         issueComplexity: "trivial",
         agentTierPreference: "default",

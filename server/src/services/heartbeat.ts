@@ -7099,7 +7099,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
-    let runtimeConfig: Record<string, unknown> = {
+    const runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
@@ -7675,28 +7675,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
 
-      // Phase E1: resolve the per-call routing tier and wrap config.env so
-      // the hermes adapter's Patch 5.1 read site sees the override. We
-      // wrap runtimeConfig here (not agent.adapterConfig) because Patch
-      // 5.1 reads config.env?.HERMES_*_OVERRIDE at adapter.execute time;
-      // mutating the persisted agent record would be racy and leave
-      // residue on crashes. The existing env keys (e.g. ANTHROPIC_API_KEY
+      // Phase E1: resolve the per-call routing tier and wrap the agent's
+      // adapterConfig.env in-memory so the hermes adapter's Patch 5.1
+      // read site sees the override. Patch 5.1 reads
+      // `ctx.agent.adapterConfig.env?.HERMES_*_OVERRIDE` (the deployed
+      // adapter's `const config = ctx.agent?.adapterConfig ?? {}` derefs
+      // the agent, not the call's config arg). The wrap is in-memory
+      // only — never persisted — so a dispatch crash leaves no residue
+      // on the agent record. Existing env keys (e.g. ANTHROPIC_API_KEY
       // and HERMES_YOLO_MODE on the pilot) are preserved by the helper.
+      const persistedAgentAdapterConfig = parseObject(agent.adapterConfig);
       const routingOverride = buildRoutingOverrideEnv({
         issueComplexity: (issueContext?.complexity as IssueComplexity | null | undefined) ?? null,
         agentTierPreference: (agent.tierPreference as RoutingTier | null | undefined) ?? null,
-        existingEnv: parseObject(runtimeConfig.env),
+        existingEnv: parseObject(persistedAgentAdapterConfig.env),
       });
       resolvedRoutingTier = routingOverride.resolution.tier;
       resolvedRoutingModel = routingOverride.resolution.entry.model;
-      runtimeConfig = {
-        ...runtimeConfig,
-        env: routingOverride.env,
+      const wrappedAgent = {
+        ...agent,
+        adapterConfig: {
+          ...persistedAgentAdapterConfig,
+          env: routingOverride.env,
+        },
       };
 
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: wrappedAgent,
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,

@@ -1,12 +1,17 @@
 /**
  * Phase E1 dispatch helper.
  *
- * Wraps an existing adapter `config.env` map with the two HERMES_*_OVERRIDE
- * keys that Patch 5.1 reads in the hermes-paperclip-adapter at the
- * adapter.execute call site. The wrap is structural only (no DB writes,
- * no agent mutation): the heartbeat dispatcher in services/heartbeat.ts
- * substitutes the returned env back onto runtimeConfig immediately
- * before calling adapter.execute.
+ * Wraps an existing adapter env map with the two HERMES_*_OVERRIDE keys
+ * that Patch 5.1 reads in the hermes-paperclip-adapter. Patch 5.1's
+ * read site is `const config = (ctx.agent?.adapterConfig ?? {})` —
+ * i.e. the adapter reads from `ctx.agent.adapterConfig.env`, not from
+ * `ctx.config.env`. The heartbeat dispatcher in services/heartbeat.ts
+ * therefore builds an in-memory wrapped agent (same identity, extended
+ * adapterConfig.env) and passes it as `agent:` to adapter.execute.
+ *
+ * The wrap is structural only (no DB writes, no mutation of the
+ * persisted agent record): if dispatch crashes after the wrap, no
+ * residue is left.
  *
  * Existing env keys (notably ANTHROPIC_API_KEY and HERMES_YOLO_MODE on
  * the pilot) are preserved. The override values use the typed-env
