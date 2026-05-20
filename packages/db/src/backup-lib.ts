@@ -637,6 +637,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       ORDER BY e.extname
     `;
     if (extensions.length > 0) {
+      const extensionSchemas = [...new Set(extensions.map((extension) => extension.schema_name))]
+        .filter((schemaName) => schemaName !== "public");
+      if (extensionSchemas.length > 0) {
+        emit("-- Extension schemas");
+        for (const schemaName of extensionSchemas) {
+          emitStatement(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(schemaName)};`);
+        }
+        emit("");
+      }
+
       emit("-- Extensions");
       for (const extension of extensions) {
         emitStatement(
