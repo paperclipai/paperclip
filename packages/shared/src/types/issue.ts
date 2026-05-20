@@ -450,6 +450,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  skipHandoff?: boolean;
 }
 
 export interface IssueExecutionMonitorState {

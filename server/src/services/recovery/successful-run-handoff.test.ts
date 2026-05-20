@@ -144,6 +144,23 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("skips handoff when executionPolicy.skipHandoff is true", () => {
+    expect(decide({ issue: { ...issue, executionPolicy: { skipHandoff: true } } as any })).toEqual({
+      kind: "skip",
+      reason: "issue execution policy opts out of handoff escalation",
+    });
+  });
+
+  it("does not skip handoff when executionPolicy.skipHandoff is false", () => {
+    const decision = decide({ issue: { ...issue, executionPolicy: { skipHandoff: false } } as any });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("does not skip handoff when executionPolicy is null", () => {
+    const decision = decide({ issue: { ...issue, executionPolicy: null } as any });
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("does not queue on missing-comment retry bookkeeping runs", () => {
     expect(decide({ run: { ...run, issueCommentStatus: "retry_exhausted" } as any })).toEqual({
       kind: "skip",
