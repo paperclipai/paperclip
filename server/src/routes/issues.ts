@@ -1380,11 +1380,21 @@ export function issueRoutes(
     return true;
   }
 
-  function assertAgentIssueCommentAllowed(req: Request, res: Response) {
+  function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { status: string; assigneeAgentId: string | null },
+  ) {
     if (req.actor.type !== "agent") return true;
-    if (req.actor.agentId) return true;
-    res.status(403).json({ error: "Agent authentication required" });
-    return false;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (issue.status === "in_progress" && issue.assigneeAgentId === actorAgentId) {
+      return Boolean(requireAgentRunId(req, res));
+    }
+    return true;
   }
 
   function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
@@ -5114,7 +5124,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!assertAgentIssueCommentAllowed(req, res)) return;
+    if (!assertAgentIssueCommentAllowed(req, res, issue)) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
