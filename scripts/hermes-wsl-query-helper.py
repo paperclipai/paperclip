@@ -2,9 +2,23 @@
 import subprocess
 import sys
 import os
+import shutil
 
 
-HERMES_PATH = os.environ.get("HERMES_WSL_PATH", "hermes")
+def resolve_hermes_path() -> str:
+    configured = os.environ.get("HERMES_WSL_PATH")
+    if configured:
+        return configured
+
+    found = shutil.which("hermes")
+    if found:
+        return found
+
+    home_fallback = os.path.expanduser("~/.local/bin/hermes")
+    if os.path.exists(home_fallback):
+        return home_fallback
+
+    return "hermes"
 
 
 def main() -> int:
@@ -16,7 +30,7 @@ def main() -> int:
     with open(query_file, "r", encoding="utf-8") as handle:
         query = handle.read()
 
-    command = [HERMES_PATH, "chat", "-q", query]
+    command = [resolve_hermes_path(), "chat", "-q", query]
     command.extend(sys.argv[2:])
     return subprocess.run(command).returncode
 
