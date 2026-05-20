@@ -219,6 +219,40 @@ describe("CommandCenterLanding (LET-503 dashboard)", () => {
     expect(rowText).toContain("LET-999");
   });
 
+  it("renders three Linear-style state rails (Running / Blocked / In review) populated from telemetry", async () => {
+    issuesListMock.mockResolvedValue([
+      makeIssue({ id: "run-1", status: "in_progress", title: "Ship Q3 dashboard", identifier: "LET-R1" }),
+      makeIssue({ id: "run-2", status: "in_progress", title: "Audit access policies", identifier: "LET-R2" }),
+      makeIssue({ id: "blk-1", status: "blocked", title: "Migrate billing service", identifier: "LET-B1" }),
+      makeIssue({ id: "rev-1", status: "in_review", title: "SSO group sync", identifier: "LET-V1" }),
+    ]);
+    agentsListMock.mockResolvedValue([]);
+
+    await renderLanding();
+
+    const running = container?.querySelector('[data-testid="eaos-command-center-rail-running"]');
+    const blocked = container?.querySelector('[data-testid="eaos-command-center-rail-blocked"]');
+    const inReview = container?.querySelector('[data-testid="eaos-command-center-rail-in-review"]');
+    expect(running).not.toBeNull();
+    expect(blocked).not.toBeNull();
+    expect(inReview).not.toBeNull();
+
+    expect(
+      container?.querySelector('[data-testid="eaos-command-center-rail-running-count"]')?.textContent,
+    ).toBe("2");
+    expect(
+      container?.querySelector('[data-testid="eaos-command-center-rail-blocked-count"]')?.textContent,
+    ).toBe("1");
+    expect(
+      container?.querySelector('[data-testid="eaos-command-center-rail-in-review-count"]')?.textContent,
+    ).toBe("1");
+
+    // Each rail shows actual mission rows from telemetry.
+    expect(running?.textContent ?? "").toContain("Ship Q3 dashboard");
+    expect(blocked?.textContent ?? "").toContain("Migrate billing service");
+    expect(inReview?.textContent ?? "").toContain("SSO group sync");
+  });
+
   it("falls back to a non-numeric placeholder when there is no company scope", async () => {
     companyState = NO_SCOPE_COMPANY;
     issuesListMock.mockResolvedValue([]);

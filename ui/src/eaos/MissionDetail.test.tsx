@@ -80,6 +80,14 @@ vi.mock("@/api/heartbeats", () => ({
   },
 }));
 
+// LET-503 round-5: MissionDetailHeader / Inspector gate the Kernel/Admin
+// escape hatch + safety-posture chips behind isOperator. The legacy
+// LET-467 detail tests expect the kernel-link to render, so the role
+// stub defaults to operator.
+vi.mock("./useEaosViewerRole", () => ({
+  useEaosViewerRole: () => ({ isOperator: true, isInstanceAdmin: true, membershipRole: "admin", loading: false }),
+}));
+
 import { MissionDetail } from "./MissionDetail";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -305,9 +313,11 @@ describe("MissionDetail (LET-467)", () => {
       expect(container?.querySelector('[data-testid="eaos-mission-detail"]')).not.toBeNull();
     });
 
-    // Default tab is Overview — switch to Evidence.
+    // Default secondary panel is Activity; the page starts with the replay
+    // feed visible because the document layout always shows description +
+    // activity by default. Switch to Evidence to assert its empty state.
     const evidenceTab = container?.querySelector(
-      '[data-testid="eaos-mission-detail-tab-evidence"]',
+      '[data-testid="eaos-mission-detail-section-evidence"]',
     ) as HTMLButtonElement | null;
     expect(evidenceTab).not.toBeNull();
     await act(async () => {
@@ -317,12 +327,12 @@ describe("MissionDetail (LET-467)", () => {
 
     expect(container?.querySelector('[data-testid="eaos-mission-evidence-empty-all"]')).not.toBeNull();
 
-    // Switch to Replay and confirm empty state.
-    const replayTab = container?.querySelector(
-      '[data-testid="eaos-mission-detail-tab-replay"]',
+    // Switch back to Activity and confirm the replay empty state.
+    const activityTab = container?.querySelector(
+      '[data-testid="eaos-mission-detail-section-activity"]',
     ) as HTMLButtonElement | null;
     await act(async () => {
-      replayTab?.click();
+      activityTab?.click();
     });
     await flushReact();
     expect(container?.querySelector('[data-testid="eaos-mission-replay-empty-all"]')).not.toBeNull();
@@ -355,7 +365,7 @@ describe("MissionDetail (LET-467)", () => {
     });
 
     const allowedButtonPattern =
-      /^eaos-mission-(detail-tab|evidence-filter|replay-filter)-/;
+      /^eaos-mission-(detail-section|evidence-filter|replay-filter)-/;
     const buttons = Array.from(container?.querySelectorAll("button") ?? []) as HTMLButtonElement[];
     for (const button of buttons) {
       const testid = button.getAttribute("data-testid") ?? "";
@@ -404,9 +414,9 @@ describe("MissionDetail (LET-467)", () => {
     // but title-as-text in the header is the most visible leak path — re-assert at the doc level.
     expect(container?.textContent ?? "").not.toContain(SECRET);
 
-    // Overview description must also be redacted.
+    // Document description must also be redacted.
     const desc = container?.querySelector(
-      '[data-testid="eaos-mission-overview-description"]',
+      '[data-testid="eaos-mission-document-description"]',
     );
     expect(desc?.textContent ?? "").not.toContain(SECRET);
     expect(desc?.textContent ?? "").toContain("[REDACTED]");
@@ -447,7 +457,7 @@ describe("MissionDetail (LET-467)", () => {
     });
 
     const evidenceTab = container?.querySelector(
-      '[data-testid="eaos-mission-detail-tab-evidence"]',
+      '[data-testid="eaos-mission-detail-section-evidence"]',
     ) as HTMLButtonElement | null;
     await act(async () => {
       evidenceTab?.click();
@@ -463,7 +473,7 @@ describe("MissionDetail (LET-467)", () => {
     expect(evidenceItem?.textContent ?? "").toContain("[REDACTED]");
 
     const replayTab = container?.querySelector(
-      '[data-testid="eaos-mission-detail-tab-replay"]',
+      '[data-testid="eaos-mission-detail-section-activity"]',
     ) as HTMLButtonElement | null;
     await act(async () => {
       replayTab?.click();
@@ -502,7 +512,7 @@ describe("MissionDetail (LET-467)", () => {
     });
 
     const evidenceTab = container?.querySelector(
-      '[data-testid="eaos-mission-detail-tab-evidence"]',
+      '[data-testid="eaos-mission-detail-section-evidence"]',
     ) as HTMLButtonElement | null;
     await act(async () => {
       evidenceTab?.click();
@@ -530,10 +540,14 @@ describe("MissionDetail (LET-467)", () => {
     // No nested <main> landmarks — the kernel Layout already owns the page <main>.
     expect(container?.querySelectorAll("main").length).toBe(0);
 
-    const tablist = container?.querySelector('[data-testid="eaos-mission-detail-tablist"]');
+    const tablist = container?.querySelector(
+      '[data-testid="eaos-mission-detail-secondary-tablist"]',
+    );
     expect(tablist?.getAttribute("role")).toBe("tablist");
     const tabs = container?.querySelectorAll('[role="tab"]');
-    expect(tabs?.length).toBe(4);
+    // Linear-style rebuild collapses the 4-tab strip into a 3-section
+    // Activity / Evidence / Discussion switch under the document.
+    expect(tabs?.length).toBe(3);
 
     // Inspector is a named aside.
     const inspector = container?.querySelector('[data-testid="eaos-mission-detail-inspector"]');

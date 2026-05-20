@@ -7,6 +7,7 @@ import { Link } from "@/lib/router";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
 import { redactSecretLikeText } from "../secret-redact";
+import { useEaosViewerRole } from "../useEaosViewerRole";
 
 interface MissionDetailHeaderProps {
   issue: Issue;
@@ -80,6 +81,10 @@ export function MissionDetailHeader({
   const isLive = hasActiveRun || liveRunCount > 0;
   const safeTitle = redactSecretLikeText(issue.title);
   const kernelAriaName = issue.identifier ?? safeTitle;
+  // LET-503 round-5: gate the Kernel/Admin escape hatch + posture chips
+  // behind the operator role. Customer-facing users never see operator
+  // jargon, raw status tokens (ACTIVE / PREVIEW), or `Kernel / Admin view`.
+  const { isOperator } = useEaosViewerRole();
 
   return (
     <header
@@ -87,29 +92,31 @@ export function MissionDetailHeader({
       className="flex flex-col gap-3 rounded-md border border-border bg-card p-4"
       data-testid="eaos-mission-detail-header"
     >
-      <div className="flex flex-wrap items-center gap-2" data-testid="eaos-mission-detail-truth">
-        <EaosStateChip
-          label={chip.label}
-          prefix="Status"
-          title={`Mission status: ${issue.status}`}
-        />
-        {isLive ? (
+      {isOperator ? (
+        <div className="flex flex-wrap items-center gap-2" data-testid="eaos-mission-detail-truth">
           <EaosStateChip
-            label="LIVE"
-            prefix="Run"
-            title={
-              hasActiveRun
-                ? "An active run is in progress for this mission."
-                : `${liveRunCount} live run${liveRunCount === 1 ? "" : "s"}`
-            }
+            label={chip.label}
+            prefix="Status"
+            title={`Mission status: ${issue.status}`}
           />
-        ) : null}
-        <EaosStateChip
-          label="PREVIEW"
-          prefix="Truth"
-          title="Header summary aggregates issue + run state; gate/owner labels are derived from status and assignment."
-        />
-      </div>
+          {isLive ? (
+            <EaosStateChip
+              label="LIVE"
+              prefix="Run"
+              title={
+                hasActiveRun
+                  ? "An active run is in progress for this mission."
+                  : `${liveRunCount} live run${liveRunCount === 1 ? "" : "s"}`
+              }
+            />
+          ) : null}
+          <EaosStateChip
+            label="PREVIEW"
+            prefix="Truth"
+            title="Header summary aggregates issue + run state; gate/owner labels are derived from status and assignment."
+          />
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
@@ -133,15 +140,17 @@ export function MissionDetailHeader({
             {safeTitle}
           </h1>
         </div>
-        <Link
-          to={kernelHref}
-          aria-label={`Open Kernel/Admin view for ${kernelAriaName}`}
-          data-testid="eaos-mission-detail-kernel-link"
-          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        >
-          <span aria-hidden="true">⎈</span>
-          <span>Kernel / Admin view</span>
-        </Link>
+        {isOperator ? (
+          <Link
+            to={kernelHref}
+            aria-label={`Open Kernel/Admin view for ${kernelAriaName}`}
+            data-testid="eaos-mission-detail-kernel-link"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <span aria-hidden="true">⎈</span>
+            <span>Kernel / Admin view</span>
+          </Link>
+        ) : null}
       </div>
 
       <dl

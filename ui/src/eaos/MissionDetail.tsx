@@ -23,14 +23,6 @@ import { activityApi } from "@/api/activity";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { EaosStateChip } from "./EaosStateChip";
-import {
-  NOT_CONNECTED_DATA_LABEL,
-  NOT_CONNECTED_DATA_NOTE,
-  NOT_CONNECTED_DATA_PREFIX,
-  SHELL_POSTURE_LABEL,
-  SHELL_POSTURE_PREFIX,
-} from "./state-labels";
 import { describeOwner, MissionDetailHeader } from "./mission-detail/MissionDetailHeader";
 import { MissionDetailInspector } from "./mission-detail/MissionDetailInspector";
 import { MissionEvidenceBoard } from "./mission-detail/MissionEvidenceBoard";
@@ -39,14 +31,12 @@ import { buildEvidenceItems } from "./mission-detail/build-evidence";
 import { buildReplayItems } from "./mission-detail/build-replay";
 import { safeDisplayText } from "./secret-redact";
 
-type DetailTab = "overview" | "evidence" | "replay" | "graph";
-
-const TABS: ReadonlyArray<{ id: DetailTab; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "evidence", label: "Evidence" },
-  { id: "replay", label: "Replay" },
-  { id: "graph", label: "Graph & discussion" },
-];
+// LET-503 round-5 — Mission detail is a Linear-style document workbench.
+// The page is split into a primary document column (description + activity
+// + evidence) and a right-hand properties rail (MissionDetailInspector).
+// The 4-tab strip from LET-467 is replaced by a single scrollable document
+// with collapsible activity/evidence sections so the surface reads as a
+// task page, not a dashboard.
 
 function missionListHrefFromPathname(pathname: string): string {
   const missionRoute = "/eaos/missions";
@@ -59,11 +49,13 @@ function missionListHrefFromPathname(pathname: string): string {
   return `${prefix}${missionRoute}`;
 }
 
+type SecondaryPanel = "activity" | "evidence" | "discussion";
+
 export function MissionDetail() {
   const { missionRef } = useParams<{ missionRef?: string }>();
   const { pathname } = useLocation();
   const { selectedCompanyId } = useCompany();
-  const [tab, setTab] = useState<DetailTab>("overview");
+  const [panel, setPanel] = useState<SecondaryPanel>("activity");
   const missionListHref = missionListHrefFromPathname(pathname);
 
   const trimmedRef = missionRef ? missionRef.trim() : "";
@@ -277,71 +269,25 @@ export function MissionDetail() {
         hasActiveRun={!!activeRunQuery.data}
       />
 
-      <div
-        role="tablist"
-        aria-label="Mission workbench tabs"
-        data-testid="eaos-mission-detail-tablist"
-        className="flex flex-wrap items-center gap-1.5"
-      >
-        {TABS.map((option) => {
-          const isActive = tab === option.id;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              role="tab"
-              id={`eaos-mission-tab-${option.id}`}
-              aria-selected={isActive}
-              aria-controls={`eaos-mission-panel-${option.id}`}
-              tabIndex={isActive ? 0 : -1}
-              data-testid={`eaos-mission-detail-tab-${option.id}`}
-              onClick={() => setTab(option.id)}
-              onKeyDown={(event) => {
-                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-                event.preventDefault();
-                const idx = TABS.findIndex((t) => t.id === tab);
-                const delta = event.key === "ArrowLeft" ? -1 : 1;
-                const next = TABS[(idx + delta + TABS.length) % TABS.length];
-                if (next) setTab(next.id);
-              }}
-              className={
-                "inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background "
-                + (isActive
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground")
-              }
-            >
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
-
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <div
-          className="flex flex-col gap-3 lg:col-span-8"
-          role="tabpanel"
-          id={`eaos-mission-panel-${tab}`}
-          aria-labelledby={`eaos-mission-tab-${tab}`}
-          data-testid={`eaos-mission-detail-panel-${tab}`}
+          className="flex min-w-0 flex-col gap-4 lg:col-span-8"
+          data-testid="eaos-mission-detail-document"
         >
-          {tab === "overview" ? (
-            <MissionOverview
-              issue={issue}
-              evidenceCount={evidenceItems.length}
-              replayCount={replayItems.length}
-              liveRunCount={liveRunsQuery.data?.length ?? 0}
-              hasActiveRun={!!activeRunQuery.data}
-              owner={owner}
-            />
-          ) : null}
-
-          {tab === "evidence" ? <MissionEvidenceBoard items={evidenceItems} /> : null}
-
-          {tab === "replay" ? <MissionReplayFeed items={replayItems} /> : null}
-
-          {tab === "graph" ? (
-            <MissionGraphAndDiscussion
+          <MissionDocument issue={issue} />
+          <SecondaryPanelSwitch
+            panel={panel}
+            onChange={setPanel}
+            counts={{
+              activity: replayItems.length,
+              evidence: evidenceItems.length,
+              discussion: commentsQuery.data?.length ?? 0,
+            }}
+          />
+          {panel === "activity" ? <MissionReplayFeed items={replayItems} /> : null}
+          {panel === "evidence" ? <MissionEvidenceBoard items={evidenceItems} /> : null}
+          {panel === "discussion" ? (
+            <MissionDiscussion
               issue={issue}
               comments={commentsQuery.data ?? []}
               treeEventCount={treeQuery.data?.timeline.length ?? 0}
@@ -364,83 +310,98 @@ export function MissionDetail() {
   );
 }
 
-function MissionOverview({
-  issue,
-  evidenceCount,
-  replayCount,
-  liveRunCount,
-  hasActiveRun,
-  owner,
-}: {
-  issue: Issue;
-  evidenceCount: number;
-  replayCount: number;
-  liveRunCount: number;
-  hasActiveRun: boolean;
-  owner: string;
-}) {
+function MissionDocument({ issue }: { issue: Issue }) {
+  const description = issue.description ? safeDisplayText(issue.description, 4000) : null;
+  const safeTitle = safeDisplayText(issue.title, 240);
   return (
     <section
-      aria-labelledby="eaos-mission-overview-title"
-      data-testid="eaos-mission-overview"
-      className="flex flex-col gap-3 rounded-md border border-border bg-card p-4"
+      aria-labelledby="eaos-mission-document-title"
+      data-testid="eaos-mission-document"
+      className="flex flex-col gap-3 rounded-md border border-border bg-card px-5 py-4"
     >
-      <header className="flex items-center justify-between gap-2">
-        <h2 id="eaos-mission-overview-title" className="text-base font-semibold tracking-tight text-foreground">
-          Overview
+      <header className="flex flex-col gap-1">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Mission</p>
+        <h2
+          id="eaos-mission-document-title"
+          className="text-lg font-semibold tracking-tight text-foreground"
+        >
+          {safeTitle}
         </h2>
-        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-          Mission command summary
-        </p>
       </header>
-      <dl className="grid grid-cols-1 gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
-        <OverviewItem label="Status" value={issue.status} />
-        <OverviewItem label="Owner" value={owner} />
-        <OverviewItem label="Priority" value={issue.priority} />
-        <OverviewItem
-          label="Live run"
-          value={hasActiveRun ? "Active run in progress" : liveRunCount > 0 ? `${liveRunCount} live` : "None"}
-        />
-        <OverviewItem
-          label="Blockers"
-          value={
-            !issue.blockerAttention || issue.blockerAttention.unresolvedBlockerCount === 0
-              ? "None"
-              : `${issue.blockerAttention.unresolvedBlockerCount} unresolved`
-          }
-        />
-        <OverviewItem label="Evidence collected" value={String(evidenceCount)} />
-        <OverviewItem label="Replay events" value={String(replayCount)} />
-        <OverviewItem
-          label="Last activity"
-          value={issue.lastActivityAt ? new Date(issue.lastActivityAt as unknown as string).toISOString().slice(0, 16) + " UTC" : "—"}
-        />
-      </dl>
-      {issue.description ? (
-        <details className="rounded-md border border-border bg-background p-3 text-xs">
-          <summary className="cursor-pointer text-xs font-medium text-foreground">Mission description</summary>
-          <p
-            className="mt-2 whitespace-pre-line text-xs text-foreground"
-            data-testid="eaos-mission-overview-description"
-          >
-            {safeDisplayText(issue.description, 2000)}
-          </p>
-        </details>
-      ) : null}
+      {description ? (
+        <p
+          className="whitespace-pre-line text-sm leading-relaxed text-foreground/90"
+          data-testid="eaos-mission-document-description"
+        >
+          {description}
+        </p>
+      ) : (
+        <p
+          data-testid="eaos-mission-document-description-empty"
+          className="rounded border border-dashed border-border bg-background px-3 py-2 text-xs text-muted-foreground"
+        >
+          No description on this mission yet.
+        </p>
+      )}
     </section>
   );
 }
 
-function OverviewItem({ label, value }: { label: string; value: string }) {
+function SecondaryPanelSwitch({
+  panel,
+  onChange,
+  counts,
+}: {
+  panel: SecondaryPanel;
+  onChange: (next: SecondaryPanel) => void;
+  counts: { activity: number; evidence: number; discussion: number };
+}) {
+  const options: Array<{ id: SecondaryPanel; label: string; count: number }> = [
+    { id: "activity", label: "Activity", count: counts.activity },
+    { id: "evidence", label: "Evidence", count: counts.evidence },
+    { id: "discussion", label: "Discussion", count: counts.discussion },
+  ];
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="text-xs text-foreground">{value}</dd>
+    <div
+      role="tablist"
+      aria-label="Mission activity sections"
+      data-testid="eaos-mission-detail-secondary-tablist"
+      className="inline-flex items-center self-start rounded-md border border-border bg-card p-0.5 text-xs"
+    >
+      {options.map((option) => {
+        const selected = panel === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            data-testid={`eaos-mission-detail-section-${option.id}`}
+            onClick={() => onChange(option.id)}
+            className={
+              "inline-flex items-center gap-1.5 rounded px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
+              (selected
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:bg-accent/40 hover:text-foreground")
+            }
+          >
+            <span>{option.label}</span>
+            <span
+              className={
+                "rounded px-1 text-[10px] tabular-nums " +
+                (selected ? "bg-background/20 text-background" : "bg-muted text-muted-foreground")
+              }
+            >
+              {option.count}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-function MissionGraphAndDiscussion({
+function MissionDiscussion({
   issue,
   comments,
   treeEventCount,
@@ -455,33 +416,38 @@ function MissionGraphAndDiscussion({
   const childCount = issue.relatedWork?.outbound?.length ?? 0;
   return (
     <section
-      aria-labelledby="eaos-mission-graph-title"
-      data-testid="eaos-mission-graph"
+      aria-labelledby="eaos-mission-discussion-title"
+      data-testid="eaos-mission-discussion"
       className="flex flex-col gap-3 rounded-md border border-border bg-card p-4"
     >
       <header className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="eaos-mission-graph-title" className="text-base font-semibold tracking-tight text-foreground">
-          Graph & discussion
+        <h2
+          id="eaos-mission-discussion-title"
+          className="text-sm font-semibold tracking-tight text-foreground"
+        >
+          Discussion
         </h2>
-        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-          Tree, blockers, related work, comments
-        </p>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {comments.length} comment{comments.length === 1 ? "" : "s"}
+        </span>
       </header>
-      <dl className="grid grid-cols-1 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
-        <OverviewItem label="Unresolved blockers" value={String(blockerCount)} />
-        <OverviewItem label="Related work links" value={String(childCount)} />
-        <OverviewItem
-          label="Tree events"
-          value={hasTreeData ? String(treeEventCount) : "—"}
-        />
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-[11px] text-muted-foreground sm:grid-cols-3">
+        <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
+          <dt>Unresolved blockers</dt>
+          <dd className="text-foreground tabular-nums">{blockerCount}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
+          <dt>Related work</dt>
+          <dd className="text-foreground tabular-nums">{childCount}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-2 sm:flex-col sm:items-start">
+          <dt>Tree events</dt>
+          <dd className="text-foreground tabular-nums">{hasTreeData ? treeEventCount : "—"}</dd>
+        </div>
       </dl>
-      <p className="text-xs text-muted-foreground">
-        Comments and discussion are read-only in this slice. The full conversation composer and
-        write surfaces remain in Kernel/Admin until EAOS comment-write UX is explicitly designed.
-      </p>
       <p
         className="text-xs text-foreground"
-        data-testid="eaos-mission-graph-comment-count"
+        data-testid="eaos-mission-discussion-comment-count"
       >
         {comments.length === 0
           ? "No discussion entries yet."
@@ -498,15 +464,7 @@ function DetailLoading() {
       className="flex flex-col gap-3"
       data-testid="eaos-mission-detail-loading"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-        <EaosStateChip
-          label={NOT_CONNECTED_DATA_LABEL}
-          prefix={NOT_CONNECTED_DATA_PREFIX}
-          title={NOT_CONNECTED_DATA_NOTE}
-        />
-      </div>
-      <h1
+<h1
         id="eaos-mission-detail-loading-title"
         className="text-2xl font-semibold tracking-tight text-foreground"
       >
@@ -540,15 +498,7 @@ function DetailEmptyShell({
       className="flex flex-col gap-3"
       data-testid={testId}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-        <EaosStateChip
-          label={NOT_CONNECTED_DATA_LABEL}
-          prefix={NOT_CONNECTED_DATA_PREFIX}
-          title={NOT_CONNECTED_DATA_NOTE}
-        />
-      </div>
-      <h1
+<h1
         id="eaos-mission-detail-empty-title"
         className="text-2xl font-semibold tracking-tight text-foreground"
       >
@@ -583,15 +533,7 @@ function DetailNotFound({
       data-testid="eaos-mission-detail-not-found"
       className="flex flex-col gap-3"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <EaosStateChip label={SHELL_POSTURE_LABEL} prefix={SHELL_POSTURE_PREFIX} />
-        <EaosStateChip
-          label={NOT_CONNECTED_DATA_LABEL}
-          prefix={NOT_CONNECTED_DATA_PREFIX}
-          title={NOT_CONNECTED_DATA_NOTE}
-        />
-      </div>
-      <h1
+<h1
         id="eaos-mission-detail-not-found-title"
         className="text-2xl font-semibold tracking-tight text-foreground"
       >

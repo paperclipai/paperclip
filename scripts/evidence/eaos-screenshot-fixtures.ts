@@ -296,6 +296,12 @@ const POPULATED_ORG_TREE = [
   },
 ];
 
+const PROJECT_LOOKUP: Record<string, { urlKey: string; name: string }> = {
+  [PROJECT_IDS.growth]: { urlKey: "growth-q3", name: "Growth Q3" },
+  [PROJECT_IDS.platform]: { urlKey: "platform-hardening", name: "Platform Hardening" },
+  [PROJECT_IDS.research]: { urlKey: "research-q2", name: "Customer Research Q2" },
+};
+
 function buildIssue(input: {
   id: string;
   identifier: string;
@@ -310,10 +316,37 @@ function buildIssue(input: {
   workMode?: string;
   completedMinAgo?: number | null;
 }) {
+  const projectMeta = input.projectId ? PROJECT_LOOKUP[input.projectId] ?? null : null;
   return {
     id: input.id,
     companyId: SCREENSHOT_COMPANY_ID,
     projectId: input.projectId,
+    project: projectMeta
+      ? {
+          id: input.projectId!,
+          companyId: SCREENSHOT_COMPANY_ID,
+          urlKey: projectMeta.urlKey,
+          name: projectMeta.name,
+          status: "active",
+          color: null,
+          goalId: null,
+          goalIds: [],
+          goals: [],
+          description: null,
+          leadAgentId: null,
+          targetDate: null,
+          env: null,
+          pauseReason: null,
+          pausedAt: null,
+          executionWorkspacePolicy: null,
+          codebase: { kind: "none" },
+          workspaces: [],
+          primaryWorkspace: null,
+          archivedAt: null,
+          createdAt: ago(60 * 24 * 30),
+          updatedAt: ago(60 * 12),
+        }
+      : null,
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
@@ -760,6 +793,44 @@ export function buildScreenshotApiRoutes(
     {
       pathPattern: new RegExp(`^/api/companies/${SCREENSHOT_COMPANY_ID}/issues(?:\\b|/|\\?)`),
       response: { status: 200, body: issueListBody },
+    },
+    {
+      // LET-503 round-5: support `/api/issues/:idOrIdentifier` for the
+      // Mission detail page. Match against either the `id` UUID or the
+      // human `identifier` (ACME-104, etc) used in the targeted captures.
+      pathPattern: /^\/api\/issues\/[^/]+$/,
+      response: (url: URL) => {
+        const ref = decodeURIComponent(url.pathname.split("/").pop() ?? "");
+        const list = issueListBody as ReadonlyArray<{ id: string; identifier: string | null }>;
+        const match = list.find(
+          (issue) => issue.id === ref || issue.identifier === ref || issue.identifier?.toUpperCase() === ref.toUpperCase(),
+        );
+        if (!match) return { status: 404, body: { error: { code: "not_found", message: "Issue not found" } } };
+        return { status: 200, body: match };
+      },
+    },
+    {
+      // Validation history returns an object with `entries`, not a list.
+      // The detail page calls `history.entries.map` so it must be shaped
+      // as an object.
+      pathPattern: /^\/api\/issues\/[^/]+\/validation-history$/,
+      response: { status: 200, body: { entries: [] } },
+    },
+    {
+      // Tree observability returns an object with `timeline`, not a list.
+      pathPattern: /^\/api\/issues\/[^/]+\/tree-observability(?:\?.*)?$/,
+      response: { status: 200, body: { timeline: [], rootIssueId: null } },
+    },
+    {
+      // Active-run is a singleton or null.
+      pathPattern: /^\/api\/issues\/[^/]+\/active-run$/,
+      response: { status: 200, body: null },
+    },
+    {
+      // Comments, runs, activity, etc. for a single issue — all empty so
+      // the detail page renders its truthful empty states.
+      pathPattern: /^\/api\/issues\/[^/]+\/(comments|interactions|documents|approvals|runs|activity|work-products|live-runs|feedback-votes|attachments|labels)/,
+      response: { status: 200, body: [] },
     },
     {
       pathPattern: new RegExp(`^/api/companies/${SCREENSHOT_COMPANY_ID}/projects(?:\\b|/|\\?)`),

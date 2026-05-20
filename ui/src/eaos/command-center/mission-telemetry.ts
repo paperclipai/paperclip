@@ -36,6 +36,11 @@ export interface MissionTelemetry {
   readonly highPriority: number;
   readonly recent: readonly Issue[];
   readonly recentlyCompleted: readonly Issue[];
+  // LET-503 round-5: per-rail buckets so the dashboard can render
+  // Running / Blocked / In review as separate Linear-style state rails.
+  readonly running: readonly Issue[];
+  readonly blocked: readonly Issue[];
+  readonly inReview: readonly Issue[];
   readonly agents: AgentRosterSummary;
   readonly companyScoped: boolean;
   readonly isLoading: boolean;
@@ -134,6 +139,9 @@ export function useMissionTelemetry({ pageLimit = 75 }: UseMissionTelemetryOptio
     const recentlyCompleted = sortedByActivity
       .filter((issue) => issue.status === "done")
       .slice(0, 3);
+    const running = sortedByActivity.filter((issue) => ACTIVE_STATUSES.has(issue.status)).slice(0, 5);
+    const blocked = sortedByActivity.filter((issue) => BLOCKED_STATUSES.has(issue.status)).slice(0, 5);
+    const inReview = sortedByActivity.filter((issue) => REVIEW_STATUSES.has(issue.status)).slice(0, 5);
     const agents = summarizeAgents(agentsQuery.data ?? []);
     return {
       missions,
@@ -142,6 +150,9 @@ export function useMissionTelemetry({ pageLimit = 75 }: UseMissionTelemetryOptio
       highPriority,
       recent,
       recentlyCompleted,
+      running,
+      blocked,
+      inReview,
       agents,
       companyScoped: !!selectedCompanyId,
       isLoading: !!selectedCompanyId && issuesQuery.isLoading,

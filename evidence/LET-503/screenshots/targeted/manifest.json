@@ -1,6 +1,6 @@
 {
   "schema": "eaos-targeted-screenshots/v1",
-  "generatedAt": "2026-05-20T05:51:50.372Z",
+  "generatedAt": "2026-05-20T06:34:00.881Z",
   "base": "http://localhost:5173",
   "viewer": "customer-member",
   "mode": "populated",
@@ -33,6 +33,21 @@
     {
       "id": "missions-list-scrolled-720",
       "file": "missions-list-scrolled-720.png",
+      "ok": true
+    },
+    {
+      "id": "missions-board-720",
+      "file": "missions-board-720.png",
+      "ok": true
+    },
+    {
+      "id": "dashboard-rails-720",
+      "file": "dashboard-rails-720.png",
+      "ok": true
+    },
+    {
+      "id": "mission-detail-document-720",
+      "file": "mission-detail-document-720.png",
       "ok": true
     }
   ]

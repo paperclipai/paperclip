@@ -30,6 +30,14 @@ vi.mock("@/api/issues", () => ({
   },
 }));
 
+const agentsListMock = vi.fn();
+
+vi.mock("@/api/agents", () => ({
+  agentsApi: {
+    list: (...args: unknown[]) => agentsListMock(...args),
+  },
+}));
+
 const viewerRoleMock = vi.fn<() => { isOperator: boolean; isInstanceAdmin: boolean; membershipRole: string | null; loading: boolean }>();
 
 vi.mock("../useEaosViewerRole", () => ({
@@ -139,6 +147,8 @@ async function render() {
 
 beforeEach(() => {
   listMock.mockReset();
+  agentsListMock.mockReset();
+  agentsListMock.mockResolvedValue([]);
   viewerRoleMock.mockReset();
   // Default to customer (non-operator) so the existing "no posture chip"
   // assertions reflect the strictest viewer.
@@ -338,6 +348,77 @@ describe("MissionsListPage", () => {
 
     expect(container?.querySelector('[data-testid="eaos-missions-row"]')).toBeNull();
     expect(container?.querySelector('[data-testid="eaos-missions-list"]')).toBeNull();
+  });
+
+  it("renders status text + priority shorthand + assignee initials/name for a populated row", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    agentsListMock.mockResolvedValueOnce([
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: "agent-1", name: "Avery Chen", role: "engineer" } as any,
+    ]);
+    listMock.mockResolvedValueOnce([
+      makeIssue({
+        id: "row-1",
+        identifier: "LET-LB",
+        status: "in_progress",
+        priority: "critical",
+        title: "Ship Q3 growth dashboard",
+        assigneeAgentId: "agent-1",
+        project: { id: "p1", urlKey: "growth", name: "Growth Q3" } as never,
+      }),
+    ]);
+    await render();
+
+    const row = container?.querySelector('[data-testid="eaos-missions-row"]');
+    expect(row).not.toBeNull();
+
+    // Status block carries a visible text label so the icon is not the only
+    // affordance for users to identify state.
+    const status = row?.querySelector('[data-testid="eaos-missions-row-status"]');
+    expect(status).not.toBeNull();
+    expect(status?.textContent ?? "").toContain("In progress");
+
+    // Priority surfaces both an icon and the industry-standard P0/P1/P2
+    // shorthand so reviewers can read it at a glance.
+    const priority = row?.querySelector('[data-testid="eaos-missions-row-priority"]');
+    expect(priority).not.toBeNull();
+    expect(priority?.textContent ?? "").toContain("P0");
+    expect(priority?.getAttribute("aria-label")).toBe("Priority: Critical");
+
+    // Project chip surfaces the project name.
+    const project = row?.querySelector('[data-testid="eaos-missions-row-project"]');
+    expect(project).not.toBeNull();
+    expect(project?.textContent ?? "").toContain("Growth Q3");
+
+    // Owner cell renders an initials avatar plus the looked-up name.
+    const owner = row?.querySelector('[data-testid="eaos-missions-row-owner"]');
+    expect(owner).not.toBeNull();
+    expect(owner?.textContent ?? "").toContain("AC"); // initials Avery Chen
+    expect(owner?.textContent ?? "").toContain("Avery Chen");
+    const avatar = owner?.querySelector('[data-testid="eaos-missions-row-owner-avatar"]');
+    expect(avatar?.getAttribute("aria-label") ?? "").toContain("Avery Chen");
+  });
+
+  it("falls back to a non-empty owner label when the agent lookup has not loaded yet", async () => {
+    viewerRoleMock.mockReturnValue({ isOperator: false, isInstanceAdmin: false, membershipRole: "member", loading: false });
+    agentsListMock.mockResolvedValueOnce([]); // empty lookup
+    listMock.mockResolvedValueOnce([
+      makeIssue({
+        id: "row-2",
+        identifier: "LET-NL",
+        status: "in_progress",
+        priority: "high",
+        title: "Audit access policies",
+        assigneeAgentId: "agent-unknown",
+      }),
+    ]);
+    await render();
+
+    const owner = container?.querySelector('[data-testid="eaos-missions-row-owner"]');
+    expect(owner).not.toBeNull();
+    // Even without a real name we still surface a non-empty marker so the
+    // row is never blank for an assigned mission.
+    expect(owner?.textContent ?? "").toMatch(/[A-Za-z]/);
   });
 
   it("renders zero mutating controls — no approve/deploy/restart/rerun/apply buttons appear", async () => {

@@ -7,6 +7,7 @@ import { Link } from "@/lib/router";
 import type { Approval, Issue } from "@paperclipai/shared";
 import { EaosStateChip } from "../EaosStateChip";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
+import { useEaosViewerRole } from "../useEaosViewerRole";
 
 interface MissionDetailInspectorProps {
   issue: Issue;
@@ -45,6 +46,9 @@ export function MissionDetailInspector({
   liveRuns,
 }: MissionDetailInspectorProps) {
   const kernelHref = `/issues/${issue.identifier ?? issue.id}`;
+  // LET-503 round-5: operator-gate the Safety posture chips, the
+  // "No approval, deploy..." paragraph, and the Related/Kernel link.
+  const { isOperator } = useEaosViewerRole();
   return (
     <aside
       aria-label="Mission properties"
@@ -106,48 +110,52 @@ export function MissionDetailInspector({
         </p>
       </section>
 
-      <section aria-labelledby="eaos-mission-inspector-safety-title" className="flex flex-col gap-2">
-        <h2
-          id="eaos-mission-inspector-safety-title"
-          className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-        >
-          Safety posture
-        </h2>
-        <div className="flex flex-wrap gap-1.5" data-testid="eaos-mission-inspector-safety">
-          <EaosStateChip
-            label="PREVIEW"
-            prefix="Slice"
-            title="Read-only EAOS slice; sensitive text is masked before display."
-          />
-          <EaosStateChip
-            label="DRY-RUN"
-            prefix="Actions"
-            title="No mutating actions available in this slice."
-          />
-        </div>
-        <p className="text-[11px] text-muted-foreground">
-          No approval, deploy, release, runtime, spend, secret, external write, or live campaign
-          controls in the EAOS detail view. Use Kernel/Admin if you need a mutation surface.
-        </p>
-      </section>
+      {isOperator ? (
+        <section aria-labelledby="eaos-mission-inspector-safety-title" className="flex flex-col gap-2">
+          <h2
+            id="eaos-mission-inspector-safety-title"
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            Safety posture
+          </h2>
+          <div className="flex flex-wrap gap-1.5" data-testid="eaos-mission-inspector-safety">
+            <EaosStateChip
+              label="PREVIEW"
+              prefix="Slice"
+              title="Read-only EAOS slice; sensitive text is masked before display."
+            />
+            <EaosStateChip
+              label="DRY-RUN"
+              prefix="Actions"
+              title="No mutating actions available in this slice."
+            />
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            No approval, deploy, release, runtime, spend, secret, external write, or live campaign
+            controls in the EAOS detail view. Use Kernel/Admin if you need a mutation surface.
+          </p>
+        </section>
+      ) : null}
 
-      <section aria-labelledby="eaos-mission-inspector-links-title" className="flex flex-col gap-2">
-        <h2
-          id="eaos-mission-inspector-links-title"
-          className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-        >
-          Related
-        </h2>
-        <Link
-          to={kernelHref}
-          data-testid="eaos-mission-inspector-kernel-link"
-          aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
-          className="inline-flex w-fit items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        >
-          <span aria-hidden="true">⎈</span>
-          <span>Kernel / Admin view</span>
-        </Link>
-      </section>
+      {isOperator ? (
+        <section aria-labelledby="eaos-mission-inspector-links-title" className="flex flex-col gap-2">
+          <h2
+            id="eaos-mission-inspector-links-title"
+            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            Related
+          </h2>
+          <Link
+            to={kernelHref}
+            data-testid="eaos-mission-inspector-kernel-link"
+            aria-label={`Open Kernel/Admin view for ${issue.identifier ?? issue.title}`}
+            className="inline-flex w-fit items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            <span aria-hidden="true">⎈</span>
+            <span>Kernel / Admin view</span>
+          </Link>
+        </section>
+      ) : null}
     </aside>
   );
 }

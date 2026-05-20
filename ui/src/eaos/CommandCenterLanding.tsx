@@ -38,10 +38,15 @@ export function CommandCenterLanding({ telemetryHook = useMissionTelemetry }: Co
 
       <PostureTiles telemetry={telemetry} />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <NeedsAttention telemetry={telemetry} />
-        <RecentlyCompleted telemetry={telemetry} />
-      </div>
+      {/* LET-503 round-5 — Linear-style state rails. The previous single
+          "Needs attention" panel is replaced with three short state rails:
+          Running / Blocked / In review. Each rail mirrors the Missions
+          list row contract (status icon + identifier + title) so the
+          surfaces stay consistent.  Recently completed remains a quiet
+          secondary rail below. */}
+      <StateRails telemetry={telemetry} />
+
+      <RecentlyCompleted telemetry={telemetry} />
     </section>
   );
 }
@@ -181,19 +186,150 @@ function PostureTiles({ telemetry }: { telemetry: MissionTelemetry }) {
   );
 }
 
-function NeedsAttention({ telemetry }: { telemetry: MissionTelemetry }) {
+function StateRails({ telemetry }: { telemetry: MissionTelemetry }) {
+  const rails: Array<{
+    id: "running" | "blocked" | "in-review";
+    title: string;
+    accent: string;
+    rows: readonly Issue[];
+    count: number;
+    emptyMessage: string;
+  }> = [
+    {
+      id: "running",
+      title: "Running",
+      accent: "bg-blue-500",
+      rows: telemetry.running,
+      count: telemetry.counts.active,
+      emptyMessage: "Nothing in progress.",
+    },
+    {
+      id: "blocked",
+      title: "Blocked",
+      accent: "bg-amber-500",
+      rows: telemetry.blocked,
+      count: telemetry.counts.blocked,
+      emptyMessage: "Nothing blocked.",
+    },
+    {
+      id: "in-review",
+      title: "In review",
+      accent: "bg-violet-500",
+      rows: telemetry.inReview,
+      count: telemetry.counts.inReview,
+      emptyMessage: "Nothing in review.",
+    },
+  ];
+  if (telemetry.isError) {
+    return (
+      <section
+        aria-labelledby="eaos-command-center-rails-title"
+        data-testid="eaos-command-center-activity"
+        className="rounded-md border border-border bg-card"
+      >
+        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+          <h2
+            id="eaos-command-center-rails-title"
+            className="text-sm font-semibold tracking-tight text-foreground"
+          >
+            What needs you now
+          </h2>
+        </header>
+        <ContextNote
+          tone="error"
+          testId="eaos-command-center-activity-error"
+          body="Activity feed is temporarily unavailable. Try refreshing."
+        />
+      </section>
+    );
+  }
+  if (!telemetry.companyScoped) {
+    return (
+      <section
+        aria-labelledby="eaos-command-center-rails-title"
+        data-testid="eaos-command-center-activity"
+        className="rounded-md border border-border bg-card"
+      >
+        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+          <h2
+            id="eaos-command-center-rails-title"
+            className="text-sm font-semibold tracking-tight text-foreground"
+          >
+            What needs you now
+          </h2>
+        </header>
+        <ContextNote
+          testId="eaos-command-center-activity-no-company"
+          body="Select a company scope in the top bar to load mission activity."
+        />
+      </section>
+    );
+  }
+  if (telemetry.isLoading) {
+    return (
+      <section
+        aria-labelledby="eaos-command-center-rails-title"
+        data-testid="eaos-command-center-activity"
+        className="rounded-md border border-border bg-card"
+      >
+        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+          <h2
+            id="eaos-command-center-rails-title"
+            className="text-sm font-semibold tracking-tight text-foreground"
+          >
+            What needs you now
+          </h2>
+        </header>
+        <ContextNote
+          testId="eaos-command-center-activity-loading"
+          body="Loading missions…"
+        />
+      </section>
+    );
+  }
+  const hasAnything =
+    telemetry.running.length > 0 || telemetry.blocked.length > 0 || telemetry.inReview.length > 0;
+  if (!hasAnything) {
+    return (
+      <section
+        aria-labelledby="eaos-command-center-rails-title"
+        data-testid="eaos-command-center-activity"
+        className="rounded-md border border-border bg-card"
+      >
+        <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+          <h2
+            id="eaos-command-center-rails-title"
+            className="text-sm font-semibold tracking-tight text-foreground"
+          >
+            What needs you now
+          </h2>
+          <Link
+            to="/eaos/missions"
+            className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            data-testid="eaos-command-center-open-missions"
+          >
+            All missions →
+          </Link>
+        </header>
+        <ContextNote
+          testId="eaos-command-center-activity-empty"
+          body="No active missions in this scope right now."
+        />
+      </section>
+    );
+  }
   return (
     <section
-      aria-labelledby="eaos-command-center-attention-title"
+      aria-labelledby="eaos-command-center-rails-title"
       data-testid="eaos-command-center-activity"
-      className="flex min-h-0 flex-col gap-2 rounded-md border border-border bg-card"
+      className="flex flex-col gap-3"
     >
-      <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+      <header className="flex items-center justify-between gap-2">
         <h2
-          id="eaos-command-center-attention-title"
+          id="eaos-command-center-rails-title"
           className="text-sm font-semibold tracking-tight text-foreground"
         >
-          Needs attention
+          What needs you now
         </h2>
         <Link
           to="/eaos/missions"
@@ -203,32 +339,59 @@ function NeedsAttention({ telemetry }: { telemetry: MissionTelemetry }) {
           All missions →
         </Link>
       </header>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {rails.map((rail) => (
+          <StateRail key={rail.id} {...rail} />
+        ))}
+      </div>
+    </section>
+  );
+}
 
-      {telemetry.isError ? (
+function StateRail({
+  id,
+  title,
+  accent,
+  rows,
+  count,
+  emptyMessage,
+}: {
+  id: "running" | "blocked" | "in-review";
+  title: string;
+  accent: string;
+  rows: readonly Issue[];
+  count: number;
+  emptyMessage: string;
+}) {
+  return (
+    <section
+      aria-label={title}
+      data-testid={`eaos-command-center-rail-${id}`}
+      className="flex min-h-0 flex-col rounded-md border border-border bg-card"
+    >
+      <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold tracking-tight text-foreground">
+          <span aria-hidden="true" className={"h-1.5 w-1.5 rounded-full " + accent} />
+          {title}
+        </h3>
+        <span className="text-[11px] tabular-nums text-muted-foreground" data-testid={`eaos-command-center-rail-${id}-count`}>
+          {count}
+        </span>
+      </header>
+      {rows.length === 0 ? (
         <ContextNote
-          tone="error"
-          testId="eaos-command-center-activity-error"
-          body="Activity feed is temporarily unavailable. Try refreshing."
-        />
-      ) : !telemetry.companyScoped ? (
-        <ContextNote
-          testId="eaos-command-center-activity-no-company"
-          body="Select a company scope in the top bar to load mission activity."
-        />
-      ) : telemetry.isLoading ? (
-        <ContextNote
-          testId="eaos-command-center-activity-loading"
-          body="Loading missions…"
-        />
-      ) : telemetry.recent.length === 0 ? (
-        <ContextNote
-          testId="eaos-command-center-activity-empty"
-          body="No active missions in this scope right now."
+          testId={`eaos-command-center-rail-${id}-empty`}
+          body={emptyMessage}
         />
       ) : (
-        <ul aria-label="Active missions" className="flex flex-col">
-          {telemetry.recent.map((issue, index) => (
-            <ActivityRow key={issue.id} issue={issue} isLast={index === telemetry.recent.length - 1} />
+        <ul aria-label={title} className="flex flex-col">
+          {rows.map((issue, index) => (
+            <ActivityRow
+              key={issue.id}
+              issue={issue}
+              isLast={index === rows.length - 1}
+              compact
+            />
           ))}
         </ul>
       )}

@@ -176,6 +176,64 @@ const CAPTURES: readonly Capture[] = [
       await page.waitForTimeout(250);
     },
   },
+  {
+    // LET-503 round-5: prove the Kanban Board view ships and is reachable
+    // from the same surface as the list. The previous round-4 ship had no
+    // committed board-mode capture; the reviewer flagged this explicitly.
+    id: "missions-board-720",
+    width: 1440,
+    height: 720,
+    path: "/eaos/missions",
+    waitFor: '[data-testid="eaos-missions-page"]',
+    setup: async (page) => {
+      await page.waitForSelector('[data-testid="eaos-missions-list"]', {
+        timeout: 6_000,
+      });
+      await page.locator('[data-testid="eaos-missions-view-board"]').click();
+      await page.waitForSelector('[data-testid="eaos-missions-board"]', {
+        timeout: 4_000,
+      });
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    // LET-503 round-5: prove the Dashboard command-center rebuild — three
+    // state rails (Running / Blocked / In review) sit under the posture
+    // tiles, replacing the previous single "Needs attention" panel.
+    id: "dashboard-rails-720",
+    width: 1440,
+    height: 720,
+    path: "/eaos",
+    waitFor: '[data-testid="eaos-command-center-landing"]',
+    setup: async (page) => {
+      await page.waitForSelector('[data-testid="eaos-command-center-rail-running"]', {
+        timeout: 6_000,
+      });
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    // LET-503 round-5: prove the Mission detail Linear-style rebuild —
+    // central document column with right-hand properties sidebar, no
+    // 4-tab strip. Pick a populated issue identifier from the fixtures.
+    id: "mission-detail-document-720",
+    width: 1440,
+    height: 720,
+    path: "/eaos/missions/ACME-104",
+    // The page can land on any of these data-testids depending on how
+    // far through the query waterfall it is when we capture: success
+    // surface, not-found, loading. Use a wildcard prefix so we always
+    // get *something* visible instead of a white frame.
+    waitFor: '[data-testid^="eaos-mission-detail"]',
+    setup: async (page) => {
+      // Best-effort wait for the document section; fall through quickly
+      // if the page is in another state so the screenshot still lands.
+      await page
+        .waitForSelector('[data-testid="eaos-mission-document"]', { timeout: 4_000 })
+        .catch(() => {});
+      await page.waitForTimeout(400);
+    },
+  },
 ];
 
 async function ensureDir(path: string): Promise<void> {

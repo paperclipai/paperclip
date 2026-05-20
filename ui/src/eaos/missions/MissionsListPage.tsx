@@ -34,13 +34,15 @@ import {
   Minus,
   Rows3,
 } from "lucide-react";
-import type { Issue, IssuePriority } from "@paperclipai/shared";
+import type { Agent, Issue, IssuePriority } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { issuesApi } from "@/api/issues";
+import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { useEaosViewerRole } from "../useEaosViewerRole";
 import { AgentAvatar } from "../agents/AgentAvatar";
+import type { AvatarSubject } from "../agents/agent-avatar";
 import {
   bucketMissions,
   resolveMissionRow,
@@ -77,6 +79,31 @@ export function MissionsListPage({ now, initialMode = "list" }: MissionsListPage
       }),
     enabled: Boolean(selectedCompanyId),
   });
+
+  const agentsQuery = useQuery<Agent[]>({
+    queryKey: selectedCompanyId
+      ? [...queryKeys.agents.list(selectedCompanyId), "eaos-missions-owner-lookup"]
+      : ["agents", "__no-company__", "eaos-missions-owner-lookup"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    staleTime: 60_000,
+  });
+
+  const agentLookup = useMemo(() => {
+    const list: Agent[] = agentsQuery.data ?? [];
+    const map = new Map<string, { name: string; role: string | null }>();
+    for (const agent of list) {
+      map.set(agent.id, { name: agent.name ?? "", role: agent.role ?? null });
+      // execution-agent-name-key (e.g. "engineer") is sometimes the only
+      // pointer to a role-based agent; key off urlKey/name so the resolver
+      // can still produce real initials in that path.
+      const urlKey = (agent as { urlKey?: string | null }).urlKey;
+      if (urlKey) {
+        map.set(urlKey, { name: agent.name ?? urlKey, role: agent.role ?? null });
+      }
+    }
+    return map;
+  }, [agentsQuery.data]);
 
   const rows = useMemo<MissionRow[]>(() => {
     const issues: Issue[] = issuesQuery.data ?? [];
@@ -132,9 +159,9 @@ export function MissionsListPage({ now, initialMode = "list" }: MissionsListPage
       ) : rows.length === 0 ? (
         <EmptyState />
       ) : mode === "list" ? (
-        <MissionList rows={rows} isOperator={isOperator} />
+        <MissionList rows={rows} isOperator={isOperator} agentLookup={agentLookup} />
       ) : (
-        <MissionBoard buckets={buckets} isOperator={isOperator} />
+        <MissionBoard buckets={buckets} isOperator={isOperator} agentLookup={agentLookup} />
       )}
 
       {hasData && rows.length > 0 ? <FilterSummary summary={summary} /> : null}
@@ -247,7 +274,45 @@ function ViewModeButton({
 
 // ---- Linear-style flat list ----
 
-function MissionList({ rows, isOperator }: { rows: readonly MissionRow[]; isOperator: boolean }) {
+type AgentLookup = Map<string, { name: string; role: string | null }>;
+
+function enrichAvatar(
+  avatar: MissionRow["ownerSummary"]["avatar"],
+  agentLookup: AgentLookup,
+): { subject: AvatarSubject; displayName: string } | null {
+  if (!avatar) return null;
+  if (avatar.kind === "agent") {
+    const meta = agentLookup.get(avatar.agentId);
+    const name = meta?.name ?? "";
+    const role = meta?.role ?? avatar.role ?? null;
+    return {
+      subject: { kind: "agent", agentId: avatar.agentId, name, role },
+      displayName: name || (role ? capitalize(role) : "Agent"),
+    };
+  }
+  if (avatar.kind === "user") {
+    return {
+      subject: { kind: "user", userId: avatar.userId, name: null },
+      displayName: "Teammate",
+    };
+  }
+  return { subject: { kind: "system" }, displayName: "System" };
+}
+
+function capitalize(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function MissionList({
+  rows,
+  isOperator,
+  agentLookup,
+}: {
+  rows: readonly MissionRow[];
+  isOperator: boolean;
+  agentLookup: AgentLookup;
+}) {
   return (
     <div
       data-testid="eaos-missions-list"
@@ -255,14 +320,28 @@ function MissionList({ rows, isOperator }: { rows: readonly MissionRow[]; isOper
     >
       <ul role="list" className="divide-y divide-border">
         {rows.map((row) => (
-          <MissionListRow key={row.id} row={row} isOperator={isOperator} />
+          <MissionListRow
+            key={row.id}
+            row={row}
+            isOperator={isOperator}
+            agentLookup={agentLookup}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function MissionListRow({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
+function MissionListRow({
+  row,
+  isOperator,
+  agentLookup,
+}: {
+  row: MissionRow;
+  isOperator: boolean;
+  agentLookup: AgentLookup;
+}) {
+  const owner = enrichAvatar(row.ownerSummary.avatar, agentLookup);
   return (
     <li
       data-testid="eaos-missions-row"
@@ -270,10 +349,10 @@ function MissionListRow({ row, isOperator }: { row: MissionRow; isOperator: bool
       data-mission-primary-state={row.primaryState}
       data-mission-priority={row.priority}
       data-mission-freshness={row.freshness}
-      className="group flex items-center gap-3 px-3 py-2 hover:bg-accent/30"
+      className="group flex items-center gap-2 px-3 py-2 hover:bg-accent/30"
     >
-      <StatusIcon state={row.primaryState} />
-      <PriorityIcon priority={row.priority} />
+      <StatusCell state={row.primaryState} />
+      <PriorityCell priority={row.priority} />
       {row.identifier ? (
         <span
           data-testid="eaos-missions-row-identifier"
@@ -292,13 +371,8 @@ function MissionListRow({ row, isOperator }: { row: MissionRow; isOperator: bool
       {row.projectLabel ? (
         <ProjectChip label={row.projectLabel} urlKey={row.projectUrlKey} />
       ) : null}
-      {row.ownerSummary.avatar ? (
-        <AgentAvatar
-          size="sm"
-          subject={row.ownerSummary.avatar}
-          ariaLabel={`${row.ownerSummary.currentLabel} — ${row.ownerSummary.currentReason}`}
-          testId="eaos-missions-row-owner-avatar"
-        />
+      {owner ? (
+        <OwnerCell subject={owner.subject} displayName={owner.displayName} reason={row.ownerSummary.currentReason} />
       ) : (
         <UnassignedDot />
       )}
@@ -327,9 +401,11 @@ function MissionListRow({ row, isOperator }: { row: MissionRow; isOperator: bool
 function MissionBoard({
   buckets,
   isOperator,
+  agentLookup,
 }: {
   buckets: { active: MissionRow[]; blocked: MissionRow[]; inReview: MissionRow[]; doneWithEvidence: MissionRow[]; other: MissionRow[] };
   isOperator: boolean;
+  agentLookup: AgentLookup;
 }) {
   const columns: Array<{ id: string; title: string; rows: MissionRow[] }> = [
     { id: "active", title: "Active", rows: buckets.active },
@@ -343,7 +419,7 @@ function MissionBoard({
       className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-auto sm:grid-cols-2 lg:grid-cols-4"
     >
       {columns.map((column) => (
-        <BoardColumn key={column.id} {...column} isOperator={isOperator} />
+        <BoardColumn key={column.id} {...column} isOperator={isOperator} agentLookup={agentLookup} />
       ))}
     </div>
   );
@@ -354,11 +430,13 @@ function BoardColumn({
   title,
   rows,
   isOperator,
+  agentLookup,
 }: {
   id: string;
   title: string;
   rows: MissionRow[];
   isOperator: boolean;
+  agentLookup: AgentLookup;
 }) {
   return (
     <section
@@ -379,14 +457,25 @@ function BoardColumn({
             None.
           </p>
         ) : (
-          rows.map((row) => <BoardCard key={row.id} row={row} isOperator={isOperator} />)
+          rows.map((row) => (
+            <BoardCard key={row.id} row={row} isOperator={isOperator} agentLookup={agentLookup} />
+          ))
         )}
       </div>
     </section>
   );
 }
 
-function BoardCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }) {
+function BoardCard({
+  row,
+  isOperator,
+  agentLookup,
+}: {
+  row: MissionRow;
+  isOperator: boolean;
+  agentLookup: AgentLookup;
+}) {
+  const owner = enrichAvatar(row.ownerSummary.avatar, agentLookup);
   return (
     <Link
       to={`/eaos/missions/${row.identifier ?? row.id}`}
@@ -396,18 +485,23 @@ function BoardCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }
       className="block rounded-md border border-border bg-background p-2.5 transition-colors hover:border-foreground/30 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <PriorityIcon priority={row.priority} />
+        <PriorityCell priority={row.priority} compact />
         {row.identifier ? <span className="font-mono tabular-nums">{row.identifier}</span> : null}
       </div>
       <p className="mt-1.5 line-clamp-2 text-sm text-foreground">{row.title}</p>
       <div className="mt-2 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-          {row.ownerSummary.avatar ? (
-            <AgentAvatar
-              size="xs"
-              subject={row.ownerSummary.avatar}
-              ariaLabel={row.ownerSummary.currentLabel}
-            />
+          {owner ? (
+            <span className="flex min-w-0 items-center gap-1" title={owner.displayName}>
+              <AgentAvatar
+                size="xs"
+                variant="initials"
+                subject={owner.subject}
+                ariaLabel={owner.displayName}
+                testId="eaos-missions-board-card-owner-avatar"
+              />
+              <span className="hidden max-w-[80px] truncate sm:inline">{owner.displayName}</span>
+            </span>
           ) : (
             <UnassignedDot small />
           )}
@@ -423,6 +517,91 @@ function BoardCard({ row, isOperator }: { row: MissionRow; isOperator: boolean }
 }
 
 // ---- Small leaf components ----
+
+const STATUS_LABEL: Record<MissionPrimaryState, string> = {
+  active: "In progress",
+  blocked: "Blocked",
+  "in-review": "In review",
+  "release-held": "Release held",
+  "done-with-evidence": "Done",
+  "done-evidence-incomplete": "Done",
+  cancelled: "Cancelled",
+  stale: "Stale",
+  "needs-next-owner": "Needs owner",
+};
+
+function StatusCell({ state }: { state: MissionPrimaryState }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1"
+      data-testid="eaos-missions-row-status"
+      data-state={state}
+    >
+      <StatusIcon state={state} />
+      <span className="hidden text-[11px] font-medium text-muted-foreground sm:inline">
+        {STATUS_LABEL[state]}
+      </span>
+    </span>
+  );
+}
+
+const PRIORITY_SHORTHAND: Record<IssuePriority, { code: string; label: string; tone: string }> = {
+  critical: { code: "P0", label: "Critical", tone: "text-red-600 bg-red-50 border-red-200" },
+  high: { code: "P1", label: "High", tone: "text-orange-600 bg-orange-50 border-orange-200" },
+  medium: { code: "P2", label: "Medium", tone: "text-muted-foreground bg-background border-border" },
+  low: { code: "P3", label: "Low", tone: "text-muted-foreground bg-background border-border" },
+  none: { code: "—", label: "No priority", tone: "text-muted-foreground/70 bg-background border-border" },
+};
+
+function PriorityCell({ priority, compact }: { priority: IssuePriority; compact?: boolean }) {
+  const meta = PRIORITY_SHORTHAND[priority];
+  return (
+    <span
+      aria-label={`Priority: ${meta.label}`}
+      title={meta.label}
+      data-testid="eaos-missions-row-priority"
+      data-priority={priority}
+      className={
+        "inline-flex shrink-0 items-center gap-0.5 rounded border font-mono text-[10px] font-semibold tabular-nums " +
+        meta.tone +
+        " " +
+        (compact ? "px-1 py-0" : "px-1.5 py-0.5")
+      }
+    >
+      <PriorityIcon priority={priority} />
+      <span>{meta.code}</span>
+    </span>
+  );
+}
+
+function OwnerCell({
+  subject,
+  displayName,
+  reason,
+}: {
+  subject: AvatarSubject;
+  displayName: string;
+  reason: string;
+}) {
+  return (
+    <span
+      data-testid="eaos-missions-row-owner"
+      className="inline-flex min-w-0 shrink-0 items-center gap-1.5"
+      title={`${displayName} — ${reason}`}
+    >
+      <AgentAvatar
+        size="sm"
+        variant="initials"
+        subject={subject}
+        ariaLabel={`${displayName} — ${reason}`}
+        testId="eaos-missions-row-owner-avatar"
+      />
+      <span className="hidden max-w-[120px] truncate text-[11px] text-muted-foreground md:inline">
+        {displayName}
+      </span>
+    </span>
+  );
+}
 
 function StatusIcon({ state }: { state: MissionPrimaryState }) {
   switch (state) {
