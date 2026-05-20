@@ -4,7 +4,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { loadConfig } from "../config.js";
-import { createApiTierPluginWorkerManagerStub } from "../services/plugin-worker-manager-stub.js";
+import {
+  ApiTierPluginWorkerError,
+  createApiTierPluginWorkerManagerStub,
+} from "../services/plugin-worker-manager-stub.js";
 
 describe("PAPERCLIP_NODE_ROLE", () => {
   const originalEnv = { ...process.env };
@@ -145,5 +148,43 @@ describe("createApiTierPluginWorkerManagerStub", () => {
   it("stopAll is a no-op (returns void without throwing)", async () => {
     const stub = createApiTierPluginWorkerManagerStub();
     await expect(stub.stopAll()).resolves.toBeUndefined();
+  });
+});
+
+// Contract test for the defense-in-depth guard in plugin-loader.ts (the catch
+// block around lifecycleManager.markError). The guard relies on the thrown
+// error being detectable as ApiTierPluginWorkerError via `instanceof`, so that
+// any future lazy code path on api-tier doesn't strand a plugin row with
+// status='error' (the original PR #105 stranding shape).
+//
+// If a future refactor of plugin-worker-manager-stub.ts breaks `instanceof`
+// (e.g., re-throwing as a generic Error, or moving the class to a different
+// export), this test fires the alarm BEFORE the regression reaches production.
+describe("ApiTierPluginWorkerError instanceof contract (plugin-loader guard)", () => {
+  it("errors thrown by the stub are instances of ApiTierPluginWorkerError", async () => {
+    const stub = createApiTierPluginWorkerManagerStub();
+    for (const invoke of [
+      () => stub.startWorker("p", {} as any),
+      () => stub.stopWorker("p"),
+      () => stub.call("p", "shutdown" as any, {} as any),
+    ]) {
+      try {
+        await invoke();
+        expect.fail("should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ApiTierPluginWorkerError);
+        expect(e).toBeInstanceOf(Error);
+      }
+    }
+  });
+
+  it("error preserves the .name field used in logs", async () => {
+    const stub = createApiTierPluginWorkerManagerStub();
+    try {
+      await stub.startWorker("p", {} as any);
+      expect.fail("should have thrown");
+    } catch (e: any) {
+      expect(e.name).toBe("ApiTierPluginWorkerError");
+    }
   });
 });
