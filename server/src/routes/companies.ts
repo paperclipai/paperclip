@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -35,6 +36,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const importJobs = new Map<string, ImportJobRecord>();
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -177,27 +179,45 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(preview);
   });
 
-  router.post(COMPANY_IMPORT_ROUTE_PATH, validate(companyPortabilityImportSchema), async (req, res) => {
+  router.get("/import/jobs/:jobId", async (req, res) => {
+    assertCloudTenantCaller(req);
+    const job = importJobs.get(req.params.jobId as string);
+    if (!job || job.cloudTenantKey !== cloudTenantRequestKey(req)) {
+      res.status(404).json({ error: "Import job not found" });
+      return;
+    }
+    res.json(importJobResponse(job));
+  });
+
+  router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
     assertBoard(req);
-    assertImportTargetAccess(req, req.body.target);
+    const rawImportBody: unknown = req.body;
     const actor = getActorInfo(req);
-    const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
-    await logActivity(db, {
-      companyId: result.company.id,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      action: "company.imported",
-      entityType: "company",
-      entityId: result.company.id,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      details: {
-        include: req.body.include ?? null,
-        agentCount: result.agents.length,
-        warningCount: result.warnings.length,
-        companyAction: result.company.action,
-      },
-    });
+    const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
+    if (req.header("x-paperclip-cloud-async-import") === "1") {
+      assertCloudTenantCaller(req);
+      const job = createImportJob(cloudTenantRequestKey(req));
+      importJobs.set(job.id, job);
+      const operation = async () => {
+        const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+        assertImportTargetAccess(req, importBody.target);
+        const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
+        const result = await portability.importBundle(importBody, boardUserId);
+        await logImportedCompanyActivity(db, activity, result);
+        return result;
+      };
+      res.status(202).json(importJobAcceptedResponse(job));
+      setImmediate(() => {
+        void runImportJob(job, operation);
+      });
+      return;
+    }
+
+    const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+    assertImportTargetAccess(req, importBody.target);
+    const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
+    const result = await portability.importBundle(importBody, boardUserId);
+    await logImportedCompanyActivity(db, activity, result);
     res.json(result);
   });
 
@@ -411,4 +431,156 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   });
 
   return router;
+}
+
+type CompanyImportResult = {
+  company: { id: string; action: unknown };
+  agents: unknown[];
+  warnings: unknown[];
+};
+
+interface ImportJobRecord {
+  id: string;
+  cloudTenantKey: string;
+  status: "running" | "succeeded" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  error?: { message: string };
+  result?: {
+    companyId: string;
+    agentCount: number;
+    warningCount: number;
+    companyAction: unknown;
+  };
+}
+
+interface ImportedCompanyActivityContext {
+  actorType: "user" | "agent";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  include: unknown;
+}
+
+function assertCloudTenantCaller(req: Request) {
+  if (req.actor.source !== "cloud_tenant") {
+    throw forbidden("Trusted Cloud tenant access required");
+  }
+}
+
+function cloudTenantRequestKey(req: Request) {
+  return [
+    req.actor.userId ?? "",
+    req.header("x-paperclip-cloud-stack-id")?.trim() ?? "",
+    req.header("x-paperclip-cloud-paperclip-company-id")?.trim() ?? "",
+  ].join(":");
+}
+
+function createImportJob(cloudTenantKey: string): ImportJobRecord {
+  const now = new Date().toISOString();
+  return {
+    id: `tenant-import-${randomUUID()}`,
+    cloudTenantKey,
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function runImportJob(
+  job: ImportJobRecord,
+  operation: () => Promise<CompanyImportResult>,
+) {
+  try {
+    const result = await operation();
+    const now = new Date().toISOString();
+    job.status = "succeeded";
+    job.updatedAt = now;
+    job.completedAt = now;
+    job.result = {
+      companyId: result.company.id,
+      agentCount: result.agents.length,
+      warningCount: result.warnings.length,
+      companyAction: result.company.action,
+    };
+  } catch (error) {
+    const now = new Date().toISOString();
+    job.status = "failed";
+    job.updatedAt = now;
+    job.completedAt = now;
+    job.error = { message: errorMessage(error) };
+  }
+}
+
+function importedCompanyActivityContext(
+  actor: ReturnType<typeof getActorInfo>,
+  include: unknown,
+): ImportedCompanyActivityContext {
+  return {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    include,
+  };
+}
+
+async function logImportedCompanyActivity(
+  db: Db,
+  activity: ImportedCompanyActivityContext,
+  result: CompanyImportResult,
+) {
+  await logActivity(db, {
+    companyId: result.company.id,
+    actorType: activity.actorType,
+    actorId: activity.actorId,
+    action: "company.imported",
+    entityType: "company",
+    entityId: result.company.id,
+    agentId: activity.agentId,
+    runId: activity.runId,
+    details: {
+      include: activity.include,
+      agentCount: result.agents.length,
+      warningCount: result.warnings.length,
+      companyAction: result.company.action,
+    },
+  });
+}
+
+function importJobAcceptedResponse(job: ImportJobRecord) {
+  return {
+    job: {
+      id: job.id,
+      status: job.status,
+    },
+    statusUrl: `/api/companies/import/jobs/${encodeURIComponent(job.id)}`,
+    retryAfterMs: 1000,
+  };
+}
+
+function importJobResponse(job: ImportJobRecord) {
+  const response: Record<string, unknown> = {
+    job: {
+      id: job.id,
+      status: job.status,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+      ...(job.error ? { error: job.error } : {}),
+      ...(job.result ? { result: job.result } : {}),
+    },
+    retryAfterMs: 1000,
+  };
+  if (job.error?.message) {
+    response.error = job.error.message;
+    response.message = job.error.message;
+    response.reason = job.error.message;
+  }
+  return response;
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim() ? error.message : String(error);
 }
