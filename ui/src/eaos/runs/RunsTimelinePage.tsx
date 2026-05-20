@@ -22,6 +22,7 @@ import { Link } from "@/lib/router";
 import { redactSecretLikeText } from "../secret-redact";
 import { useEaosViewerRole } from "../useEaosViewerRole";
 import { humanizeActivityAction, humanizeActorType } from "./activity-labels";
+import { AgentAvatar } from "../agents/AgentAvatar";
 import {
   collapseEventsToRuns,
   summarizeRunTimeline,
@@ -264,8 +265,26 @@ function RunRow({
           </span>
         ) : null}
       </div>
-      <div className="flex items-start gap-2">
-        <ActivityIcon aria-hidden="true" className="mt-0.5 h-4 w-4 text-foreground" />
+      <div className="flex items-start gap-2.5">
+        {row.latestActorType === "agent" && row.agentId ? (
+          <AgentAvatar
+            size="md"
+            subject={{ kind: "agent", agentId: row.agentId, name: actorLabel, role: null }}
+            testId="eaos-runs-row-actor-avatar"
+          />
+        ) : row.latestActorType === "user" ? (
+          <AgentAvatar
+            size="md"
+            subject={{ kind: "user", userId: row.latestActorId, name: actorLabel }}
+            testId="eaos-runs-row-actor-avatar"
+          />
+        ) : (
+          <AgentAvatar
+            size="md"
+            subject={{ kind: "system" }}
+            testId="eaos-runs-row-actor-avatar"
+          />
+        )}
         <div className="flex min-w-0 flex-1 flex-col">
           <p className="truncate text-sm font-medium text-foreground" data-testid="eaos-runs-row-title">
             {redactSecretLikeText(row.issueTitle ?? `Recent run`)}

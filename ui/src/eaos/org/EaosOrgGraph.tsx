@@ -18,6 +18,7 @@ import {
 import { Maximize2, Minus, Plus } from "lucide-react";
 import type { OrgNode } from "@/api/agents";
 import { redactSecretLikeText } from "../secret-redact";
+import { AgentAvatar } from "../agents/AgentAvatar";
 
 const CARD_W = 200;
 const CARD_H = 88;
@@ -600,15 +601,27 @@ export function EaosOrgGraph({
               }}
               onKeyDown={(event) => handleNodeKey(event, node.id)}
             >
-              <div className="flex items-start gap-2">
-                <span
-                  aria-hidden="true"
-                  className="mt-1 h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: dotColor }}
+              <div className="flex items-start gap-2.5">
+                <AgentAvatar
+                  size="md"
+                  subject={
+                    node.id === "__eaos-org-company-root"
+                      ? { kind: "system" }
+                      : { kind: "agent", agentId: node.id, name: node.name, role: node.role }
+                  }
+                  testId={`eaos-org-node-${node.id}-avatar`}
+                  className="mt-0.5"
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px] font-medium text-foreground">
-                    {redactSecretLikeText(node.name)}
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: dotColor }}
+                    />
+                    <div className="truncate text-[13px] font-medium text-foreground">
+                      {redactSecretLikeText(node.name)}
+                    </div>
                   </div>
                   <div className="truncate text-[11px] text-muted-foreground">
                     {node.roleLabel}

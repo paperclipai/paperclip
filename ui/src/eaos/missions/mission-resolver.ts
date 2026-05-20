@@ -48,6 +48,13 @@ export interface MissionRow {
     readonly currentLabel: string;
     readonly currentTruth: MissionTruthLabel;
     readonly currentReason: string;
+    // LET-503 round-3: stable identifying token for the AgentAvatar that
+    // renders next to the owner label. `kind` matches the avatar API.
+    readonly avatar:
+      | { readonly kind: "agent"; readonly agentId: string; readonly role: string | null }
+      | { readonly kind: "user"; readonly userId: string }
+      | { readonly kind: "system" }
+      | null;
   };
   readonly evidenceSummary: {
     readonly hasPlanDocument: boolean;
@@ -179,6 +186,7 @@ function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
       currentLabel: "Human teammate",
       currentTruth: "Backend-backed",
       currentReason: "Assigned to a human teammate",
+      avatar: { kind: "user", userId: issue.assigneeUserId },
     };
   }
   if (issue.assigneeAgentId) {
@@ -186,6 +194,7 @@ function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
       currentLabel: "Agent",
       currentTruth: "Backend-backed",
       currentReason: "Assigned to an agent",
+      avatar: { kind: "agent", agentId: issue.assigneeAgentId, role: null },
     };
   }
   if (issue.executionAgentNameKey) {
@@ -193,12 +202,14 @@ function resolveOwner(issue: Issue): MissionRow["ownerSummary"] {
       currentLabel: "Role-based agent",
       currentTruth: "Backend-backed",
       currentReason: "Picked up by a role-based agent",
+      avatar: { kind: "agent", agentId: issue.executionAgentNameKey, role: null },
     };
   }
   return {
     currentLabel: "Unassigned",
     currentTruth: "Backend-derived",
     currentReason: "No owner assigned yet",
+    avatar: null,
   };
 }
 

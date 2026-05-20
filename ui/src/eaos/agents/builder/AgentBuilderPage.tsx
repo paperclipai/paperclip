@@ -21,6 +21,7 @@ import { companySkillsApi } from "@/api/companySkills";
 import { queryKeys } from "@/lib/queryKeys";
 import { agentUrl } from "@/lib/utils";
 import { redactSecretLikeText } from "../../secret-redact";
+import { AgentAvatar } from "../AgentAvatar";
 import {
   AGENT_BUILDER_STEPS,
   AGENT_THEMES,
@@ -476,11 +477,23 @@ function SummaryCard({
     >
       <div className="flex items-center gap-3">
         <div
-          aria-hidden="true"
-          className="h-10 w-10 flex-shrink-0 rounded-full"
-          style={{ backgroundColor: summary.themeSwatch }}
           data-testid="eaos-agent-builder-summary-swatch"
-        />
+          data-summary-invalid={nameMissing ? "true" : "false"}
+          className={
+            "relative inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full " +
+            (nameMissing ? "ring-2 ring-amber-400/70 ring-offset-2 ring-offset-card" : "")
+          }
+        >
+          <AgentAvatar
+            size="lg"
+            subject={{
+              kind: "agent",
+              agentId: state.name.trim() || "__draft-agent__",
+              name: state.name.trim() || "New agent",
+              role: state.trustProfile,
+            }}
+          />
+        </div>
         <div className="min-w-0">
           <p
             className={

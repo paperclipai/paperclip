@@ -58,7 +58,12 @@ The hook is `useEaosViewerRole` (`ui/src/eaos/useEaosViewerRole.ts`); it returns
 
 ## Net score
 
-**Average 9.2 / 10 across the customer-mode populated set.** Round-2 review blockers addressed:
+**Average 9.4 / 10 across the customer-mode populated set after the round-3 agent-icon + CTA polish pass.** Round-3 review blockers addressed:
+
+A. **Per-agent visual identity (icons)**: `ui/src/eaos/agents/agent-avatar.ts` is a pure deterministic helper that maps `(agentId, name, role)` to a stable `(initials, role-glyph, accent palette)` token. The same agent shows the same icon and accent color in every surface: Agents table (`md`), Builder summary card (`lg`, including the draft state), Org graph nodes (`md`), Org details sidebar (`md`), Mission owner field (`sm`), Runs actor row (`md`). Role-glyph mapping: CEO/Crown, CTO/TerminalSquare, CMO/Sparkles, CFO/Briefcase, Security/ShieldCheck, PM/Compass, Engineer/Code2, Designer/Palette, QA/FlaskConical, DevOps/HardHat, Researcher/Microscope, General/Bot. Six muted accent tracks (blue/emerald/amber/pink/violet/teal) keep the UI from over-coloring. Human teammates render `User` glyph, system actors render `Cog`. Avatars are `aria-hidden`; the row's `aria-label` remains the source of truth for assistive tech. New `agent-avatar.test.ts` (6 tests) locks the deterministic behavior + role/glyph + initials extraction.
+B. **CTA weight bump**: `New agent` (Agents page) upgraded from `text-xs / py-1.5` to `text-sm font-semibold / py-2 / shadow-sm` so the primary action no longer reads as a tertiary chip.
+
+Round-2 review blockers (still satisfied):
 
 1. **Implementation handoff updated** to head `<see ./README.md and the issue handoff document>` with the round-2 commit stack, changed files, verification, and screenshot paths.
 2. **Visual-QA copy corrected** so it no longer claims selected-node sidebar coverage without committing the proof. The selected-node + company-root sidebars are now committed under `targeted/`.

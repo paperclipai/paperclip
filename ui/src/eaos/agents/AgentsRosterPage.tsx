@@ -20,6 +20,7 @@ import {
   type AgentRosterCounts,
   type AgentRosterRow,
 } from "./agent-roster";
+import { AgentAvatar } from "./AgentAvatar";
 
 interface AgentsRosterPageProps {
   // Tests inject a fixed `now` so freshness copy is deterministic. In
@@ -70,9 +71,9 @@ export function AgentsRosterPage({ now }: AgentsRosterPageProps = {}) {
         <Link
           to="/eaos/agents/new"
           data-testid="eaos-agents-new-cta"
-          className="inline-flex items-center gap-1 self-start rounded-md border border-foreground bg-foreground px-3 py-1.5 text-xs font-medium text-background hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:self-auto"
+          className="inline-flex items-center gap-1.5 self-start rounded-md border border-foreground bg-foreground px-3.5 py-2 text-sm font-semibold text-background shadow-sm hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:self-auto"
         >
-          <Plus className="h-3 w-3" aria-hidden="true" />
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           New agent
         </Link>
       </header>
@@ -220,17 +221,26 @@ function AgentRow({ row, referenceNow }: { row: AgentRosterRow; referenceNow: Da
       data-agent-status={row.status}
     >
       <td className="px-3 py-2">
-        <span
-          className="block truncate font-medium text-foreground"
-          data-testid="eaos-agents-row-name"
-        >
-          {redactSecretLikeText(row.name)}
-        </span>
-        {row.title ? (
-          <span className="block truncate text-[11px] text-muted-foreground">
-            {redactSecretLikeText(row.title)}
-          </span>
-        ) : null}
+        <div className="flex items-center gap-2.5">
+          <AgentAvatar
+            size="md"
+            subject={{ kind: "agent", agentId: row.id, name: row.name, role: row.role }}
+            testId="eaos-agents-row-avatar"
+          />
+          <div className="min-w-0">
+            <span
+              className="block truncate font-medium text-foreground"
+              data-testid="eaos-agents-row-name"
+            >
+              {redactSecretLikeText(row.name)}
+            </span>
+            {row.title ? (
+              <span className="block truncate text-[11px] text-muted-foreground">
+                {redactSecretLikeText(row.title)}
+              </span>
+            ) : null}
+          </div>
+        </div>
       </td>
       <td className="px-3 py-2 text-muted-foreground" data-testid="eaos-agents-row-role">
         {row.roleLabel}

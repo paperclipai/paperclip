@@ -24,6 +24,7 @@ import { Link } from "@/lib/router";
 import { AGENT_ROLE_LABELS, type AgentRole, type Agent } from "@paperclipai/shared";
 import { redactSecretLikeText } from "../secret-redact";
 import { EaosOrgGraph, type EaosOrgGraphNodeDecoration } from "./EaosOrgGraph";
+import { AgentAvatar } from "../agents/AgentAvatar";
 
 const LEADERSHIP_ROLES: ReadonlySet<AgentRole> = new Set(["ceo", "cto", "cmo", "cfo"]);
 
@@ -236,11 +237,14 @@ function OrgDetailsPanel({
         className="flex min-h-0 flex-col rounded-md border border-border bg-card"
       >
         <header className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
-          <div className="min-w-0">
-            <div className="truncate text-[13px] font-semibold text-foreground">
-              {redactSecretLikeText(companyName)}
+          <div className="flex min-w-0 items-center gap-2.5">
+            <AgentAvatar size="md" subject={{ kind: "system" }} />
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-semibold text-foreground">
+                {redactSecretLikeText(companyName)}
+              </div>
+              <div className="truncate text-[11px] text-muted-foreground">Company</div>
             </div>
-            <div className="truncate text-[11px] text-muted-foreground">Company</div>
           </div>
           <button
             type="button"
@@ -284,11 +288,17 @@ function OrgDetailsPanel({
       className="flex min-h-0 flex-col rounded-md border border-border bg-card"
     >
       <header className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-foreground">
-            {redactSecretLikeText(name)}
+        <div className="flex min-w-0 items-center gap-2.5">
+          <AgentAvatar
+            size="md"
+            subject={{ kind: "agent", agentId: selectedId, name, role: role ?? null }}
+          />
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-foreground">
+              {redactSecretLikeText(name)}
+            </div>
+            <div className="truncate text-[11px] text-muted-foreground">{roleLabel}</div>
           </div>
-          <div className="truncate text-[11px] text-muted-foreground">{roleLabel}</div>
         </div>
         <button
           type="button"

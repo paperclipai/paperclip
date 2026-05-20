@@ -29,6 +29,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { EaosStateChip } from "../EaosStateChip";
 import { useEaosViewerRole } from "../useEaosViewerRole";
+import { AgentAvatar } from "../agents/AgentAvatar";
+import type * as React from "react";
 import {
   bucketMissions,
   resolveMissionRow,
@@ -323,6 +325,15 @@ function MissionRowCard({ row, isOperator }: { row: MissionRow; isOperator: bool
           truth={row.ownerSummary.currentTruth}
           reason={row.ownerSummary.currentReason}
           showTruth={isOperator}
+          leading={
+            row.ownerSummary.avatar ? (
+              <AgentAvatar
+                size="sm"
+                subject={row.ownerSummary.avatar}
+                testId="eaos-missions-row-owner-avatar"
+              />
+            ) : null
+          }
         />
         <Field
           label="Evidence"
@@ -386,12 +397,14 @@ function Field({
   truth,
   reason,
   showTruth,
+  leading,
 }: {
   label: string;
   value: string;
   truth: MissionTruthLabel;
   reason?: string;
   showTruth: boolean;
+  leading?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-0.5" data-testid={`eaos-missions-row-field-${label.toLowerCase().replace(/\s+/g, "-")}`}>
@@ -399,7 +412,10 @@ function Field({
         {label}
         {showTruth ? <TruthInlineMark truth={truth} /> : null}
       </dt>
-      <dd className="text-foreground">{value}</dd>
+      <dd className="flex items-center gap-1.5 text-foreground">
+        {leading}
+        <span className="truncate">{value}</span>
+      </dd>
       {reason ? <p className="text-[11px] text-muted-foreground">{reason}</p> : null}
     </div>
   );
