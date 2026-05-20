@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpxLocalExecutor } from "./execute.js";
 
 const tempRoots: string[] = [];
@@ -374,6 +375,124 @@ describe("acpx_local runtime skill isolation", () => {
     );
     expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='first-key'"))).toHaveLength(1);
     expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
+  });
+
+  it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const runStderrDir = path.join(stateDir, "run-stderr");
+    await fs.mkdir(runStderrDir, { recursive: true });
+    const stderrTail = "claude-agent-acp: SDK init failed (auth missing)";
+    await fs.writeFile(path.join(runStderrDir, "run-1.log"), `${stderrTail}\n`, "utf8");
+
+    class FakeAcpRuntimeError extends Error {
+      readonly code = "ACP_SESSION_INIT_FAILED";
+      readonly cause: Error;
+      readonly retryable = false;
+      constructor(message: string, cause: Error) {
+        super(message);
+        this.name = "AcpRuntimeError";
+        this.cause = cause;
+      }
+    }
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => {
+          throw new FakeAcpRuntimeError(
+            "session/new failed: backend rejected initialize",
+            new Error("upstream timeout"),
+          );
+        },
+        startTurn: () => ({
+          events: (async function* () {})(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    const meta = result.errorMeta ?? {};
+    expect(meta.errorName).toBe("AcpRuntimeError");
+    expect(meta.acpCode).toBe("ACP_SESSION_INIT_FAILED");
+    expect(meta.causeMessage).toBe("upstream timeout");
+    expect(meta.retryable).toBe(false);
+    expect(typeof meta.stackPreview).toBe("string");
+    expect(meta.phase).toBe("ensure_session");
+
+    const errorLogLine = logs.find((entry) => entry.stream === "stdout" && entry.text.includes("\"type\":\"acpx.error\""));
+    expect(errorLogLine).toBeTruthy();
+    const errorPayload = JSON.parse(errorLogLine!.text.trim());
+    expect(errorPayload.phase).toBe("ensure_session");
+    expect(errorPayload.errorName).toBe("AcpRuntimeError");
+    expect(errorPayload.acpCode).toBe("ACP_SESSION_INIT_FAILED");
+    expect(errorPayload.causeMessage).toBe("upstream timeout");
+    expect(errorPayload.childStderrTail).toContain("SDK init failed");
+
+    const stderrLog = logs.find((entry) => entry.stream === "stderr" && entry.text.includes("ACPX child stderr tail"));
+    expect(stderrLog).toBeTruthy();
+    expect(stderrLog!.text).toContain(stderrTail);
+  });
+
+  it("writes wrapper that redirects child stderr to a per-run log file", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const runtimeOptions: AcpRuntimeOptions[] = [];
+    const execute = createAcpxLocalExecutor({
+      createRuntime: (options) => {
+        runtimeOptions.push(options as unknown as AcpRuntimeOptions);
+        return buildRuntime() as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-stderr-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const verboseFlags = runtimeOptions.map((options) => (options as { verbose?: boolean }).verbose);
+    expect(verboseFlags.every((flag) => flag === true)).toBe(true);
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
+    expect(wrapperFile).toBeTruthy();
+    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
+    expect(wrapper).toContain("stderr_dir=");
+    expect(wrapper).toContain("run-stderr");
+    expect(wrapper).toContain("PAPERCLIP_RUN_ID");
+    expect(wrapper).toContain("tee -a");
+    expect(wrapper).toContain("exec node ./fake-acp.js");
   });
 
   it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {

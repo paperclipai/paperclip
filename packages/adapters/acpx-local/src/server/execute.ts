@@ -94,6 +94,7 @@ interface AcpxPreparedRuntime {
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
+  childStderrLogPath: string | null;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -569,6 +570,7 @@ async function writeAgentWrapper(input: {
   acpxAgent: string;
   agentCommandShell: string;
   env: Record<string, string>;
+  childStderrDir: string;
 }): Promise<{ wrapperPath: string; envFilePath: string }> {
   const wrappersDir = path.join(input.stateDir, "wrappers");
   await fs.mkdir(wrappersDir, { recursive: true });
@@ -580,6 +582,7 @@ async function writeAgentWrapper(input: {
     agent: input.acpxAgent,
     command: input.agentCommandShell,
     env: envLines,
+    childStderrDir: input.childStderrDir,
   });
   const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
   const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
@@ -591,6 +594,11 @@ async function writeAgentWrapper(input: {
     "  set -a",
     "  source \"$env_file\"",
     "  set +a",
+    "fi",
+    `stderr_dir=${shellQuote(input.childStderrDir)}`,
+    "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
+    "  mkdir -p \"$stderr_dir\"",
+    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" >&2)",
     "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
@@ -757,12 +765,15 @@ async function buildRuntime(input: {
   const builtInCommand = resolveBuiltInAgentCommand(acpxAgent);
   const agentCommand = configuredCommand || builtInCommand || null;
   const agentCommandShell = configuredCommand || (builtInCommand ? shellQuote(builtInCommand) : "");
+  const childStderrDir = path.join(stateDir, "run-stderr");
+  const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
   const wrapper = agentCommand
     ? await writeAgentWrapper({
         stateDir,
         acpxAgent,
         agentCommandShell,
         env,
+        childStderrDir,
       })
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
@@ -817,6 +828,7 @@ async function buildRuntime(input: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
     },
+    childStderrLogPath,
   };
 }
 
@@ -999,31 +1011,144 @@ function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   return result.error.message;
 }
 
-function classifyError(err: unknown): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
-  const message = err instanceof Error ? err.message : String(err);
+type AcpxExecutionPhase = "ensure_session" | "configure_session" | "turn";
+
+function describeErrorDiagnostics(err: unknown): {
+  errorName: string;
+  acpCode: string | null;
+  causeMessage: string | null;
+  retryable: boolean | null;
+  stackPreview: string | null;
+} {
+  const errorName =
+    err instanceof Error ? err.name || err.constructor.name : typeof err;
   const maybeCode =
     err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
       ? (err as { code: string }).code
       : null;
-  const acpCode = isAcpRuntimeError(err) || (maybeCode?.startsWith("ACP_") ?? false) ? maybeCode : null;
+  const acpCode =
+    isAcpRuntimeError(err) || (maybeCode?.startsWith("ACP_") ?? false) ? maybeCode : null;
+  const cause =
+    err && typeof err === "object" && (err as { cause?: unknown }).cause !== undefined
+      ? (err as { cause?: unknown }).cause
+      : undefined;
+  const causeMessage =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "string"
+        ? cause
+        : null;
+  const retryable =
+    err && typeof err === "object" && typeof (err as { retryable?: unknown }).retryable === "boolean"
+      ? (err as { retryable: boolean }).retryable
+      : null;
+  const stack = err instanceof Error && typeof err.stack === "string" ? err.stack : "";
+  const stackPreview = stack ? stack.split("\n").slice(0, 6).join("\n") : null;
+  return { errorName, acpCode, causeMessage, retryable, stackPreview };
+}
+
+function classifyError(
+  err: unknown,
+  phase?: AcpxExecutionPhase,
+): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
+  const message = err instanceof Error ? err.message : String(err);
+  const diagnostics = describeErrorDiagnostics(err);
+  const { acpCode, errorName, causeMessage, retryable, stackPreview } = diagnostics;
+  const baseMeta: Record<string, unknown> = {
+    errorName,
+    ...(acpCode ? { acpCode } : {}),
+    ...(causeMessage ? { causeMessage } : {}),
+    ...(retryable !== null ? { retryable } : {}),
+    ...(stackPreview ? { stackPreview } : {}),
+    ...(phase ? { phase } : {}),
+  };
   const lower = message.toLowerCase();
   const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
   if (authLike) {
     return {
       errorCode: "acpx_auth_required",
-      errorMeta: { category: "auth", ...(acpCode ? { acpCode } : {}) },
+      errorMeta: { category: "auth", ...baseMeta },
+    };
+  }
+  const phaseCode = (() => {
+    if (acpCode === "ACP_SESSION_INIT_FAILED") return "acpx_session_init_failed";
+    if (acpCode === "ACP_TURN_FAILED") return "acpx_turn_failed";
+    if (acpCode === "ACP_BACKEND_MISSING") return "acpx_backend_missing";
+    if (acpCode === "ACP_BACKEND_UNAVAILABLE") return "acpx_backend_unavailable";
+    if (phase === "ensure_session") return "acpx_session_init_failed";
+    if (phase === "configure_session") return "acpx_session_config_failed";
+    if (phase === "turn") return "acpx_turn_failed";
+    return null;
+  })();
+  if (phaseCode) {
+    return {
+      errorCode: phaseCode,
+      errorMeta: { category: acpCode ? "protocol" : "runtime", ...baseMeta },
     };
   }
   if (acpCode) {
     return {
       errorCode: "acpx_protocol_error",
-      errorMeta: { category: "protocol", acpCode },
+      errorMeta: { category: "protocol", ...baseMeta },
     };
   }
   return {
     errorCode: "acpx_runtime_error",
-    errorMeta: { category: "runtime" },
+    errorMeta: { category: "runtime", ...baseMeta },
   };
+}
+
+async function readChildStderrTail(input: {
+  logPath: string | null;
+  maxBytes?: number;
+}): Promise<string | null> {
+  if (!input.logPath) return null;
+  const maxBytes = input.maxBytes ?? 4096;
+  let handle: fs.FileHandle | null = null;
+  try {
+    const stat = await fs.stat(input.logPath);
+    if (stat.size === 0) return null;
+    handle = await fs.open(input.logPath, "r");
+    const readBytes = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(readBytes);
+    await handle.read(buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
+    const tail = buffer.toString("utf8").trim();
+    return tail.length > 0 ? tail : null;
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+async function emitAcpxFailure(input: {
+  ctx: AdapterExecutionContext;
+  prepared: AcpxPreparedRuntime;
+  err: unknown;
+  phase: AcpxExecutionPhase;
+}): Promise<{
+  classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
+  message: string;
+  childStderrTail: string | null;
+}> {
+  const { ctx, prepared, err, phase } = input;
+  const message = err instanceof Error ? err.message : String(err);
+  const classified = classifyError(err, phase);
+  const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  if (childStderrTail) {
+    await ctx.onLog(
+      "stderr",
+      `[paperclip] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
+    );
+  }
+  await emitAcpxLog(ctx, {
+    type: "acpx.error",
+    message,
+    phase,
+    ...classified.errorMeta,
+    ...(childStderrTail ? { childStderrTail } : {}),
+  });
+  return { classified, message, childStderrTail };
 }
 
 function isResumeFailure(err: unknown): boolean {
@@ -1136,6 +1261,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+      verbose: true,
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
     if (cached) clearWarmHandleTimer(cached);
@@ -1177,9 +1303,12 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         }
       }
     } catch (err) {
-      const classified = classifyError(err);
-      const message = err instanceof Error ? err.message : String(err);
-      await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "ensure_session",
+      });
       return {
         exitCode: 1,
         signal: null,
@@ -1216,9 +1345,12 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         onLog: ctx.onLog,
       });
     } catch (err) {
-      const classified = classifyError(err);
-      const message = err instanceof Error ? err.message : String(err);
-      await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "configure_session",
+      });
       await runtime.close({
         handle: sessionHandle,
         reason: "paperclip config cleanup",
@@ -1414,8 +1546,9 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
-      const classified = classifyError(err);
-      const message = timedOut ? `Timed out after ${prepared.timeoutSec}s` : err instanceof Error ? err.message : String(err);
+      const classified = classifyError(err, "turn");
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = timedOut ? `Timed out after ${prepared.timeoutSec}s` : rawMessage;
       const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
       if (cancel) await cancel(message).catch(() => {});
       await runtime.close({
@@ -1428,7 +1561,22 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      await emitAcpxLog(ctx, { type: "acpx.error", message, ...classified.errorMeta });
+      const childStderrTail = await readChildStderrTail({
+        logPath: prepared.childStderrLogPath,
+      });
+      if (childStderrTail) {
+        await ctx.onLog(
+          "stderr",
+          `[paperclip] ACPX child stderr tail (turn):\n${childStderrTail}\n`,
+        );
+      }
+      await emitAcpxLog(ctx, {
+        type: "acpx.error",
+        message,
+        phase: "turn",
+        ...classified.errorMeta,
+        ...(childStderrTail ? { childStderrTail } : {}),
+      });
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,
