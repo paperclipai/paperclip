@@ -162,6 +162,12 @@ function resolveCostUsd(opts: {
       return estimate;
     }
   }
+  // metered_api (Bedrock) intentionally falls through to providerReported.
+  // AWS bills Bedrock usage directly at region-specific prices that differ
+  // from Anthropic direct rates, so applying our ANTHROPIC_MODEL_PRICING
+  // estimator here would replace one wrong number ($0) with another (10-30%
+  // off from the real AWS invoice). Bedrock cost visibility is tracked
+  // separately — see RFC discussion on paperclipai/paperclip#5066.
   return providerReported || 0;
 }
 
