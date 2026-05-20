@@ -375,3 +375,7 @@ See `doc/bob-shell-adapter-phase1-complete.md` for details.
 - ✅ Content-addressed bundles
 - 🔄 Performance benchmarks (pending)
 - 🔄 Cache cleanup utilities (pending)
+## Setup Guide
+
+See [docs/SETUP.md](./docs/SETUP.md) for end-to-end installation, agent
+configuration, and troubleshooting.

@@ -1,6 +1,6 @@
 # Using Paperclip with the Bob Shell Adapter
 
-This guide walks you through cloning this fork, building Paperclip, and setting up an agent that runs on Bob Shell.
+This guide walks you through cloning the repo, building Paperclip, and setting up an agent that runs on Bob Shell.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ This guide walks you through cloning this fork, building Paperclip, and setting 
 ## 1. Clone and Build
 
 ```bash
-git clone https://github.com/danijel-soldo/paperclip.git
+git clone https://github.com/paperclipai/paperclip.git
 cd paperclip
 pnpm install
 pnpm build
