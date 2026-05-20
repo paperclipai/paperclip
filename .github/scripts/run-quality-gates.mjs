@@ -102,11 +102,12 @@ async function main() {
   const branch = PR_BRANCH ?? pr.head.ref;
 
   // Run all quality gates (pure functions run sync, deps check is async)
+  const prTitle = pr.title ?? '';
   const [templateResult, issueResult, testResult, lockfileResult, depsResult] =
     await Promise.all([
       Promise.resolve(checkTemplate(prBody)),
-      Promise.resolve(checkLinkedIssue(prBody)),
-      Promise.resolve(checkTestCoverage(files)),
+      Promise.resolve(checkLinkedIssue(prBody, prTitle)),
+      Promise.resolve(checkTestCoverage(files, prTitle)),
       Promise.resolve(checkLockfile(files, author, branch)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber),
     ]);
