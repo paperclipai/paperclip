@@ -98,7 +98,7 @@ export function ExecutionWorkspaceCloseDialog({
         </DialogHeader>
 
         {readinessQuery.isLoading ? (
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Checking whether this workspace is safe to close...
           </div>
@@ -174,7 +174,7 @@ export function ExecutionWorkspaceCloseDialog({
             {readiness.git ? (
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">Git status</h3>
-                <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
                       <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Branch</div>
@@ -212,7 +212,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Other linked issues</h3>
                 <div className="space-y-2">
                   {otherLinkedIssues.map((issue) => (
-                    <div key={issue.id} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                    <div key={issue.id} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <Link to={issueUrl(issue)} className="min-w-0 break-words font-medium hover:underline">
                           {issue.identifier ?? issue.id} · {issue.title}
@@ -230,7 +230,7 @@ export function ExecutionWorkspaceCloseDialog({
                 <h3 className="text-sm font-medium">Attached runtime services</h3>
                 <div className="space-y-2">
                   {readiness.runtimeServices.map((service) => (
-                    <div key={service.id} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                    <div key={service.id} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
                       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <span className="font-medium">{service.serviceName}</span>
                         <span className="text-xs text-muted-foreground">{service.status} · {service.lifecycle}</span>
@@ -248,7 +248,7 @@ export function ExecutionWorkspaceCloseDialog({
               <h3 className="text-sm font-medium">Cleanup actions</h3>
               <div className="space-y-2">
                 {readiness.plannedActions.map((action, index) => (
-                  <div key={`${action.kind}-${index}`} className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm">
+                  <div key={`${action.kind}-${index}`} className="rounded-xl border border-border bg-background px-4 py-3 text-sm">
                     <div className="font-medium">{action.label}</div>
                     <div className="mt-1 break-words text-muted-foreground">{action.description}</div>
                     {action.command ? (
@@ -269,7 +269,7 @@ export function ExecutionWorkspaceCloseDialog({
             ) : null}
 
             {currentStatus === "archived" ? (
-              <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+              <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-muted-foreground">
                 This workspace is already archived.
               </div>
             ) : null}

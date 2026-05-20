@@ -51,6 +51,7 @@ export interface ExecutionWorkspaceIssueRef {
   id: string;
   identifier: string | null;
   title: string | null;
+  workMode?: string | null;
 }
 
 export interface ExecutionWorkspaceAgentRef {
@@ -107,6 +108,11 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   profileKind: string;
   processGroupId: number | null;
 }
+
+type StoppedRuntimeServiceReuseCandidate = {
+  id: string;
+  port: number | null;
+};
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
@@ -413,32 +419,33 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
+function trimToLastBytes(value: string, limit: number) {
+  const byteLength = Buffer.byteLength(value, "utf8");
+  if (byteLength <= limit) return value;
+  return Buffer.from(value, "utf8").subarray(byteLength - limit).toString("utf8");
+}
+
 function createProcessOutputCapture(maxBytes: number): ProcessOutputAccumulator {
   const limit = Math.max(1, Math.trunc(maxBytes));
-  let chunks: string[] = [];
+  let text = "";
   let truncated = false;
   let totalBytes = 0;
 
   return {
     append(chunk: string) {
       if (!chunk) return;
-      chunks.push(chunk);
       totalBytes += Buffer.byteLength(chunk, "utf8");
 
-      let currentBytes = chunks.reduce((sum, value) => sum + Buffer.byteLength(value, "utf8"), 0);
-      if (currentBytes <= limit) return;
-
-      const combined = Buffer.from(chunks.join(""), "utf8");
-      const tail = combined.subarray(Math.max(0, combined.length - limit)).toString("utf8");
-      chunks = [tail];
-      truncated = true;
-      currentBytes = Buffer.byteLength(tail, "utf8");
-      if (currentBytes > limit) {
-        chunks = [Buffer.from(tail, "utf8").subarray(Math.max(0, currentBytes - limit)).toString("utf8")];
+      const combined = text + chunk;
+      if (Buffer.byteLength(combined, "utf8") <= limit) {
+        text = combined;
+        return;
       }
+
+      text = trimToLastBytes(combined, limit);
+      truncated = true;
     },
     finish(): ProcessOutputCapture {
-      const text = chunks.join("");
       if (!truncated) {
         return {
           text,
@@ -706,6 +713,7 @@ function buildWorkspaceCommandEnv(input: {
   env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
   env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
   env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
+  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
   return env;
 }
 
@@ -1814,6 +1822,33 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
     });
 }
 
+async function findStoppedRuntimeServiceReuseCandidate(input: {
+  db?: Db;
+  companyId: string;
+  reuseKey: string | null;
+}): Promise<StoppedRuntimeServiceReuseCandidate | null> {
+  if (!input.db || !input.reuseKey) return null;
+  const row = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      port: workspaceRuntimeServices.port,
+    })
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.companyId, input.companyId),
+        eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
+        eq(workspaceRuntimeServices.provider, "local_process"),
+        eq(workspaceRuntimeServices.status, "stopped"),
+      ),
+    )
+    .orderBy(desc(workspaceRuntimeServices.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return row ?? null;
+}
+
 function clearIdleTimer(record: RuntimeServiceRecord) {
   if (!record.idleTimer) return;
   clearTimeout(record.idleTimer);
@@ -1926,9 +1961,20 @@ async function startLocalRuntimeService(input: {
   const serviceIdentityFingerprint = input.reuseKey ?? envFingerprint;
   const explicitPort = identity.explicitPort;
   const identityPort = identity.identityPort;
+  const stoppedReuseCandidate = await findStoppedRuntimeServiceReuseCandidate({
+    db: input.db,
+    companyId: input.agent.companyId,
+    reuseKey: input.reuseKey,
+  });
+  const reusableStoppedPort =
+    asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port
+      ? (await readLocalServicePortOwner(stoppedReuseCandidate.port))
+        ? null
+        : stoppedReuseCandidate.port
+      : null;
   const port =
     asString(portConfig.type, "") === "auto"
-      ? await allocatePort()
+      ? (reusableStoppedPort ?? await allocatePort())
       : explicitPort > 0
         ? explicitPort
         : null;
@@ -2072,7 +2118,7 @@ async function startLocalRuntimeService(input: {
   }
 
   const record: RuntimeServiceRecord = {
-    id: randomUUID(),
+    id: stoppedReuseCandidate?.id ?? randomUUID(),
     companyId: input.agent.companyId,
     projectId: input.workspace.projectId,
     projectWorkspaceId: input.workspace.workspaceId,
@@ -2239,11 +2285,15 @@ function readConfiguredServiceStates(config: Record<string, unknown>) {
   const raw = parseObject(config.serviceStates);
   const states: WorkspaceRuntimeServiceStateMap = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (value === "running" || value === "stopped") {
+    if (value === "running" || value === "stopped" || value === "manual") {
       states[key] = value;
     }
   }
   return states;
+}
+
+function readDesiredRuntimeState(value: unknown): WorkspaceRuntimeDesiredState | null {
+  return value === "running" || value === "stopped" || value === "manual" ? value : null;
 }
 
 export function buildWorkspaceRuntimeDesiredStatePatch(input: {
@@ -2257,7 +2307,7 @@ export function buildWorkspaceRuntimeDesiredStatePatch(input: {
   serviceStates: WorkspaceRuntimeServiceStateMap | null;
 } {
   const configuredServices = listConfiguredRuntimeServiceEntries(input.config);
-  const fallbackState: WorkspaceRuntimeDesiredState = input.currentDesiredState === "running" ? "running" : "stopped";
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.currentDesiredState) ?? "stopped";
   const nextServiceStates: WorkspaceRuntimeServiceStateMap = {};
 
   for (let index = 0; index < configuredServices.length; index += 1) {
@@ -2265,15 +2315,26 @@ export function buildWorkspaceRuntimeDesiredStatePatch(input: {
   }
 
   const nextState: WorkspaceRuntimeDesiredState = input.action === "stop" ? "stopped" : "running";
+  const applyActionState = (index: number) => {
+    const key = String(index);
+    // Manual services are intentionally left under operator control even when
+    // an API action targets that individual service.
+    if (nextServiceStates[key] === "manual") return;
+    nextServiceStates[key] = nextState;
+  };
   if (input.serviceIndex === undefined || input.serviceIndex === null) {
     for (let index = 0; index < configuredServices.length; index += 1) {
-      nextServiceStates[String(index)] = nextState;
+      applyActionState(index);
     }
   } else if (input.serviceIndex >= 0 && input.serviceIndex < configuredServices.length) {
-    nextServiceStates[String(input.serviceIndex)] = nextState;
+    applyActionState(input.serviceIndex);
   }
 
-  const desiredState = Object.values(nextServiceStates).some((state) => state === "running") ? "running" : "stopped";
+  const desiredState = Object.values(nextServiceStates).some((state) => state === "running")
+    ? "running"
+    : Object.values(nextServiceStates).some((state) => state === "manual")
+      ? "manual"
+      : "stopped";
 
   return {
     desiredState,
@@ -2290,7 +2351,7 @@ function selectRuntimeServiceEntries(input: {
 }) {
   const entries = listConfiguredRuntimeServiceEntries(input.config);
   const states = input.serviceStates ?? readConfiguredServiceStates(input.config);
-  const fallbackState: WorkspaceRuntimeDesiredState = input.defaultDesiredState === "running" ? "running" : "stopped";
+  const fallbackState: WorkspaceRuntimeDesiredState = readDesiredRuntimeState(input.defaultDesiredState) ?? "stopped";
 
   return entries.filter((_, index) => {
     if (input.serviceIndex !== undefined && input.serviceIndex !== null) {
@@ -2312,7 +2373,12 @@ export async function ensureRuntimeServicesForRun(input: {
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<RuntimeServiceRef[]> {
-  const rawServices = readRuntimeServiceEntries(input.config);
+  const rawServices = selectRuntimeServiceEntries({
+    config: input.config,
+    respectDesiredStates: true,
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
+    serviceStates: readConfiguredServiceStates(input.config),
+  });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
@@ -2400,7 +2466,7 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
     config: input.config,
     serviceIndex: input.serviceIndex,
     respectDesiredStates: input.respectDesiredStates,
-    defaultDesiredState: input.config.desiredState === "running" ? "running" : "stopped",
+    defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const refs: RuntimeServiceRef[] = [];

@@ -21,6 +21,22 @@ import type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  IssueAssigneeAdapterOverrides,
+  IssueThreadInteraction,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  CreateIssueThreadInteraction,
+  PluginIssueOriginKind,
+  IssueSurfaceVisibility,
+  PluginManagedAgentResolution,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineResolution,
+  PluginManagedSkillResolution,
+  CompanySkill,
+  Routine,
+  RoutineRun,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -34,13 +50,35 @@ export type {
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
+  PluginEnvironmentDriverDeclaration,
+  PluginManagedAgentDeclaration,
+  PluginManagedAgentResolution,
+  PluginManagedProjectDeclaration,
+  PluginManagedProjectResolution,
+  PluginManagedRoutineDeclaration,
+  PluginManagedRoutineResolution,
+  PluginManagedSkillDeclaration,
+  PluginManagedSkillFileDeclaration,
+  PluginManagedSkillResolution,
+  CompanySkill,
+  Routine,
+  RoutineRun,
+  PluginLocalFolderDeclaration,
+  PluginCompanySettings,
+  PluginManagedResourceKind,
+  PluginManagedResourceRef,
   PluginUiSlotDeclaration,
   PluginUiDeclaration,
   PluginLauncherActionDeclaration,
   PluginLauncherRenderDeclaration,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginDatabaseDeclaration,
+  PluginApiRouteDeclaration,
+  PluginApiRouteCompanyResolution,
   PluginRecord,
+  PluginDatabaseNamespaceRecord,
+  PluginMigrationRecord,
   PluginConfig,
   JsonSchema,
   PluginStatus,
@@ -57,6 +95,13 @@ export type {
   PluginJobRunStatus,
   PluginJobRunTrigger,
   PluginWebhookDeliveryStatus,
+  PluginDatabaseCoreReadTable,
+  PluginDatabaseMigrationStatus,
+  PluginDatabaseNamespaceMode,
+  PluginDatabaseNamespaceStatus,
+  PluginApiRouteAuthMode,
+  PluginApiRouteCheckoutPolicy,
+  PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
   Company,
@@ -65,6 +110,14 @@ export type {
   IssueComment,
   IssueDocument,
   IssueDocumentSummary,
+  IssueRelationIssueSummary,
+  IssueThreadInteraction,
+  SuggestTasksInteraction,
+  AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
+  CreateIssueThreadInteraction,
+  PluginIssueOriginKind,
+  IssueSurfaceVisibility,
   Agent,
   Goal,
 } from "@paperclipai/shared";
@@ -291,12 +344,52 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Checkout/ref requested for the workspace, when known. */
+  repoRef: string | null;
+  /** Default comparison ref for workspace tooling, when known. */
+  defaultRef: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Execution workspace metadata (read-only via ctx.executionWorkspaces)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-safe execution workspace metadata provided by the host. This exposes
+ * the local/repository coordinates plugins need for workspace tooling without
+ * giving the SDK a host-owned diff engine.
+ */
+export interface PluginExecutionWorkspaceMetadata {
+  /** UUID primary key. */
+  id: string;
+  /** UUID of the owning company. */
+  companyId: string;
+  /** UUID of the parent project. */
+  projectId: string;
+  /** UUID of the backing project workspace, when present. */
+  projectWorkspaceId: string | null;
+  /** Absolute filesystem path to the workspace when locally realized. */
+  path: string | null;
+  /** Current working directory for local workspace tooling. */
+  cwd: string | null;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Base ref configured for the workspace, when known. */
+  baseRef: string | null;
+  /** Branch name configured for the workspace, when known. */
+  branchName: string | null;
+  /** Host provider type for the realized workspace. */
+  providerType: string | null;
+  /** Provider metadata already safe for plugin consumption. */
+  providerMetadata: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +413,92 @@ export interface PluginConfigClient {
    * host before being passed to the worker.
    */
   get(): Promise<Record<string, unknown>>;
+}
+
+export interface PluginLocalFolderProblem {
+  code:
+    | "not_configured"
+    | "not_absolute"
+    | "missing"
+    | "not_directory"
+    | "not_readable"
+    | "not_writable"
+    | "missing_directory"
+    | "missing_file"
+    | "path_traversal"
+    | "symlink_escape"
+    | "atomic_write_failed";
+  message: string;
+  path?: string;
+}
+
+export interface PluginLocalFolderStatus {
+  folderKey: string;
+  configured: boolean;
+  path: string | null;
+  realPath: string | null;
+  access: "read" | "readWrite";
+  readable: boolean;
+  writable: boolean;
+  requiredDirectories: string[];
+  requiredFiles: string[];
+  missingDirectories: string[];
+  missingFiles: string[];
+  healthy: boolean;
+  problems: PluginLocalFolderProblem[];
+  checkedAt: string;
+}
+
+export interface PluginLocalFolderConfigureInput {
+  companyId: string;
+  folderKey: string;
+  path: string;
+  access?: "read" | "readWrite";
+  requiredDirectories?: string[];
+  requiredFiles?: string[];
+}
+
+export interface PluginLocalFolderListOptions {
+  relativePath?: string | null;
+  recursive?: boolean;
+  maxEntries?: number;
+}
+
+export interface PluginLocalFolderEntry {
+  path: string;
+  name: string;
+  kind: "file" | "directory";
+  size: number | null;
+  modifiedAt: string | null;
+}
+
+export interface PluginLocalFolderListing {
+  folderKey: string;
+  relativePath: string | null;
+  entries: PluginLocalFolderEntry[];
+  truncated: boolean;
+}
+
+export interface PluginLocalFoldersClient {
+  /** Manifest-declared local folders for this plugin. */
+  declarations(): import("@paperclipai/shared").PluginLocalFolderDeclaration[];
+  /** Persist a company-scoped local folder path after validating it. */
+  configure(input: PluginLocalFolderConfigureInput): Promise<PluginLocalFolderStatus>;
+  /** Check the stored folder readiness for a company and folder key. */
+  status(companyId: string, folderKey: string): Promise<PluginLocalFolderStatus>;
+  /** List entries below a configured folder after containment checks. */
+  list(companyId: string, folderKey: string, options?: PluginLocalFolderListOptions): Promise<PluginLocalFolderListing>;
+  /** Read a UTF-8 text file below a configured folder after containment checks. */
+  readText(companyId: string, folderKey: string, relativePath: string): Promise<string>;
+  /** Write a UTF-8 text file below a configured folder using atomic rename. */
+  writeTextAtomic(
+    companyId: string,
+    folderKey: string,
+    relativePath: string,
+    contents: string,
+  ): Promise<PluginLocalFolderStatus>;
+  /** Delete a file below a configured folder after containment checks. Missing files are treated as already deleted. */
+  deleteFile(companyId: string, folderKey: string, relativePath: string): Promise<PluginLocalFolderStatus>;
 }
 
 /**
@@ -405,6 +584,17 @@ export interface PluginLaunchersClient {
    * declaration replaces the previous one.
    */
   register(launcher: PluginLauncherRegistration): void;
+}
+
+export interface PluginDatabaseClient {
+  /** Host-derived PostgreSQL schema name for this plugin's namespace. */
+  namespace: string;
+
+  /** Run a restricted SELECT against the plugin namespace and whitelisted core tables. */
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+
+  /** Run a restricted INSERT, UPDATE, or DELETE against the plugin namespace. */
+  execute(sql: string, params?: unknown[]): Promise<{ rowCount: number }>;
 }
 
 /**
@@ -659,6 +849,70 @@ export interface PluginProjectsClient {
    * @see PLUGIN_SPEC.md §20 — Local Tooling
    */
   getWorkspaceForIssue(issueId: string, companyId: string): Promise<PluginWorkspace | null>;
+
+  /** Resolve and reconcile manifest-declared plugin-managed projects by stable key. Requires `projects.managed`. */
+  managed: {
+    get(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+    reconcile(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+    reset(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
+  };
+}
+
+/**
+ * `ctx.executionWorkspaces` — read execution workspace metadata.
+ *
+ * Requires `execution.workspaces.read`.
+ */
+export interface PluginExecutionWorkspacesClient {
+  /**
+   * Return plugin-safe metadata for an execution workspace. The host enforces
+   * company access before returning any workspace coordinates.
+   */
+  get(workspaceId: string, companyId: string): Promise<PluginExecutionWorkspaceMetadata | null>;
+}
+
+/**
+ * `ctx.routines` — resolve and reconcile plugin-managed Paperclip routines.
+ *
+ * Requires `routines.managed` capability.
+ */
+export interface PluginRoutinesClient {
+  managed: {
+    get(routineKey: string, companyId: string): Promise<PluginManagedRoutineResolution>;
+    reconcile(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<PluginManagedRoutineResolution>;
+    reset(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<PluginManagedRoutineResolution>;
+    update(
+      routineKey: string,
+      companyId: string,
+      patch: { status?: string },
+    ): Promise<Routine>;
+    run(
+      routineKey: string,
+      companyId: string,
+      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+    ): Promise<RoutineRun>;
+  };
+}
+
+/**
+ * `ctx.skills` — resolve and reconcile plugin-managed company skills.
+ *
+ * Requires `skills.managed` capability.
+ */
+export interface PluginSkillsClient {
+  managed: {
+    get(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reconcile(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+    reset(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+  };
 }
 
 /**
@@ -867,6 +1121,178 @@ export interface PluginIssueDocumentsClient {
   delete(issueId: string, key: string, companyId: string): Promise<void>;
 }
 
+export interface PluginIssueMutationActor {
+  /** Agent that initiated the plugin operation, when the plugin is acting from an agent run. */
+  actorAgentId?: string | null;
+  /** Board/user that initiated the plugin operation, when known. */
+  actorUserId?: string | null;
+  /** Heartbeat run that initiated the operation. Required for checkout-aware agent actions. */
+  actorRunId?: string | null;
+}
+
+export interface PluginIssueRelationSummary {
+  blockedBy: IssueRelationIssueSummary[];
+  blocks: IssueRelationIssueSummary[];
+}
+
+export interface PluginIssueRelationsClient {
+  /** Read blocker relationships for an issue. Requires `issue.relations.read`. */
+  get(issueId: string, companyId: string): Promise<PluginIssueRelationSummary>;
+  /** Replace the issue's blocked-by relation set. Requires `issue.relations.write`. */
+  setBlockedBy(
+    issueId: string,
+    blockedByIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Add one or more blockers while preserving existing blockers. Requires `issue.relations.write`. */
+  addBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+  /** Remove one or more blockers while preserving all other blockers. Requires `issue.relations.write`. */
+  removeBlockers(
+    issueId: string,
+    blockerIssueIds: string[],
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginIssueRelationSummary>;
+}
+
+export interface PluginIssueCheckoutOwnership {
+  issueId: string;
+  status: Issue["status"];
+  assigneeAgentId: string | null;
+  checkoutRunId: string | null;
+  adoptedFromRunId: string | null;
+}
+
+export interface PluginIssueWakeupResult {
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueWakeupBatchResult {
+  issueId: string;
+  queued: boolean;
+  runId: string | null;
+}
+
+export interface PluginIssueRunSummary {
+  id: string;
+  issueId: string | null;
+  agentId: string;
+  status: string;
+  invocationSource: string;
+  triggerDetail: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueApprovalSummary {
+  issueId: string;
+  id: string;
+  type: string;
+  status: string;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueCostSummary {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  billingCode: string | null;
+}
+
+export interface PluginBudgetIncidentSummary {
+  id: string;
+  scopeType: string;
+  scopeId: string;
+  metric: string;
+  windowKind: string;
+  thresholdType: string;
+  amountLimit: number;
+  amountObserved: number;
+  status: string;
+  approvalId: string | null;
+  createdAt: string;
+}
+
+export interface PluginIssueInvocationBlockSummary {
+  issueId: string;
+  agentId: string;
+  scopeType: "company" | "agent" | "project";
+  scopeId: string;
+  scopeName: string;
+  reason: string;
+}
+
+export interface PluginIssueOrchestrationSummary {
+  issueId: string;
+  companyId: string;
+  subtreeIssueIds: string[];
+  relations: Record<string, PluginIssueRelationSummary>;
+  approvals: PluginIssueApprovalSummary[];
+  runs: PluginIssueRunSummary[];
+  costs: PluginIssueCostSummary;
+  openBudgetIncidents: PluginBudgetIncidentSummary[];
+  invocationBlocks: PluginIssueInvocationBlockSummary[];
+}
+
+export interface PluginIssueSubtreeOptions {
+  /** Include the root issue in the result. Defaults to true. */
+  includeRoot?: boolean;
+  /** Include blocker relationship summaries keyed by issue ID. */
+  includeRelations?: boolean;
+  /** Include issue document summaries keyed by issue ID. */
+  includeDocuments?: boolean;
+  /** Include queued/running heartbeat runs keyed by issue ID. */
+  includeActiveRuns?: boolean;
+  /** Include assignee summaries keyed by agent ID. */
+  includeAssignees?: boolean;
+}
+
+export interface PluginIssueAssigneeSummary {
+  id: string;
+  name: string;
+  role: string;
+  title: string | null;
+  status: Agent["status"];
+}
+
+export interface PluginIssueSubtree {
+  rootIssueId: string;
+  companyId: string;
+  issueIds: string[];
+  issues: Issue[];
+  relations?: Record<string, PluginIssueRelationSummary>;
+  documents?: Record<string, IssueDocumentSummary[]>;
+  activeRuns?: Record<string, PluginIssueRunSummary[]>;
+  assignees?: Record<string, PluginIssueAssigneeSummary>;
+}
+
+export interface PluginIssueSummariesClient {
+  /**
+   * Read the compact orchestration inputs a workflow plugin needs for an
+   * issue or issue subtree. Requires `issues.orchestration.read`.
+   */
+  getOrchestration(input: {
+    issueId: string;
+    companyId: string;
+    includeSubtree?: boolean;
+    billingCode?: string | null;
+  }): Promise<PluginIssueOrchestrationSummary>;
+}
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -874,8 +1300,12 @@ export interface PluginIssueDocumentsClient {
  * - `issues.read` for read operations
  * - `issues.create` for create
  * - `issues.update` for update
+ * - `issues.checkout` for checkout ownership assertions
+ * - `issues.wakeup` for assignment wakeup requests
+ * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, and `requestConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -884,7 +1314,11 @@ export interface PluginIssuesClient {
     companyId: string;
     projectId?: string;
     assigneeAgentId?: string;
+    originKind?: PluginIssueOriginKind;
+    originKindPrefix?: string;
+    originId?: string;
     status?: Issue["status"];
+    includePluginOperations?: boolean;
     limit?: number;
     offset?: number;
   }): Promise<Issue[]>;
@@ -897,17 +1331,82 @@ export interface PluginIssuesClient {
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
     description?: string;
+    status?: Issue["status"];
     priority?: Issue["priority"];
     assigneeAgentId?: string;
+    assigneeUserId?: string | null;
+    requestDepth?: number;
+    billingCode?: string | null;
+    assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+    surfaceVisibility?: IssueSurfaceVisibility;
+    originKind?: PluginIssueOriginKind;
+    originId?: string | null;
+    originRunId?: string | null;
+    blockedByIssueIds?: string[];
+    labelIds?: string[];
+    executionWorkspaceId?: string | null;
+    executionWorkspacePreference?: string | null;
+    executionWorkspaceSettings?: Record<string, unknown> | null;
+    actor?: PluginIssueMutationActor;
   }): Promise<Issue>;
   update(
     issueId: string,
     patch: Partial<Pick<
       Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
-    >>,
+      | "title"
+      | "description"
+      | "status"
+      | "priority"
+      | "assigneeAgentId"
+      | "assigneeUserId"
+      | "billingCode"
+      | "originKind"
+      | "originId"
+      | "originRunId"
+      | "requestDepth"
+      | "executionWorkspaceId"
+      | "executionWorkspacePreference"
+    >> & {
+      blockedByIssueIds?: string[];
+      labelIds?: string[];
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+    },
     companyId: string,
+    actor?: PluginIssueMutationActor,
   ): Promise<Issue>;
+  assertCheckoutOwner(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+  }): Promise<PluginIssueCheckoutOwnership>;
+  /**
+   * Read a root issue's descendants with optional relation/document/run/assignee
+   * summaries. Requires `issue.subtree.read`.
+   */
+  getSubtree(
+    issueId: string,
+    companyId: string,
+    options?: PluginIssueSubtreeOptions,
+  ): Promise<PluginIssueSubtree>;
+  requestWakeup(
+    issueId: string,
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKey?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupResult>;
+  requestWakeups(
+    issueIds: string[],
+    companyId: string,
+    options?: {
+      reason?: string;
+      contextSource?: string;
+      idempotencyKeyPrefix?: string | null;
+    } & PluginIssueMutationActor,
+  ): Promise<PluginIssueWakeupBatchResult[]>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
   createComment(
     issueId: string,
@@ -915,8 +1414,36 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueComment>;
+  createInteraction(
+    issueId: string,
+    interaction: CreateIssueThreadInteraction,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<IssueThreadInteraction>;
+  suggestTasks(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "suggest_tasks" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<SuggestTasksInteraction>;
+  askUserQuestions(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<AskUserQuestionsInteraction>;
+  requestConfirmation(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RequestConfirmationInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
+  /** Read and write blocker relationships. */
+  relations: PluginIssueRelationsClient;
+  /** Read compact orchestration summaries. */
+  summaries: PluginIssueSummariesClient;
 }
 
 /**
@@ -934,6 +1461,12 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
+  managed: {
+    get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+    reconcile(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+    reset(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
+  };
   /** Create, message, and close agent chat sessions. Requires `agent.sessions.*` capabilities. */
   sessions: PluginAgentSessionsClient;
 }
@@ -1129,6 +1662,9 @@ export interface PluginContext {
   /** Read resolved operator configuration. */
   config: PluginConfigClient;
 
+  /** Configure and safely access trusted company-scoped local folders. */
+  localFolders: PluginLocalFoldersClient;
+
   /** Subscribe to and emit domain events. Requires `events.subscribe` / `events.emit`. */
   events: PluginEventsClient;
 
@@ -1137,6 +1673,9 @@ export interface PluginContext {
 
   /** Register launcher metadata that the host can surface in plugin UI entry points. */
   launchers: PluginLaunchersClient;
+
+  /** Restricted plugin-owned database namespace. Requires database namespace capabilities. */
+  db: PluginDatabaseClient;
 
   /** Make outbound HTTP requests. Requires `http.outbound`. */
   http: PluginHttpClient;
@@ -1155,6 +1694,15 @@ export interface PluginContext {
 
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
+
+  /** Read execution workspace metadata. Requires `execution.workspaces.read`. */
+  executionWorkspaces: PluginExecutionWorkspacesClient;
+
+  /** Resolve and reconcile plugin-managed routines. Requires `routines.managed`. */
+  routines: PluginRoutinesClient;
+
+  /** Resolve and reconcile plugin-managed company skills. Requires `skills.managed`. */
+  skills: PluginSkillsClient;
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;

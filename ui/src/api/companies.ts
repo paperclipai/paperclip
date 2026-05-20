@@ -32,6 +32,7 @@ export const companiesApi = {
         | "description"
         | "status"
         | "budgetMonthlyCents"
+        | "attachmentMaxBytes"
         | "requireBoardApprovalForNewAgents"
         | "feedbackDataSharingEnabled"
         | "brandColor"
@@ -47,17 +48,12 @@ export const companiesApi = {
     companyId: string,
     data: CompanyPortabilityExportRequest,
   ) =>
-    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
+    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   exportPreview: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
-  exportPackage: (
-    companyId: string,
-    data: CompanyPortabilityExportRequest,
-  ) =>
-    api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>

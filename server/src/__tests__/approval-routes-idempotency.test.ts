@@ -29,14 +29,6 @@ const mockSecretService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/index.js", () => ({
-  approvalService: () => mockApprovalService,
-  heartbeatService: () => mockHeartbeatService,
-  issueApprovalService: () => mockIssueApprovalService,
-  logActivity: mockLogActivity,
-  secretService: () => mockSecretService,
-}));
-
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     approvalService: () => mockApprovalService,
@@ -49,8 +41,8 @@ function registerModuleMocks() {
 
 async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -72,8 +64,8 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
 
 async function createAgentApp() {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/approvals.js")>("../routes/approvals.js"),
+    import("../middleware/index.js"),
+    import("../routes/approvals.js"),
   ]);
   const app = express();
   app.use(express.json());
@@ -95,10 +87,26 @@ async function createAgentApp() {
 describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/approvals.js");
+    vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    mockApprovalService.list.mockReset();
+    mockApprovalService.getById.mockReset();
+    mockApprovalService.create.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.reject.mockReset();
+    mockApprovalService.requestRevision.mockReset();
+    mockApprovalService.resubmit.mockReset();
+    mockApprovalService.listComments.mockReset();
+    mockApprovalService.addComment.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockIssueApprovalService.listIssuesForApproval.mockReset();
+    mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
+    mockLogActivity.mockReset();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
@@ -305,16 +313,13 @@ describe("approval routes idempotent retries", () => {
       });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockApprovalService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        type: "request_board_approval",
-        requestedByAgentId: "agent-1",
-        requestedByUserId: null,
-        status: "pending",
-        decisionNote: null,
-      }),
-    );
+    expect(res.body).toMatchObject({
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+    });
     expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
       "approval-1",

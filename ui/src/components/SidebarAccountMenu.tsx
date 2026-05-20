@@ -6,6 +6,7 @@ import {
   type LucideIcon,
   Moon,
   Settings,
+  UserRound,
   Sun,
   UserRoundPen,
 } from "lucide-react";
@@ -25,6 +26,8 @@ const DOCS_URL = "https://docs.paperclip.ing/";
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
   instanceSettingsTarget: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   version?: string | null;
 }
 
@@ -43,6 +46,20 @@ function deriveInitials(name: string) {
     return `${parts[0]?.[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}`.toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
+}
+
+function deriveUserSlug(name: string | null | undefined, email: string | null | undefined, id: string | null | undefined) {
+  const candidates = [name, email?.split("@")[0], email, id];
+  for (const candidate of candidates) {
+    const slug = candidate
+      ?.trim()
+      .toLowerCase()
+      .replace(/['"]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (slug) return slug;
+  }
+  return "me";
 }
 
 function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
@@ -87,12 +104,16 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
 export function SidebarAccountMenu({
   deploymentMode,
   instanceSettingsTarget,
+  open: controlledOpen,
+  onOpenChange,
   version,
 }: SidebarAccountMenuProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { theme, toggleTheme } = useTheme();
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -112,6 +133,7 @@ export function SidebarAccountMenu({
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
   const initials = deriveInitials(displayName);
+  const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -138,7 +160,7 @@ export function SidebarAccountMenu({
           side="top"
           align="start"
           sideOffset={10}
-          className="w-[var(--radix-popover-trigger-width)] overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
+          className="w-[277px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
         >
           <div className="h-24 bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]" />
           <div className="-mt-8 px-4 pb-4">
@@ -164,6 +186,13 @@ export function SidebarAccountMenu({
             </div>
 
             <div className="mt-4 space-y-1">
+              <MenuAction
+                label="View profile"
+                description="Open your activity, task, and usage ledger."
+                icon={UserRound}
+                href={profileHref}
+                onClick={closeNavigationChrome}
+              />
               <MenuAction
                 label="Edit profile"
                 description="Update your display name and avatar."

@@ -48,7 +48,7 @@ describe("llm routes", () => {
     vi.doUnmock("../routes/llms.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockListServerAdapters.mockReturnValue([
       { type: "codex_local", agentConfigurationDoc: "# codex_local agent configuration" },
     ]);
@@ -66,6 +66,9 @@ describe("llm routes", () => {
     const res = await request(app).get("/api/llms/agent-configuration.txt");
 
     expect(res.status).toBe(200);
+    expect(res.text).toContain("Use the paperclip-create-agent skill for end-to-end hiring");
+    expect(res.text).toContain("desiredSkills");
+    expect(res.text).toContain("sourceIssueId/sourceIssueIds");
     expect(res.text).toContain("Timer heartbeats are opt-in for new hires.");
     expect(res.text).toContain("Leave runtimeConfig.heartbeat.enabled false");
   });

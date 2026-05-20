@@ -32,12 +32,14 @@ Then you define who reports to the CEO: a CTO managing programmers, a CMO managi
 
 ### Agent Execution
 
-There are two fundamental modes for running an agent's heartbeat:
+Paperclip supports several ways to run an agent's heartbeat:
 
-1. **Run a command** — Paperclip kicks off a process (shell command, Python script, etc.) and tracks it. The heartbeat is "execute this and monitor it."
-2. **Fire and forget a request** — Paperclip sends a webhook/API call to an externally running agent. The heartbeat is "notify this agent to wake up." (OpenClaw hooks work this way.)
+1. **Local CLI/session adapters** — Paperclip starts or resumes local coding-tool sessions such as Claude Code, Codex, Gemini, OpenCode, Pi, and Cursor, then tracks the run.
+2. **Run a command** — Paperclip kicks off a process (shell command, Python script, etc.) and tracks it. The heartbeat is "execute this and monitor it."
+3. **Fire and forget a request** — Paperclip sends a webhook/API call to an externally running agent. The heartbeat is "notify this agent to wake up." OpenClaw-style hooks work this way.
+4. **External adapter plugins** — Paperclip loads adapter packages through the plugin/adapter flow so self-hosted installs can add runtimes without hardcoding them in core.
 
-We provide sensible defaults — a default agent that shells out to Claude Code or Codex with your configuration, remembers session IDs, runs basic scripts. But you can plug in anything.
+Agent runs can use project and execution workspaces, managed runtime services such as preview/dev servers, adapter-specific session state, and HTTP/webhook-style execution. We provide sensible defaults, but the adapter is still the boundary: if a runtime can be invoked, observed, and authorized, Paperclip can coordinate it.
 
 ### Task Management
 
@@ -54,7 +56,7 @@ I am researching the Facebook ads Granola uses (current task)
 
 Tasks have parentage. Every task exists in service of a parent task, all the way up to the company goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
 
-More detailed task structure TBD.
+The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
 ## Principles
 
@@ -115,7 +117,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
-- Do not build enterprise-grade RBAC first. The current V1 spec still treats multi-board governance and fine-grained human permissions as out of scope, so the first multi-user version should be coarse and company-scoped.
+- Do not build enterprise-grade RBAC first. Paperclip now has authenticated mode, company memberships, instance roles, and permission grants, but fine-grained enterprise governance should remain secondary to the core company control plane.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
@@ -136,11 +138,14 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 5. **Output-first**
    Work is not done until the user can see the result: file, document, preview link, screenshot, plan, or PR.
 
-6. **Local-first, cloud-ready**
+6. **Execution visibility without log worship**
+   Active runs, recovery issues, productivity review states, blockers, and work products should be first-class surfaces. Raw transcripts are available when needed, but they are not the primary product surface.
+
+7. **Local-first, cloud-ready**
    The mental model should not change between local solo use and shared/private or public/cloud deployment.
 
-7. **Safe autonomy**
+8. **Safe autonomy**
    Auto mode is allowed; hidden token burn is not.
 
-8. **Thin core, rich edges**
+9. **Thin core, rich edges**
    Put optional chat, knowledge, and special surfaces into plugins/extensions rather than bloating the control plane.

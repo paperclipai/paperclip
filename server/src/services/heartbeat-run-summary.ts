@@ -69,6 +69,26 @@ export function summarizeHeartbeatRunResultJson(
     }
   }
 
+  for (const key of ["stopReason", "timeoutSource"] as const) {
+    const value = readCommentText(resultJson[key]);
+    if (value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["effectiveTimeoutSec", "effectiveTimeoutMs"] as const) {
+    const value = readNumericField(resultJson, key);
+    if (value !== undefined && value !== null) {
+      summary[key] = value;
+    }
+  }
+
+  for (const key of ["timeoutConfigured", "timeoutFired"] as const) {
+    if (typeof resultJson[key] === "boolean") {
+      summary[key] = resultJson[key];
+    }
+  }
+
   return Object.keys(summary).length > 0 ? summary : null;
 }
 

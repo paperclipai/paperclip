@@ -13,9 +13,12 @@ export const companies = pgTable(
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    attachmentMaxBytes: integer("attachment_max_bytes")
+      .notNull()
+      .default(10 * 1024 * 1024),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
-      .default(true),
+      .default(false),
     feedbackDataSharingEnabled: boolean("feedback_data_sharing_enabled")
       .notNull()
       .default(false),

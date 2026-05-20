@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -35,6 +36,9 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const devServerRestartRequestFilePath = path.join(repoRoot, ".paperclip", "dev-server-restart-request.json");
+const devServerStatusToken = mode === "dev" ? randomUUID() : null;
+const devServerStatusTokenHeader = "x-paperclip-dev-server-status-token";
 
 const watchedDirectories = [
   "cli",
@@ -67,6 +71,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -133,10 +138,12 @@ const env: NodeJS.ProcessEnv = {
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
+  env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN = devServerStatusToken ?? "";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
 
 if (mode === "watch") {
+  delete env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN;
   env.PAPERCLIP_MIGRATION_PROMPT ??= "never";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";
 }
@@ -343,6 +350,13 @@ function writeDevServerStatus() {
 function clearDevServerStatus() {
   if (mode !== "dev") return;
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -553,7 +567,9 @@ async function scanForBackendChanges() {
 }
 
 async function getDevHealthPayload() {
-  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`);
+  const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, {
+    headers: devServerStatusToken ? { [devServerStatusTokenHeader]: devServerStatusToken } : undefined,
+  });
   if (!response.ok) {
     throw new Error(`Health request failed (${response.status})`);
   }
@@ -626,7 +642,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  if (dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequested = consumeDevServerRestartRequest();
+  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -638,11 +655,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }

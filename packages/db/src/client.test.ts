@@ -467,4 +467,78 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "replays migration 0059 safely when plugin_database_namespaces already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const pluginNamespacesHash = await migrationHash(
+          "0059_plugin_database_namespaces.sql",
+        );
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${pluginNamespacesHash}'`,
+        );
+
+        const tables = await sql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('plugin_database_namespaces', 'plugin_migrations')
+            ORDER BY table_name
+          `,
+        );
+        expect(tables.map((row) => row.table_name)).toEqual([
+          "plugin_database_namespaces",
+          "plugin_migrations",
+        ]);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0059_plugin_database_namespaces.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const indexes = await verifySql.unsafe<{ indexname: string }[]>(
+          `
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename IN ('plugin_database_namespaces', 'plugin_migrations')
+            ORDER BY indexname
+          `,
+        );
+        expect(indexes.map((row) => row.indexname)).toEqual(
+          expect.arrayContaining([
+            "plugin_database_namespaces_namespace_idx",
+            "plugin_database_namespaces_plugin_idx",
+            "plugin_database_namespaces_status_idx",
+            "plugin_migrations_plugin_idx",
+            "plugin_migrations_plugin_key_idx",
+            "plugin_migrations_status_idx",
+          ]),
+        );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });
