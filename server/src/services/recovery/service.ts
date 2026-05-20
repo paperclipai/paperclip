@@ -647,10 +647,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasTerminalStaleRunSuppression(
-    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "lastOutputAt">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "lastOutputAt" | "contextSnapshot">,
   ) {
     const terminalEvaluation = await latestTerminalStaleRunEvaluation(run.companyId, run.id);
     if (!terminalEvaluation) return false;
+
+    const sourceIssue = await resolveStaleRunSourceIssue(run as typeof heartbeatRuns.$inferSelect);
+    if (sourceIssue?.executionRunId === run.id && !["done", "cancelled"].includes(sourceIssue.status)) {
+      return false;
+    }
 
     const terminalAt = terminalEvaluation.completedAt ?? terminalEvaluation.cancelledAt ?? terminalEvaluation.updatedAt;
     if (!terminalAt) return false;
