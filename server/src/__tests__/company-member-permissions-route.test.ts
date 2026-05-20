@@ -236,7 +236,7 @@ describe("PATCH /companies/:companyId/members/:memberId/permissions", () => {
     // would surface as a 404 here. The guard itself succeeded — that's what
     // this test asserts — so we accept either 200 or 404 from the trailing
     // lookup, but never 403 from the guard.
-    expect(res.status).not.toBe(403);
+    expect([200, 404]).toContain(res.status);
     expect(mockAccessService.archiveMember).toHaveBeenCalledWith(
       companyId,
       humanMemberId,
@@ -256,5 +256,37 @@ describe("PATCH /companies/:companyId/members/:memberId/permissions", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("owners cannot be removed");
     expect(mockAccessService.archiveMember).not.toHaveBeenCalled();
+  });
+
+  // Regression for PR #6358 feedback: the grant-update relaxation must only
+  // apply to PATCH /permissions. The other two PATCH routes still rely on
+  // loadCompanyMemberRecords (human-only) after they mutate, so they have to
+  // reject agent principals at the guard — before any DB mutation runs.
+  it("rejects PATCH /members/:memberId for an agent-principal member at the guard (no DB write)", async () => {
+    mockAccessService.getMemberById.mockResolvedValue(agentMember);
+
+    const app = createApp(localImplicitBoardActor);
+
+    const res = await request(app)
+      .patch(`/api/companies/${companyId}/members/${agentMemberId}`)
+      .send({ status: "suspended" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human company members can be removed");
+    expect(mockAccessService.setMemberPermissions).not.toHaveBeenCalled();
+  });
+
+  it("rejects PATCH /members/:memberId/role-and-grants for an agent-principal member at the guard (no DB write)", async () => {
+    mockAccessService.getMemberById.mockResolvedValue(agentMember);
+
+    const app = createApp(localImplicitBoardActor);
+
+    const res = await request(app)
+      .patch(`/api/companies/${companyId}/members/${agentMemberId}/role-and-grants`)
+      .send({ status: "active", grants: [] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human company members can be removed");
+    expect(mockAccessService.setMemberPermissions).not.toHaveBeenCalled();
   });
 });
