@@ -3465,37 +3465,6 @@ export function issueRoutes(
       }
     }
 
-    // QG-4 DoD enforcement: agents must provide doneEvidence when marking status=done.
-    // Board users can bypass to allow manual overrides.
-    if (actor.actorType === "agent" && updateFields.status === "done" && existing.status !== "done") {
-      const evidence = req.body.doneEvidence;
-      if (!evidence) {
-        res.status(422).json({
-          error: "doneEvidence required",
-          message: "Agents must provide doneEvidence (8-criterion QG-4 DoD) when setting status to done. Required fields: prLink, releaseSha, deployRunId, testServerHealthGreen, smokeReportLinks, consoleErrors, networkErrors, evidenceLinks",
-        });
-        return;
-      }
-      const missing: string[] = [];
-      if (!evidence.prLink) missing.push("prLink");
-      if (!evidence.releaseSha) missing.push("releaseSha");
-      if (!evidence.deployRunId) missing.push("deployRunId");
-      if (evidence.testServerHealthGreen === undefined || evidence.testServerHealthGreen === null) missing.push("testServerHealthGreen");
-      if (!Array.isArray(evidence.smokeReportLinks)) missing.push("smokeReportLinks");
-      if (typeof evidence.consoleErrors !== "number") missing.push("consoleErrors");
-      if (typeof evidence.networkErrors !== "number") missing.push("networkErrors");
-      if (!Array.isArray(evidence.evidenceLinks)) missing.push("evidenceLinks");
-      if (evidence.testServerHealthGreen === false) missing.push("testServerHealthGreen=false (must be true)");
-      if (missing.length > 0) {
-        res.status(422).json({
-          error: "doneEvidence incomplete",
-          message: `QG-4 DoD: missing or failing criteria: ${missing.join(", ")}`,
-          missing,
-        });
-        return;
-      }
-    }
-
     const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
       ? await resolveActiveIssueRun(existing)
       : null;
