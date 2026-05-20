@@ -3732,6 +3732,76 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  /**
+   * QG-B: Capability Gate (heuristic).
+   * Compares agent.capabilities text against capabilities derived from issue title.
+   * Returns null if no violation, or { required, missing } when the agent cannot do the work.
+   *
+   * Heuristic (intentionally conservative — false positive = unnecessary cancel, false negative = agent runs without skills):
+   * - title hints map to required capability keywords (Playwright, pytest, SSH).
+   * - agent.capabilities text must contain the keyword AND no negative marker (yok/gap/cannot/yapamaz/calismaz/disabled) within ±80 chars of it.
+   */
+  async function evaluateAgentCapabilityForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+  ): Promise<{ required: string[]; missing: string[] } | null> {
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return null;
+
+    let title: string | null =
+      readNonEmptyString((context as Record<string, unknown>).issueTitle) ??
+      readNonEmptyString((context as Record<string, unknown>).title);
+    if (!title) {
+      try {
+        const rows = await db
+          .select({ title: issues.title })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .limit(1);
+        title = (rows[0]?.title ?? null) as string | null;
+      } catch {
+        return null;
+      }
+    }
+    if (!title) return null;
+
+    const titleLower = title.toLowerCase();
+    const required: string[] = [];
+    if (/\[ux\]|\bui\b|frontend|dashboard|panel|playwright|smoke|\[qg-2\]|\[qg-d\]/i.test(titleLower)) {
+      required.push("Playwright");
+    }
+    if (/\[backend\]|\[be\]|migration|celery|pytest|\[qg-3\]/i.test(titleLower)) {
+      required.push("pytest");
+    }
+    if (/\[devops\]|\bssh\b|cloudwatch|\becs\b|deploy|\baws\b/i.test(titleLower)) {
+      required.push("SSH");
+    }
+    if (/\[qa\]/i.test(titleLower) && !required.includes("Playwright")) {
+      required.push("Playwright");
+    }
+    if (required.length === 0) return null;
+
+    const agentCaps = (agent.capabilities || "").toLowerCase();
+    const missing: string[] = [];
+    for (const req of required) {
+      const reqLower = req.toLowerCase();
+      const idx = agentCaps.indexOf(reqLower);
+      if (idx < 0) {
+        missing.push(req);
+        continue;
+      }
+      // ±80 char window around the keyword for negative qualifier
+      const start = Math.max(0, idx - 80);
+      const end = Math.min(agentCaps.length, idx + reqLower.length + 80);
+      const window = agentCaps.slice(start, end);
+      if (/\b(yok|gap|cannot|yapamaz|calismaz|disabled)\b/i.test(window)) {
+        missing.push(req);
+      }
+    }
+    if (missing.length === 0) return null;
+    return { required, missing };
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -3751,6 +3821,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    // QG-B: Capability Gate — verify agent has required capabilities for this issue (heuristic, conservative).
+    const capabilityViolation = await evaluateAgentCapabilityForRun(agent, context);
+    if (capabilityViolation) {
+      const reason = `capability_missing: ${capabilityViolation.missing.join(", ")} (required: ${capabilityViolation.required.join(", ")}). agent.capabilities does not satisfy these requirements (per CAN/CANNOT bundle). Re-assign to a capable agent or extend the agent capability bundle.`;
+      await cancelRunInternal(run.id, reason);
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "heartbeat.capability_gate_blocked",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          required: capabilityViolation.required,
+          missing: capabilityViolation.missing,
+          source: "heartbeat.claim_queued_run.capability_gate_qg_b",
+          issueId: readNonEmptyString(context.issueId),
+        },
+      });
+      logger.info(
+        { runId: run.id, required: capabilityViolation.required, missing: capabilityViolation.missing },
+        "claimQueuedRun: capability gate blocked",
+      );
       return null;
     }
 
