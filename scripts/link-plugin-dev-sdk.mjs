@@ -30,6 +30,10 @@ try {
 }
 
 const relativeSdkDir = relative(scopeDir, sdkDir);
-symlinkSync(relativeSdkDir, linkTarget, "dir");
+if (process.platform === "win32") {
+  symlinkSync(relativeSdkDir, linkTarget, "junction");
+} else {
+  symlinkSync(relativeSdkDir, linkTarget, "dir");
+}
 
 console.log(`  ✓ Linked local @paperclipai/plugin-sdk for ${packageDir}`);

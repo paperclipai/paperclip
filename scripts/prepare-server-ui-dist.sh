@@ -30,5 +30,5 @@ if [ ! -f "$UI_DIST/index.html" ]; then
 fi
 
 rm -rf "$SERVER_UI_DIST"
-cp -r "$UI_DIST" "$SERVER_UI_DIST"
+pnpm exec cpx "${UI_DIST}/**/*" "${SERVER_UI_DIST}"
 echo "  -> Copied ui/dist to server/ui-dist"
