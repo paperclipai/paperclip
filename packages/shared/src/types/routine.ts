@@ -54,6 +54,7 @@ export interface Routine {
   projectId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
+  carryStateIssueId: string | null;
   title: string;
   description: string | null;
   assigneeAgentId: string | null;
@@ -94,6 +95,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   projectId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
+  carryStateIssueId: string | null;
   title: string;
   description: string | null;
   assigneeAgentId: string | null;

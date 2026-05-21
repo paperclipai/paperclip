@@ -435,6 +435,29 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("persists carryStateIssueId update and reflects it in the returned routine", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    expect(routine.carryStateIssueId).toBeNull();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "carry state issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const updated = await svc.update(routine.id, { carryStateIssueId: issueId }, {});
+    expect(updated?.carryStateIssueId).toBe(issueId);
+    expect(updated?.updatedAt.getTime()).toBeGreaterThan(routine.updatedAt.getTime());
+
+    const fetched = await svc.get(routine.id);
+    expect(fetched?.carryStateIssueId).toBe(issueId);
+
+    const cleared = await svc.update(routine.id, { carryStateIssueId: null }, {});
+    expect(cleared?.carryStateIssueId).toBeNull();
+  });
+
   it("restores an older routine revision append-only and preserves run history", async () => {
     const { routine, svc } = await seedFixture();
     const revision1Id = routine.latestRevisionId!;
