@@ -263,9 +263,14 @@ function generateCustomModesYaml(
     customInstructions,
   ].filter(Boolean).join("\n\n");
 
+  // The UI (config-fields.tsx) and workspace.ts both use `modeConfig.groups`
+  // as the canonical key for the user's tool-group selection. Reading
+  // `modeConfig.toolGroups` here would silently fall through to ROLE_GROUPS
+  // defaults and let the cached custom_modes.yaml diverge from the workspace
+  // copy whenever a user customises tool groups.
   const toolGroups =
-    (Array.isArray(modeConfig.toolGroups) && modeConfig.toolGroups.length > 0
-      ? modeConfig.toolGroups
+    (Array.isArray(modeConfig.groups) && modeConfig.groups.length > 0
+      ? modeConfig.groups
       : null) ??
     ROLE_GROUPS[agentRole] ??
     ["read", "edit", "command", "mcp"];
