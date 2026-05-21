@@ -2391,6 +2391,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  let shutdownRequested = false;
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -3835,12 +3836,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const now = new Date();
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx
+        .update(heartbeatRuns)
+        .set({ status, ...patch, updatedAt: now })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (row && patch?.finishedAt) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.executionRunId, runId));
+      }
+
+      return row;
+    });
 
     if (updated) {
       publishLiveEvent({
@@ -4813,7 +4831,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), or(eq(issues.executionRunId, run.id), isNull(issues.executionRunId))));
       }
 
       return retryRun;
@@ -5540,7 +5558,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), or(eq(issues.executionRunId, run.id), isNull(issues.executionRunId))));
       }
 
       return {
@@ -8209,6 +8227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          await releaseIssueExecutionAndPromote(latestRun ?? run).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
@@ -9952,9 +9971,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(heartbeatRuns.status, "running"),
           ),
         )
-        .orderBy(desc(heartbeatRuns.startedAt))
+        .orderBy(desc(heartbeatRuns.createdAt))
         .limit(1);
       return run ?? null;
+    },
+
+    gracefulShutdown: async (opts?: { timeoutMs?: number }) => {
+      shutdownRequested = true;
+      const timeoutMs = opts?.timeoutMs ?? 30_000;
+      const deadline = Date.now() + timeoutMs;
+
+      const activeRunIds = Array.from(activeRunExecutions);
+      for (const activeRunId of activeRunIds) {
+        try {
+          await cancelRunInternal(activeRunId, "Server shutting down");
+        } catch (err) {
+          logger.warn(
+            { err, runId: activeRunId },
+            "Failed to cancel active run during graceful shutdown",
+          );
+        }
+      }
+
+      while (activeRunExecutions.size > 0 && Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      }
+
+      if (activeRunExecutions.size > 0) {
+        logger.warn(
+          { remainingActiveRuns: Array.from(activeRunExecutions) },
+          "Graceful shutdown timed out with active runs still executing",
+        );
+      }
     },
   };
 }

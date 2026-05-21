@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -18,7 +18,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
+import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
 import { issueRoutes } from "../routes/issues.js";
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -283,4 +289,44 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       },
     });
   });
+
+  it("logs a stale lock warning and emits telemetry during checkout when executionRunId points to a finished run", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale execution lock checkout",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const trackMock = vi.fn();
+    vi.mocked(getTelemetryClient).mockReturnValue({ track: trackMock } as any);
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`[stale_lock] issue=${issueId} stale_run=${failedRunId}`),
+    );
+    expect(trackMock).toHaveBeenCalledWith(
+      "stale_execution_run_id_detected",
+      expect.objectContaining({
+        issue_id: issueId,
+        stale_run_id: failedRunId,
+      }),
+    );
+
+    warnSpy.mockRestore();
+  });
+
 });
