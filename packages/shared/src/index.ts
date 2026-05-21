@@ -635,6 +635,8 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  PortfolioItem,
+  Testimonial,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
 export {
@@ -1039,6 +1041,19 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+} from "./validators/index.js";
+
+export {
+  createPortfolioItemSchema,
+  updatePortfolioItemSchema,
+  portfolioItemSchema,
+  type PortfolioItemInput,
+  type UpdatePortfolioItemInput,
+  createTestimonialSchema,
+  updateTestimonialSchema,
+  testimonialSchema,
+  type TestimonialInput,
+  type UpdateTestimonialInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

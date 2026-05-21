@@ -342,7 +342,11 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
 } from "./access.js";
-export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export type {
+  QuotaWindow, ProviderQuotaResult
+} from "./quota.js";
+export type { PortfolioItem } from "./portfolio.js";
+export type { Testimonial } from "./testimonial.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

@@ -194,4 +194,12 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  portfolio: {
+    list: (companyId: string) => ["portfolio", companyId] as const,
+    detail: (companyId: string, id: string) => ["portfolio", companyId, id] as const,
+  },
+  testimonials: {
+    list: (companyId: string) => ["testimonials", companyId] as const,
+    detail: (companyId: string, id: string) => ["testimonials", companyId, id] as const,
+  },
 };

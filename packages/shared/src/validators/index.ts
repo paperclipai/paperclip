@@ -393,6 +393,22 @@ export {
 } from "./access.js";
 
 export {
+  createPortfolioItemSchema,
+  updatePortfolioItemSchema,
+  portfolioItemSchema,
+  type PortfolioItemInput,
+  type UpdatePortfolioItemInput,
+} from "./portfolio.js";
+
+export {
+  createTestimonialSchema,
+  updateTestimonialSchema,
+  testimonialSchema,
+  type TestimonialInput,
+  type UpdateTestimonialInput,
+} from "./testimonial.js";
+
+export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,
