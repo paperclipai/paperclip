@@ -121,6 +121,20 @@ env:
         secretKeyRef:
           name: paperclip-microsoft-oidc
           key: MICROSOFT_CLIENT_SECRET
+    # BLO-6295 piece D — daily Entra group reconciler. Loops every
+    # MICROSOFT_GROUP_RECONCILE_INTERVAL_HOURS (default 24h) over every
+    # paperclip user with a linked Microsoft account, queries Graph
+    # for current group memberships, and applies the same reconcile
+    # logic as the signin-time better-auth hook
+    # (server/src/auth/microsoft-rbac.ts): ssh-users → Blockcast
+    # operator membership, AdminAgents → pending admin-elevation
+    # approval (NOT auto-grant). Catches off-boarding from AdminAgents
+    # even when the affected user doesn't sign in. The paperclip-prod
+    # Entra app has Group.Read.All app-permission granted with admin
+    # consent so the client_credentials grant against Microsoft Graph
+    # works.
+    - name: MICROSOFT_GROUP_RECONCILE_ENABLED
+      value: "true"
     - name: PAPERCLIP_DEPLOYMENT_MODE
       value: authenticated
     - name: PAPERCLIP_DEPLOYMENT_EXPOSURE

@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { parseIdTokenGroups, reconcileMicrosoftUser } from "./microsoft-rbac.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -143,6 +144,45 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
               clientId: microsoftClientId!,
               clientSecret: microsoftClientSecret!,
               tenantId: microsoftTenantId!,
+            },
+          },
+          // BLO-6295 piece D: reconcile Entra group claim → paperclip RBAC.
+          // The account.create.after hook fires once when the Microsoft
+          // identity is first linked; account.update.after fires on every
+          // subsequent signin (better-auth updates the access/id token).
+          // Both call the same reconcile function — it's idempotent and
+          // ssh-users → operator membership / AdminAgents → pending approval
+          // both no-op when the state already matches. Failures are logged
+          // and swallowed: a Graph hiccup must not block the user signing
+          // in (the daily reconciler will catch up).
+          databaseHooks: {
+            account: {
+              create: {
+                after: async (account: { providerId?: string; userId?: string; idToken?: string | null }) => {
+                  if (account?.providerId !== "microsoft") return;
+                  if (!account.userId) return;
+                  try {
+                    const groups = parseIdTokenGroups(account.idToken ?? null);
+                    if (groups.length === 0) return;
+                    await reconcileMicrosoftUser(db, account.userId, groups);
+                  } catch (err) {
+                    console.error("[better-auth] microsoft rbac reconcile (create) failed:", err);
+                  }
+                },
+              },
+              update: {
+                after: async (account: { providerId?: string; userId?: string; idToken?: string | null }) => {
+                  if (account?.providerId !== "microsoft") return;
+                  if (!account.userId) return;
+                  try {
+                    const groups = parseIdTokenGroups(account.idToken ?? null);
+                    if (groups.length === 0) return;
+                    await reconcileMicrosoftUser(db, account.userId, groups);
+                  } catch (err) {
+                    console.error("[better-auth] microsoft rbac reconcile (update) failed:", err);
+                  }
+                },
+              },
             },
           },
         }

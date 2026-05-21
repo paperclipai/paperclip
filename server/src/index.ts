@@ -1148,6 +1148,29 @@ export async function startServer(): Promise<StartedServer> {
     );
   }
 
+  // BLO-6295 piece D — daily Microsoft Entra group reconciler. Gated on
+  // MICROSOFT_GROUP_RECONCILE_ENABLED=true; only the worker / all tier
+  // runs it so HA API replicas don't spin up parallel reconcilers.
+  if (
+    process.env.MICROSOFT_GROUP_RECONCILE_ENABLED === "true" &&
+    config.paperclipNodeRole !== "api"
+  ) {
+    void (async () => {
+      try {
+        const { startMicrosoftGroupReconciler } = await import(
+          "./services/microsoft-group-reconciler.js"
+        );
+        startMicrosoftGroupReconciler({ db: db as any });
+        logger.info(
+          { role: config.paperclipNodeRole },
+          "microsoft-group-reconciler started",
+        );
+      } catch (err) {
+        logger.warn({ err }, "microsoft-group-reconciler failed to start (non-fatal)");
+      }
+    })();
+  }
+
   // Start Linear tunnel if Linear is connected and cloudflared is available.
   // The tunnel is a singleton outbound cloudflared process; running multiple
   // copies (one per API replica) would point Linear's webhooks at whichever
