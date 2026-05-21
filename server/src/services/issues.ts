@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -239,6 +239,8 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
+  sortField?: "updated";
+  sortDir?: "asc" | "desc";
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -791,6 +793,43 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
     .filter((value): value is Date => value instanceof Date)
     .sort((a, b) => b.getTime() - a.getTime());
   return normalized[0] ?? null;
+}
+
+function issueListOrderBy(
+  companyId: string,
+  {
+    hasSearch,
+    priorityOrder,
+    searchOrder,
+    sortField,
+    sortDir,
+  }: {
+    hasSearch: boolean;
+    priorityOrder: SQL;
+    searchOrder: SQL;
+    sortField?: IssueFilters["sortField"];
+    sortDir?: IssueFilters["sortDir"];
+  },
+) {
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  if (sortField === "updated") {
+    const activityOrder = sortDir === "asc"
+      ? asc(canonicalLastActivityAt)
+      : desc(canonicalLastActivityAt);
+    const updatedOrder = sortDir === "asc" ? asc(issues.updatedAt) : desc(issues.updatedAt);
+    const idOrder = sortDir === "asc" ? asc(issues.id) : desc(issues.id);
+    return hasSearch
+      ? [asc(searchOrder), activityOrder, updatedOrder, idOrder]
+      : [activityOrder, updatedOrder, idOrder];
+  }
+
+  return [
+    hasSearch ? asc(searchOrder) : asc(priorityOrder),
+    asc(priorityOrder),
+    desc(canonicalLastActivityAt),
+    desc(issues.updatedAt),
+    desc(issues.id),
+  ];
 }
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
@@ -3532,18 +3571,17 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
-        .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
-          asc(priorityOrder),
-          desc(canonicalLastActivityAt),
-          desc(issues.updatedAt),
-          desc(issues.id),
-        );
+        .orderBy(...issueListOrderBy(companyId, {
+          hasSearch,
+          priorityOrder,
+          searchOrder,
+          sortField: filters?.sortField,
+          sortDir: filters?.sortDir,
+        }));
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));

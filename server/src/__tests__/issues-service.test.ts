@@ -380,6 +380,46 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
   });
 
+  it("can page issues by most recently updated before priority", async () => {
+    const companyId = randomUUID();
+    const oldCriticalIssueId = randomUUID();
+    const recentMediumIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: oldCriticalIssueId,
+        companyId,
+        title: "Old critical issue",
+        status: "todo",
+        priority: "critical",
+        updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        id: recentMediumIssueId,
+        companyId,
+        title: "Recent medium issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.993Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      limit: 1,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
+  });
+
   it("ranks comment matches ahead of description-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();

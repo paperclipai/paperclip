@@ -76,11 +76,17 @@ describe("successful run handoff decision", () => {
       resumeIntent: true,
       resumeFromRunId: "run-1",
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
