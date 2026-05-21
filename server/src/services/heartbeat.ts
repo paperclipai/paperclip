@@ -58,6 +58,7 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { buildRoutingOverrideEnv } from "../routing/build-routing-override-env.js";
+import { buildRoutingEscalatedDomainEvent } from "../routing/build-routing-escalated-event.js";
 import { escalateOneTier } from "../routing/escalate-tier.js";
 import { resolveModel } from "../routing/model-menu.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -7771,11 +7772,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !adapterResult.timedOut &&
         !adapterOwnsRetry &&
         escalationCount === 0 &&
-        escalateCandidate !== null
+        escalateCandidate !== null &&
+        resolvedRoutingTier !== null &&
+        resolvedRoutingModel !== null
       ) {
-        const fromTier = resolvedRoutingTier;
-        const fromModel = resolvedRoutingModel;
+        const fromTier: RoutingTier = resolvedRoutingTier;
+        const fromModel: string = resolvedRoutingModel;
         const escalatedEntry = resolveModel(escalateCandidate);
+        const escalationReason =
+          adapterResult.errorMessage ?? `exit code ${adapterResult.exitCode ?? "?"}`;
+        const escalationErrorCode = adapterResult.errorCode ?? null;
+        const escalationErrorFamily = adapterResult.errorFamily ?? null;
         await appendRunEvent(currentRun, seq++, {
           eventType: "routing.escalation",
           stream: "system",
@@ -7787,11 +7794,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             toTier: escalateCandidate,
             toModel: escalatedEntry.model,
             toProvider: escalatedEntry.provider,
-            reason: adapterResult.errorMessage ?? `exit code ${adapterResult.exitCode ?? "?"}`,
-            errorCode: adapterResult.errorCode ?? null,
-            errorFamily: adapterResult.errorFamily ?? null,
+            reason: escalationReason,
+            errorCode: escalationErrorCode,
+            errorFamily: escalationErrorFamily,
           },
         });
+        // Phase E3 notifier — fire-and-forget. The run event above is
+        // the in-database record; this domain event is the
+        // out-of-band notification observability and cost-tracking
+        // subscribe to. Wrapped in try/catch so a publish failure
+        // never blocks the escalated retry below.
+        try {
+          publishPluginDomainEvent(
+            buildRoutingEscalatedDomainEvent({
+              runId: currentRun.id,
+              agentId: currentRun.agentId,
+              companyId: currentRun.companyId,
+              issueId: issueId ?? null,
+              fromTier,
+              fromModel,
+              toTier: escalateCandidate,
+              toModel: escalatedEntry.model,
+              toProvider: escalatedEntry.provider,
+              reason: escalationReason,
+              errorCode: escalationErrorCode,
+              errorFamily: escalationErrorFamily,
+            }),
+          );
+        } catch (err) {
+          logger.warn(
+            { err, runId: currentRun.id },
+            "publishPluginDomainEvent(agent.routing.escalated) failed",
+          );
+        }
         // Re-wrap the agent with escalated values. Operator pin is
         // INTENTIONALLY overridden here (recovery > pin).
         const escalatedAgent = {

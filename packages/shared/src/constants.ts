@@ -1065,6 +1065,12 @@ export const PLUGIN_EVENT_TYPES = [
   "agent.run.finished",
   "agent.run.failed",
   "agent.run.cancelled",
+  // Phase E3: emitted when the dispatcher's escalation backstop
+  // retries a failed run at the next tier up. Mirrors the
+  // routing.escalation run-event payload plus run/agent/company/issue
+  // identifiers. Fire-and-forget — observability and cost tracking
+  // subscribe; the dispatcher does not wait on or read this event.
+  "agent.routing.escalated",
   "goal.created",
   "goal.updated",
   "approval.created",
