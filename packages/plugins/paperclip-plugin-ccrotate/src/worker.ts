@@ -25,8 +25,29 @@ function logger() {
 
 const SNAPSHOT_KEY = "snapshot";
 const SNAPSHOT_NAMESPACE = "ccrotate";
+const SNAPSHOT_STREAM_CHANNEL = "snapshot";
 
 const TARGETS: CcrotateTarget[] = ["claude", "codex"];
+
+// State-server SSE feed. Reachable inside the cluster via the
+// ccrotate-auth-bot-state Service in the paperclip namespace; paperclip-0 gets
+// ingress access via a dedicated NetworkPolicy rule in onprem-k8s. The env
+// override exists for the dev-server harness and for any future migration
+// (e.g. routing through paperclip-public-tools auth-proxy).
+const STATE_SSE_URL =
+  process.env.CCROTATE_STATE_SSE_URL ??
+  process.env.CCROTATE_STATE_URL ??
+  "http://ccrotate-auth-bot-state.paperclip.svc:4002";
+
+// Reconnect cadence — start fast, back off exponentially up to 30s. We never
+// stop retrying as long as the worker is alive; the state-server is in the
+// same namespace, so prolonged outages indicate a paperclip control-plane
+// issue worth visibly recovering from.
+const SSE_RECONNECT_MIN_MS = 1_000;
+const SSE_RECONNECT_MAX_MS = 30_000;
+
+// Background snapshot fan-out task. Lives once per worker; aborts on shutdown.
+let snapshotStreamAbort: AbortController | null = null;
 
 function describeError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -610,12 +631,139 @@ async function handleStatePut(input: PluginApiRequestInput): Promise<PluginApiRe
   return { status: 200, body: { snapshot: value } };
 }
 
+// ─── SSE subscription to ccrotate-auth-bot state-server ─────────────────────
+//
+// On every state-server mutation event, refresh the snapshot and push it to
+// any UI clients via ctx.streams.emit. The UI hook (usePluginStream) gets a
+// real-time view of pool state without polling. Disconnect handling: retry
+// with capped exponential backoff; on visible error, log and continue. The
+// snapshot also fans out on initial connect ("connected" SSE event) so a UI
+// that subscribes after the worker started still gets a current view.
+
+// Debounce snapshot emission. A single state-server route call can lead to
+// several broadcasts in close succession (e.g. an `applyImport` rewrites
+// multiple files; freshness-loop probes a batch of accounts during recovery).
+// We coalesce into one ctx.streams.emit per quiet window so the UI gets one
+// re-render per logical mutation burst, not N.
+const SNAPSHOT_EMIT_DEBOUNCE_MS = 200;
+let pendingEmitReasons = new Set<string>();
+let pendingEmitTimer: NodeJS.Timeout | null = null;
+
+async function flushSnapshotEmit(): Promise<void> {
+  pendingEmitTimer = null;
+  const reasons = Array.from(pendingEmitReasons);
+  pendingEmitReasons.clear();
+  if (reasons.length === 0) return;
+  const ctx = ctxRef;
+  if (!ctx) return;
+  try {
+    const result = await handleSnapshot();
+    if (result.status === 200 && result.body) {
+      ctx.streams.emit(SNAPSHOT_STREAM_CHANNEL, {
+        reason: reasons.length === 1 ? reasons[0] : `batch:${reasons.join(",")}`,
+        snapshot: result.body,
+      });
+    }
+  } catch (error) {
+    logger()?.debug?.("emitSnapshot failed", { reasons, error: describeError(error) });
+  }
+}
+
+function emitSnapshot(reason: string): void {
+  pendingEmitReasons.add(reason);
+  if (pendingEmitTimer) return;
+  pendingEmitTimer = setTimeout(() => { void flushSnapshotEmit(); }, SNAPSHOT_EMIT_DEBOUNCE_MS);
+}
+
+async function consumeSseStream(
+  response: Response,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!response.body) return;
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE blocks are separated by a blank line. Keep partial block in buffer.
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!block || block.startsWith(":")) continue; // comment/keepalive
+        const lines = block.split("\n");
+        let event = "message";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+          else if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice("data:".length).trim();
+        }
+        // Any non-comment event is reason enough to refresh the snapshot:
+        // the connected event seeds initial UI state, and each subsequent
+        // event signals a tier-cache mutation we want to reflect. emitSnapshot
+        // is debounced so a burst (e.g. import.applied + token-refreshed) only
+        // fires one `ccrotate when` invocation downstream.
+        emitSnapshot(event || "message");
+        // `data` parsing is best-effort — we don't need the payload, just
+        // the signal that *something* changed. Keeping the parsed value
+        // unused here so future debug logging can pick it up cheaply.
+        void data;
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+}
+
+async function snapshotSubscriptionLoop(signal: AbortSignal): Promise<void> {
+  let backoffMs = SSE_RECONNECT_MIN_MS;
+  while (!signal.aborted) {
+    try {
+      logger()?.info("ccrotate plugin connecting to state-server SSE", { url: STATE_SSE_URL });
+      const response = await fetch(`${STATE_SSE_URL}/state/events`, {
+        method: "GET",
+        signal,
+        headers: { accept: "text/event-stream" },
+      });
+      if (!response.ok) {
+        throw new Error(`SSE connect failed: HTTP ${response.status}`);
+      }
+      backoffMs = SSE_RECONNECT_MIN_MS;
+      await consumeSseStream(response, signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      logger()?.warn("ccrotate plugin SSE subscription dropped", {
+        error: describeError(error),
+        nextRetryMs: backoffMs,
+      });
+    }
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, backoffMs);
+      signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+    backoffMs = Math.min(backoffMs * 2, SSE_RECONNECT_MAX_MS);
+  }
+}
+
 // ─── Plugin definition ───────────────────────────────────────────────────────
 
 const plugin: PaperclipPlugin = definePlugin({
   async setup(ctx) {
     ctxRef = ctx;
-    logger()?.info("ccrotate plugin (visualization) ready", { pluginId: PLUGIN_ID });
+    logger()?.info("ccrotate plugin (visualization) ready", {
+      pluginId: PLUGIN_ID,
+      sseUrl: STATE_SSE_URL,
+    });
+    // Start the SSE → ctx.streams fan-out loop. Fire-and-forget: the loop
+    // owns its own retry/backoff and exits cleanly on abort. setup() must
+    // not await it (the loop blocks forever by design).
+    if (snapshotStreamAbort) snapshotStreamAbort.abort();
+    snapshotStreamAbort = new AbortController();
+    void snapshotSubscriptionLoop(snapshotStreamAbort.signal);
   },
 
   async onHealth() {
@@ -623,6 +771,15 @@ const plugin: PaperclipPlugin = definePlugin({
   },
 
   async onShutdown() {
+    if (snapshotStreamAbort) {
+      snapshotStreamAbort.abort();
+      snapshotStreamAbort = null;
+    }
+    if (pendingEmitTimer) {
+      clearTimeout(pendingEmitTimer);
+      pendingEmitTimer = null;
+    }
+    pendingEmitReasons.clear();
     ctxRef = null;
   },
 

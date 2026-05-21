@@ -16,6 +16,7 @@
 // hook, and the PoolTable render. Splitting would just scatter state.
 
 import { useState, useEffect, useCallback, useRef, type CSSProperties, type FormEvent } from "react";
+import { usePluginStream } from "@paperclipai/plugin-sdk/ui";
 import type {
   PluginPageProps,
   PluginSidebarProps,
@@ -23,6 +24,15 @@ import type {
 } from "@paperclipai/plugin-sdk/ui";
 import { PLUGIN_ID } from "../manifest.js";
 import type { SnapshotResponse, AccountRow, CcrotateTarget } from "../types.js";
+
+// The worker emits this shape on the "snapshot" stream channel each time
+// the upstream state-server reports a tier-cache mutation. The UI uses
+// `usePluginStream("snapshot")` to get push-driven updates — see worker.ts
+// emitSnapshot/snapshotSubscriptionLoop.
+interface SnapshotStreamEvent {
+  reason: string;
+  snapshot: SnapshotResponse;
+}
 
 // ─── fetch helpers ──────────────────────────────────────────────────────────
 
@@ -65,9 +75,20 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-// ─── snapshot hook with auto-refresh (F-UI-4) ───────────────────────────────
+// ─── snapshot hook with SSE-driven updates + polling fallback ───────────────
+//
+// Primary update channel: usePluginStream("snapshot") — the worker emits an
+// event each time the upstream state-server reports a tier-cache mutation
+// (kkroo/ccrotate#60). The hook applies `lastEvent.snapshot` to local state
+// in an effect so React state lives in this hook (not in the SDK's internal
+// events array).
+//
+// Fallback poll: a 5-min silent re-fetch in case the SSE chain is broken
+// (worker can't reach state-server, plugin host SSE bridge wedged, etc.).
+// Down from the old 30s cadence because the SSE feed is now the primary
+// freshness driver; the long fallback is purely a defense-in-depth net.
 
-const AUTO_REFRESH_MS = 30_000;
+const FALLBACK_REFRESH_MS = 5 * 60_000;
 
 function useSnapshot(companyId: string | null | undefined) {
   const [data, setData] = useState<SnapshotResponse | null>(null);
@@ -94,16 +115,27 @@ function useSnapshot(companyId: string | null | undefined) {
     }
   }, [companyId]);
 
+  // SSE channel subscription — pushed by the worker on every state-server
+  // mutation event.
+  const stream = usePluginStream<SnapshotStreamEvent>("snapshot", companyId ? { companyId } : undefined);
+  useEffect(() => {
+    const evt = stream.lastEvent;
+    if (!evt?.snapshot || !mounted.current) return;
+    setData(evt.snapshot);
+    setError(null);
+    setLoading(false);
+  }, [stream.lastEvent]);
+
   useEffect(() => {
     if (!companyId) {
       setLoading(false);
       return;
     }
     void fetchOnce(false);
-    // F-UI-4: silent re-fetch every 30s so the open page stays current
-    // without manual refresh. Errors from background refetches surface
-    // in the error state but don't blank the data.
-    const handle = setInterval(() => { void fetchOnce(true); }, AUTO_REFRESH_MS);
+    // Long-interval fallback. Primary freshness is the SSE stream; this just
+    // catches the case where the worker → state-server SSE chain silently
+    // dies and the page sits open for ages.
+    const handle = setInterval(() => { void fetchOnce(true); }, FALLBACK_REFRESH_MS);
     return () => clearInterval(handle);
   }, [companyId, fetchOnce]);
 
@@ -121,7 +153,15 @@ function useSnapshot(companyId: string | null | undefined) {
     }
   }, [companyId, fetchOnce]);
 
-  return { data, loading, error, refreshing, refresh, reload: fetchOnce };
+  return {
+    data,
+    loading,
+    error,
+    refreshing,
+    refresh,
+    reload: fetchOnce,
+    streamConnected: stream.connected,
+  };
 }
 
 // ─── styles ─────────────────────────────────────────────────────────────────
@@ -566,7 +606,7 @@ function PoolTable({
 
 export function CcrotatePage({ context }: PluginPageProps) {
   const companyId = context.companyId ?? null;
-  const { data, loading, error, refreshing, refresh, reload } = useSnapshot(companyId);
+  const { data, loading, error, refreshing, refresh, reload, streamConnected } = useSnapshot(companyId);
 
   return (
     <div style={pageStyle}>
@@ -575,7 +615,7 @@ export function CcrotatePage({ context }: PluginPageProps) {
           <h2 style={{ ...headerTitleStyle, fontSize: "20px" }}>ccrotate pool</h2>
           <div style={subtleStyle}>
             {data?.fetchedAt ? (
-              `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}  ·  auto-refresh every ${AUTO_REFRESH_MS / 1000}s`
+              `tier-cache fetched ${new Date(data.fetchedAt).toLocaleTimeString()}${data.cacheAge ? ` (age ${data.cacheAge})` : ""}  ·  ${streamConnected ? "live (SSE)" : "fallback polling"}`
             ) : loading ? (
               <SkeletonBar width={280} height={11} />
             ) : (
