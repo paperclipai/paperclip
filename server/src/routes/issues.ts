@@ -4201,26 +4201,28 @@ export function issueRoutes(
               );
             }
           }
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-          });
+          if (dependent.assigneeAgentId) {
+            addWakeup(dependent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_blockers_resolved",
+              payload: {
+                issueId: dependent.id,
+                resolvedBlockerIssueId: issue.id,
+                blockerIssueIds: dependent.blockerIssueIds,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: dependent.id,
+                taskId: dependent.id,
+                wakeReason: "issue_blockers_resolved",
+                source: "issue.blockers_resolved",
+                resolvedBlockerIssueId: issue.id,
+                blockerIssueIds: dependent.blockerIssueIds,
+              },
+            });
+          }
         }
       }
 

@@ -461,6 +461,87 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it("auto-transitions an unassigned blocked dependent to todo without sending a wakeup", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-300",
+      title: "Blocker",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-1",
+        companyId: "company-1",
+        identifier: "PAP-300",
+        title: "Blocker",
+        description: null,
+        status: "done",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      })
+      .mockResolvedValueOnce({
+        id: "issue-2",
+        companyId: "company-1",
+        identifier: "PAP-301",
+        title: "Unassigned dependent",
+        description: null,
+        status: "todo",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    // Dependent has no assignee — previously this prevented auto-unblocking
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        companyId: "company-1",
+        identifier: "PAP-301",
+        assigneeAgentId: null,
+        status: "blocked",
+        blockerIssueIds: ["issue-1"],
+      },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      // Status must be transitioned even without an assignee
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        "issue-2",
+        expect.objectContaining({ status: "todo" }),
+      );
+    });
+    // No wakeup should be sent for an unassigned issue
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      null,
+      expect.anything(),
+    );
+  });
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",

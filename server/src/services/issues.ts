@@ -3870,7 +3870,7 @@ export function issueService(db: Db) {
       }
 
       return candidates
-        .filter((candidate) => candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status))
+        .filter((candidate) => !["backlog", "done", "cancelled"].includes(candidate.status))
         .map((candidate) => {
           const blockers = blockersByIssueId.get(candidate.id) ?? [];
           return {
@@ -3884,7 +3884,7 @@ export function issueService(db: Db) {
           id: candidate.id,
           companyId: candidate.companyId,
           identifier: candidate.identifier,
-          assigneeAgentId: candidate.assigneeAgentId!,
+          assigneeAgentId: candidate.assigneeAgentId ?? null,
           status: candidate.status,
           executionState: candidate.executionState,
           blockerIssueIds: candidate.blockerIssueIds,
