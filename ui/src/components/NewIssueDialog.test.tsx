@@ -13,6 +13,13 @@ const dialogState = vi.hoisted(() => ({
   closeNewIssue: vi.fn(),
 }));
 
+const dialogContentState = vi.hoisted(() => ({
+  onPointerDownOutside: null as null | ((event: {
+    detail: { originalEvent: { target: EventTarget | null } };
+    preventDefault: () => void;
+  }) => void),
+}));
+
 const companyState = vi.hoisted(() => ({
   companies: [
     {
@@ -186,13 +193,16 @@ vi.mock("@/components/ui/dialog", () => ({
     children,
     showCloseButton: _showCloseButton,
     onEscapeKeyDown: _onEscapeKeyDown,
-    onPointerDownOutside: _onPointerDownOutside,
+    onPointerDownOutside,
     ...props
   }: ComponentProps<"div"> & {
     showCloseButton?: boolean;
     onEscapeKeyDown?: (event: unknown) => void;
     onPointerDownOutside?: (event: unknown) => void;
-  }) => <div {...props}>{children}</div>,
+  }) => {
+    dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
+    return <div {...props}>{children}</div>;
+  },
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -285,6 +295,7 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
@@ -588,6 +599,49 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
+    const title = "验证中文任务";
+    const description = [
+      "请用中文回复。",
+      "日本語: 次の手順を書いてください。",
+      "हिन्दी: कृपया स्थिति बताएं।",
+    ].join("\n");
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, title);
+    await typeTextareaValue(descriptionInput!, description);
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Issue"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title,
+        description,
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("submits planning work mode when planning is selected", async () => {
     const { root } = renderDialog(container);
     await flush();
@@ -682,6 +736,27 @@ describe("NewIssueDialog", () => {
     expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
     expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
     expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("allows editor autocomplete portal pointer events inside the modal", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const menu = document.createElement("div");
+    menu.setAttribute("data-paperclip-floating-ui", "");
+    const option = document.createElement("button");
+    menu.appendChild(option);
+    document.body.appendChild(menu);
+    const preventDefault = vi.fn();
+
+    dialogContentState.onPointerDownOutside?.({
+      detail: { originalEvent: { target: option } },
+      preventDefault,
+    });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
   });

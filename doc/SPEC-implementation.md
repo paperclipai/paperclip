@@ -37,7 +37,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise create visible recovery issues or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -206,6 +206,8 @@ Invariant: at least one root `company` level goal per company.
 Invariant:
 
 - project env is merged into run environment for issues in that project and overrides conflicting agent env keys before Paperclip runtime-owned keys are injected
+
+Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
 ## 7.6 `issues` (core task entity)
 
@@ -376,6 +378,10 @@ Operational policy:
   - `created_by_user_id` uuid/text fk null
   - `updated_by_agent_id` uuid fk null
   - `updated_by_user_id` uuid/text fk null
+  - `locked_at` timestamptz null
+  - `locked_by_agent_id` uuid fk null
+  - `locked_by_user_id` uuid/text fk null
+  - Locked documents are immutable until unlocked. Board operators can lock/unlock; agent writes to a locked key create a new issue document with a derived key instead of overwriting the locked document.
 - `document_revisions` stores append-only history:
   - `id` uuid pk
   - `company_id` uuid fk not null
@@ -396,7 +402,7 @@ The current implementation includes additional V1-control-plane tables beyond th
 
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
-- Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, and `routines`.
+- Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
 ## 8. State Machines
@@ -434,9 +440,10 @@ Side effects:
 V1 non-terminal liveness rule:
 
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
-- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery issue owns the next action
+- `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
+- explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
@@ -523,6 +530,8 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
+- `POST /issues/:issueId/documents/:key/lock`
+- `POST /issues/:issueId/documents/:key/unlock`
 - `GET /issues/:issueId/documents/:key/revisions`
 - `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
@@ -670,7 +679,13 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
-## 11.5 Scheduler Rules
+## 11.5 Recovery Model Profiles
+
+The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
+
+Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
+
+## 11.6 Scheduler Rules
 
 Per-agent schedule fields in `adapter_config`:
 

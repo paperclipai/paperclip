@@ -900,5 +900,3 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 });
-
-// FMA-1811 scoped PR ci trigger marker

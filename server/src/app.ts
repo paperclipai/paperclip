@@ -59,6 +59,8 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
+import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
+import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -80,6 +82,12 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/site.webmanifest",
   "/sw.js",
 ]);
+
+export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
+  const error = err as { code?: unknown; message?: unknown; cause?: unknown };
+  if (error?.code === "ECONNREFUSED") return true;
+  return Boolean(error?.cause && isDatabaseConnectionUnavailableError(error.cause));
+}
 
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
@@ -136,13 +144,17 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
+    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+  };
 
+  app.use(COMPANY_IMPORT_API_PATH, express.json({
+    limit: PORTABLE_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
   app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
-    verify: (req, _res, buf) => {
-      (req as unknown as { rawBody: Buffer }).rawBody = buf;
-    },
+    limit: DEFAULT_JSON_BODY_LIMIT,
+    verify: captureRawBody,
   }));
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -404,28 +416,45 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
-  const feedbackExportTimer = opts.feedbackExportService
+  let feedbackExportShuttingDown = false;
+  let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
+  const disableFeedbackExportFlushes = () => {
+    feedbackExportShuttingDown = true;
+    if (feedbackExportTimer) {
+      clearInterval(feedbackExportTimer);
+      feedbackExportTimer = null;
+    }
+  };
+  const flushPendingFeedbackExports = async () => {
+    if (feedbackExportShuttingDown) return;
+    try {
+      await opts.feedbackExportService?.flushPendingFeedbackTraces();
+    } catch (err) {
+      if (isDatabaseConnectionUnavailableError(err)) {
+        disableFeedbackExportFlushes();
+        logger.warn({ err }, "Disabling pending feedback export flushes because the database is unavailable");
+        return;
+      }
+      logger.error({ err }, "Failed to flush pending feedback exports");
+    }
+  };
+
+  feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
-      void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
-        logger.error({ err }, "Failed to flush pending feedback exports");
-      });
+      void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
   if (opts.feedbackExportService) {
-    void opts.feedbackExportService.flushPendingFeedbackTraces().catch((err) => {
-      logger.error({ err }, "Failed to flush pending feedback exports");
-    });
+    void flushPendingFeedbackExports();
   }
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
-  const devWatcher = opts.uiMode === "vite-dev"
-    ? createPluginDevWatcher(
-      lifecycle,
-      async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
-    )
-    : null;
+  const devWatcher = createPluginDevWatcher(
+    lifecycle,
+    async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+  );
   void loader.loadAll().then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
@@ -436,13 +465,19 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
-  process.once("exit", () => {
-    if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+  let appServicesShutdown = false;
+  const shutdownAppServices = () => {
+    if (appServicesShutdown) return;
+    appServicesShutdown = true;
+    disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
-  });
+  };
+  app.locals.paperclipShutdown = shutdownAppServices;
+
+  process.once("exit", shutdownAppServices);
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });

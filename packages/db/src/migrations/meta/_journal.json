@@ -589,6 +589,27 @@
       "when": 1778074536410,
       "tag": "0083_company_secret_provider_configs",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1778355326070,
+      "tag": "0084_issue_recovery_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1778787362162,
+      "tag": "0085_tranquil_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1778976000000,
+      "tag": "0086_routine_env_runtime_contract",
+      "breakpoints": true
     }
   ]
 }

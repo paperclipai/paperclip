@@ -83,6 +83,7 @@ import { testEnvironment } from "./test.js";
 describe("codex remote environment diagnostics", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    delete process.env.OPENAI_API_KEY;
   });
 
   it("stages managed CODEX_HOME in an isolated runtime dir and keeps the probe cwd on the original remote workspace", async () => {
@@ -148,5 +149,46 @@ describe("codex remote environment diagnostics", () => {
       }),
     });
     expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("avoids /tmp CODEX_HOME for remote API-key hello probes", async () => {
+    const remoteTarget: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "cloudflare",
+      remoteCwd: "/remote/workspace",
+      runner: {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      },
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        command: "codex",
+        env: {
+          OPENAI_API_KEY: "sk-test",
+        },
+      },
+      executionTarget: remoteTarget,
+      environmentName: "QA Cloudflare",
+    });
+
+    expect(result.status).toBe("pass");
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, AdapterExecutionTarget, string, string[], { cwd: string; env: Record<string, string> }]
+      | undefined;
+    expect(probeCall?.[4].env.CODEX_HOME).toContain("/remote/workspace/.paperclip-runtime/codex/probe-home-codex-envtest-");
+    expect(probeCall?.[4].env.CODEX_HOME?.startsWith("/tmp/")).toBe(false);
+    expect(probeCall?.[3]).toContain("--skip-git-repo-check");
   });
 });
