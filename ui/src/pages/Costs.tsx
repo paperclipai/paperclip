@@ -31,8 +31,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DateRangePicker } from "../components/DateRangePicker";
+import type { DateRange } from "react-day-picker";
 
 const NO_COMPANY = "__none__";
 
@@ -564,22 +565,20 @@ export function Costs() {
 
           {preset === "custom" ? (
             <div className="flex flex-wrap items-center gap-2 border border-border p-3">
-              <Input
-                type="date"
-                value={customFrom}
-                onChange={(event) => setCustomFrom(event.target.value)}
-                max={customTo || undefined}
-                aria-label="Start date"
-                className="w-auto min-w-[140px]"
-              />
-              <span className="text-sm text-muted-foreground">to</span>
-              <Input
-                type="date"
-                value={customTo}
-                onChange={(event) => setCustomTo(event.target.value)}
-                min={customFrom || undefined}
-                aria-label="End date"
-                className="w-auto min-w-[140px]"
+              <DateRangePicker
+                value={
+                  customFrom || customTo
+                    ? {
+                        from: customFrom ? new Date(customFrom + "T00:00:00") : undefined,
+                        to: customTo ? new Date(customTo + "T00:00:00") : undefined,
+                      }
+                    : undefined
+                }
+                onChange={(range: DateRange | undefined) => {
+                  setCustomFrom(range?.from ? range.from.toISOString().slice(0, 10) : "");
+                  setCustomTo(range?.to ? range.to.toISOString().slice(0, 10) : "");
+                }}
+                placeholder="Select date range"
               />
             </div>
           ) : null}

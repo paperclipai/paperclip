@@ -52,6 +52,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "date-fns": "^4.2.1",
     "hermes-paperclip-adapter": "^0.2.0",
     "i18next": "^26.1.0",
     "lexical": "0.35.0",
@@ -59,6 +60,7 @@
     "mermaid": "^11.12.0",
     "radix-ui": "^1.4.3",
     "react": "^19.0.0",
+    "react-day-picker": "9",
     "react-dom": "^19.0.0",
     "react-i18next": "^17.0.7",
     "react-markdown": "^10.1.0",
@@ -67,17 +69,17 @@
     "tailwind-merge": "^3.4.1"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.7",
     "@storybook/addon-a11y": "10.3.5",
     "@storybook/addon-docs": "10.3.5",
     "@storybook/react-vite": "10.3.5",
+    "@tailwindcss/vite": "^4.0.7",
     "@types/node": "^25.2.3",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "storybook": "10.3.5",
     "tailwindcss": "^4.0.7",
     "typescript": "^5.7.3",
-    "storybook": "10.3.5",
     "vite": "^6.1.0",
     "vitest": "^3.0.5"
   }
