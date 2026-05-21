@@ -7,7 +7,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-import { agentDetailUi, formatWorkspaceOperationStatus } from "../lib/i18n";
+import { agentDetailUi, formatWorkspaceOperationStatus, orchestrationInjectionPage } from "../lib/i18n";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "./StatusBadge";
 import { CopyText } from "./CopyText";
@@ -91,10 +91,10 @@ function isMarkdown(pathValue: string) {
 
 function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
   const env = asRecord(envValue);
-  if (!env) return "<unable-to-parse>";
+  if (!env) return orchestrationInjectionPage.envFallbackUnableToParse;
 
   const keys = Object.keys(env);
-  if (keys.length === 0) return "<empty>";
+  if (keys.length === 0) return orchestrationInjectionPage.envFallbackEmpty;
 
   return keys
     .sort()

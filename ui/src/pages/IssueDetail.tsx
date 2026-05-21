@@ -4036,7 +4036,7 @@ export function IssueDetail() {
                       void refetchTreeControlPreview();
                     }}
                   >
-                    Retry preview
+                    {issueTreeControl.retryPreview}
                   </Button>
                 </div>
               ) : treeControlPreview ? (
