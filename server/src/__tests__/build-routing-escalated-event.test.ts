@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import {
   buildRoutingEscalatedDomainEvent,
+  buildRoutingEscalatedPayload,
   type RoutingEscalatedEventInput,
 } from "../routing/build-routing-escalated-event.js";
 import { resolveTier } from "../routing/resolve-tier.js";
@@ -38,7 +39,47 @@ function baseInput(
   };
 }
 
-describe("buildRoutingEscalatedDomainEvent (Phase E3 notifier)", () => {
+describe("buildRoutingEscalatedPayload (Phase I — payload for logActivity.details)", () => {
+  it("returns the exact 12-field shape subscribers see", () => {
+    const payload = buildRoutingEscalatedPayload(baseInput());
+    expect(payload).toEqual({
+      runId: "run-1",
+      agentId: "agent-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      fromTier: "fast",
+      fromModel: "claude-haiku-4-5-20251001",
+      toTier: "default",
+      toModel: "claude-sonnet-4-6",
+      toProvider: "anthropic",
+      reason: "exit code 1",
+      errorCode: null,
+      errorFamily: null,
+    });
+  });
+
+  it("preserves null issueId (escalation can happen on issueless runs)", () => {
+    const payload = buildRoutingEscalatedPayload(baseInput({ issueId: null }));
+    expect(payload.issueId).toBeNull();
+  });
+
+  it("preserves errorCode and errorFamily when present", () => {
+    const payload = buildRoutingEscalatedPayload(
+      baseInput({ errorCode: "context_overflow", errorFamily: "input_size" }),
+    );
+    expect(payload.errorCode).toBe("context_overflow");
+    expect(payload.errorFamily).toBe("input_size");
+  });
+
+  it("returns a fresh object each call (no shared mutable state)", () => {
+    const a = buildRoutingEscalatedPayload(baseInput());
+    const b = buildRoutingEscalatedPayload(baseInput());
+    expect(a).not.toBe(b);
+    expect(a).toEqual(b);
+  });
+});
+
+describe("buildRoutingEscalatedDomainEvent (Phase E3 — full PluginEvent envelope, retained for non-logActivity callers)", () => {
   describe("event envelope shape", () => {
     it("returns a PluginEvent with eventType=agent.routing.escalated", () => {
       const event = buildRoutingEscalatedDomainEvent(baseInput());
@@ -77,61 +118,34 @@ describe("buildRoutingEscalatedDomainEvent (Phase E3 notifier)", () => {
         errorCode: null,
         errorFamily: null,
       });
-      // UUIDv4 shape — coarse check, just that it's a non-empty string.
       expect(typeof event.eventId).toBe("string");
       expect(event.eventId.length).toBeGreaterThan(10);
-      // ISO8601 timestamp shape.
       expect(event.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
   });
 
-  describe("payload shape (must mirror routing.escalation run-event payload + identifiers)", () => {
-    it("includes all routing.escalation fields plus run/agent/company/issue identifiers", () => {
+  describe("envelope payload mirrors the standalone payload builder", () => {
+    it("event.payload === buildRoutingEscalatedPayload(input)", () => {
       const event = buildRoutingEscalatedDomainEvent(baseInput());
-      expect(event.payload).toEqual({
-        runId: "run-1",
-        agentId: "agent-1",
-        companyId: "company-1",
-        issueId: "issue-1",
-        fromTier: "fast",
-        fromModel: "claude-haiku-4-5-20251001",
-        toTier: "default",
-        toModel: "claude-sonnet-4-6",
-        toProvider: "anthropic",
-        reason: "exit code 1",
-        errorCode: null,
-        errorFamily: null,
-      });
-    });
-
-    it("preserves null issueId (escalation can happen on issueless runs)", () => {
-      const event = buildRoutingEscalatedDomainEvent(baseInput({ issueId: null }));
-      expect(event.payload.issueId).toBeNull();
-    });
-
-    it("preserves errorCode and errorFamily when present", () => {
-      const event = buildRoutingEscalatedDomainEvent(
-        baseInput({ errorCode: "context_overflow", errorFamily: "input_size" }),
-      );
-      expect(event.payload.errorCode).toBe("context_overflow");
-      expect(event.payload.errorFamily).toBe("input_size");
+      const payload = buildRoutingEscalatedPayload(baseInput());
+      expect(event.payload).toEqual(payload);
     });
   });
 });
 
-describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capture)", () => {
+describe("Phase I + E3 dispatch-shape integration (resolver-driven escalation + capture)", () => {
   // This test models the dispatch site contract end-to-end without
   // standing up the full heartbeat machinery:
   //   1. The dispatcher resolves a tier for the issue.
   //   2. A stub adapter "fails" on that tier (i.e. the first call's
   //      exit code is non-zero).
   //   3. The dispatcher escalates one tier up.
-  //   4. The dispatcher builds + publishes the agent.routing.escalated
-  //      domain event so observability can react.
+  //   4. The dispatcher publishes the escalation event (via
+  //      publishPluginDomainEvent in this test; the real dispatch
+  //      site uses logActivity, which also publishes — but
+  //      logActivity requires a real Db so we exercise the publish
+  //      path directly here).
   //   5. The stub adapter "succeeds" on the escalated tier.
-  // We capture published events via a fake PluginEventBus and assert
-  // the escalation event is published with the resolver-derived
-  // from/to tiers and models.
 
   let publishedEvents: PluginEvent[];
 
@@ -146,7 +160,6 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
   });
 
   afterEach(() => {
-    // Reset the module-scoped bus so test bleed doesn't accumulate.
     setPluginEventBus({
       emit: vi.fn(async () => ({ errors: [] })),
     } as unknown as Parameters<typeof setPluginEventBus>[0]);
@@ -163,20 +176,16 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
       execute: (args: { tier: string; model: string }) => Promise<{ exitCode: number }>;
     };
   }) {
-    // Step 1: dispatcher resolves the initial tier.
     const initial = resolveTier({
       issueComplexity: opts.issueComplexity,
       agentTierPreference: opts.agentTierPreference,
     });
 
-    // Step 2: stub adapter call at the initial tier.
     const firstResult = await opts.adapter.execute({
       tier: initial.tier,
       model: initial.entry.model,
     });
 
-    // Step 3: escalation backstop. Only escalate on failure with a
-    // non-cap tier (matches Phase E2 contract in heartbeat.ts:7765).
     const escalateCandidate = escalateOneTier(initial.tier);
     if (firstResult.exitCode === 0 || escalateCandidate === null) {
       return { escalated: false, finalTier: initial.tier };
@@ -184,7 +193,6 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
 
     const escalatedEntry = resolveModel(escalateCandidate);
 
-    // Step 4: build + publish the Phase E3 domain event.
     publishPluginDomainEvent(
       buildRoutingEscalatedDomainEvent({
         runId: opts.runId,
@@ -202,7 +210,6 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
       }),
     );
 
-    // Step 5: stub adapter call at the escalated tier.
     await opts.adapter.execute({
       tier: escalateCandidate,
       model: escalatedEntry.model,
@@ -216,19 +223,17 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
       execute: vi
         .fn()
         .mockImplementationOnce(async ({ tier }: { tier: string; model: string }) => {
-          // First call (tier=fast) fails.
           expect(tier).toBe("fast");
           return { exitCode: 1 };
         })
         .mockImplementationOnce(async ({ tier }: { tier: string; model: string }) => {
-          // Second call (tier=default after escalation) succeeds.
           expect(tier).toBe("default");
           return { exitCode: 0 };
         }),
     };
 
     const result = await simulateDispatchWithEscalation({
-      issueComplexity: "trivial", // resolves to fast
+      issueComplexity: "trivial",
       agentTierPreference: null,
       runId: "run-e3",
       agentId: "agent-e3",
@@ -239,11 +244,8 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
 
     expect(result.escalated).toBe(true);
     expect(result.finalTier).toBe("default");
-
-    // The adapter was called twice (initial + escalated).
     expect(adapter.execute).toHaveBeenCalledTimes(2);
 
-    // Exactly one Phase E3 domain event was published.
     const escalationEvents = publishedEvents.filter(
       (event) => event.eventType === "agent.routing.escalated",
     );
@@ -297,7 +299,7 @@ describe("Phase E3 dispatch-shape integration (resolver-driven escalation + capt
     };
 
     const result = await simulateDispatchWithEscalation({
-      issueComplexity: "hard", // resolves to heavy (cap)
+      issueComplexity: "hard",
       agentTierPreference: null,
       runId: "run-cap",
       agentId: "agent-cap",

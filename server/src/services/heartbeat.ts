@@ -58,7 +58,7 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { buildRoutingOverrideEnv } from "../routing/build-routing-override-env.js";
-import { buildRoutingEscalatedDomainEvent } from "../routing/build-routing-escalated-event.js";
+import { buildRoutingEscalatedPayload } from "../routing/build-routing-escalated-event.js";
 import { escalateOneTier } from "../routing/escalate-tier.js";
 import { resolveModel } from "../routing/model-menu.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -7799,14 +7799,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorFamily: escalationErrorFamily,
           },
         });
-        // Phase E3 notifier — fire-and-forget. The run event above is
-        // the in-database record; this domain event is the
-        // out-of-band notification observability and cost-tracking
-        // subscribe to. Wrapped in try/catch so a publish failure
-        // never blocks the escalated retry below.
+        // Phase I notifier — fire-and-forget. The run event above is
+        // the in-database record on the run itself; this activity_log
+        // row is the persistent, queryable record at the company
+        // level. logActivity also publishes a domain event via
+        // eventTypeForActivityAction (the "agent.routing.escalated"
+        // action is in PLUGIN_EVENT_SET, so it gets forwarded to the
+        // plugin bus automatically). Wrapped in try/catch so a
+        // logActivity failure never blocks the escalated retry below.
         try {
-          publishPluginDomainEvent(
-            buildRoutingEscalatedDomainEvent({
+          await logActivity(db, {
+            companyId: currentRun.companyId,
+            actorType: "agent",
+            actorId: currentRun.agentId,
+            action: "agent.routing.escalated",
+            entityType: "heartbeat_run",
+            entityId: currentRun.id,
+            agentId: currentRun.agentId,
+            runId: currentRun.id,
+            details: buildRoutingEscalatedPayload({
               runId: currentRun.id,
               agentId: currentRun.agentId,
               companyId: currentRun.companyId,
@@ -7819,12 +7830,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               reason: escalationReason,
               errorCode: escalationErrorCode,
               errorFamily: escalationErrorFamily,
-            }),
-          );
+            }) as unknown as Record<string, unknown>,
+          });
         } catch (err) {
           logger.warn(
             { err, runId: currentRun.id },
-            "publishPluginDomainEvent(agent.routing.escalated) failed",
+            "logActivity(agent.routing.escalated) failed",
           );
         }
         // Re-wrap the agent with escalated values. Operator pin is
