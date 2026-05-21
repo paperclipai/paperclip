@@ -5145,21 +5145,34 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      const insertCommentValues = {
+        companyId: issue.companyId,
+        issueId,
+        authorAgentId: actor.agentId ?? null,
+        authorUserId: actor.userId ?? null,
+        authorType,
+        createdByRunId: actor.runId ?? null,
+        body: redactedBody,
+        presentation,
+        metadata,
+        ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
+      };
+      // If a stale run_id causes a FK violation, retry with null run attribution so the comment
+      // is still posted. This can happen when a Cowork-session JWT references a pruned run.
       const [comment] = await db
         .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          authorType,
-          createdByRunId: actor.runId ?? null,
-          body: redactedBody,
-          presentation,
-          metadata,
-          ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
-        })
-        .returning();
+        .values(insertCommentValues)
+        .returning()
+        .catch(async (e) => {
+          const pgCode = (e as any)?.cause?.code ?? (e as any)?.code;
+          if (pgCode === "23503" && insertCommentValues.createdByRunId) {
+            return db
+              .insert(issueComments)
+              .values({ ...insertCommentValues, createdByRunId: null })
+              .returning();
+          }
+          throw e;
+        });
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await db
