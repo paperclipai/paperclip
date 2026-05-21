@@ -1,5 +1,3 @@
-"use client"
-
 import * as React from "react"
 import { format } from "date-fns"
 import { Calendar as CalendarIcon } from "lucide-react"
@@ -15,53 +13,82 @@ import {
 } from "@/components/ui/popover"
 
 interface DateRangePickerProps {
-  value: DateRange | undefined
-  onChange: (range: DateRange | undefined) => void
+  from: string
+  to: string
+  onChange: (range: { from: string; to: string }) => void
   className?: string
-  placeholder?: string
 }
 
-export function DateRangePicker({
-  value,
-  onChange,
-  className,
-  placeholder = "Pick a date range",
-}: DateRangePickerProps) {
+function parseDate(value: string): Date | undefined {
+  if (!value) return undefined
+  const d = new Date(value + "T00:00:00")
+  return isNaN(d.getTime()) ? undefined : d
+}
+
+function formatDate(date: Date | undefined): string {
+  if (!date || isNaN(date.getTime())) return ""
+  return format(date, "yyyy-MM-dd")
+}
+
+export function DateRangePicker({ from, to, onChange, className }: DateRangePickerProps) {
+  const [open, setOpen] = React.useState(false)
+
+  const fromDate = parseDate(from)
+  const toDate = parseDate(to)
+
+  const range: DateRange | undefined =
+    fromDate && toDate
+      ? { from: fromDate, to: toDate }
+      : fromDate
+        ? { from: fromDate, to: undefined }
+        : undefined
+
+  const handleSelect = (selectedRange: DateRange | undefined) => {
+    const nextFrom = formatDate(selectedRange?.from)
+    const nextTo = formatDate(selectedRange?.to)
+
+    onChange({ from: nextFrom, to: nextTo })
+
+    // Close popover when both dates are selected
+    if (nextFrom && nextTo) {
+      setOpen(false)
+    }
+  }
+
+  const displayText = React.useMemo(() => {
+    if (fromDate && toDate) {
+      return `${format(fromDate, "MMM d, yyyy")} - ${format(toDate, "MMM d, yyyy")}`
+    }
+    if (fromDate) {
+      return `${format(fromDate, "MMM d, yyyy")} - ...`
+    }
+    return "Pick a date range"
+  }, [fromDate, toDate])
+
   return (
     <div className={cn("grid gap-2", className)}>
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
             id="date"
             variant={"outline"}
             className={cn(
-              "w-auto justify-start text-left font-normal",
-              !value && "text-muted-foreground"
+              "w-full justify-start text-left font-normal sm:w-[300px]",
+              !fromDate && "text-muted-foreground"
             )}
           >
             <CalendarIcon className="mr-2 h-4 w-4" />
-            {value?.from ? (
-              value.to ? (
-                <>
-                  {format(value.from, "LLL dd, y")} -{" "}
-                  {format(value.to, "LLL dd, y")}
-                </>
-              ) : (
-                format(value.from, "LLL dd, y")
-              )
-            ) : (
-              <span>{placeholder}</span>
-            )}
+            {displayText}
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-auto p-0" align="start">
           <Calendar
             initialFocus
             mode="range"
-            defaultMonth={value?.from}
-            selected={value}
-            onSelect={onChange}
-            numberOfMonths={2}
+            defaultMonth={fromDate}
+            selected={range}
+            onSelect={handleSelect}
+            numberOfMonths={1}
           />
         </PopoverContent>
       </Popover>

@@ -33,7 +33,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DateRangePicker } from "../components/DateRangePicker";
-import type { DateRange } from "react-day-picker";
 
 const NO_COMPANY = "__none__";
 
@@ -566,19 +565,12 @@ export function Costs() {
           {preset === "custom" ? (
             <div className="flex flex-wrap items-center gap-2 border border-border p-3">
               <DateRangePicker
-                value={
-                  customFrom || customTo
-                    ? {
-                        from: customFrom ? new Date(customFrom + "T00:00:00") : undefined,
-                        to: customTo ? new Date(customTo + "T00:00:00") : undefined,
-                      }
-                    : undefined
-                }
-                onChange={(range: DateRange | undefined) => {
-                  setCustomFrom(range?.from ? range.from.toISOString().slice(0, 10) : "");
-                  setCustomTo(range?.to ? range.to.toISOString().slice(0, 10) : "");
+                from={customFrom}
+                to={customTo}
+                onChange={(range) => {
+                  setCustomFrom(range.from)
+                  setCustomTo(range.to)
                 }}
-                placeholder="Select date range"
               />
             </div>
           ) : null}
