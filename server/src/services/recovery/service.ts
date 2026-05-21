@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, not, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2386,6 +2387,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // carry-state 이슈는 에이전트 실행 대상이 아닌 document storage 목적이므로 recovery action 스킵
+      const isCarryStateIssue = await db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(eq(routines.carryStateIssueId, issue.id))
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      if (isCarryStateIssue) {
+        result.skipped += 1;
+        continue;
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
@@ -2478,6 +2491,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (!handoffEvidence.exhausted) {
+          result.skipped += 1;
+          continue;
+        }
+
+        // carry-state 이슈는 disposition 없이 종료가 정상 — 에스컬레이션 스킵
+        const isCarryState = await db
+          .select({ id: routines.id })
+          .from(routines)
+          .where(
+            and(
+              eq(routines.carryStateIssueId, issue.id),
+              not(eq(routines.status, "archived")),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (isCarryState) {
           result.skipped += 1;
           continue;
         }
