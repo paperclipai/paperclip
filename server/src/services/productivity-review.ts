@@ -5,9 +5,11 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -23,6 +25,8 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+export const DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_THRESHOLD = 3;
+export const DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -50,6 +54,8 @@ type ProductivityReviewThresholds = {
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
+  escalationThreshold: number;
+  escalationLookbackMs: number;
 };
 
 type ProductivityReviewEvidence = {
@@ -106,6 +112,10 @@ const MONITOR_SCHEDULED_SUPPRESSION_ACTORS = new Set(["assignee", "board"]);
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+function productivityReviewEscalationFingerprint(sourceIssueId: string) {
+  return `productivity-review-escalation:${sourceIssueId}`;
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -191,6 +201,14 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
     resolvedSnoozeMs: readPositiveInteger(
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
+    ),
+    escalationThreshold: readPositiveInteger(
+      overrides?.escalationThreshold ?? DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_THRESHOLD,
+      DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_THRESHOLD,
+    ),
+    escalationLookbackMs: readPositiveInteger(
+      overrides?.escalationLookbackMs ?? DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS,
     ),
   };
 }
@@ -313,6 +331,66 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(issues.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countResolvedProductivityReviews(
+    companyId: string,
+    sourceIssueId: string,
+    lookbackMs: number,
+    now: Date,
+  ): Promise<number> {
+    const cutoff = new Date(now.getTime() - lookbackMs);
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          gt(issues.updatedAt, cutoff),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  async function findOpenProductivityReviewEscalation(companyId: string, sourceIssueId: string) {
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.productivityReviewEscalation),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function latestResolvedProductivityReviews(companyId: string, sourceIssueId: string, lookbackMs: number, now: Date) {
+    const cutoff = new Date(now.getTime() - lookbackMs);
+    return db
+      .select({ id: issues.id, identifier: issues.identifier, status: issues.status, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          gt(issues.updatedAt, cutoff),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(5);
   }
 
   async function recordMonitorScheduledSuppression(suppression: MonitorScheduledSuppression) {
@@ -650,6 +728,34 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return null;
   }
 
+  async function resolveEscalationOwnerUserId(companyId: string) {
+    const rows = await db
+      .select({ userId: companyMemberships.principalId, membershipRole: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .orderBy(
+        sql`case when ${companyMemberships.membershipRole} = 'owner' then 0 when ${companyMemberships.membershipRole} = 'admin' then 1 else 2 end`,
+        asc(companyMemberships.createdAt),
+        asc(companyMemberships.id),
+      )
+      .limit(1);
+    return rows[0]?.userId ?? null;
+  }
+
+  function isProductivityReviewOptedOut(issue: IssueRow) {
+    const policy = issue.executionPolicy;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false;
+    const monitor = (policy as Record<string, unknown>).monitor;
+    if (!monitor || typeof monitor !== "object" || Array.isArray(monitor)) return false;
+    return (monitor as Record<string, unknown>).productivityReviewDisabled === true;
+  }
+
   function buildReviewMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
     const latestRuns = evidence.latestRuns.length > 0
       ? evidence.latestRuns.map((run) =>
@@ -708,9 +814,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       "## Manager Decision",
       "",
-      "- Close as productive if this pattern is expected.",
-      "- Continue with a snooze window if the current work should keep running without repeat review spam.",
-      "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      "A \"Close as productive\" verdict requires at least ONE of the following concrete progress signals:",
+      "- An assignee run-linked comment in the last 6h that contains a `Next action:` line",
+      "- A non-stale PR/MR link in the source issue's evidence (created or updated in the last 24h)",
+      "- A recent test result, artifact commit, or workspace deliverable in the last 6h",
+      "",
+      "If none of these signals is present, the correct verdict is one of:",
+      "- Request decomposition (the work is too large for a single heartbeat issue and needs to be split)",
+      "- Block with an unblock owner (the work needs human direction; name the gate)",
+      "- Stop/cancel (the work is not delivering value and should be wound down)",
+      "- Continue with a snooze window (only if the assignee has a clear next step but no surface evidence yet)",
     ].join("\n");
   }
 
@@ -866,6 +979,93 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  async function createProductivityReviewEscalation(input: {
+    sourceIssue: IssueRow;
+    priorReviewCount: number;
+    thresholds: ProductivityReviewThresholds;
+    now: Date;
+  }) {
+    const existing = await findOpenProductivityReviewEscalation(input.sourceIssue.companyId, input.sourceIssue.id);
+    if (existing) return { kind: "existing" as const, escalationIssueId: existing.id };
+
+    const [ownerUserId, priorReviews] = await Promise.all([
+      resolveEscalationOwnerUserId(input.sourceIssue.companyId),
+      latestResolvedProductivityReviews(
+        input.sourceIssue.companyId,
+        input.sourceIssue.id,
+        input.thresholds.escalationLookbackMs,
+        input.now,
+      ),
+    ]);
+    const lookbackDays = Math.round(input.thresholds.escalationLookbackMs / (24 * 60 * 60 * 1000));
+    const priorReviewLines = priorReviews.length > 0
+      ? priorReviews.map((review) => `- ${review.identifier ?? review.id}: ${review.status}, updated ${review.updatedAt.toISOString()}`).join("\n")
+      : "- no prior review rows available in the sampled lookback";
+
+    const escalation = await issuesSvc.create(input.sourceIssue.companyId, {
+      title: `[user-cover] productivity-review escalation: ${input.sourceIssue.identifier ?? input.sourceIssue.title} — ${input.priorReviewCount} prior reviews in ${lookbackDays}d`,
+      description: [
+        `Productivity review hit the repeat-review cap for ${input.sourceIssue.identifier ?? input.sourceIssue.id}.`,
+        "",
+        `- Source status: ${input.sourceIssue.status}`,
+        `- Source assignee agent: ${input.sourceIssue.assigneeAgentId ?? "none"}`,
+        `- Prior review count: ${input.priorReviewCount} prior resolved productivity reviews in ${lookbackDays}d`,
+        `- Latest source activity: ${input.sourceIssue.lastActivityAt?.toISOString?.() ?? input.sourceIssue.updatedAt.toISOString()}`,
+        `- Source started at: ${input.sourceIssue.startedAt?.toISOString?.() ?? "unknown"}`,
+        `- Source monitor next check: ${input.sourceIssue.monitorNextCheckAt?.toISOString?.() ?? "none"}`,
+        "",
+        "## Recent wrapper verdicts",
+        "",
+        priorReviewLines,
+        "",
+        "## User direction needed",
+        "",
+        "Please choose one explicit direction: cancel / hand off / decompose / let it run with the opt-out flag.",
+      ].join("\n"),
+      status: "todo",
+      priority: "high",
+      parentId: input.sourceIssue.id,
+      projectId: input.sourceIssue.projectId,
+      goalId: input.sourceIssue.goalId,
+      billingCode: input.sourceIssue.billingCode,
+      assigneeAgentId: null,
+      assigneeUserId: ownerUserId,
+      originKind: RECOVERY_ORIGIN_KINDS.productivityReviewEscalation,
+      originId: input.sourceIssue.id,
+      originFingerprint: productivityReviewEscalationFingerprint(input.sourceIssue.id),
+      requestDepth: clampIssueRequestDepth(input.sourceIssue.requestDepth + 1),
+    });
+
+    if (["todo", "in_progress", "in_review", "blocked"].includes(input.sourceIssue.status)) {
+      const existingBlockers = await db
+        .select({ blockerIssueId: issueRelations.issueId })
+        .from(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, input.sourceIssue.companyId),
+            eq(issueRelations.relatedIssueId, input.sourceIssue.id),
+            eq(issueRelations.type, "blocks"),
+          ),
+        );
+      await issuesSvc.update(input.sourceIssue.id, {
+        status: "blocked",
+        blockedByIssueIds: [...new Set([...existingBlockers.map((row) => row.blockerIssueId), escalation.id])],
+      });
+    }
+
+    logger.info(
+      {
+        companyId: input.sourceIssue.companyId,
+        sourceIssueId: input.sourceIssue.id,
+        priorReviewCount: input.priorReviewCount,
+        escalationIssueId: escalation.id,
+      },
+      "productivity review escalated chronic source issue",
+    );
+
+    return { kind: "created" as const, escalationIssueId: escalation.id };
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -895,6 +1095,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       updated: 0,
       existing: 0,
       snoozed: 0,
+      escalated: 0,
+      optedOut: 0,
       monitorScheduledSuppressed: 0,
       closedSuppressedMonitorReviews: 0,
       skipped: 0,
@@ -915,8 +1117,30 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
+      if (isProductivityReviewOptedOut(candidate)) {
+        result.optedOut += 1;
+        continue;
+      }
       if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      const priorReviewCount = await countResolvedProductivityReviews(
+        candidate.companyId,
+        candidate.id,
+        thresholds.escalationLookbackMs,
+        now,
+      );
+      if (priorReviewCount >= thresholds.escalationThreshold) {
+        const outcome = await createProductivityReviewEscalation({
+          sourceIssue: candidate,
+          priorReviewCount,
+          thresholds,
+          now,
+        });
+        if (outcome.kind === "existing") result.existing += 1;
+        else result.escalated += 1;
+        result.reviewIssueIds.push(outcome.escalationIssueId);
         continue;
       }
       const sourceAgent = await getAgent(candidate.assigneeAgentId);
@@ -1029,6 +1253,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   return {
     reconcileProductivityReviews,
+    countResolvedProductivityReviews,
     isProductivityReviewContinuationHoldActive,
     recordContinuationHold,
   };

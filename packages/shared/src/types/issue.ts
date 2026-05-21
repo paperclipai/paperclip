@@ -366,6 +366,7 @@ export interface IssueExecutionMonitorPolicy {
   timeoutAt?: string | null;
   maxAttempts?: number | null;
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+  productivityReviewDisabled?: boolean;
 }
 
 export interface IssueExecutionPolicy {

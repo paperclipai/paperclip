@@ -5,9 +5,11 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -23,6 +25,7 @@ import {
   productivityReviewService,
 } from "../services/productivity-review.ts";
 import { logActivity } from "../services/activity-log.js";
+import { RECOVERY_ORIGIN_KINDS } from "../services/recovery/origins.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -57,8 +60,10 @@ describeEmbeddedPostgres("productivity review service", () => {
     monitorScheduledBy?: "assignee" | "board" | null;
     parentId?: string | null;
     originKind?: string;
+    executionPolicy?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
+    const ownerUserId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
@@ -70,6 +75,13 @@ describeEmbeddedPostgres("productivity review service", () => {
       name: "Productivity Review Co",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "owner",
     });
     await db.insert(agents).values([
       {
@@ -110,11 +122,12 @@ describeEmbeddedPostgres("productivity review service", () => {
       startedAt: opts?.startedAt ?? createdAt,
       monitorNextCheckAt: opts?.monitorNextCheckAt ?? null,
       monitorScheduledBy: opts?.monitorScheduledBy ?? null,
+      executionPolicy: opts?.executionPolicy ?? null,
       createdAt,
       updatedAt: createdAt,
     });
 
-    return { companyId, managerId, coderId, issueId, issuePrefix, createdAt };
+    return { companyId, ownerUserId, managerId, coderId, issueId, issuePrefix, createdAt };
   }
 
   async function insertRuns(input: {
@@ -173,6 +186,47 @@ describeEmbeddedPostgres("productivity review service", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND)))
       .orderBy(issues.createdAt);
+  }
+
+  async function listProductivityReviewEscalations(companyId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, RECOVERY_ORIGIN_KINDS.productivityReviewEscalation)))
+      .orderBy(issues.createdAt);
+  }
+
+  async function insertResolvedProductivityReviews(input: {
+    companyId: string;
+    sourceIssueId: string;
+    issuePrefix: string;
+    count: number;
+    now: Date;
+    ageMs?: number;
+    status?: "done" | "cancelled";
+    hiddenAt?: Date | null;
+  }) {
+    await db.insert(issues).values(
+      Array.from({ length: input.count }, (_, index) => {
+        const createdAt = new Date(input.now.getTime() - (input.ageMs ?? 7 * 60 * 60 * 1000) - index * 60_000);
+        return {
+          id: randomUUID(),
+          companyId: input.companyId,
+          title: `Resolved productivity review ${index}`,
+          status: input.status ?? "done",
+          priority: "high",
+          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          originId: input.sourceIssueId,
+          originFingerprint: `productivity-review:${input.sourceIssueId}`,
+          parentId: input.sourceIssueId,
+          issueNumber: index + 10,
+          identifier: `${input.issuePrefix}-${randomUUID().slice(0, 8)}`,
+          hiddenAt: input.hiddenAt ?? null,
+          createdAt,
+          updatedAt: createdAt,
+        };
+      }),
+    );
   }
 
   it("creates exactly one manager-assigned review for a no-comment run streak and refreshes it idempotently", async () => {
@@ -544,6 +598,262 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     expect(result.snoozed).toBe(1);
     expect(reviews).toHaveLength(1);
+  });
+
+  it("counts only visible done productivity reviews inside the escalation lookback", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 2,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 1,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+      status: "cancelled",
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 1,
+      now,
+      ageMs: 15 * 24 * 60 * 60 * 1000,
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 1,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+      hiddenAt: now,
+    });
+
+    const count = await productivityReviewService(db).countResolvedProductivityReviews(
+      seeded.companyId,
+      seeded.issueId,
+      14 * 24 * 60 * 60 * 1000,
+      now,
+    );
+
+    expect(count).toBe(2);
+  });
+
+  it("escalates at the repeat-review threshold and blocks the source issue", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 3,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.escalated).toBe(1);
+    const [escalation] = await listProductivityReviewEscalations(seeded.companyId);
+    expect(escalation?.title).toContain(`[user-cover] productivity-review escalation: ${seeded.issuePrefix}-1`);
+    expect(escalation?.assigneeUserId).toBe(seeded.ownerUserId);
+    expect(escalation?.assigneeAgentId).toBeNull();
+    expect(escalation?.originId).toBe(seeded.issueId);
+    expect(escalation?.originFingerprint).toBe(`productivity-review-escalation:${seeded.issueId}`);
+    expect(escalation?.parentId).toBe(seeded.issueId);
+    expect(escalation?.description).toContain("3 prior resolved productivity reviews");
+    expect(escalation?.description).toContain("cancel / hand off / decompose / let it run with the opt-out flag");
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(source?.status).toBe("blocked");
+    const relations = await db
+      .select()
+      .from(issueRelations)
+      .where(and(eq(issueRelations.issueId, escalation!.id), eq(issueRelations.relatedIssueId, seeded.issueId)));
+    expect(relations).toHaveLength(1);
+  });
+
+  it("does not escalate below the repeat-review threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 2,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.escalated).toBe(0);
+    expect(result.created).toBe(1);
+    expect(await listProductivityReviewEscalations(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not duplicate an existing open productivity-review escalation", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 3,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      title: "Existing escalation",
+      status: "todo",
+      priority: "high",
+      assigneeUserId: seeded.ownerUserId,
+      originKind: RECOVERY_ORIGIN_KINDS.productivityReviewEscalation,
+      originId: seeded.issueId,
+      originFingerprint: `productivity-review-escalation:${seeded.issueId}`,
+      parentId: seeded.issueId,
+      issueNumber: 99,
+      identifier: `${seeded.issuePrefix}-99`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.existing).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(await listProductivityReviewEscalations(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("does not flip terminal source issues while escalating repeat reviews", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "todo",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db.update(issues).set({ status: "done", completedAt: now, updatedAt: now }).where(eq(issues.id, seeded.issueId));
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 3,
+      now,
+      ageMs: 8 * 60 * 60 * 1000,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.scanned).toBe(0);
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(source?.status).toBe("done");
+  });
+
+  it("opt-out flag short-circuits the candidate before snooze and escalation", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+          productivityReviewDisabled: true,
+        },
+      },
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 3,
+      now,
+      ageMs: 30 * 60 * 1000,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.optedOut).toBe(1);
+    expect(result.snoozed).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.created).toBe(0);
+  });
+
+  it("keeps snoozing recent resolved reviews before escalation counting", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertResolvedProductivityReviews({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      issuePrefix: seeded.issuePrefix,
+      count: 3,
+      now,
+      ageMs: 30 * 60 * 1000,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.snoozed).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(await listProductivityReviewEscalations(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("includes the hardened close-as-productive evidence gate in review markdown", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("A \"Close as productive\" verdict requires at least ONE");
+    expect(review?.description).toContain("An assignee run-linked comment in the last 6h that contains a `Next action:` line");
+    expect(review?.description).toContain("Request decomposition (the work is too large for a single heartbeat issue and needs to be split)");
   });
 
   it("reports and logs soft-stop holds for open no-comment reviews", async () => {

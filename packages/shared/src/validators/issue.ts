@@ -190,6 +190,7 @@ export const issueExecutionMonitorPolicySchema = z.object({
   timeoutAt: z.string().datetime().optional().nullable().default(null),
   maxAttempts: z.number().int().positive().max(100).optional().nullable().default(null),
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
+  productivityReviewDisabled: z.boolean().optional().default(false),
 });
 
 export const issueExecutionPolicySchema = z.object({
