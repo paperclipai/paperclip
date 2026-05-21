@@ -58,6 +58,20 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+/**
+ * v2 agent organisation kinds (Plan 3, shipped in PR-I, migration 0089).
+ * - "agent": individual persistent identity (legacy CEO/CTO/CMO/UX, hermes-pilot).
+ * - "guild": persistent knowledge bank that spawns ephemeral workers per task.
+ * - "orchestrator": COO/PM-style coordinator that routes work between guilds.
+ * - "worker": transient runtime instance spawned by a guild for one task.
+ *
+ * The DB column defaults all existing rows to "agent" so legacy behaviour is
+ * unchanged. The API surface (createAgentSchema) accepts kind on creation;
+ * once set, the kind discriminates routing and lifecycle semantics.
+ */
+export const AGENT_KINDS = ["agent", "guild", "orchestrator", "worker"] as const;
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
 export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   ceo: "CEO",
   cto: "CTO",

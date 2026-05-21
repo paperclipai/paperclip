@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
+  AGENT_KINDS,
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
@@ -67,6 +68,10 @@ export const agentRuntimeConfigSchema = z.object({
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
+  // v2 agent organisation kind (Plan 3): defaults to "agent" for backward
+  // compatibility. Operators set "guild" to create persistent knowledge
+  // banks; "orchestrator" and "worker" are reserved for future phases.
+  kind: z.enum(AGENT_KINDS).optional().default("agent"),
   tierPreference: z.enum(ROUTING_TIERS).optional().default("default"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
