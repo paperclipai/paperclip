@@ -22,6 +22,7 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
@@ -46,11 +47,15 @@ export function parseCostLimit(query: Record<string, unknown>) {
 
 export function costRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    toolDispatcher?: PluginToolDispatcher;
+  } = {},
 ) {
   const router = Router();
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
+    toolDispatcher: options.toolDispatcher,
   });
   const budgetHooks = {
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,

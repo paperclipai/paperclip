@@ -77,6 +77,7 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
@@ -118,7 +119,10 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    toolDispatcher?: PluginToolDispatcher;
+  } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -170,6 +174,7 @@ export function agentRoutes(
   });
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
+    toolDispatcher: options.toolDispatcher,
   });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
