@@ -106,6 +106,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    agentRuntimeConfig?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -145,7 +146,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         reportsTo: managerId,
         adapterType: "codex_local",
         adapterConfig: {},
-        runtimeConfig: {},
+        runtimeConfig: opts.agentRuntimeConfig ?? {},
         permissions: {},
       },
     ]);
@@ -797,5 +798,93 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  describe("per-agent suspicion threshold skip guard", () => {
+    it("skips evaluation when silence age is below agent-specific suspicion threshold", async () => {
+      const now = new Date("2026-05-18T20:00:00.000Z");
+      const { companyId } = await seedRunningRun({
+        now,
+        ageMs: 5400000, // 1.5h — above global 1h threshold, below agent-specific 2h threshold
+        agentRuntimeConfig: {
+          silenceSuspicionThresholdMs: 7200000, // 2h
+          silenceCriticalThresholdMs: 21600000, // 6h
+        },
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+      expect(result.created).toBe(0);
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+
+      const [evaluation] = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stale_active_run_evaluation"),
+          ),
+        );
+      expect(evaluation).toBeUndefined();
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "heartbeat.output_stale_below_agent_threshold_skipped"),
+          ),
+        );
+      expect(activity).toBeDefined();
+      expect(activity.details).toMatchObject({
+        skipReason: "below_agent_suspicion_threshold",
+        agentSuspicionThresholdMs: 7200000,
+      });
+    });
+
+    it("does not skip evaluation when silence meets agent-specific threshold", async () => {
+      const now = new Date("2026-05-18T20:00:00.000Z");
+      const { companyId } = await seedRunningRun({
+        now,
+        ageMs: 7200000 + 60 * 60 * 1000, // 3h — above 2h agent-specific threshold
+        agentRuntimeConfig: {
+          silenceSuspicionThresholdMs: 7200000, // 2h
+          silenceCriticalThresholdMs: 21600000, // 6h
+        },
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+      expect(result.created).toBeGreaterThanOrEqual(1);
+
+      const [evaluation] = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stale_active_run_evaluation"),
+          ),
+        );
+      expect(evaluation).toBeDefined();
+    });
+
+    it("does not skip evaluation when agent has no threshold override and silence is past global default", async () => {
+      const now = new Date("2026-05-18T20:00:00.000Z");
+      const { companyId } = await seedRunningRun({
+        now,
+        ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000, // just past global 1h
+        agentRuntimeConfig: {},
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+      expect(result.created).toBeGreaterThanOrEqual(1);
+    });
   });
 });

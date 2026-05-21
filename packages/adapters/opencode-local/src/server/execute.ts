@@ -310,6 +310,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTarget,
       asNumber(config.timeoutSec, 0),
     );
+    const silenceTimeoutSec = asNumber(config.silenceTimeoutSec, 1800);
     const graceSec = asNumber(config.graceSec, 20);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
@@ -579,6 +580,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: prompt,
         timeoutSec,
         graceSec,
+        silenceTimeoutSec,
         onSpawn,
         onLog,
       });
@@ -591,18 +593,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; silenceTimedOut?: boolean; stdout: string; stderr: string };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        const timeoutMessage = attempt.proc.silenceTimedOut
+          ? `Killed after ${silenceTimeoutSec}s of output silence`
+          : `Timed out after ${timeoutSec}s`;
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorMessage: timeoutMessage,
           clearSession: clearSessionOnMissingSession,
         };
       }
