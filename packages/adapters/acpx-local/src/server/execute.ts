@@ -731,6 +731,15 @@ async function buildRuntime(input: {
     if (typeof value === "string") env[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
+  // via session/set_config_option — the ACP server's set_config_option handler
+  // validates the value against its internal available-models list and rejects
+  // bare model IDs (e.g. "claude-opus-4-7") that don't exactly match a model
+  // entry in some versions. ANTHROPIC_MODEL is read during initialization, so
+  // it reliably sets the model before any turns are run.
+  if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
+    env.ANTHROPIC_MODEL = requestedModel;
+  }
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
@@ -834,7 +843,12 @@ async function buildRuntime(input: {
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
   const options: Array<{ key: string; value: string }> = [];
-  if (prepared.requestedModel) options.push({ key: "model", value: prepared.requestedModel });
+  // Model for the claude agent is pre-set via ANTHROPIC_MODEL env var at
+  // startup; skip set_config_option to avoid ACP-server model-name validation
+  // that rejects bare IDs like "claude-opus-4-7" in some runtime versions.
+  if (prepared.requestedModel && prepared.acpxAgent !== "claude") {
+    options.push({ key: "model", value: prepared.requestedModel });
+  }
   if (prepared.requestedThinkingEffort) {
     options.push({
       key: prepared.acpxAgent === "codex" ? "reasoning_effort" : "effort",
@@ -1403,7 +1417,13 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         commandNotes: [
           `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
           `Effective ACPX permission mode: ${prepared.permissionMode}.`,
-          ...(prepared.requestedModel ? [`Requested ACPX model: ${prepared.requestedModel}.`] : []),
+          ...(prepared.requestedModel
+            ? [
+                prepared.acpxAgent === "claude"
+                  ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                  : `Requested ACPX model: ${prepared.requestedModel}.`,
+              ]
+            : []),
           ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
           ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
           ...(Array.isArray(prepared.skillsIdentity.commandNotes)
