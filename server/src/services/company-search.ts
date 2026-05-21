@@ -2,6 +2,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, issues, projects } from "@paperclipai/db";
+import { issueVisibilityCondition } from "./issue-visibility.js";
 import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
@@ -300,7 +301,11 @@ export function companySearchBranchFetchLimit(limit: number, offset = 0) {
 
 export function companySearchService(db: Db) {
   return {
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { visibility?: import("./issue-visibility.js").IssueVisibility },
+    ): Promise<CompanySearchResponse> => {
       const normalizedQuery = normalizeQuery(query.q);
       const tokens = tokenizeQuery(normalizedQuery);
       const scope = query.scope;
@@ -595,6 +600,11 @@ export function companySearchService(db: Db) {
             eq(issues.companyId, companyId),
             isNull(issues.hiddenAt),
             issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch }),
+            ...(options?.visibility
+              ? [issueVisibilityCondition(options.visibility, companyId)].filter(
+                  (c): c is NonNullable<typeof c> => Boolean(c),
+                )
+              : []),
           ))
           .orderBy(desc(score), desc(issues.updatedAt), desc(issues.id))
           .limit(fetchLimit)

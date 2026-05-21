@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  PERMISSION_KEYS,
   type Agent,
+  type PermissionKey,
 } from "@paperclipai/shared";
 import { Shield, ShieldCheck, Trash2, Users } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
@@ -25,6 +27,30 @@ import { useToast } from "@/context/ToastContext";
 import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
+
+const permissionLabels: Record<PermissionKey, string> = {
+  "agents:create": "Create agents",
+  "users:invite": "Invite humans and agents",
+  "users:manage_permissions": "Manage members and grants",
+  "tasks:assign": "Assign tasks",
+  "tasks:assign_scope": "Assign scoped tasks",
+  "tasks:manage_active_checkouts": "Manage active task checkouts",
+  "tasks:view_all": "View all tasks (otherwise: own + descendants only)",
+  "joins:approve": "Approve join requests",
+  "environments:manage": "Manage environments",
+};
+
+function formatGrantSummary(member: CompanyMember) {
+  if (member.grants.length === 0) return "No explicit grants";
+  return member.grants.map((grant) => permissionLabels[grant.permissionKey]).join(", ");
+}
+
+const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>, PermissionKey[]> = {
+  owner: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "tasks:view_all", "joins:approve"],
+  admin: ["agents:create", "users:invite", "tasks:assign", "tasks:view_all", "joins:approve"],
+  operator: ["tasks:assign", "tasks:view_all"],
+  viewer: ["tasks:view_all"],
+};
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";

@@ -9,6 +9,11 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import {
+  resolveIssueVisibility,
+  assertIssueVisible,
+  type IssueVisibility,
+} from "../services/issue-visibility.js";
 
 interface WsSocket {
   readyState: number;
@@ -44,6 +49,17 @@ interface UpgradeContext {
   companyId: string;
   actorType: "board" | "agent";
   actorId: string;
+  /**
+   * For the board (human) actor path: true if the upgrade was authorized via
+   * the local_trusted implicit board fallback (no real authenticated user).
+   * Local-implicit board users bypass issue-visibility scoping.
+   */
+  isLocalImplicit?: boolean;
+  /**
+   * For the board actor path: true if the resolved user has the
+   * `instance_admin` role and therefore bypasses issue-visibility scoping.
+   */
+  isInstanceAdmin?: boolean;
 }
 
 interface IncomingMessageWithContext extends IncomingMessage {
@@ -52,6 +68,58 @@ interface IncomingMessageWithContext extends IncomingMessage {
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Adapts a WS UpgradeContext into the `Request["actor"]` shape that
+ * `resolveIssueVisibility` consumes. The visibility resolver only inspects
+ * `type`, `source`, `isInstanceAdmin`, and `userId`, so we just provide
+ * those four fields.
+ */
+function buildActorForVisibility(context: {
+  actorType: "board" | "agent";
+  actorId: string;
+  isLocalImplicit?: boolean;
+  isInstanceAdmin?: boolean;
+}): Parameters<typeof resolveIssueVisibility>[2] {
+  if (context.actorType === "agent") {
+    return {
+      type: "agent",
+      agentId: context.actorId,
+      source: "agent_jwt",
+    } as Parameters<typeof resolveIssueVisibility>[2];
+  }
+  return {
+    type: "board",
+    userId: context.actorId,
+    source: context.isLocalImplicit ? "local_implicit" : "session",
+    isInstanceAdmin: Boolean(context.isInstanceAdmin),
+  } as Parameters<typeof resolveIssueVisibility>[2];
+}
+
+/**
+ * Extracts an `issueId` from a live event payload when the event references
+ * a specific issue. Returns `null` for events that aren't issue-scoped
+ * (those are always delivered).
+ */
+function readIssueIdFromEvent(event: unknown): string | null {
+  if (typeof event !== "object" || event === null) return null;
+  const payload = (event as { payload?: unknown }).payload;
+  if (typeof payload !== "object" || payload === null) return null;
+  const candidate = (payload as { issueId?: unknown; entityId?: unknown; entityType?: unknown });
+  if (typeof candidate.issueId === "string" && candidate.issueId.length > 0) {
+    return candidate.issueId;
+  }
+  // For activity.logged-shaped events the issue id lives under entityId when
+  // entityType === "issue".
+  if (
+    candidate.entityType === "issue"
+    && typeof candidate.entityId === "string"
+    && candidate.entityId.length > 0
+  ) {
+    return candidate.entityId;
+  }
+  return null;
 }
 
 function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {
@@ -113,6 +181,7 @@ async function authorizeUpgrade(
         companyId,
         actorType: "board",
         actorId: "board",
+        isLocalImplicit: true,
       };
     }
 
@@ -149,6 +218,7 @@ async function authorizeUpgrade(
       companyId,
       actorType: "board",
       actorId: userId,
+      isInstanceAdmin: Boolean(roleRow),
     };
   }
 
@@ -198,15 +268,56 @@ export function setupLiveEventsWebSocketServer(
     }
   }, 30000);
 
-  wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
+  wss.on("connection", async (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
     if (!context) {
       socket.close(1008, "missing context");
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
+    const subscriberCompanyId = context.companyId;
+    // Resolve the subscriber's issue visibility once per connection. Agents,
+    // local-implicit board users, and instance admins all collapse to
+    // {mode:"all"} and skip per-event filtering on the hot path.
+    const subscriberVisibility: IssueVisibility = await resolveIssueVisibility(
+      db,
+      subscriberCompanyId,
+      buildActorForVisibility(context),
+    );
+    const visibilityCache = new Map<string, { visible: boolean; expiresAt: number }>();
+    const VISIBILITY_CACHE_TTL_MS = 30_000;
+    const VISIBILITY_CACHE_MAX_ENTRIES = 500;
+
+    async function shouldDeliverIssueEvent(issueId: string): Promise<boolean> {
+      if (subscriberVisibility.mode === "all") return true;
+      const cached = visibilityCache.get(issueId);
+      const now = Date.now();
+      if (cached && cached.expiresAt > now) return cached.visible;
+      try {
+        await assertIssueVisible(db, subscriberCompanyId, issueId, subscriberVisibility);
+        visibilityCache.set(issueId, { visible: true, expiresAt: now + VISIBILITY_CACHE_TTL_MS });
+        if (visibilityCache.size > VISIBILITY_CACHE_MAX_ENTRIES) {
+          // Cheap LRU-ish prune: drop oldest 20% of entries by insertion order.
+          const prune = Math.ceil(VISIBILITY_CACHE_MAX_ENTRIES * 0.2);
+          let i = 0;
+          for (const key of visibilityCache.keys()) {
+            if (i++ >= prune) break;
+            visibilityCache.delete(key);
+          }
+        }
+        return true;
+      } catch {
+        visibilityCache.set(issueId, { visible: false, expiresAt: now + VISIBILITY_CACHE_TTL_MS });
+        return false;
+      }
+    }
+
+    const unsubscribe = subscribeCompanyLiveEvents(subscriberCompanyId, async (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
+      if (subscriberVisibility.mode === "scoped") {
+        const issueId = readIssueIdFromEvent(event);
+        if (issueId && !(await shouldDeliverIssueEvent(issueId))) return;
+      }
       socket.send(JSON.stringify(event));
     });
 

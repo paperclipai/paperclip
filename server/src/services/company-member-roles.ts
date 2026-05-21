@@ -32,6 +32,7 @@ export function grantsForHumanRole(
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "users:manage_permissions", scope: null },
         { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "tasks:view_all", scope: null },
         { permissionKey: "joins:approve", scope: null },
       ];
     case "admin":
@@ -40,12 +41,18 @@ export function grantsForHumanRole(
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "tasks:view_all", scope: null },
         { permissionKey: "joins:approve", scope: null },
       ];
     case "operator":
-      return [{ permissionKey: "tasks:assign", scope: null }];
+      return [
+        { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "tasks:view_all", scope: null },
+      ];
     case "viewer":
-      return [];
+      return [
+        { permissionKey: "tasks:view_all", scope: null },
+      ];
   }
 }
 
