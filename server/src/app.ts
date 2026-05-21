@@ -145,6 +145,23 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+  const slowRequestThresholdMs = 500;
+  app.use((req, res, next) => {
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      const durationMs = Date.now() - startedAt;
+      if (durationMs <= slowRequestThresholdMs) return;
+      logger.warn({
+        event: "slow_request",
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        durationMs,
+        runId: req.header("x-paperclip-run-id") ?? null,
+      }, "slow request");
+    });
+    next();
+  });
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
