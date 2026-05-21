@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
 import { activityApi } from "../api/activity";
 import { queryKeys } from "../lib/queryKeys";
+import { useCompany } from "../context/CompanyContext";
 import { cn } from "../lib/utils";
 import type { Agent, Issue } from "@paperclipai/shared";
 
@@ -109,6 +110,9 @@ function SignalPill({
 }
 
 export function FactoryHealthBadge({ companyId, agents }: FactoryHealthBadgeProps) {
+  const { selectedCompany } = useCompany();
+  const prefix = selectedCompany?.issuePrefix ?? "";
+
   const commonQueryOptions = {
     staleTime: REFRESH_INTERVAL_MS,
     refetchInterval: REFRESH_INTERVAL_MS,
@@ -160,24 +164,26 @@ export function FactoryHealthBadge({ companyId, agents }: FactoryHealthBadgeProp
     : "gray";
   const activeAgentsTone: SignalTone = activeAgentsCount > 0 ? "green" : "gray";
 
+  const cycleIssueRef = latestCycle?.identifier ?? latestCycle?.id;
+
   return (
     <div className="flex w-full flex-wrap items-center gap-2">
       <SignalPill
-        to="/issues?status=todo,in_progress,blocked"
+        to={`/${prefix}/issues?status=todo,in_progress,blocked`}
         title="Open factory management issues"
         label="Open FM"
         value={String(fmCount)}
         tone={fmTone}
       />
       <SignalPill
-        to={latestCycle ? `/issues/${latestCycle.id}` : "/issues"}
+        to={cycleIssueRef ? `/${prefix}/issues/${cycleIssueRef}` : `/${prefix}/issues`}
         title="Last completed cycle status"
         label="Last cycle"
         value={latestCycle ? (latestCycle.status === "done" ? "Pass" : "Fail") : "Unknown"}
         tone={cycleTone}
       />
       <SignalPill
-        to="/agents"
+        to={`/${prefix}/agents`}
         title="Active agents in last 15 minutes"
         label="Active agents (15m)"
         value={String(activeAgentsCount)}
