@@ -57,6 +57,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { deleteAgentJobsForRun, listLiveAgentJobRunIds } from "./k8s-job-liveness.js";
+import { processPendingImageBumpForAgent } from "./agent-image-bump.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -187,6 +188,12 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator, EnvironmentRunError } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+// Run statuses considered terminal. Used to gate the agent-image-bump
+// run-completion hook in setRunStatus: a deferred image bump is retried
+// only when its agent reaches one of these states. Non-terminal transitions
+// (queued ↔ running) must NOT trigger the bump.
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -4107,6 +4114,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+
+      // BLO-4141: when a run reaches a terminal state, retry any deferred image
+      // bump for the agent. Fire-and-forget — failures stay inside the
+      // processor (logged there + self-healing on the next terminal transition),
+      // and we never want a bump-retry error to surface as a heartbeat error
+      // since the run itself finished cleanly.
+      if (TERMINAL_RUN_STATUSES.has(updated.status)) {
+        const agentIdForBump = updated.agentId;
+        const runIdForBump = updated.id;
+        void processPendingImageBumpForAgent(db, agentIdForBump).catch((err) => {
+          logger.warn(
+            {
+              agentId: agentIdForBump,
+              runId: runIdForBump,
+              error: err instanceof Error ? err.message : String(err),
+            },
+            "processPendingImageBumpForAgent failed; will retry on next run completion",
+          );
+        });
+      }
     }
 
     return updated;

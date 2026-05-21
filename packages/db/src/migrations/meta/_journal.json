@@ -694,6 +694,13 @@
       "when": 1778842800000,
       "tag": "0098_activity_log_entity_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1779317570852,
+      "tag": "0099_agents_pending_image_bump",
+      "breakpoints": true
     }
   ]
 }

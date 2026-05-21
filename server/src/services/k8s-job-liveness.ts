@@ -129,6 +129,41 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
   }
 }
 
+// Verified against production Job pod labels (kubectl get pods -l app.kubernetes.io/managed-by=paperclip)
+// and adapter sources at paperclip-adapter-{claude,opencode}-k8s/src/server/job-manifest.ts
+// which set "paperclip.io/agent-id" (hyphen) on every agent Job.
+const AGENT_ID_LABEL = "paperclip.io/agent-id";
+
+/**
+ * Returns true when there is at least one active (not yet completed) Job for
+ * the given agent in the paperclip namespace. Returns false when the kube API
+ * is unavailable (not in cluster, RBAC missing, transient error) so the
+ * caller can degrade to DB-only in-flight detection.
+ */
+export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
+  const state = initClient();
+  if (state.kind !== "ready") return false;
+  try {
+    const res = await state.api.listNamespacedJob({
+      namespace: PAPERCLIP_K8S_NAMESPACE,
+      labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
+    });
+    const items = res.items ?? [];
+    return items.some((job) => {
+      const status = job.status;
+      if (!status) return true;
+      const active = status.active ?? 0;
+      const succeeded = status.succeeded ?? 0;
+      const failed = status.failed ?? 0;
+      return active > 0 || (succeeded === 0 && failed === 0);
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn({ agentId, error: reason }, "k8s in-flight check failed; falling back to DB-only");
+    return false;
+  }
+}
+
 /** Test-only hook to force re-init (e.g. after env changes). */
 export function __resetK8sJobLivenessClient() {
   clientState = { kind: "uninitialized" };
