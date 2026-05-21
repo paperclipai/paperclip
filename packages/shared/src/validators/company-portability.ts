@@ -45,6 +45,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   logoPath: z.string().nullable(),
   attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
+  operatorDigestEnabled: z.boolean().optional(),
   feedbackDataSharingEnabled: z.boolean().default(false),
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
   feedbackDataSharingConsentByUserId: z.string().nullable().default(null),

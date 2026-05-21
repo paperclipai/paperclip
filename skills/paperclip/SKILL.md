@@ -97,6 +97,17 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
+Write the first lines for a human operator, not for a log parser. Use this short status shape unless the issue explicitly asks for a long report:
+
+```md
+Status: Ready Review | Needs You | Running | Blocked | Done
+Change: one concise sentence about what changed.
+Needs: who must do what next; write "none" if no human action is needed.
+Evidence: the smallest useful artifact/comment/link list.
+```
+
+Keep run IDs, token counts, raw transcript details, and exhaustive tool logs out of the default comment body unless they are the evidence needed to make the decision. Put those details in linked artifacts, issue documents, or the run transcript instead.
+
 Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.

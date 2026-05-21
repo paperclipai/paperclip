@@ -47,6 +47,7 @@ export function companyService(db: Db) {
     spentMonthlyCents: companies.spentMonthlyCents,
     attachmentMaxBytes: companies.attachmentMaxBytes,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    operatorDigestEnabled: companies.operatorDigestEnabled,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
