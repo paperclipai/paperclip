@@ -339,6 +339,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueWorkProducts);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -846,6 +847,99 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       )
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
+
+  it("skips operator-only pending confirmations on already blocked issues without logging every sweep", async () => {
+    const { companyId, issueId } = await seedAssignedTodoNoRunFixture();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Confirm plan",
+      summary: "Operator approval required.",
+      payload: { title: "Confirm plan", summary: "Operator approval required." },
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+    const second = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+
+    expect(first).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(second).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+    });
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.filter((event) => event.action === "issue.thread_interaction_operator_waiting")).toHaveLength(0);
+  });
+
+  it("wakes an agent-wakeable stalled pending interaction cleanly", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T01:00:00.000Z");
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "implementation_followup",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Resume implementation",
+      summary: "Agent needs to continue the interaction.",
+      createdByAgentId: agentId,
+      payload: { title: "Resume implementation", summary: "Agent needs to continue the interaction." },
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileStalledIssueThreadInteractions({ now, thresholdMs: 10 * 60 * 1000 });
+
+    expect(first).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 1,
+      skipped: 0,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const stalledWakeups = wakeups.filter((wakeup) => wakeup.reason === "issue_interaction_stalled");
+    expect(stalledWakeups).toHaveLength(1);
+    expect(stalledWakeups[0]?.payload).toMatchObject({
+      issueId,
+      interactionId,
+      interactionKind: "implementation_followup",
+      mutation: "stalled_interaction_recovery",
+    });
+  });
 
   async function seedQueuedIssueRunFixture() {
     const companyId = randomUUID();
