@@ -571,7 +571,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       if (blocker.status === "blocked") {
         const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
         if (nested) return nested;
-        if (hasExplicitWaitingPath(blocker)) continue;
+        // Chain below this blocked intermediate is clean — skip leaf inspection.
+        // A transitive terminal blocker may be suppressed (e.g. in_review + pending interaction);
+        // checking the intermediate node's own assignee/state would produce a false positive.
+        continue;
       }
 
       const leafFinding = blockedFindingForLeaf(source, blocker, path);
