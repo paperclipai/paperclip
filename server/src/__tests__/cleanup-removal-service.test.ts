@@ -6,14 +6,17 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   documents,
   documentRevisions,
+  financeEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
   issueReadStates,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -44,11 +47,14 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(issueReadStates);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(companySkills);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -227,5 +233,69 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes finance and cost events linked to heartbeat runs before deleting the company", async () => {
+    const { agentId, companyId, issueId, runId } = await seedFixture();
+    const costEventId = randomUUID();
+    const occurredAt = new Date("2026-05-01T12:00:00.000Z");
+
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      issueId,
+      heartbeatRunId: runId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "tokens",
+      model: "gpt-4",
+      costCents: 12,
+      occurredAt,
+    });
+
+    await db.insert(financeEvents).values({
+      companyId,
+      agentId,
+      issueId,
+      heartbeatRunId: runId,
+      costEventId,
+      biller: "openai",
+      eventKind: "usage",
+      amountCents: 12,
+      currency: "USD",
+      direction: "debit",
+      estimated: false,
+      occurredAt,
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("removes issue thread interactions before deleting the company", async () => {
+    const { companyId, issueId } = await seedFixture();
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, tasks: [] },
+    });
+
+    const removed = await companyService(db).remove(companyId);
+
+    expect(removed?.id).toBe(companyId);
+    await expect(
+      db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId)),
+    ).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 });
