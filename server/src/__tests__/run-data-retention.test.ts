@@ -400,10 +400,13 @@ describeEmbedded("run-data-retention", () => {
   it("clamps heartbeatRunEventsDays to heartbeatRunsDays via loadConfig", async () => {
     const origEventsEnv = process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUN_EVENTS_DAYS;
     const origRunsEnv = process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUNS_DAYS;
+    const origBind = process.env.PAPERCLIP_BIND;
     try {
       // Set events > runs to trigger clamping
       process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUN_EVENTS_DAYS = "30";
       process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUNS_DAYS = "10";
+      // loadConfig validates bind mode — override to loopback so this test is machine-agnostic
+      process.env.PAPERCLIP_BIND = "loopback";
       const { loadConfig } = await import("../config.js");
       const config = loadConfig();
       // AD3: events should be clamped to runs value
@@ -414,6 +417,8 @@ describeEmbedded("run-data-retention", () => {
       else process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUN_EVENTS_DAYS = origEventsEnv;
       if (origRunsEnv === undefined) delete process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUNS_DAYS;
       else process.env.PAPERCLIP_RETENTION_HEARTBEAT_RUNS_DAYS = origRunsEnv;
+      if (origBind === undefined) delete process.env.PAPERCLIP_BIND;
+      else process.env.PAPERCLIP_BIND = origBind;
     }
   });
 
