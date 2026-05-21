@@ -86,10 +86,10 @@ export function CompanySettings() {
   });
 
   const settingsMutation = useMutation({
-    mutationFn: (requireApproval: boolean) =>
-      companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
-      }),
+    mutationFn: (data: {
+      requireBoardApprovalForNewAgents?: boolean;
+      operatorDigestEnabled?: boolean;
+    }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
@@ -416,6 +416,22 @@ export function CompanySettings() {
         </div>
       )}
 
+      {/* Review experience */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Review experience
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="Operator digest"
+            hint="Show a compact human-readable issue summary for state, next action, evidence, and risk."
+            checked={selectedCompany.operatorDigestEnabled !== false}
+            onChange={(enabled) => settingsMutation.mutate({ operatorDigestEnabled: enabled })}
+            toggleTestId="company-settings-operator-digest-toggle"
+          />
+        </div>
+      </div>
+
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -426,7 +442,7 @@ export function CompanySettings() {
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
-            onChange={(v) => settingsMutation.mutate(v)}
+            onChange={(v) => settingsMutation.mutate({ requireBoardApprovalForNewAgents: v })}
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>

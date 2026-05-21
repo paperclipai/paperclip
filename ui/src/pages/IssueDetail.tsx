@@ -76,6 +76,7 @@ import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { OperatorDigestCard } from "../components/OperatorDigestCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -106,6 +107,7 @@ import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key"
 import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
+import { buildOperatorDigest } from "../lib/operator-digest";
 import {
   SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION,
@@ -1221,7 +1223,7 @@ function IssueDetailActivityTab({
 
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
-  const { selectedCompanyId } = useCompany();
+  const { companies, selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
@@ -1551,6 +1553,22 @@ export function IssueDetail() {
   const panelChildIssues = useMemo(
     () => childIssues,
     [issuePanelKey],
+  );
+  const issueCompany = useMemo(
+    () => issue ? companies.find((company) => company.id === issue.companyId) ?? null : null,
+    [companies, issue?.companyId],
+  );
+  const operatorDigest = useMemo(
+    () => issue && issueCompany?.operatorDigestEnabled !== false
+      ? buildOperatorDigest({
+        issue,
+        childIssues,
+        comments,
+        interactions,
+        hasLiveRuns,
+      })
+      : null,
+    [childIssues, comments, hasLiveRuns, interactions, issue, issueCompany?.operatorDigestEnabled],
   );
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
   const siblingNavigation = useMemo(
@@ -3631,6 +3649,10 @@ export function IssueDetail() {
             await uploadAttachment.mutateAsync(file);
           }}
         />
+
+        {operatorDigest ? (
+          <OperatorDigestCard digest={operatorDigest} />
+        ) : null}
       </div>
 
       <PluginSlotOutlet
