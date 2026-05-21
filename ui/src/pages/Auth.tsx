@@ -59,6 +59,21 @@ export function AuthPage() {
     },
   });
 
+  const microsoftMutation = useMutation({
+    mutationFn: async () => authApi.signInSocial({ provider: "microsoft", callbackURL: nextPath }),
+    onSuccess: ({ url }) => {
+      setError(null);
+      window.location.assign(url);
+    },
+    onError: (err) => {
+      setError(
+        err instanceof Error
+          ? `Microsoft sign-in unavailable: ${err.message}`
+          : "Microsoft sign-in unavailable.",
+      );
+    },
+  });
+
   const canSubmit =
     email.trim().length > 0 &&
     password.trim().length > 0 &&
@@ -158,6 +173,28 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {mode === "sign_in" && (
+            <>
+              <div className="my-5 flex items-center gap-3">
+                <div className="h-px flex-1 bg-border" />
+                <span className="text-xs text-muted-foreground">or</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={microsoftMutation.isPending}
+                onClick={() => {
+                  setError(null);
+                  microsoftMutation.mutate();
+                }}
+              >
+                {microsoftMutation.isPending ? "Redirecting…" : "Sign in with Microsoft"}
+              </Button>
+            </>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
