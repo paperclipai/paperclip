@@ -1,6 +1,7 @@
 export { execute } from "./execute.js";
 export { listGeminiSkills, syncGeminiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
+export { getConfigSchema } from "./config-schema.js";
 export {
   parseGeminiJsonl,
   isGeminiUnknownSessionError,
