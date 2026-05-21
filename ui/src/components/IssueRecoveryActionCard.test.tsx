@@ -99,6 +99,7 @@ function buildAction(overrides: Partial<IssueRecoveryAction> = {}): IssueRecover
     monitorPolicy: null,
     attemptCount: 1,
     maxAttempts: 3,
+    stale: false,
     timeoutAt: null,
     lastAttemptAt: "2026-05-09T19:30:00.000Z",
     outcome: null,
