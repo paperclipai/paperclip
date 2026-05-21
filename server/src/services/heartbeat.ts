@@ -188,6 +188,8 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator, EnvironmentRunError } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { createServerGbrainClient } from "./gbrain-client-factory.js";
+import { runSweepWakePreflight } from "./sweep-wake-preflight.js";
 
 // Run statuses considered terminal. Used to gate the agent-image-bump
 // run-completion hook in setRunStatus: a deferred image bump is retried
@@ -2696,6 +2698,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const sweepWakePreflightGbrain = createServerGbrainClient();
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const ccrotateServeBaseUrl =
@@ -7304,6 +7307,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const candidate of candidates) {
       try {
+        const preflight = await runSweepWakePreflight({
+          db,
+          gbrain: sweepWakePreflightGbrain,
+          agent: {
+            id: candidate.assigneeAgentId,
+            companyId: candidate.companyId,
+            name: "",
+          },
+          issueId: candidate.id,
+        });
+        if (preflight.skip) {
+          skipped += 1;
+          continue;
+        }
         const result = await enqueueWakeup(candidate.assigneeAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -9977,24 +9994,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_dependencies_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
-              unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
-          });
-          return { kind: "skipped" as const };
+          return {
+            kind: "dependency_blocked" as const,
+            unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+          };
         }
 
         if (activeExecutionRun) {
@@ -10158,6 +10161,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
+      if (outcome.kind === "dependency_blocked") {
+        const preflight = await runSweepWakePreflight({
+          db,
+          gbrain: sweepWakePreflightGbrain,
+          agent,
+          issueId,
+        });
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: preflight.skip ? "server_side_sweep_preflight" : "issue_dependencies_blocked",
+          payload: {
+            ...(payload ?? {}),
+            issueId,
+            unresolvedBlockerIssueIds: outcome.unresolvedBlockerIssueIds,
+          },
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          finishedAt: new Date(),
+        });
+        return null;
+      }
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
