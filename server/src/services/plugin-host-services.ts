@@ -64,6 +64,7 @@ import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -480,7 +481,11 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
-  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    toolDispatcher?: PluginToolDispatcher;
+    manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1;
+  } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -2171,6 +2176,18 @@ export function buildHostServices(
           .returning()
           .then((rows) => rows.length);
         if (deleted === 0) throw new Error(`Session not found: ${params.sessionId}`);
+      },
+    },
+
+    tools: {
+      async register(params) {
+        if (disposed) {
+          throw new Error("Host services have been disposed");
+        }
+        if (!options.toolDispatcher) {
+          throw new Error("Tool dispatcher not available");
+        }
+        options.toolDispatcher.registerDynamicTool(pluginKey, params.name, params.declaration, pluginId);
       },
     },
 
