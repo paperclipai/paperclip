@@ -171,6 +171,31 @@ The valid action-path primitives are:
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
 
+### Recovery action lifecycle - automatic resolution on liveness-restored
+
+An open explicit recovery action is **covered** when its `sourceIssueId`
+currently exhibits at least one valid action-path primitive listed above.
+
+During the same startup/periodic reconciliation pass that opens recovery
+actions for stranded work, Paperclip must also evaluate existing open recovery
+actions and clear any that are already covered:
+
+- resolve with `outcome=restored` when the source issue has a healthy live path
+- use the mapped terminal outcome when the source issue is now `blocked` or
+  `cancelled`
+- close the recovery action in that same pass rather than leaving stale
+  operator cleanup work
+
+Manual resolution remains the operator override path via:
+`POST /api/issues/{issueId}/recovery-actions/{actionId}/resolve`.
+
+This rule preserves three invariants:
+
+- productive work continues once liveness is restored
+- only real blockers stop work; stale recovery wrappers do not
+- no infinite loops from repeatedly reopening and re-resolving already-covered
+  recovery state
+
 ### Explicit recovery actions
 
 An explicit recovery action is a typed liveness repair path for a source issue. It is the recovery primitive; the action can be rendered directly on the source issue or backed by a separate recovery issue when the repair needs its own work item.
@@ -334,6 +359,11 @@ On startup and on the periodic recovery loop, Paperclip now does four things in 
 4. scan silent active runs and create or update explicit watchdog recovery actions
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
+
+The same reconciliation pass also performs recovery-action auto-resolution for
+already-covered actions (see §7). This keeps stranded-work repair and recovery
+cleanup in one deterministic lifecycle, while the watchdog scan remains focused
+on active-run silence signals rather than stale recovered actions.
 
 ## 10. Silent Active-Run Watchdog
 
