@@ -29,6 +29,8 @@ type GatewayDeviceIdentity = {
   source: "configured" | "ephemeral";
 };
 
+type DeviceAuthPayloadVersion = "v2" | "v3";
+
 type GatewayRequestFrame = {
   type: "req";
   id: string;
@@ -80,6 +82,7 @@ type GatewayClientRequestOptions = {
 
 const PROTOCOL_VERSION = 3;
 const DEFAULT_SCOPES = ["operator.admin"];
+const DEFAULT_DEVICE_AUTH_PAYLOAD_VERSION: DeviceAuthPayloadVersion = "v2";
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
@@ -525,7 +528,8 @@ function signDevicePayload(privateKeyPem: string, payload: string): string {
   return base64UrlEncode(sig);
 }
 
-function buildDeviceAuthPayloadV3(params: {
+function buildDeviceAuthPayload(params: {
+  version: DeviceAuthPayloadVersion;
   deviceId: string;
   clientId: string;
   clientMode: string;
@@ -539,6 +543,19 @@ function buildDeviceAuthPayloadV3(params: {
 }): string {
   const scopes = params.scopes.join(",");
   const token = params.token ?? "";
+  if (params.version === "v2") {
+    return [
+      "v2",
+      params.deviceId,
+      params.clientId,
+      params.clientMode,
+      params.role,
+      scopes,
+      String(params.signedAtMs),
+      token,
+      params.nonce,
+    ].join("|");
+  }
   const platform = params.platform?.trim() ?? "";
   const deviceFamily = params.deviceFamily?.trim() ?? "";
   return [
@@ -554,6 +571,10 @@ function buildDeviceAuthPayloadV3(params: {
     platform,
     deviceFamily,
   ].join("|");
+}
+
+function normalizeDeviceAuthPayloadVersion(value: unknown): DeviceAuthPayloadVersion {
+  return value === "v3" ? "v3" : DEFAULT_DEVICE_AUTH_PAYLOAD_VERSION;
 }
 
 function resolveDeviceIdentity(config: Record<string, unknown>): GatewayDeviceIdentity {
@@ -1077,6 +1098,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const role = nonEmpty(ctx.config.role) ?? DEFAULT_ROLE;
   const scopes = normalizeScopes(ctx.config.scopes);
   const deviceFamily = nonEmpty(ctx.config.deviceFamily);
+  const deviceAuthPayloadVersion = normalizeDeviceAuthPayloadVersion(ctx.config.deviceAuthVersion);
   const disableDeviceAuth = parseBoolean(ctx.config.disableDeviceAuth, false);
 
   const wakePayload = buildWakePayload(ctx);
@@ -1215,7 +1237,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (deviceIdentity) {
         await ctx.onLog(
           "stdout",
-          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId}\n`,
+          `[openclaw-gateway] device auth enabled keySource=${deviceIdentity.source} deviceId=${deviceIdentity.deviceId} payloadVersion=${deviceAuthPayloadVersion}\n`,
         );
       } else {
         await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
@@ -1248,7 +1270,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
 
         if (deviceIdentity) {
-          const payload = buildDeviceAuthPayloadV3({
+          const payload = buildDeviceAuthPayload({
+            version: deviceAuthPayloadVersion,
             deviceId: deviceIdentity.deviceId,
             clientId,
             clientMode,

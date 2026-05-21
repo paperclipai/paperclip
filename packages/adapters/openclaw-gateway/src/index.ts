@@ -27,6 +27,7 @@ Gateway connect identity fields:
 - clientVersion (string, optional): client version string
 - role (string, optional): gateway role (default operator)
 - scopes (string[] | comma string, optional): gateway scopes (default ["operator.admin"])
+- deviceAuthVersion (string, optional): signed device payload version ("v2" default, "v3" for newer gateways)
 - disableDeviceAuth (boolean, optional): disable signed device payload in connect params (default false)
 
 Request behavior fields:
