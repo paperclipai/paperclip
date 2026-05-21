@@ -954,13 +954,15 @@ export function IssuesList({
     if (merged.size > 0) return [...merged.values()];
     return isPending ? issues : [];
   }, [boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
-  const boardColumnLimitReached = useMemo(
-    () =>
-      viewState.viewMode === "board" &&
-      !searchWithinLoadedIssues &&
-      boardIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
-    [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
-  );
+  const boardCappedStatuses = useMemo(() => {
+    if (viewState.viewMode !== "board" || searchWithinLoadedIssues) return new Set<IssueStatus>();
+    return new Set<IssueStatus>(
+      boardIssueStatuses.filter(
+        (_, i) => (boardIssueQueries[i]?.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT,
+      ),
+    );
+  }, [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode]);
+  const boardColumnLimitReached = boardCappedStatuses.size > 0;
 
   const filtered = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
@@ -1568,9 +1570,18 @@ export function IssuesList({
         </p>
       )}
       {boardColumnLimitReached && (
-        <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
-        </p>
+        <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground">
+          <p>
+            Board view is capped at {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues per status column. Some older Done, Cancelled, or Backlog issues may be hidden. Use search, filters, or List view to find the rest.
+          </p>
+          <button
+            type="button"
+            className="shrink-0 underline underline-offset-2 hover:text-foreground transition-colors"
+            onClick={() => updateView({ viewMode: "list" })}
+          >
+            Switch to List view
+          </button>
+        </div>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
@@ -1588,6 +1599,7 @@ export function IssuesList({
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
           collapsedStatuses={boardCollapsedStatuses}
+          cappedStatuses={boardCappedStatuses}
           initialVisibleCount={viewState.boardColumnPageSize}
           revealIncrement={viewState.boardColumnPageSize}
           onUpdateIssue={onUpdateIssue}
