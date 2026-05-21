@@ -2354,6 +2354,9 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
         ? Number(rawPrNumber)
         : null;
   if (prNumber === null) return null;
+  const rawPrRole = readNonEmptyString(contextSnapshot.prRole);
+  const prRole: "author" | "reviewer" | null =
+    rawPrRole === "author" || rawPrRole === "reviewer" ? rawPrRole : null;
   return {
     wakeReason: wakeReason ?? "github_pull_request",
     prNumber,
@@ -2361,6 +2364,10 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
     event: readNonEmptyString(contextSnapshot.githubEvent),
     deliveryId: readNonEmptyString(contextSnapshot.githubDeliveryId),
     reviewKind: reviewKind ?? null,
+    prRole,
+    reviewBody: readNonEmptyString(contextSnapshot.githubPrReviewBody),
+    reviewState: readNonEmptyString(contextSnapshot.githubPrReviewState),
+    reviewAuthorLogin: readNonEmptyString(contextSnapshot.githubPrReviewAuthorLogin),
   };
 }
 
@@ -2387,6 +2394,10 @@ export function buildPaperclipTaskMarkdown(input: {
     event?: string | null;
     deliveryId?: string | null;
     reviewKind?: string | null;
+    prRole?: "author" | "reviewer" | null;
+    reviewBody?: string | null;
+    reviewState?: string | null;
+    reviewAuthorLogin?: string | null;
   } | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
@@ -2418,11 +2429,30 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Wake reason: ${quoteTaskScalar(prReview.wakeReason)}`,
     );
     if (prReview.event) lines.push(`- GitHub event: ${quoteTaskScalar(prReview.event)}`);
-    lines.push(
-      "",
-      "GitHub PR review directive:",
-      "A GitHub webhook woke you to review this pull request. Follow your AGENTS.md PR-review workflow against the PR above. Do not short-circuit to an inbox check — the PR IS your assignment for this run.",
-    );
+    if (prReview.prRole === "author") {
+      const reviewerLabel = prReview.reviewAuthorLogin ?? "A reviewer";
+      const stateLabel = prReview.reviewState ? prReview.reviewState.toUpperCase() : null;
+      lines.push(
+        "",
+        "GitHub PR review feedback directive:",
+        stateLabel
+          ? `${reviewerLabel} just submitted a review on YOUR pull request (state: ${stateLabel}).`
+          : `${reviewerLabel} just posted findings on YOUR pull request.`,
+      );
+      if (prReview.reviewBody) {
+        lines.push("", "Latest review body:", fenceTaskText(prReview.reviewBody));
+      }
+      lines.push(
+        "",
+        "Read the latest review on the PR above (use `gh pr view` / `gh api` if the body is missing here). If the findings are correct, push a follow-up commit addressing them. If they are wrong or out of scope, reply on the PR with rationale. Do NOT close the PR or self-approve. The PR's status is your responsibility this run; don't bounce to inbox-only mode.",
+      );
+    } else {
+      lines.push(
+        "",
+        "GitHub PR review directive:",
+        "A GitHub webhook woke you to review this pull request. Follow your AGENTS.md PR-review workflow against the PR above. Do not short-circuit to an inbox check — the PR IS your assignment for this run.",
+      );
+    }
     if (issue || wakeComment) {
       lines.push("");
     }

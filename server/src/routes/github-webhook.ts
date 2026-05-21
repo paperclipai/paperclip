@@ -100,6 +100,31 @@ interface ResolvedEventContext {
   wakeReason: string;
   prNumber: number | null;
   repoFullName: string | null;
+  // pull_request_review.submitted only — drives the author-facing directive
+  // so the assignee wake's prompt carries the reviewer's findings without
+  // needing a separate `gh pr view` shellout.
+  reviewBody?: string | null;
+  reviewState?: string | null;
+  reviewAuthorLogin?: string | null;
+}
+
+// Cap review body in contextSnapshot so the heartbeat-run row stays small.
+// Author directive renders the truncation marker so the author knows to
+// fetch the full body via `gh pr view`.
+const REVIEW_BODY_MAX_BYTES = 4096;
+
+function clampReviewBody(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (Buffer.byteLength(trimmed, "utf8") <= REVIEW_BODY_MAX_BYTES) return trimmed;
+  // Byte-length truncation so UTF-8 multibyte characters don't split.
+  const buf = Buffer.from(trimmed, "utf8");
+  let cut = buf.subarray(0, REVIEW_BODY_MAX_BYTES).toString("utf8");
+  // `toString("utf8")` replaces split surrogates with U+FFFD; strip a
+  // trailing replacement char to avoid a visible glyph in the directive.
+  if (cut.endsWith("�")) cut = cut.slice(0, -1);
+  return `${cut}\n…(truncated)`;
 }
 
 function resolveEventContext(
@@ -197,11 +222,19 @@ function resolveEventContext(
       if (action !== "submitted") return null;
       const pr = payload.pull_request as Record<string, unknown> | undefined;
       const collected = collectFromPullRequest(pr);
+      const review = payload.review as Record<string, unknown> | undefined;
+      const reviewBody = clampReviewBody(review?.body as string | null | undefined);
+      const reviewState = (review?.state as string | undefined) ?? null;
+      const reviewUser = review?.user as Record<string, unknown> | undefined;
+      const reviewAuthorLogin = (reviewUser?.login as string | undefined) ?? null;
       return {
         identifiers: collected.ids,
         wakeReason: "github_pr_review_submitted",
         prNumber: collected.number,
         repoFullName,
+        reviewBody,
+        reviewState,
+        reviewAuthorLogin,
       };
     }
     case "pull_request": {
@@ -315,6 +348,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
             reviewKind: "pr_review",
+            prRole: "reviewer",
           },
           // One wake per PR per event so a flurry of check_run/synchronize
           // bursts on the same PR don't trigger N reviews.
@@ -390,6 +424,12 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
         skipped.push({ issueIdentifier: issue.identifier, reason: "unassigned" });
         continue;
       }
+      // PR-shaped wakes carry an `prRole: "author"` marker so the
+      // heartbeat directive flips from reviewer-shaped ("review this PR")
+      // to author-shaped ("a reviewer just posted findings on YOUR PR").
+      // Non-PR wakes (CI completion, etc.) leave prRole unset.
+      const isPrWake =
+        context.wakeReason.startsWith("github_pr_") && context.prNumber !== null;
       try {
         await heartbeat.wakeup(issue.assigneeAgentId, {
           source: "automation",
@@ -414,7 +454,22 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubDeliveryId: deliveryId,
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
+            ...(isPrWake ? { prRole: "author" as const } : {}),
+            ...(context.reviewBody ? { githubPrReviewBody: context.reviewBody } : {}),
+            ...(context.reviewState ? { githubPrReviewState: context.reviewState } : {}),
+            ...(context.reviewAuthorLogin
+              ? { githubPrReviewAuthorLogin: context.reviewAuthorLogin }
+              : {}),
           },
+          // Coalesce rapid bursts on the same PR/event so a single review
+          // submission can't fan into N author runs. Parallel to the
+          // reviewer wake's `pr_review:<repo>:<num>:<reason>` key but
+          // scoped by issue so two issues sharing a PR each get their own.
+          ...(isPrWake
+            ? {
+                idempotencyKey: `pr_review_author:${issue.id}:${context.repoFullName ?? "unknown"}:${context.prNumber}:${context.wakeReason}`,
+              }
+            : {}),
         });
         wakes.push({ issueIdentifier: issue.identifier, agentId: issue.assigneeAgentId });
       } catch (err) {

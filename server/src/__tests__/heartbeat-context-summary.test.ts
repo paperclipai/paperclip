@@ -74,6 +74,80 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(prReviewMarkdown).toContain("GitHub PR review directive:");
     expect(prReviewMarkdown).toContain("Follow your AGENTS.md PR-review workflow");
     expect(prReviewMarkdown).toContain("Do not short-circuit to an inbox check");
+    // Author-shaped directive must NOT leak into the legacy reviewer path
+    // (BLO-6300: same prompt was being injected for both wake recipients).
+    expect(prReviewMarkdown).not.toContain("GitHub PR review feedback directive:");
+  });
+
+  it("explicit prRole='reviewer' uses the same reviewer directive as the legacy path", () => {
+    const reviewerMarkdown = buildPaperclipTaskMarkdown({
+      issue: null,
+      prReview: {
+        wakeReason: "github_pr_opened",
+        prNumber: 35,
+        repoFullName: "Blockcast/paperclip",
+        event: "pull_request",
+        prRole: "reviewer",
+      },
+    });
+    expect(reviewerMarkdown).toContain("GitHub PR review directive:");
+    expect(reviewerMarkdown).toContain("Follow your AGENTS.md PR-review workflow");
+    expect(reviewerMarkdown).not.toContain("GitHub PR review feedback directive:");
+  });
+
+  it("renders an author-facing directive when prRole === 'author' on a review-submitted wake", () => {
+    // BLO-6300: the assignee wake fired by pull_request_review.submitted
+    // used to inject the reviewer-shaped "review this PR" directive into
+    // the PR author's prompt. Now the author gets a directive that maps
+    // to what they're supposed to do: read findings + push a follow-up.
+    const authorMarkdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "BLO-5269",
+        title: "Aggregator",
+        workMode: null,
+        description: null,
+      },
+      prReview: {
+        wakeReason: "github_pr_review_submitted",
+        prNumber: 953,
+        repoFullName: "Blockcast/magma",
+        event: "pull_request_review",
+        prRole: "author",
+        reviewBody: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
+        reviewState: "commented",
+        reviewAuthorLogin: "ally",
+      },
+    });
+
+    // Reviewer directive must not leak through.
+    expect(authorMarkdown).not.toContain("GitHub PR review directive:");
+    expect(authorMarkdown).not.toContain("Follow your AGENTS.md PR-review workflow");
+    // Author directive header + reviewer attribution.
+    expect(authorMarkdown).toContain("GitHub PR review feedback directive:");
+    expect(authorMarkdown).toContain("ally just submitted a review on YOUR pull request (state: COMMENTED).");
+    // Review body fence-block injected inline so the author doesn't need
+    // to shell out to `gh pr view` just to read the findings.
+    expect(authorMarkdown).toContain("Latest review body:");
+    expect(authorMarkdown).toContain("Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.");
+    // Closing instructions: push follow-up / reply / don't self-approve.
+    expect(authorMarkdown).toContain("push a follow-up commit");
+    expect(authorMarkdown).toContain("Do NOT close the PR or self-approve");
+  });
+
+  it("falls back to a generic author-facing directive when reviewer login / state / body are missing", () => {
+    const authorMarkdown = buildPaperclipTaskMarkdown({
+      issue: null,
+      prReview: {
+        wakeReason: "github_pr_review_submitted",
+        prNumber: 953,
+        repoFullName: "Blockcast/magma",
+        event: "pull_request_review",
+        prRole: "author",
+      },
+    });
+    expect(authorMarkdown).toContain("A reviewer just posted findings on YOUR pull request.");
+    expect(authorMarkdown).not.toContain("Latest review body:");
   });
 
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
@@ -118,7 +192,53 @@ describe("derivePaperclipPrReview", () => {
       event: "pull_request",
       deliveryId: "abc-123",
       reviewKind: "pr_review",
+      prRole: null,
+      reviewBody: null,
+      reviewState: null,
+      reviewAuthorLogin: null,
     });
+  });
+
+  it("surfaces prRole='author' + review body/state/login on assignee wakes (BLO-6300)", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_review_submitted",
+        githubPrNumber: 953,
+        githubRepoFullName: "Blockcast/magma",
+        githubEvent: "pull_request_review",
+        prRole: "author",
+        githubPrReviewBody: "Critical: silent 200 on read-only serializer.",
+        githubPrReviewState: "commented",
+        githubPrReviewAuthorLogin: "ally",
+      }),
+    ).toMatchObject({
+      prRole: "author",
+      reviewBody: "Critical: silent 200 on read-only serializer.",
+      reviewState: "commented",
+      reviewAuthorLogin: "ally",
+    });
+  });
+
+  it("surfaces prRole='reviewer' on the reviewer wake", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_opened",
+        githubPrNumber: 35,
+        githubRepoFullName: "Blockcast/paperclip",
+        prRole: "reviewer",
+      })?.prRole,
+    ).toBe("reviewer");
+  });
+
+  it("rejects unknown prRole values (defends against contextSnapshot drift)", () => {
+    expect(
+      derivePaperclipPrReview({
+        wakeReason: "github_pr_opened",
+        githubPrNumber: 35,
+        githubRepoFullName: "Blockcast/paperclip",
+        prRole: "bystander",
+      })?.prRole,
+    ).toBeNull();
   });
 
   it("coerces string-form PR numbers (operators sometimes pass strings via curl)", () => {

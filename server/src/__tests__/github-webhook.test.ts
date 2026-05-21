@@ -118,6 +118,74 @@ describe("github-webhook pure helpers", () => {
       prNumber: 200,
     });
   });
+
+  it("extracts review body / state / author from pull_request_review.submitted so the assignee wake can render it inline (BLO-6300)", () => {
+    const ctx = __test_resolveEventContext("pull_request_review", {
+      action: "submitted",
+      pull_request: {
+        number: 953,
+        title: "feat(cdn): BLO-5269 aggregator",
+        body: null,
+        head: { ref: "feat/BLO-5269" },
+      },
+      review: {
+        body: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
+        state: "commented",
+        user: { login: "ally" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    });
+    expect(ctx).toMatchObject({
+      identifiers: ["BLO-5269"],
+      wakeReason: "github_pr_review_submitted",
+      prNumber: 953,
+      repoFullName: "Blockcast/magma",
+      reviewBody: "Critical: PushExtCDNCacheHitRates POSTs to a read-only serializer.",
+      reviewState: "commented",
+      reviewAuthorLogin: "ally",
+    });
+  });
+
+  it("truncates oversize review bodies to ~4KB with a marker so the contextSnapshot row stays small (BLO-6300)", () => {
+    // 5000-byte body — 1KB over the 4096-byte cap.
+    const longBody = "x".repeat(5000);
+    const ctx = __test_resolveEventContext("pull_request_review", {
+      action: "submitted",
+      pull_request: {
+        number: 953,
+        title: "feat: BLO-5269",
+        head: { ref: "feat/BLO-5269" },
+      },
+      review: {
+        body: longBody,
+        state: "commented",
+        user: { login: "ally" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    });
+    expect(ctx?.reviewBody).toMatch(/…\(truncated\)$/);
+    // 4096-byte body + truncation marker (~14 bytes), but always less than
+    // the raw 5000 bytes — confirms we actually cut something.
+    expect(ctx?.reviewBody?.length).toBeLessThan(5000);
+  });
+
+  it("returns null reviewBody when the reviewer submitted an empty body (state-only review)", () => {
+    const ctx = __test_resolveEventContext("pull_request_review", {
+      action: "submitted",
+      pull_request: {
+        number: 953,
+        head: { ref: "feat/BLO-5269" },
+      },
+      review: {
+        body: "",
+        state: "approved",
+        user: { login: "ally" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    });
+    expect(ctx?.reviewBody).toBeNull();
+    expect(ctx?.reviewState).toBe("approved");
+  });
 });
 
 describeEmbeddedPostgres("github-webhook route", () => {
