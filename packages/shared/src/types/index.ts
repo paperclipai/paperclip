@@ -62,6 +62,17 @@ export type {
   CompanySkillFileUpdateRequest,
 } from "./company-skill.js";
 export type {
+  CompanyToolSource,
+  CompanyToolRisk,
+  ToolAccessMode,
+  CompanyTool,
+  AgentToolGrant,
+  ToolAccessMatrix,
+  ToolAccessPolicy,
+  ToolAccessPresetGrant,
+  ToolAccessPreset,
+} from "./tool-access.js";
+export type {
   AgentSkillSyncMode,
   AgentSkillState,
   AgentSkillOrigin,
@@ -77,6 +88,7 @@ export type {
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
+  AgentRuntimeIdentity,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,

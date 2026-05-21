@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -479,6 +482,54 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("registers Hermes runtime identity support", () => {
+    const adapter = findServerAdapter("hermes_local");
+
+    expect(adapter?.ensureRuntimeIdentity).toEqual(expect.any(Function));
+  });
+
+  it("detects Hermes model defaults from HERMES_HOME config", async () => {
+    const hermesHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-detect-"));
+    await writeFile(
+      path.join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  provider: openrouter",
+        "  default: anthropic/claude-sonnet-4",
+        "",
+      ].join("\n"),
+    );
+    const previousHermesHome = process.env.HERMES_HOME;
+    const previousHermesModel = process.env.HERMES_MODEL;
+    const previousHermesInferenceModel = process.env.HERMES_INFERENCE_MODEL;
+    process.env.HERMES_HOME = hermesHome;
+    delete process.env.HERMES_MODEL;
+    delete process.env.HERMES_INFERENCE_MODEL;
+    try {
+      await expect(detectAdapterModel("hermes_local")).resolves.toEqual({
+        model: "anthropic/claude-sonnet-4",
+        provider: "openrouter",
+        source: path.join(hermesHome, "config.yaml"),
+      });
+    } finally {
+      if (previousHermesHome === undefined) {
+        delete process.env.HERMES_HOME;
+      } else {
+        process.env.HERMES_HOME = previousHermesHome;
+      }
+      if (previousHermesModel === undefined) {
+        delete process.env.HERMES_MODEL;
+      } else {
+        process.env.HERMES_MODEL = previousHermesModel;
+      }
+      if (previousHermesInferenceModel === undefined) {
+        delete process.env.HERMES_INFERENCE_MODEL;
+      } else {
+        process.env.HERMES_INFERENCE_MODEL = previousHermesInferenceModel;
+      }
+    }
   });
 });
 
