@@ -1677,12 +1677,12 @@ function shouldAutoCheckoutIssueForWake(input: {
 }) {
   if (input.issueAssigneeAgentId !== input.agentId) return false;
   if (!input.isDependencyReady) return false;
+  if (isBlockedCommentInteractionWake(input.contextSnapshot, input.issueStatus)) return false;
 
   const issueStatus = readNonEmptyString(input.issueStatus);
   if (
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -1694,6 +1694,17 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason.startsWith("execution_")) return false;
 
   return true;
+}
+
+function isBlockedCommentInteractionWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  issueStatus: string | null | undefined,
+) {
+  if (contextSnapshot?.blockedCommentInteraction === true) return true;
+  if (readNonEmptyString(issueStatus) !== "blocked") return false;
+  if (!deriveCommentId(contextSnapshot, null)) return false;
+  if (contextSnapshot?.resumeIntent === true || contextSnapshot?.followUpRequested === true) return false;
+  return allowsIssueInteractionWake(contextSnapshot);
 }
 
 function shouldQueueFollowupForRunningIssueWake(input: {
@@ -3827,6 +3838,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
 
+    // Runs promoted to reopen a closed issue (deferred comment wake on done/cancelled)
+    // should not spawn a liveness continuation — the issue was just reopened and the
+    // run completed its purpose (delivering the comment context).
+    if (readNonEmptyString(context.reopenedFrom)) return;
+
+    // Runs that were themselves promoted from a deferred wake should not spawn a
+    // liveness continuation — the promotion already queued the follow-up work and a
+    // second continuation would create a duplicate run that races with it.
+    if (context.deferredWakePromotion === true) return;
+
     const [issue, agent] = await Promise.all([
       db
         .select({
@@ -5883,8 +5904,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
-    if (claimedIssueId) {
+    const claimedContext = parseObject(claimed.contextSnapshot);
+    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
+    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
+    const claimedIssueStatus = claimedIssueId
+      ? await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+          .then((rows) => rows[0]?.status ?? null)
+      : null;
+    if (
+      claimedIssueId &&
+      claimedWakeReason !== "source_scoped_recovery_action" &&
+      !isBlockedCommentInteractionWake(claimedContext, claimedIssueStatus)
+    ) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
@@ -8226,7 +8260,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           continue;
         }
 
-        const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed };
+        const promotedContextSeed: Record<string, unknown> = { ...deferredContextSeed, deferredWakePromotion: true };
+        if (
+          issue.status === "blocked" &&
+          allowsIssueInteractionWake(deferredContextSeed) &&
+          deferredContextSeed.resumeIntent !== true &&
+          deferredContextSeed.followUpRequested !== true
+        ) {
+          promotedContextSeed.blockedCommentInteraction = true;
+        }
         if (activePauseHold) {
           promotedContextSeed.treeHoldInteraction = true;
           promotedContextSeed.activeTreeHold = {
@@ -8346,16 +8388,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        await tx
-          .update(issues)
-          .set({
-            executionRunId: newRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
-            executionLockedAt: now,
-            updatedAt: now,
-          })
-          // Promoted mention wakes are issue-scoped, not issue ownership transfers.
-          .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        if (!isBlockedCommentInteractionWake(promotedContextSnapshot, issue.status)) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: newRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(deferredAgent.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            // Promoted mention wakes are issue-scoped, not issue ownership transfers.
+            .where(and(eq(issues.id, issue.id), eq(issues.assigneeAgentId, deferredAgent.id)));
+        }
 
         return {
           kind: "promoted" as const,
@@ -8902,6 +8946,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue.id,
             dependencyReadiness.unresolvedBlockerIssueIds,
           );
+        }
+
+        if (
+          issue.status === "blocked" &&
+          allowsIssueInteractionWake(enrichedContextSnapshot) &&
+          enrichedContextSnapshot.resumeIntent !== true &&
+          enrichedContextSnapshot.followUpRequested !== true
+        ) {
+          enrichedContextSnapshot.blockedCommentInteraction = true;
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
