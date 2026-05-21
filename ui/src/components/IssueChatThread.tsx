@@ -1168,6 +1168,50 @@ function getThreadMessageCopyText(message: ThreadMessage) {
     .join("\n\n");
 }
 
+function getThreadCopyAllText(messages: readonly ThreadMessage[]) {
+  const parts: string[] = [];
+  for (const message of messages) {
+    const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+    const authorName =
+      typeof custom?.["authorName"] === "string"
+        ? custom["authorName"]
+        : typeof custom?.["runAgentName"] === "string"
+          ? custom["runAgentName"]
+          : null;
+
+    const label =
+      message.role === "user"
+        ? "User"
+        : message.role === "assistant"
+          ? (authorName ?? "Agent")
+          : message.role === "system"
+            ? "System"
+            : message.role;
+
+    const timestamp = message.createdAt ? formatDateTime(message.createdAt) : "";
+    const header = timestamp ? `--- ${label} (${timestamp}) ---` : `--- ${label} ---`;
+
+    const contentLines: string[] = [];
+    for (const part of message.content) {
+      if (part.type === "text" || part.type === "reasoning") {
+        if (part.text.trim().length > 0) contentLines.push(part.text);
+      } else if (part.type === "tool-call") {
+        const lines = [`Tool: ${part.toolName}`];
+        if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
+        if (typeof part.result === "string" && part.result.trim()) lines.push(`Result:\n${part.result}`);
+        contentLines.push(lines.join("\n\n"));
+      }
+    }
+
+    if (contentLines.length > 0) {
+      parts.push([header, ...contentLines].join("\n\n"));
+    } else {
+      parts.push(header);
+    }
+  }
+  return parts.join("\n\n---\n\n");
+}
+
 const IssueChatTextParts = memo(function IssueChatTextParts({
   message,
   recessed = false,
@@ -3688,6 +3732,7 @@ export function IssueChatThread({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
+  const [copiedAll, setCopiedAll] = useState(false);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -4120,6 +4165,14 @@ export function IssueChatThread({
     scrollToLatestCommentWithSettle(latestMessagesRef.current);
   }
 
+  const handleCopyAll = useCallback(() => {
+    const text = getThreadCopyAllText(messages);
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 2000);
+    });
+  }, [messages]);
+
   const stableOnVote = useStableEvent(onVote);
   const stableOnStopRun = useStableEvent(onStopRun);
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
@@ -4217,6 +4270,17 @@ export function IssueChatThread({
               data-testid="thread-viewport"
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
+              {messages.length > 0 ? (
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleCopyAll}
+                    className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {copiedAll ? "Copied!" : "Copy all"}
+                  </button>
+                </div>
+              ) : null}
               {messages.length === 0 ? (
                 <div className={cn(
                   "text-center text-sm text-muted-foreground",
