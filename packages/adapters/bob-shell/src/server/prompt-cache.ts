@@ -5,6 +5,7 @@ import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { ensurePaperclipSkillSymlink, type PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import { ROLE_GROUPS, ROLE_WHEN_TO_USE } from "./workspace/types.js";
 
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 
@@ -216,28 +217,6 @@ export async function prepareBobPromptBundle(input: {
     instructionsFilePath,
   };
 }
-
-const ROLE_GROUPS: Record<string, string[]> = {
-  ceo:      ["read", "command", "mcp"],
-  cto:      ["read", "command", "mcp"],
-  cmo:      ["read", "mcp"],
-  cfo:      ["read", "mcp"],
-  coo:      ["read", "command", "mcp"],
-  vp:       ["read", "command", "mcp"],
-  manager:  ["read", "mcp"],
-  engineer: ["read", "edit", "command", "mcp"],
-};
-
-const ROLE_WHEN_TO_USE: Record<string, string> = {
-  ceo:      "Strategic oversight, executive decisions, and company-level approvals.",
-  cto:      "Architecture review, technical planning, and engineering governance.",
-  cmo:      "Marketing strategy, content direction, and brand decisions.",
-  cfo:      "Financial analysis, budget review, and cost decisions.",
-  coo:      "Operations coordination, process management, and cross-team work.",
-  vp:       "Division leadership, team management, and delivery oversight.",
-  manager:  "Task coordination, team management, and issue triage.",
-  engineer: "Coding, debugging, refactoring, testing, and validation.",
-};
 
 function generateCustomModesYaml(
   mode: string,

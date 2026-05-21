@@ -2,46 +2,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import yaml from "yaml";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
-
-interface BobWorkspaceSyncInput {
-  cwd: string;
-  companyId: string;
-  agentId: string;
-  agentName: string;
-  agentRole: string;
-  agentCapabilities: string | null;
-  agentInstructions?: string;
-  mode: string;
-  modeConfig?: Record<string, unknown>;
-  skills: PaperclipSkillEntry[];
-  env: Record<string, string>;
-  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-}
-
-interface BobCustomMode {
-  slug: string;
-  name: string;
-  roleDefinition: string;
-  whenToUse: string;
-  customInstructions: string;
-  groups: string[];
-}
-
-interface BobCustomModesConfig {
-  customModes: BobCustomMode[];
-}
-
-interface BobMcpServer {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-
-interface BobMcpConfig {
-  mcpServers: Record<string, BobMcpServer>;
-}
-
-const PAPERCLIP_MCP_SERVER_NAME = "paperclip";
+import {
+  PAPERCLIP_MCP_SERVER_NAME,
+  ROLE_GROUPS,
+  ROLE_WHEN_TO_USE,
+  type BobCustomMode,
+  type BobCustomModesConfig,
+  type BobMcpConfig,
+  type BobMcpServer,
+  type BobWorkspaceSyncInput,
+} from "./workspace/types.js";
 
 /**
  * Reads existing .bob/custom_modes.yaml and preserves non-Paperclip modes
@@ -76,28 +46,6 @@ async function readExistingMcpConfig(bobDir: string): Promise<BobMcpConfig> {
   }
   return { mcpServers: {} };
 }
-
-const ROLE_GROUPS: Record<string, string[]> = {
-  ceo:      ["read", "command", "mcp"],
-  cto:      ["read", "command", "mcp"],
-  cmo:      ["read", "mcp"],
-  cfo:      ["read", "mcp"],
-  coo:      ["read", "command", "mcp"],
-  vp:       ["read", "command", "mcp"],
-  manager:  ["read", "mcp"],
-  engineer: ["read", "edit", "command", "mcp"],
-};
-
-const ROLE_WHEN_TO_USE: Record<string, string> = {
-  ceo:      "Strategic oversight, executive decisions, and company-level approvals.",
-  cto:      "Architecture review, technical planning, and engineering governance.",
-  cmo:      "Marketing strategy, content direction, and brand decisions.",
-  cfo:      "Financial analysis, budget review, and cost decisions.",
-  coo:      "Operations coordination, process management, and cross-team work.",
-  vp:       "Division leadership, team management, and delivery oversight.",
-  manager:  "Task coordination, team management, and issue triage.",
-  engineer: "Coding, debugging, refactoring, testing, and validation.",
-};
 
 /**
  * Generates the Paperclip-managed custom mode for Bob Shell
