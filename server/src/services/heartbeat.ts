@@ -1769,6 +1769,12 @@ function isCheckoutConflictError(error: unknown): boolean {
   return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
 }
 
+// Detect 422 refusals from checkout when the issue status is blocked.
+// These are a known gate condition, not an adapter failure.
+function isCheckoutBlockedError(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 422 && error.message.startsWith("Issue is blocked");
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -6934,6 +6940,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
+        if (isCheckoutBlockedError(error)) {
+          // Issue is in blocked state — cancel this run as a dependency gate so the agent
+          // stays idle instead of entering error state for a non-adapter condition.
+          await cancelQueuedRunForBlockedDependencies(run, issueId, []);
+          await finalizeAgentStatus(agent.id, "cancelled");
+          return;
+        }
         if (!isCheckoutConflictError(error)) throw error;
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
       }
