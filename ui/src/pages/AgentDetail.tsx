@@ -79,6 +79,8 @@ import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import {
   isUuidLike,
   type Agent,
+  type AgentInstructionsBundle,
+  type AgentInstructionsFileSummary,
   type AgentSkillEntry,
   type AgentSkillSnapshot,
   type AgentDetail as AgentDetailRecord,
@@ -137,6 +139,7 @@ export function AgentDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialogActions();
+  const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -306,6 +309,57 @@ export function AgentDetail() {
       setActionError(err instanceof Error ? err.message : agentDetailUi.actionFailedFallback);
     },
   });
+
+  const duplicateAgent = useMutation({
+    mutationFn: async () => {
+      if (!agent?.id || !resolvedCompanyId) {
+        throw new Error("Agent is not ready to duplicate");
+      }
+
+      const instructionsBundle = await loadDuplicateInstructionsBundle(agent.id, resolvedCompanyId);
+      const payload = buildDuplicateAgentPayload(agent, instructionsBundle);
+
+      try {
+        return await agentsApi.create(resolvedCompanyId, payload);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409 && error.message.includes("requires board approval")) {
+          const hire = await agentsApi.hire(resolvedCompanyId, payload);
+          return hire.agent;
+        }
+        throw error;
+      }
+    },
+    onSuccess: async (createdAgent) => {
+      setActionError(null);
+      if (resolvedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      }
+      pushToast({
+        title: "Agent duplicated",
+        body: createdAgent.name,
+        tone: "success",
+      });
+      navigate(`/agents/${agentRouteRef(createdAgent)}/dashboard`);
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : "Failed to duplicate agent";
+      setActionError(message);
+      pushToast({
+        title: "Could not duplicate agent",
+        body: message,
+        tone: "error",
+      });
+    },
+  });
+
+  const handleDuplicateAgent = useCallback(() => {
+    if (!agent || duplicateAgent.isPending) return;
+    const nextName = duplicateAgentName(agent.name);
+    const confirmed = window.confirm(`Duplicate ${agent.name} as ${nextName}?`);
+    setMoreOpen(false);
+    if (!confirmed) return;
+    duplicateAgent.mutate();
+  }, [agent, duplicateAgent]);
 
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
@@ -479,6 +533,18 @@ export function AgentDetail() {
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="end">
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                disabled={duplicateAgent.isPending}
+                onClick={handleDuplicateAgent}
+              >
+                {duplicateAgent.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+                Duplicate Agent
+              </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                 onClick={() => {

@@ -286,7 +286,13 @@ export function formatIssueActivityAction(
   }
 
   if (
-    (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
+    (
+      action === "issue.document_created" ||
+      action === "issue.document_updated" ||
+      action === "issue.document_locked" ||
+      action === "issue.document_unlocked" ||
+      action === "issue.document_deleted"
+    ) &&
     details
   ) {
     const key = typeof details.key === "string" ? details.key : "document";

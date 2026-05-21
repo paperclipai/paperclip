@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -73,6 +74,10 @@ vi.mock("../services/index.js", () => ({
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
   }),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   logActivity: vi.fn(async () => undefined),
@@ -130,6 +135,10 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
@@ -197,6 +206,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

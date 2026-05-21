@@ -184,6 +184,6 @@ export function decideRunLivenessContinuation(input: {
       livenessContinuationState: livenessState,
       livenessContinuationReason: livenessReason,
       livenessContinuationInstruction: payload.instruction,
-    }),
+    }, "normal_model"),
   };
 }

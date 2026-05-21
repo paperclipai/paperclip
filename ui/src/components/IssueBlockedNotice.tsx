@@ -1,4 +1,9 @@
-import type { IssueBlockerAttention, IssueRelationIssueSummary, SuccessfulRunHandoffState } from "@paperclipai/shared";
+import type {
+  IssueBlockerAttention,
+  IssueRecoveryAction,
+  IssueRelationIssueSummary,
+  SuccessfulRunHandoffState,
+} from "@paperclipai/shared";
 import { AlertTriangle, Flag } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -70,6 +75,7 @@ export function IssueBlockedNotice({
 
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
+    const recoveryAction = blocker.activeRecoveryAction ?? null;
     return (
       <IssueLinkQuicklook
         key={blocker.id}
@@ -81,6 +87,7 @@ export function IssueBlockedNotice({
         <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
+        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
       </IssueLinkQuicklook>
     );
   };

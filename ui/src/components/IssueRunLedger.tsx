@@ -665,6 +665,7 @@ export function IssueRunLedgerContent({
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
+            const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
               <article
                 key={`run:${run.runId}`}
@@ -745,6 +746,7 @@ export function IssueRunLedgerContent({
                       </span>
                     );
                   })()}
+                  {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
                   <span className="ml-auto shrink-0">{relativeTime(item.timestamp)}</span>
                 </div>
 

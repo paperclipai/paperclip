@@ -1,5 +1,6 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { CloudAccessGate } from "./components/CloudAccessGate";
@@ -153,6 +154,7 @@ function boardRoutes() {
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
       <Route path="inbox/unread" element={<Inbox />} />
+      <Route path="inbox/blocked" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/blocked" element={<Inbox />} />
       <Route path="inbox/requests" element={<JoinRequestQueue />} />
@@ -273,6 +275,7 @@ function UnprefixedBoardRedirect() {
 
 function NoCompaniesStartPage() {
   const { openOnboarding } = useDialogActions();
+  const { t } = useTranslation();
 
   return (
     <div className="mx-auto max-w-xl py-10">

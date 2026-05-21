@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { execute } from "@paperclipai/adapter-claude-local/server";
+import { claudeSessionCwdMatchesExecutionTarget, execute } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
   commandPath: string,
@@ -580,7 +580,7 @@ describe("claude execute", () => {
     const remoteWorkspace = path.join(root, "sandbox-$HOME");
     const binDir = path.join(root, "bin");
     const commandPath = path.join(binDir, "claude");
-    const capturePath = path.join(remoteWorkspace, "capture.json");
+    const capturePath1 = path.join(remoteWorkspace, "capture-1.json");
     const claudeRoot = path.join(root, ".claude");
     const previousHome = process.env.HOME;
     const previousPath = process.env.PATH;
@@ -615,7 +615,7 @@ describe("claude execute", () => {
           command: commandPath,
           cwd: localWorkspace,
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath1,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
@@ -635,7 +635,17 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(result.sessionParams).toMatchObject({
+        cwd: localWorkspace,
+        remoteExecution: {
+          transport: "sandbox",
+          providerKey: "e2b",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: remoteWorkspace,
+        },
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath1, "utf8")) as CapturePayload;
       expect(capture.argv).toContain("--allowedTools");
       expect(capture.argv).toContain(
         "Task AskUserQuestion Bash(*) CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
@@ -654,6 +664,19 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it("allows remote session resumes when saved cwd is the host workspace", () => {
+    expect(claudeSessionCwdMatchesExecutionTarget({
+      runtimeSessionCwd: "/host/workspace",
+      effectiveExecutionCwd: "/remote/workspace",
+      executionTargetIsRemote: true,
+    })).toBe(true);
+    expect(claudeSessionCwdMatchesExecutionTarget({
+      runtimeSessionCwd: "/host/workspace",
+      effectiveExecutionCwd: "/remote/workspace",
+      executionTargetIsRemote: false,
+    })).toBe(false);
+  });
 
   it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));

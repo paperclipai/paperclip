@@ -36,6 +36,7 @@ import type {
   FeedbackVoteValue,
   IssueAttachment,
   IssueBlockerAttention,
+  IssueRecoveryAction,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
   IssueWorkMode,
@@ -135,6 +136,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
+import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -298,6 +300,14 @@ interface IssueChatThreadProps {
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  recoveryAction?: IssueRecoveryAction | null;
+  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  canFalsePositiveRecoveryAction?: boolean;
+  legacyRecoverySourceIssue?: {
+    identifier: string | null;
+    href: string;
+    title?: string | null;
+  } | null;
   assigneeUserId?: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
@@ -333,6 +343,7 @@ interface IssueChatThreadProps {
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
+  footer?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -3607,6 +3618,10 @@ export function IssueChatThread({
   blockedBy = [],
   blockerAttention = null,
   successfulRunHandoff = null,
+  recoveryAction = null,
+  onResolveRecoveryAction,
+  canFalsePositiveRecoveryAction = false,
+  legacyRecoverySourceIssue = null,
   companyId,
   projectId,
   issueStatus,
@@ -3634,6 +3649,7 @@ export function IssueChatThread({
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
+  footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
@@ -4242,11 +4258,49 @@ export function IssueChatThread({
                     onResume={onResumeFromBacklog}
                     resuming={resumeFromBacklogPending}
                   />
+                  {recoveryAction ? (
+                    <IssueRecoveryActionCard
+                      action={recoveryAction}
+                      agentMap={agentMap}
+                      onResolve={onResolveRecoveryAction}
+                      canFalsePositive={canFalsePositiveRecoveryAction}
+                    />
+                  ) : null}
+                  {legacyRecoverySourceIssue ? (
+                    <SystemNotice
+                      tone="info"
+                      label="Legacy recovery issue"
+                      body={
+                        <span>
+                          Legacy recovery issue. Newer recovery actions live on the source issue
+                          {legacyRecoverySourceIssue.identifier ? (
+                            <>
+                              {" — "}
+                              <Link
+                                to={legacyRecoverySourceIssue.href}
+                                className="underline-offset-2 hover:underline"
+                              >
+                                {legacyRecoverySourceIssue.identifier}
+                                {legacyRecoverySourceIssue.title ? (
+                                  <span className="text-muted-foreground">
+                                    {" "}
+                                    — {legacyRecoverySourceIssue.title}
+                                  </span>
+                                ) : null}
+                              </Link>
+                            </>
+                          ) : (
+                            "."
+                          )}
+                        </span>
+                      }
+                    />
+                  ) : null}
                   <IssueBlockedNotice
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
-                    successfulRunHandoff={successfulRunHandoff}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
                         ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
@@ -4256,6 +4310,7 @@ export function IssueChatThread({
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
+              {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div

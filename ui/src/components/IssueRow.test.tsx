@@ -228,7 +228,7 @@ describe("IssueRow", () => {
     });
   });
 
-  it("renders planning mode marker for planning work mode issues", () => {
+  it("does not render a planning mode marker for planning work mode issues", () => {
     const root = createRoot(container);
 
     act(() => {

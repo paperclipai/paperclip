@@ -19,6 +19,9 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
 
 type SqlRef = { schema: string; table: string; keyword: string };
+type QualifiedRefPattern =
+  | { pattern: RegExp; groups: "keyword-schema-table" }
+  | { pattern: RegExp; groups: "schema-table"; keyword: string };
 
 export type PluginDatabaseRuntimeResult<T = Record<string, unknown>> = {
   rows?: T[];
@@ -197,6 +200,21 @@ export function validatePluginMigrationStatement(
 
   const refs = extractQualifiedRefs(statement);
   if (refs.length === 0 && !isCommentStmt) {
+    throw new Error("Plugin migration objects must use fully qualified schema names");
+  }
+
+  const objectRefKeywords = new Set([
+    "alter table",
+    "create index",
+    "create table",
+    "create view",
+    "drop table",
+    "into",
+    "truncate table",
+    "update",
+  ]);
+  const hasQualifiedObjectRef = refs.some((ref) => objectRefKeywords.has(ref.keyword));
+  if (!hasQualifiedObjectRef && !normalized.startsWith("comment ")) {
     throw new Error("Plugin migration objects must use fully qualified schema names");
   }
 

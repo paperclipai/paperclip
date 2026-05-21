@@ -693,7 +693,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
@@ -743,7 +743,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           issueId: review.id,
           sourceIssueId: evidence.sourceIssue.id,
           trigger: evidence.trigger,
-        }),
+        }, "status_only"),
         requestedByActorType: "system",
         requestedByActorId: "productivity_review",
         contextSnapshot: withRecoveryModelProfileHint({
@@ -753,7 +753,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
           sourceIssueId: evidence.sourceIssue.id,
           productivityReviewTrigger: evidence.trigger,
-        }),
+        }, "status_only"),
       });
     }
 

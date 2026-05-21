@@ -123,7 +123,17 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
+  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE: 10,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS: [10, 25, 50],
+  KanbanBoard: (props: {
+    issues: Issue[];
+    compactCards?: boolean;
+    collapsedStatuses?: string[];
+    initialVisibleCount?: number;
+    revealIncrement?: number;
+  }) => {
     mockKanbanBoard(props);
     return (
       <div data-testid="kanban-board">
@@ -1005,6 +1015,110 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Done column issue");
       expect(container.textContent).not.toContain("Parent total-limited issue");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const backlogIssues = Array.from({ length: 101 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        compactCards: true,
+        collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("lets board users choose the per-column page size", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-page-size", title: "Page size issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    const pageSizeButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("title") === "Cards per column",
+    );
+    expect(pageSizeButton).toBeTruthy();
+
+    act(() => {
+      pageSizeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    let option25: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      option25 = Array.from(document.body.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("25 per column"),
+      );
+      expect(option25).toBeTruthy();
+    });
+
+    act(() => {
+      option25?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 25,
+        revealIncrement: 25,
+      }));
+    });
+
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardColumnPageSize\":25");
 
     act(() => {
       root.unmount();

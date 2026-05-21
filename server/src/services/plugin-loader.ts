@@ -1835,10 +1835,7 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: {
-          PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
-          PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
-        },
+        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime

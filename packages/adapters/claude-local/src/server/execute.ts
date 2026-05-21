@@ -91,6 +91,15 @@ interface ClaudeRuntimeConfig {
   extraArgs: string[];
 }
 
+export function claudeSessionCwdMatchesExecutionTarget(input: {
+  runtimeSessionCwd: string;
+  effectiveExecutionCwd: string;
+  executionTargetIsRemote: boolean;
+}): boolean {
+  if (input.executionTargetIsRemote || input.runtimeSessionCwd.length === 0) return true;
+  return path.resolve(input.runtimeSessionCwd) === path.resolve(input.effectiveExecutionCwd);
+}
+
 function buildLoginResult(input: {
   proc: RunProcessResult;
   loginUrl: string | null;
@@ -593,7 +602,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     hasMatchingPromptBundle &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+    claudeSessionCwdMatchesExecutionTarget({
+      runtimeSessionCwd,
+      effectiveExecutionCwd,
+      executionTargetIsRemote,
+    }) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (
@@ -865,7 +878,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd: effectiveExecutionCwd,
+        cwd,
         promptBundleKey: promptBundle.bundleKey,
         ...(executionTargetIsRemote
           ? {

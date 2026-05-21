@@ -122,11 +122,15 @@ function formatEmbeddedPostgresError(error: unknown): string {
 }
 
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
-  const { dataDir, instance } = await createEmbeddedPostgresTestInstance(
-    "paperclip-embedded-postgres-probe-",
-  );
+  let dataDir: string | null = null;
+  let instance: EmbeddedPostgresInstance | null = null;
 
   try {
+    const created = await createEmbeddedPostgresTestInstance(
+      "paperclip-embedded-postgres-probe-",
+    );
+    dataDir = created.dataDir;
+    instance = created.instance;
     await instance.initialise();
     await instance.start();
     return { supported: true };
@@ -151,9 +155,14 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
-  const { dataDir, port, instance } = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+  let dataDir: string | null = null;
+  let instance: EmbeddedPostgresInstance | null = null;
 
   try {
+    const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
+    dataDir = created.dataDir;
+    instance = created.instance;
+    const { port } = created;
     await instance.initialise();
     await instance.start();
 

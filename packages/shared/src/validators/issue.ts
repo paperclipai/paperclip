@@ -119,14 +119,14 @@ export const issueExecutionWorkspaceSettingsSchema = z
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
-    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+    workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict();
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
-    adapterConfig: z.record(z.unknown()).optional(),
+    adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();

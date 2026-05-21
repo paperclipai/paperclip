@@ -111,7 +111,7 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.textContent).toContain(`${sidebarAccountMenu.versionPrefix}1.2.3`);
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-[var(--radix-popover-trigger-width)]");
+      .toContain("w-[277px]");
 
     await act(async () => {
       root.unmount();

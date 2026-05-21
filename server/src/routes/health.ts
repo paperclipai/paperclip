@@ -48,6 +48,40 @@ export function healthRoutes(
 ) {
   const router = Router();
 
+  router.post("/dev-server/restart", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (opts.deploymentMode === "authenticated" && actorType !== "board") {
+      res.status(403).json({ error: "board_access_required" });
+      return;
+    }
+
+    const persistedDevServerStatus = readPersistedDevServerStatus();
+    if (!persistedDevServerStatus) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    const restartRequired =
+      persistedDevServerStatus.dirty ||
+      persistedDevServerStatus.changedPathCount > 0 ||
+      persistedDevServerStatus.pendingMigrations.length > 0;
+    if (!restartRequired) {
+      res.status(409).json({ error: "restart_not_required" });
+      return;
+    }
+
+    const written = writeDevServerRestartRequest({
+      requestedAt: new Date().toISOString(),
+      reason: "manual_restart_now",
+    });
+    if (!written) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    res.status(202).json({ status: "restart_requested" });
+  });
+
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(

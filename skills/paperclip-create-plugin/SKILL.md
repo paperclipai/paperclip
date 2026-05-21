@@ -33,16 +33,15 @@ description: >
 用脚手架生成样板代码，不要从零手写：
 
 ```bash
-pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js <npm-package-name> --output <target-dir>
+paperclipai plugin init @acme/my-plugin --output ~/dev/paperclip-plugins
 ```
 
 若插件建在 Paperclip 仓库外，传 `--sdk-path`，让脚手架把本地 SDK/shared 快照到 `.paperclip-sdk/`：
 
 ```bash
 pnpm --filter @paperclipai/create-paperclip-plugin build
-node packages/plugins/create-paperclip-plugin/dist/index.js @acme/plugin-name \
-  --output /absolute/path/to/plugin-repos \
+node packages/plugins/create-paperclip-plugin/dist/index.js @acme/my-plugin \
+  --output /absolute/path \
   --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
 ```
 
@@ -55,11 +54,28 @@ node packages/plugins/create-paperclip-plugin/dist/index.js @acme/plugin-name \
 
 重点核对：
 
-- `src/manifest.ts`
-- `src/worker.ts`
-- `src/ui/index.tsx`
-- `tests/plugin.spec.ts`
-- `package.json`
+- `paperclipai plugin install` auto-detects local paths (absolute, `./`, `../`, `~`, or an existing relative folder) and forwards `isLocalPath: true` to the server. Pass `--local` to force local mode if the heuristic is ambiguous.
+- Paths are resolved to absolute paths before being sent to the server.
+- The server watches built outputs (`dist/`) for local-path plugins and restarts the plugin worker on rebuild — you do not need to reinstall after every edit.
+- UI hot reload via the SDK dev server (`pnpm dev:ui`, port `4177`) is optional and template-dependent; only mention it if the template wires `devUiUrl` and you verified it works end to end.
+- `--version` only applies to npm package installs. Combining it with a local path is an error.
+
+After install, inspect with:
+
+```bash
+paperclipai plugin list
+paperclipai plugin inspect <plugin-key>
+```
+
+## 5. After scaffolding, sanity-check the package
+
+Open and confirm:
+
+- `src/manifest.ts` — declared capabilities and slots
+- `src/worker.ts` — worker entry
+- `src/ui/index.tsx` — UI entry (if applicable)
+- `tests/plugin.spec.ts` — placeholder test
+- `package.json` — `paperclipPlugin` block points at `dist/manifest.js`, `dist/worker.js`, `dist/ui/`
 
 确保插件：
 
@@ -84,9 +100,9 @@ node packages/plugins/create-paperclip-plugin/dist/index.js @acme/plugin-name \
 始终执行：
 
 ```bash
-pnpm --filter <plugin-package> typecheck
-pnpm --filter <plugin-package> test
-pnpm --filter <plugin-package> build
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
 若同时修改了 SDK/宿主/插件运行时，再按需要做更大范围的仓库检查。

@@ -13,6 +13,12 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
+import {
+  BLOCKED_GROUP_OPTIONS,
+  BLOCKED_SORT_OPTIONS,
+  type BlockedInboxGroupBy,
+  type BlockedInboxSort,
+} from "../lib/blockedInbox";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
@@ -62,6 +68,7 @@ import {
 } from "../components/IssueColumns";
 import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
 import { IssueRow } from "../components/IssueRow";
+import { BlockedInboxView } from "../components/BlockedInboxView";
 import { SwipeToArchive } from "../components/SwipeToArchive";
 
 import { StatusIcon } from "../components/StatusIcon";
@@ -94,6 +101,7 @@ import {
   ArrowUpDown,
   Check,
   ChevronRight,
+  ArrowUpDown,
   Layers,
   Plus,
   XCircle,
@@ -840,7 +848,6 @@ export function Inbox() {
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT),
     enabled: !!selectedCompanyId,
   });
-
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
@@ -1921,6 +1928,7 @@ export function Inbox() {
     .map((issue) => issue.id);
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
+  const showGeneralIssueToolbarControls = tab !== "blocked";
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -2051,11 +2059,10 @@ export function Inbox() {
                   <button
                     key={value}
                     type="button"
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
-                      groupBy === value ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50",
-                    )}
-                    onClick={() => updateGroupBy(value)}
+                    variant="outline"
+                    size="icon"
+                    className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
+                    title="Group"
                   >
                     <span>{label}</span>
                     {groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
@@ -2077,10 +2084,10 @@ export function Inbox() {
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="h-8 shrink-0"
-                onClick={() => setShowMarkAllReadConfirm(true)}
-                disabled={markAllReadMutation.isPending}
+                size="icon"
+                className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+                onClick={toggleNesting}
+                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
               >
                 {markAllReadMutation.isPending ? inboxUi.markingEllipsis : inboxUi.markAllRead}
               </Button>
@@ -2209,7 +2216,7 @@ export function Inbox() {
                 </PopoverContent>
               </Popover>
             </>
-          )}
+          ) : null}
         </div>
         </div>
       </div>
@@ -2294,7 +2301,7 @@ export function Inbox() {
         />
       )}
 
-      {showWorkItemsSection && (
+      {tab !== "blocked" && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
@@ -2343,6 +2350,7 @@ export function Inbox() {
                             depth === 0 && hasChildren && collapseParentId ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={(event) => {
                                   event.preventDefault();
@@ -2375,6 +2383,7 @@ export function Inbox() {
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button
                             type="button"
+                            data-slot="icon-button"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -2455,6 +2464,9 @@ export function Inbox() {
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
+                        onMouseEnter={() => {
+                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                        }}
                       >
                         <IssueGroupHeader
                           label={group.label}
@@ -2491,6 +2503,7 @@ export function Inbox() {
                         data-inbox-item
                         className="relative"
                         onClick={() => setSelectedIndex(navIdx)}
+                        onMouseEnter={() => setSelectedIndex(navIdx)}
                       >
                         {child}
                       </div>
@@ -2658,7 +2671,12 @@ export function Inbox() {
                             key={`sel-issue:${child.id}`}
                             data-inbox-item
                             className="relative"
-                            onClick={() => setSelectedIndex(childNavIdx)}
+                            onClick={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
+                            onMouseEnter={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
                           >
                             {canArchiveIssue ? (
                               <SwipeToArchive

@@ -61,6 +61,7 @@ tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
+.superpowers/
 .claude/worktrees/
 # Cursor IDE — local editor state (not committed); team rules tracked under rules/
 .cursor/*

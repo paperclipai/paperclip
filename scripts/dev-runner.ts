@@ -102,6 +102,7 @@ const ignoredDirectoryNames = new Set([
 ]);
 
 const ignoredRelativePaths = new Set([
+  ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
 ]);
 
@@ -378,6 +379,13 @@ function writeDevServerStatus() {
 
 function clearDevServerStatus() {
   rmSync(devServerStatusFilePath, { force: true });
+  rmSync(devServerRestartRequestFilePath, { force: true });
+}
+
+function consumeDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
+  rmSync(devServerRestartRequestFilePath, { force: true });
+  return true;
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -673,11 +681,15 @@ async function maybeAutoRestartChild() {
   }
 
   const devServer = health?.devServer;
-  if (!devServer?.enabled || devServer.autoRestartEnabled !== true) {
+  if (!devServer?.enabled) {
     restartInFlight = false;
     return;
   }
-  if ((devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }

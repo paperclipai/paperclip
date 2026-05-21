@@ -86,6 +86,19 @@ export type SuccessfulRunHandoffNotice = {
   metadata: IssueCommentMetadata;
 };
 
+export function noticeMetadataReferencesRecoveryAction(
+  metadata: IssueCommentMetadata | null | undefined,
+  recoveryActionId: string,
+) {
+  return (metadata?.sections ?? []).some((section) =>
+    section.rows.some((row) =>
+      row.type === "key_value" &&
+      row.label === "Recovery action" &&
+      row.value === recoveryActionId,
+    ),
+  );
+}
+
 export type SuccessfulRunHandoffDecision =
   | {
       kind: "enqueue";
@@ -206,6 +219,7 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
   correctiveRun: NullableNoticeRun;
   sourceAssignee: NullableNoticeAgent;
   recoveryIssue: NullableNoticeIssue;
+  recoveryActionId?: string | null;
   recoveryOwner: NullableNoticeAgent;
   latestIssueStatus: string;
   latestHandoffRunStatus: string;
@@ -413,7 +427,7 @@ export function decideSuccessfulRunHandoff(input: {
     resumeFromRunId: run.id,
     ...(input.taskKey ? { taskKey: input.taskKey } : {}),
     instruction,
-  });
+  }, "status_only");
 
   return {
     kind: "enqueue",
@@ -427,6 +441,6 @@ export function decideSuccessfulRunHandoff(input: {
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,
-    }),
+    }, "status_only"),
   };
 }

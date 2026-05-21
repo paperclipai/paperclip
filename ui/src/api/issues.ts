@@ -12,6 +12,7 @@ import type {
   IssueComment,
   IssueDocument,
   IssueLabel,
+  IssueRecoveryAction,
   IssueRetryNowResponse,
   IssueThreadInteraction,
   IssueTreeControlPreview,
@@ -25,6 +26,11 @@ import { api } from "./client";
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
+};
+
+export type ResolveRecoveryActionResponse = {
+  issue: Issue;
+  recoveryAction: IssueRecoveryAction;
 };
 
 export const issuesApi = {
@@ -54,6 +60,8 @@ export const issuesApi = {
       q?: string;
       limit?: number;
       offset?: number;
+      sortField?: "updated";
+      sortDir?: "asc" | "desc";
     },
   ) => {
     const params = new URLSearchParams();
@@ -80,8 +88,32 @@ export const issuesApi = {
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+    if (filters?.sortField) params.set("sortField", filters.sortField);
+    if (filters?.sortDir) params.set("sortDir", filters.sortDir);
     const qs = params.toString();
     return api.get<Issue[]>(`/companies/${companyId}/issues${qs ? `?${qs}` : ""}`);
+  },
+  count: (
+    companyId: string,
+    filters: {
+      attention: "blocked";
+      status?: string;
+      assigneeAgentId?: string;
+      assigneeUserId?: string;
+      projectId?: string;
+      labelId?: string;
+      q?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("attention", filters.attention);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters.projectId) params.set("projectId", filters.projectId);
+    if (filters.labelId) params.set("labelId", filters.labelId);
+    if (filters.q) params.set("q", filters.q);
+    return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
   },
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
@@ -98,6 +130,15 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  resolveRecoveryAction: (
+    id: string,
+    data: {
+      actionId?: string;
+      outcome: "restored" | "false_positive" | "blocked" | "cancelled";
+      sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
+      resolutionNote?: string | null;
+    },
+  ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>
@@ -222,6 +263,10 @@ export const issuesApi = {
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
     api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
+  lockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/lock`, {}),
+  unlockDocument: (id: string, key: string) =>
+    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/unlock`, {}),
   listDocumentRevisions: (id: string, key: string) =>
     api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>

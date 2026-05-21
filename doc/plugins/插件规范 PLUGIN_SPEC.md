@@ -319,7 +319,10 @@ export interface PaperclipPluginManifestV1 {
   version: string;
   displayName: string;
   description: string;
+  author: string;
   categories: Array<"connector" | "workspace" | "automation" | "ui">;
+  minimumHostVersion?: string;
+  /** @deprecated Use `minimumHostVersion` instead. Retained for backwards compatibility. */
   minimumPaperclipVersion?: string;
   capabilities: string[];
   entrypoints: {
@@ -335,9 +338,33 @@ export interface PaperclipPluginManifestV1 {
     description: string;
     parametersSchema: JsonSchema;
   }>;
+  database?: PluginDatabaseDeclaration;
+  apiRoutes?: PluginApiRouteDeclaration[];
+  environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  agents?: PluginManagedAgentDeclaration[];
+  projects?: PluginManagedProjectDeclaration[];
+  routines?: PluginManagedRoutineDeclaration[];
+  skills?: PluginManagedSkillDeclaration[];
+  localFolders?: PluginLocalFolderDeclaration[];
+  /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
+  launchers?: PluginLauncherDeclaration[];
   ui?: {
+    launchers?: PluginLauncherDeclaration[];
     slots: Array<{
-      type: "page" | "detailTab" | "dashboardWidget" | "sidebar" | "settingsPage";
+      type: "page"
+        | "detailTab"
+        | "taskDetailView"
+        | "dashboardWidget"
+        | "sidebar"
+        | "routeSidebar"
+        | "sidebarPanel"
+        | "projectSidebarItem"
+        | "globalToolbarButton"
+        | "toolbarButton"
+        | "contextMenuItem"
+        | "commentAnnotation"
+        | "commentContextMenuItem"
+        | "settingsPage";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
@@ -354,10 +381,17 @@ Rules:
 - `id` must be globally unique
 - `id` should normally equal the npm package name
 - `apiVersion` must match the host-supported plugin API version
+- `minimumHostVersion` is preferred, with `minimumPaperclipVersion` retained for
+  backwards compatibility
 - `capabilities` must be static and install-time visible
 - config schema must be JSON Schema compatible
 - `entrypoints.ui` points to the directory containing the built UI bundle
 - `ui.slots` declares which extension slots the plugin fills, so the host knows what to mount without loading the bundle eagerly; each slot references an `exportName` from the UI bundle
+- declare managed declarations with the matching `*.managed` capability:
+  - `agents` → `agents.managed`
+  - `projects` → `projects.managed`
+  - `routines` → `routines.managed`
+  - `skills` → `skills.managed`
 
 ## 11. Agent Tools
 
@@ -631,6 +665,22 @@ Plugins that need filesystem, git, terminal, or process operations handle those 
 
 Trusted orchestration plugins can create and update Paperclip issues through `ctx.issues` instead of importing server internals. The public issue contract includes parent/project/goal links, board or agent assignees, blocker IDs, labels, billing code, request depth, execution workspace inheritance, and plugin origin metadata.
 
+Plugins that perform durable work should declare managed Paperclip resources rather than using private plugin state:
+
+- `agents` + `ctx.agents.managed.*` for named, invokable operators (`agents.managed` required)
+- `projects` + `ctx.projects.managed.*` for stable, scoped issue/workspace ownership (`projects.managed` required)
+- `routines` + `ctx.routines.managed.*` for schedule/webhook/manual execution with issue trails (`routines.managed` required)
+- `skills` + `ctx.skills.managed.*` for reusable agent capabilities (`skills.managed` required)
+
+The LLM Wiki plugin is the current reference for this pattern: it declares managed
+agents, projects, routines, and skills in manifest, reconciles them per company,
+and uses managed routines for periodic wiki maintenance and ingest operations.
+Content-oriented plugins should follow the same model instead of running
+unmanaged background loops: make the LLM-facing worker an operator-visible
+managed agent, attach reusable prompt/tool guidance as managed skills, keep
+operation issues in a managed project, and drive recurring work through managed
+routines.
+
 Origin rules:
 
 - Built-in core issues keep built-in origins such as `manual` and `routine_execution`.
@@ -746,20 +796,38 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `activity.read`
 - `costs.read`
 - `issues.orchestration.read`
+- `database.namespace.read`
 
 ### Data Write
 
 - `issues.create`
 - `issues.update`
 - `issue.comments.create`
+- `issue.interactions.create`
 - `issue.documents.write`
 - `issue.relations.write`
 - `issues.checkout`
 - `issues.wakeup`
-- `assets.write`
-- `assets.read`
 - `activity.log.write`
 - `metrics.write`
+- `telemetry.track`
+- `assets.read`
+- `assets.write`
+- `database.namespace.migrate`
+- `database.namespace.write`
+- `goals.create`
+- `goals.update`
+- `projects.managed`
+- `routines.managed`
+- `skills.managed`
+- `agents.managed`
+- `agents.pause`
+- `agents.resume`
+- `agents.invoke`
+- `agent.sessions.create`
+- `agent.sessions.list`
+- `agent.sessions.send`
+- `agent.sessions.close`
 
 ### Plugin State
 
@@ -772,8 +840,10 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `events.emit`
 - `jobs.schedule`
 - `webhooks.receive`
+- `local.folders`
 - `http.outbound`
 - `secrets.read-ref`
+- `environment.drivers.register`
 
 ### Agent Tools
 
@@ -786,6 +856,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.page.register`
 - `ui.detailTab.register`
 - `ui.dashboardWidget.register`
+- `ui.commentAnnotation.register`
 - `ui.action.register`
 
 ## 15.2 Forbidden Capabilities
@@ -894,6 +965,7 @@ Job rules:
 3. The host prevents overlapping execution of the same plugin/job combination unless explicitly allowed later.
 4. Every job run is recorded in Postgres.
 5. Failed jobs are retryable.
+6. For recurring business workflows that should create visible Paperclip work, prefer managed routines and managed resources over jobs. Jobs remain useful for private plugin-runtime maintenance tasks.
 
 ## 18. Webhooks
 

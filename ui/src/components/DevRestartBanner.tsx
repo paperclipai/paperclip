@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, TimerReset } from "lucide-react";
 import type { DevServerHealthStatus } from "../api/health";
 import { devRestartBanner } from "../lib/i18n";
@@ -21,8 +22,18 @@ function describeReason(devServer: DevServerHealthStatus): string {
 }
 
 export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthStatus }) {
+  const [restartPending, setRestartPending] = useState(false);
+  useEffect(() => {
+    if (!restartPending) return;
+    const timeout = window.setTimeout(() => {
+      setRestartPending(false);
+    }, RESTART_PENDING_RESET_MS);
+    return () => window.clearTimeout(timeout);
+  }, [restartPending]);
+
   if (!devServer?.enabled || !devServer.restartRequired) return null;
 
+  const currentDevServer = devServer;
   const changedAt = formatRelativeTimestamp(devServer.lastChangedAt);
   const sample = devServer.changedPathsSample.slice(0, 3);
   const extraChanged = Math.max(0, devServer.changedPathCount - sample.length);
@@ -58,7 +69,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 text-xs font-medium">
+        <div className="flex flex-wrap items-center gap-2 text-xs font-medium md:justify-end">
           {devServer.waitingForIdle ? (
             <div className="inline-flex items-center gap-2 rounded-full bg-amber-900/10 px-3 py-1.5 dark:bg-amber-100/10">
               <TimerReset className="h-3.5 w-3.5" />
@@ -80,6 +91,17 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
               </span>
             </div>
           )}
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-md bg-amber-950 px-3 py-1.5 text-xs font-semibold text-amber-50 transition-colors hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-200 dark:text-amber-950 dark:hover:bg-amber-100"
+            onClick={() => {
+              void requestRestartNow();
+            }}
+            disabled={restartPending}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span>{restartPending ? "Restart requested" : "Restart now"}</span>
+          </button>
         </div>
       </div>
     </div>
