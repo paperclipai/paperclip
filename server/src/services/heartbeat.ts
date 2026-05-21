@@ -61,11 +61,21 @@ import { buildRoutingOverrideEnv } from "../routing/build-routing-override-env.j
 import { buildRoutingEscalatedPayload } from "../routing/build-routing-escalated-event.js";
 import { escalateOneTier } from "../routing/escalate-tier.js";
 import { resolveModel } from "../routing/model-menu.js";
+import { buildGuildWorkerEnv } from "../dispatch/guild-worker-env.js";
+import {
+  cleanupGuildRunSandbox,
+  prepareGuildRunSandbox,
+} from "../dispatch/guild-run-sandbox.js";
+import {
+  ingestGuildLearnings,
+  type IngestGuildLearningsResult,
+} from "../dispatch/ingest-guild-learnings.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { guildSkillService } from "./guild-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -6778,6 +6788,143 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  /**
+   * Plan 3 Phase E2b: run the worker-exit hook for guild dispatches.
+   *
+   * Reads `<sandboxDir>/learnings.json` via `ingestGuildLearnings`,
+   * cleans up the sandbox dir, and returns the resultJson with a
+   * `guildLearningsIngested` marker merged in. For non-guild runs
+   * (no sandbox dir) returns the resultJson unchanged.
+   *
+   * All failures are caught and logged at WARN; the run's terminal
+   * status is never blocked by ingest issues. The `cleanedSandbox`
+   * return flag signals the caller to flip `guildLearningsIngested`
+   * so the outer finally skips its own cleanup pass.
+   */
+  async function ingestGuildLearningsIntoResult(args: {
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "kind" | "name">;
+    run: { id: string };
+    guildSandboxDir: string | null;
+    baseResultJson: Record<string, unknown> | null;
+  }): Promise<{
+    resultJson: Record<string, unknown> | null;
+    cleanedSandbox: boolean;
+    /** Telemetry payload mirroring the `guildLearningsIngested` marker,
+     * for the caller to attach to a `guild.ingest` run event via
+     * `appendRunEvent`. Null when no ingest happened (non-guild run). */
+    ingestEventPayload: Record<string, unknown> | null;
+  }> {
+    if (args.agent.kind !== "guild" || !args.guildSandboxDir) {
+      return { resultJson: args.baseResultJson, cleanedSandbox: false, ingestEventPayload: null };
+    }
+    const sandboxDir = args.guildSandboxDir;
+    let ingest: IngestGuildLearningsResult;
+    try {
+      ingest = await ingestGuildLearnings({
+        db,
+        agent: args.agent,
+        run: args.run,
+        sandboxDir,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, runId: args.run.id, agentId: args.agent.id, sandboxDir },
+        "guild dispatch: ingestGuildLearnings threw; persisting marker without ingest detail",
+      );
+      ingest = {
+        ingested: [],
+        rejected: [],
+        fileMissing: false,
+        topLevelError:
+          err instanceof Error ? err.message : "ingestGuildLearnings threw unexpectedly",
+      };
+    }
+    if (ingest.rejected.length > 0) {
+      logger.warn(
+        {
+          runId: args.run.id,
+          agentId: args.agent.id,
+          rejected: ingest.rejected,
+        },
+        "guild dispatch: some worker learnings were rejected by the hook",
+      );
+    }
+    if (ingest.topLevelError) {
+      logger.warn(
+        {
+          runId: args.run.id,
+          agentId: args.agent.id,
+          topLevelError: ingest.topLevelError,
+        },
+        "guild dispatch: learnings.json top-level error; no ingest",
+      );
+    }
+    const cleanup = await cleanupGuildRunSandbox(sandboxDir);
+    if (cleanup.warning) {
+      logger.warn(
+        { runId: args.run.id, agentId: args.agent.id, sandboxDir },
+        cleanup.warning,
+      );
+    }
+    const marker: Record<string, unknown> = {
+      at: new Date().toISOString(),
+      ingestedCount: ingest.ingested.length,
+      rejectedCount: ingest.rejected.length,
+      fileMissing: ingest.fileMissing,
+      sandboxDir,
+      ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
+      ...(ingest.ingested.length > 0 ? { ingested: ingest.ingested } : {}),
+      ...(ingest.rejected.length > 0 ? { rejected: ingest.rejected } : {}),
+    };
+    // Plan 3 Phase E3: post-hook telemetry. activity_log row is
+    // persistent + plugin-bus-published (action is in PLUGIN_EVENT_SET).
+    // Phase F's Telegram notifier subscribes to this event to alert
+    // the operator when a worker produced new provisional skills.
+    // Wrapped in try/catch — observability never blocks the run.
+    try {
+      await logActivity(db, {
+        companyId: args.agent.companyId,
+        actorType: "agent",
+        actorId: args.agent.id,
+        action: "guild.worker.skills_ingested",
+        entityType: "heartbeat_run",
+        entityId: args.run.id,
+        agentId: args.agent.id,
+        runId: args.run.id,
+        details: {
+          runId: args.run.id,
+          guildId: args.agent.id,
+          guildSlug: args.agent.name,
+          ingestedCount: ingest.ingested.length,
+          rejectedCount: ingest.rejected.length,
+          fileMissing: ingest.fileMissing,
+          ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
+          ...(ingest.ingested.length > 0 ? { ingested: ingest.ingested } : {}),
+          ...(ingest.rejected.length > 0 ? { rejected: ingest.rejected } : {}),
+        },
+      });
+    } catch (telemetryErr) {
+      logger.warn(
+        { err: telemetryErr, runId: args.run.id, agentId: args.agent.id },
+        "guild dispatch: failed to write activity_log(guild.worker.skills_ingested)",
+      );
+    }
+    const resultJson: Record<string, unknown> = {
+      ...(args.baseResultJson ?? {}),
+      guildLearningsIngested: marker,
+    };
+    const ingestEventPayload: Record<string, unknown> = {
+      runId: args.run.id,
+      guildId: args.agent.id,
+      guildSlug: args.agent.name,
+      ingestedCount: ingest.ingested.length,
+      rejectedCount: ingest.rejected.length,
+      fileMissing: ingest.fileMissing,
+      ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
+    };
+    return { resultJson, cleanedSandbox: true, ingestEventPayload };
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -6793,6 +6940,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     activeRunExecutions.add(run.id);
+
+    // Plan 3 Phase E1b: per-run guild worker state, hoisted to the
+    // outer scope so the outer try/catch/finally can clean up the
+    // sandbox dir if the (future) Phase E2b worker-exit hook didn't
+    // already do it. Both default to no-op semantics: a non-guild run
+    // never touches guildSandboxDir, and guildLearningsIngested stays
+    // false until E2b sets it.
+    let guildSandboxDir: string | null = null;
+    let guildLearningsIngested = false;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -7677,7 +7833,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      // Plan 3 Phase E1b: when agent.kind === 'guild' the adapter is
+      // resolved from adapterConfig.workerAdapterType (default
+      // 'hermes_local'), NOT from the persisted adapter_type. Rationale
+      // in design spec D2: the guild row's adapter_type is a category
+      // mistake for a row that doesn't itself execute; the worker
+      // adapter is what runs. Defaults preserve hermes_local for
+      // guild rows that omit the override; non-guild rows are
+      // untouched.
+      const workerAdapterType =
+        agent.kind === "guild"
+          ? (readNonEmptyString(parseObject(agent.adapterConfig).workerAdapterType) ?? "hermes_local")
+          : agent.adapterType;
+      const adapter = getServerAdapter(workerAdapterType);
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
@@ -7710,19 +7878,141 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       resolvedRoutingTier = routingOverride.resolution.tier;
       resolvedRoutingModel = routingOverride.resolution.entry.model;
+      // Plan 3 Phase E1b: for kind='guild' runs, mkdtemp a per-run
+      // sandbox now (before adapter.execute), copy in autonomy.json,
+      // and write the canonical-skills snapshot. Sandbox warnings are
+      // non-fatal: a missing autonomy.json or instructionsRootPath
+      // degrades the worker envelope but does not block the run.
+      //
+      // Phase E1c: the snapshot is the guild's top-20 canonical,
+      // non-retired skills by recency (per design spec D6). Workers
+      // see a deterministic snapshot at spawn time; operator
+      // promotions in flight do not change the worker's view
+      // mid-run. The full DB is still reachable via the
+      // `GET /api/companies/:cid/guilds/:gid/skills` route for
+      // workers that need fresh data. Snapshot-query failures are
+      // non-fatal: we log.warn and dispatch with an empty array.
+      if (agent.kind === "guild") {
+        const instructionsRoot = readNonEmptyString(persistedAgentAdapterConfig.instructionsRootPath);
+        let snapshotSkills: Array<{ id: string; name: string; body: string }> = [];
+        try {
+          const rows = await guildSkillService(db).list(agent.companyId, agent.id, {
+            provenance: "canonical",
+            includeRetired: false,
+            limit: 20,
+          });
+          snapshotSkills = rows.map((row) => ({ id: row.id, name: row.name, body: row.body }));
+        } catch (snapshotErr) {
+          logger.warn(
+            { err: snapshotErr, runId: run.id, agentId: agent.id },
+            "guild dispatch: canonical-skills snapshot query failed; dispatching with empty snapshot",
+          );
+        }
+        const prep = await prepareGuildRunSandbox({
+          runId: run.id,
+          guildId: agent.id,
+          guildSlug: agent.name,
+          guildInstructionsRoot: instructionsRoot,
+          skills: snapshotSkills,
+        });
+        guildSandboxDir = prep.sandboxDir;
+        for (const warning of prep.warnings) {
+          logger.warn(
+            { runId: run.id, agentId: agent.id, sandboxDir: guildSandboxDir },
+            warning,
+          );
+        }
+        // Plan 3 Phase E3: pre-spawn telemetry. Fire-and-forget run
+        // event + persistent activity_log row. logActivity also
+        // publishes to the plugin bus because the action is in
+        // PLUGIN_EVENT_SET (registered in @paperclipai/shared as
+        // 'guild.worker.dispatched'). Failures warn-log but never
+        // block dispatch.
+        const dispatchTelemetryPayload: Record<string, unknown> = {
+          runId: run.id,
+          guildId: agent.id,
+          guildSlug: agent.name,
+          sandboxDir: guildSandboxDir,
+          snapshotedSkillCount: prep.snapshotedSkillCount,
+          autonomyJsonAvailable: prep.autonomyJsonPath !== null,
+        };
+        try {
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "guild.spawn",
+            stream: "system",
+            level: "info",
+            message: `guild worker dispatched (snapshot of ${prep.snapshotedSkillCount} canonical skill${
+              prep.snapshotedSkillCount === 1 ? "" : "s"
+            })`,
+            payload: dispatchTelemetryPayload,
+          });
+        } catch (telemetryErr) {
+          logger.warn(
+            { err: telemetryErr, runId: run.id, agentId: agent.id },
+            "guild dispatch: failed to append guild.spawn run event",
+          );
+        }
+        try {
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            action: "guild.worker.dispatched",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            agentId: agent.id,
+            runId: run.id,
+            details: dispatchTelemetryPayload,
+          });
+        } catch (telemetryErr) {
+          logger.warn(
+            { err: telemetryErr, runId: run.id, agentId: agent.id },
+            "guild dispatch: failed to write activity_log(guild.worker.dispatched)",
+          );
+        }
+      }
+      // Plan 3 Phase E1b: layer guild worker env on top of the Plan 2
+      // routing override env. Guild keys (GUILD_*, WORKER_*,
+      // MEMORY_SERVICE_PROJECT) are distinct from routing keys
+      // (HERMES_*); the spread order places routing override last so
+      // it wins on any future collision (per design spec D8). For
+      // non-guild agents buildGuildWorkerEnv returns {}, so the
+      // composition is identical to the pre-Phase-E behaviour.
+      const guildEnv = guildSandboxDir
+        ? buildGuildWorkerEnv({ agent, sandboxDir: guildSandboxDir })
+        : {};
       const wrappedAgent = {
         ...agent,
         adapterConfig: {
           ...persistedAgentAdapterConfig,
-          env: routingOverride.env,
+          env: { ...guildEnv, ...routingOverride.env },
         },
       };
+      // Plan 3 Phase E1b: also layer guildEnv into runtimeConfig.env.
+      // Adapters read env from one of two places: the hermes wrapper
+      // reads `ctx.agent.adapterConfig.env` (covered by wrappedAgent
+      // above); the process / claude / codex / etc. adapters read
+      // `ctx.config.env`. The two paths historically held the same
+      // bytes (resolvedConfig.env originates from agent.adapterConfig.env).
+      // Plan 2's routing override only affects hermes (HERMES_* keys)
+      // so it didn't need this dual-layer. Phase E's guild env is
+      // adapter-neutral (the process adapter used in tests, and the
+      // hermes adapter used in production, must both see GUILD_*).
+      const runtimeConfigForAdapter = guildSandboxDir
+        ? {
+            ...runtimeConfig,
+            env: {
+              ...guildEnv,
+              ...parseObject((runtimeConfig as unknown as Record<string, unknown>).env),
+            },
+          }
+        : runtimeConfig;
 
       let adapterResult = await adapter.execute({
         runId: run.id,
         agent: wrappedAgent,
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: runtimeConfigForAdapter,
         context,
         runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
         executionTarget,
@@ -7839,12 +8129,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         // Re-wrap the agent with escalated values. Operator pin is
-        // INTENTIONALLY overridden here (recovery > pin).
+        // INTENTIONALLY overridden here (recovery > pin). Plan 3
+        // Phase E1b: guild env is layered first so the escalated retry
+        // sees the same GUILD_* / WORKER_* / MEMORY_SERVICE_PROJECT
+        // env the initial attempt saw. The HERMES_* override keys
+        // remain authoritative because they come last in the spread.
         const escalatedAgent = {
           ...agent,
           adapterConfig: {
             ...persistedAgentAdapterConfig,
             env: {
+              ...guildEnv,
               ...parseObject(persistedAgentAdapterConfig.env),
               HERMES_MODEL_OVERRIDE: { type: "plain", value: escalatedEntry.model },
               HERMES_PROVIDER_OVERRIDE: { type: "plain", value: escalatedEntry.provider },
@@ -7858,7 +8153,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runId: run.id,
           agent: escalatedAgent,
           runtime: runtimeForAdapter,
-          config: runtimeConfig,
+          config: runtimeConfigForAdapter,
           context,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
@@ -8043,6 +8338,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // visible. totalCostUsd is null on cost-less runs (e.g. local
       // tier via ollama).
       const adapterReportedModel = readNonEmptyString(adapterResult.model);
+      // Plan 3 Phase E2b: ingest the worker's learnings.json BEFORE
+      // setRunStatus so the resultJson marker is persisted in the
+      // same DB write that flips the run terminal. The hook is
+      // best-effort: a failure (file read, JSON parse, bad shape)
+      // becomes a `topLevelError` in the marker rather than failing
+      // the run. Per-skill failures end up in `rejected[]`. After the
+      // ingest we explicitly cleanup the sandbox and flip
+      // `guildLearningsIngested=true` so the outer finally skips
+      // re-cleanup. Skipped entirely for non-guild runs (kind='agent'
+      // path is unchanged).
+      const persistedResultJsonWithGuild = await ingestGuildLearningsIntoResult({
+        agent,
+        run,
+        guildSandboxDir,
+        baseResultJson: persistedResultJson,
+      });
+      if (persistedResultJsonWithGuild.cleanedSandbox) {
+        guildLearningsIngested = true;
+      }
       let persistedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         error: runErrorMessage,
@@ -8050,7 +8364,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: persistedResultJson,
+        resultJson: persistedResultJsonWithGuild.resultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
@@ -8073,6 +8387,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
+        // Plan 3 Phase E3: guild.ingest run event mirrors the
+        // activity_log row written by ingestGuildLearningsIntoResult.
+        // Emitted before the lifecycle event so the timeline reads
+        // "ingest -> terminal" which matches the actual ordering
+        // (ingest ran before setRunStatus). Skipped for non-guild runs.
+        if (persistedResultJsonWithGuild.ingestEventPayload) {
+          const payload = persistedResultJsonWithGuild.ingestEventPayload;
+          try {
+            await appendRunEvent(finalizedRun, seq++, {
+              eventType: "guild.ingest",
+              stream: "system",
+              level: "info",
+              message: `guild worker learnings ingested (${
+                Number(payload.ingestedCount ?? 0)
+              } skill${Number(payload.ingestedCount ?? 0) === 1 ? "" : "s"})`,
+              payload,
+            });
+          } catch (telemetryErr) {
+            logger.warn(
+              { err: telemetryErr, runId: run.id, agentId: agent.id },
+              "guild dispatch: failed to append guild.ingest run event",
+            );
+          }
+        }
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
           stream: "system",
@@ -8188,14 +8526,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
+      // Plan 3 Phase E2b: even on failed dispatch the worker may have
+      // written useful learnings before the inner catch fired. Honor
+      // them. For runs that never reached adapter.execute the file
+      // simply won't exist and the hook is a no-op.
+      const baseFailureResultJson = mergeRunStopMetadataForAgent(agent, "failed", {
+        errorCode: "adapter_failed",
+        errorMessage: message,
+      });
+      const failureResultWithGuild = await ingestGuildLearningsIntoResult({
+        agent,
+        run,
+        guildSandboxDir,
+        baseResultJson: baseFailureResultJson,
+      });
+      if (failureResultWithGuild.cleanedSandbox) {
+        guildLearningsIngested = true;
+      }
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
         errorCode: "adapter_failed",
         finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
-          errorMessage: message,
-        }),
+        resultJson: failureResultWithGuild.resultJson,
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -8216,6 +8568,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (failedRun) {
+        // Plan 3 Phase E3: guild.ingest event for the failure path —
+        // even failed dispatches may have ingested learnings before
+        // the inner catch fired. The marker on resultJson already
+        // records the detail; this event is the timeline equivalent.
+        if (failureResultWithGuild.ingestEventPayload) {
+          const payload = failureResultWithGuild.ingestEventPayload;
+          try {
+            await appendRunEvent(failedRun, seq++, {
+              eventType: "guild.ingest",
+              stream: "system",
+              level: "info",
+              message: `guild worker learnings ingested (${
+                Number(payload.ingestedCount ?? 0)
+              } skill${Number(payload.ingestedCount ?? 0) === 1 ? "" : "s"}) before failure`,
+              payload,
+            });
+          } catch (telemetryErr) {
+            logger.warn(
+              { err: telemetryErr, runId: run.id, agentId: agent.id },
+              "guild dispatch: failed to append guild.ingest run event on failure path",
+            );
+          }
+        }
         await appendRunEvent(failedRun, seq++, {
           eventType: "error",
           stream: "system",
@@ -8304,6 +8679,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             failureReason: latestRun?.error ?? undefined,
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+          // Plan 3 Phase E1b: best-effort cleanup of the guild
+          // worker sandbox dir if the (future) Phase E2b worker-exit
+          // hook didn't already handle it. The hook will set
+          // guildLearningsIngested=true after explicit ingest+cleanup;
+          // until then the finally is the sole cleanup path. Failures
+          // are warn-logged but never rethrown.
+          if (guildSandboxDir && !guildLearningsIngested) {
+            const sandboxToClean = guildSandboxDir;
+            const cleanup = await cleanupGuildRunSandbox(sandboxToClean);
+            if (cleanup.warning) {
+              logger.warn(
+                {
+                  runId: run.id,
+                  agentId: run.agentId,
+                  sandboxDir: sandboxToClean,
+                },
+                cleanup.warning,
+              );
+            }
+          }
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
@@ -10050,6 +10445,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    /**
+     * Wait for all in-flight run executions to fully drain.
+     *
+     * `activeRunExecutions` is added to at the start of `executeRun`
+     * and removed in its outer `finally`. So an empty set means every
+     * dispatch — including its outer-finally cleanup
+     * (releaseEnvironmentLeasesForRun, releaseRuntimeServicesForRun,
+     * startNextQueuedRunForAgent) — has fully completed.
+     *
+     * Returns `true` once the set is empty within `timeoutMs`, or
+     * `false` if the deadline elapses with runs still in flight.
+     *
+     * Test cleanup uses this as the deterministic "safe to delete"
+     * signal — without it, `afterEach` races the outer-finally writes
+     * (activity_log, environment_leases, etc.) and trips FK
+     * constraints on the deletes.
+     *
+     * Production graceful-shutdown hooks may also use this before
+     * tearing down the DB pool.
+     */
+    drainActiveRuns: async (timeoutMs = 30_000): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (activeRunExecutions.size === 0) return true;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return activeRunExecutions.size === 0;
     },
   };
 }

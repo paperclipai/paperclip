@@ -1085,6 +1085,19 @@ export const PLUGIN_EVENT_TYPES = [
   // identifiers. Fire-and-forget — observability and cost tracking
   // subscribe; the dispatcher does not wait on or read this event.
   "agent.routing.escalated",
+  // Plan 3 Phase E3: emitted when the dispatcher spawns a worker for
+  // a kind='guild' agent — right after the per-run sandbox has been
+  // prepared (autonomy.json copied, available_skills.json written),
+  // before adapter.execute. Payload: runId, guildId, guildSlug,
+  // sandboxDir, snapshotedSkillCount.
+  "guild.worker.dispatched",
+  // Plan 3 Phase E3: emitted when the worker-exit hook finishes —
+  // after learnings.json ingest and sandbox cleanup, regardless of
+  // run outcome. Payload mirrors the guildLearningsIngested marker
+  // on resultJson: ingestedCount, rejectedCount, fileMissing,
+  // topLevelError (when present), plus runId/guildId for correlation.
+  // Phase F's Telegram notifier subscribes to this event.
+  "guild.worker.skills_ingested",
   "goal.created",
   "goal.updated",
   "approval.created",
