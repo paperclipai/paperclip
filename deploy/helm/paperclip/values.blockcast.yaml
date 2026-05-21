@@ -96,6 +96,31 @@ env:
     # (PCL-1879); this is the stopgap.
     - name: PAPERCLIP_AUTH_DISABLE_SIGN_UP
       value: "true"
+    # Microsoft Entra OIDC for SSO. The Entra app `paperclip-prod`
+    # (appId 6c125fa4-deda-43c9-8475-f9c15d0f2976) is registered in the
+    # blockcast.net tenant with redirect URI
+    # https://paperclip.blockcast.net/api/auth/callback/microsoft. The
+    # better-auth instance reads these env vars and enables
+    # socialProviders.microsoft when all three are present
+    # (server/src/auth/better-auth.ts). 24-month client secret rotation:
+    # `az ad app credential reset --id 6c125fa4-... --display-name <name>`,
+    # then `kubectl create secret … --dry-run=client -o yaml | kubectl apply -f -`
+    # to replace the K8s Secret in-place.
+    - name: MICROSOFT_CLIENT_ID
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_CLIENT_ID
+    - name: MICROSOFT_TENANT_ID
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_TENANT_ID
+    - name: MICROSOFT_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_CLIENT_SECRET
     - name: PAPERCLIP_DEPLOYMENT_MODE
       value: authenticated
     - name: PAPERCLIP_DEPLOYMENT_EXPOSURE

@@ -102,6 +102,22 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
+  // Optional Microsoft Entra OIDC. Enabled only when all three env vars
+  // are set; otherwise the socialProviders block is omitted so dev/local
+  // installs without an Entra registration still work via email+password.
+  //
+  // The K8s Secret `paperclip-microsoft-oidc` (paperclip namespace) carries
+  // these for the cluster deploy — see deploy/helm/paperclip/values.blockcast.yaml.
+  // Redirect URI on the Entra app is `${publicUrl}/api/auth/callback/microsoft`,
+  // which better-auth wires up automatically when given a socialProviders.microsoft
+  // block. The Entra app issues a `groups` claim (configured server-side)
+  // that downstream RBAC can consume off `account.providerData.id_token`;
+  // claim→role mapping is a follow-up, not this PR.
+  const microsoftClientId = process.env.MICROSOFT_CLIENT_ID?.trim() || undefined;
+  const microsoftClientSecret = process.env.MICROSOFT_CLIENT_SECRET?.trim() || undefined;
+  const microsoftTenantId = process.env.MICROSOFT_TENANT_ID?.trim() || undefined;
+  const microsoftOidcEnabled = Boolean(microsoftClientId && microsoftClientSecret && microsoftTenantId);
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -120,6 +136,17 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    ...(microsoftOidcEnabled
+      ? {
+          socialProviders: {
+            microsoft: {
+              clientId: microsoftClientId!,
+              clientSecret: microsoftClientSecret!,
+              tenantId: microsoftTenantId!,
+            },
+          },
+        }
+      : {}),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
   };
 
