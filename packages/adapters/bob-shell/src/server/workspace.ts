@@ -178,24 +178,27 @@ function mergeCustomModes(
 }
 
 /**
- * Generates the Paperclip MCP server configuration
+ * Generates the Paperclip MCP server configuration.
+ *
+ * Stable per-agent values (companyId, agentId) are inlined; the secret API
+ * key, the API URL, and the per-run RUN_ID are written as ${VAR} placeholders
+ * that Bob Shell expands from its parent-process environment at MCP server
+ * startup. This mirrors `prompt-cache.ts:generateMcpJson` so the bearer token
+ * never lands on disk in the project workspace.
  */
 function generatePaperclipMcpServer(env: Record<string, string>): BobMcpServer {
-  const apiUrl = env.PAPERCLIP_API_URL || "http://localhost:3100";
-  const apiKey = env.PAPERCLIP_API_KEY || "";
   const companyId = env.PAPERCLIP_COMPANY_ID || "";
   const agentId = env.PAPERCLIP_AGENT_ID || "";
-  const runId = env.PAPERCLIP_RUN_ID || "";
 
   return {
     command: "npx",
     args: ["-y", "@paperclipai/mcp-server"],
     env: {
-      PAPERCLIP_API_URL: apiUrl,
-      PAPERCLIP_API_KEY: apiKey,
+      PAPERCLIP_API_URL: "${PAPERCLIP_API_URL}",
+      PAPERCLIP_API_KEY: "${PAPERCLIP_API_KEY}",
       PAPERCLIP_COMPANY_ID: companyId,
       PAPERCLIP_AGENT_ID: agentId,
-      PAPERCLIP_RUN_ID: runId,
+      PAPERCLIP_RUN_ID: "${PAPERCLIP_RUN_ID}",
     },
   };
 }
