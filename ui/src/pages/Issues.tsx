@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
+import { FactoryHealthBadge } from "../components/FactoryHealthBadge";
 import { CircleDot } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 
@@ -177,25 +178,30 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
-      initialSearch={syncedSearch}
-      onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
-      hasMoreIssues={hasMoreServerIssues}
-      onLoadMoreIssues={loadMoreServerIssues}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
-    />
+    <div>
+      <div className="px-4 py-2">
+        <FactoryHealthBadge companyId={selectedCompanyId} agents={agents ?? []} />
+      </div>
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        isLoadingMoreIssues={isFetchingNextPage}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        viewStateKey="paperclip:issues-view"
+        issueLinkState={issueLinkState}
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+        initialSearch={syncedSearch}
+        onSearchChange={handleSearchChange}
+        enableRoutineVisibilityFilter
+        hasMoreIssues={hasMoreServerIssues}
+        onLoadMoreIssues={loadMoreServerIssues}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      />
+    </div>
   );
 }
