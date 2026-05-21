@@ -244,6 +244,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     projectId: "project-1",
     goalId: null,
     parentIssueId: null,
+    carryStateIssueId: null,
     title: "Routine title",
     description: null,
     assigneeAgentId: "agent-1",

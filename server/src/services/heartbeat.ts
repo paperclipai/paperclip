@@ -4144,6 +4144,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
+
+    // carry-state 이슈는 document storage 전용 — missing_disposition 핸드오프 스킵
+    if (issue) {
+      const isCarryStateIssue = await db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(eq(routines.carryStateIssueId, issue.id))
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      if (isCarryStateIssue) return;
+    }
+
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
         issueId: issue.id,

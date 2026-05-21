@@ -1077,6 +1077,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             projectId,
             goalId: declaration.goalId ?? null,
             parentIssueId: null,
+            carryStateIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
             assigneeAgentId,
