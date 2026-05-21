@@ -11,8 +11,9 @@ import {
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
+  type CompanyExperimentalFeaturesConfig,
 } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 
@@ -46,6 +47,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      companyExperimentalFeatures: parsed.data.companyExperimentalFeatures ?? {},
     };
   }
   return {
@@ -55,6 +57,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    companyExperimentalFeatures: {},
   };
 }
 
@@ -154,6 +157,95 @@ export function instanceSettingsService(db: Db) {
         .where(eq(instanceSettings.id, current.id))
         .returning();
       return toInstanceSettings(updated ?? current);
+    },
+
+    updateCompanyExperimentalFeatures: async (
+      companyId: string,
+      config: CompanyExperimentalFeaturesConfig,
+    ): Promise<InstanceSettings> => {
+      return db.transaction(async (tx) => {
+        let current = await tx
+          .select()
+          .from(instanceSettings)
+          .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
+          .then((rows) => rows[0] ?? null);
+
+        if (!current) {
+          const now = new Date();
+          const [created] = await tx
+            .insert(instanceSettings)
+            .values({
+              singletonKey: DEFAULT_SINGLETON_KEY,
+              general: {},
+              experimental: {},
+              createdAt: now,
+              updatedAt: now,
+            })
+            .onConflictDoUpdate({
+              target: [instanceSettings.singletonKey],
+              set: {
+                updatedAt: now,
+              },
+            })
+            .returning();
+          current = created ?? null;
+        }
+
+        if (!current) throw new Error("Failed to initialize instance settings row");
+
+        await tx.execute(sql`
+          select id
+          from ${instanceSettings}
+          where ${instanceSettings.id} = ${current.id}
+          for update
+        `);
+
+        current = await tx
+          .select()
+          .from(instanceSettings)
+          .where(eq(instanceSettings.id, current.id))
+          .then((rows) => rows[0] ?? current);
+
+        const currentExperimental = normalizeExperimentalSettings(current.experimental);
+        const currentCompanyConfig = currentExperimental.companyExperimentalFeatures[companyId] ?? {};
+        const nextExperimental = normalizeExperimentalSettings({
+          ...currentExperimental,
+          companyExperimentalFeatures: {
+            ...currentExperimental.companyExperimentalFeatures,
+            [companyId]: {
+              ...currentCompanyConfig,
+              enabledFeatures: {
+                ...(currentCompanyConfig.enabledFeatures ?? {}),
+                ...(config.enabledFeatures ?? {}),
+              },
+              unauthenticatedLogin:
+                config.unauthenticatedLogin === undefined
+                  ? currentCompanyConfig.unauthenticatedLogin
+                  : {
+                      ...(currentCompanyConfig.unauthenticatedLogin ?? {}),
+                      ...config.unauthenticatedLogin,
+                    },
+              agentDualMode:
+                config.agentDualMode === undefined
+                  ? currentCompanyConfig.agentDualMode
+                  : {
+                      ...(currentCompanyConfig.agentDualMode ?? {}),
+                      ...config.agentDualMode,
+                    },
+            },
+          },
+        });
+        const now = new Date();
+        const [updated] = await tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...nextExperimental },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+        return toInstanceSettings(updated ?? current);
+      });
     },
 
     listCompanyIds: async (): Promise<string[]> =>

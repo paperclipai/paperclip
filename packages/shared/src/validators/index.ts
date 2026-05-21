@@ -12,6 +12,13 @@ export {
 } from "./instance.js";
 
 export {
+  companyExperimentalFeaturesConfigSchema,
+  experimentalAgentDualModeConfigSchema,
+  experimentalAgentProviderSchema,
+  experimentalFeatureKeySchema,
+} from "./experimental-features.js";
+
+export {
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   type UpsertBudgetPolicy,

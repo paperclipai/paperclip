@@ -21,6 +21,7 @@ import {
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
 } from "@paperclipai/shared";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   agents,
   agentRuntimeState,
@@ -169,11 +170,18 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  AgentRoutingService,
+  adapterTypeForAgentProvider,
+  type AgentProvider,
+  type AgentStatus,
+} from "./experimental-agent-routing.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+const EXPERIMENTAL_AGENT_ROUTING_STATUS_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -2391,6 +2399,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const agentRouting = new AgentRoutingService();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -6877,6 +6886,102 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  function isExperimentalProviderQuotaBlocked(error: string | null | undefined): boolean {
+    const normalized = (error ?? "").toLowerCase();
+    return (
+      normalized.includes("hit your limit") ||
+      normalized.includes("usage limit") ||
+      normalized.includes("rate limit") ||
+      normalized.includes("rate_limited") ||
+      normalized.includes("quota")
+    );
+  }
+
+  async function resolveExperimentalProviderStatus(
+    companyId: string,
+    provider: AgentProvider,
+    currentRunId: string,
+  ): Promise<AgentStatus> {
+    const adapterType = adapterTypeForAgentProvider(provider);
+    const cutoff = new Date(Date.now() - EXPERIMENTAL_AGENT_ROUTING_STATUS_LOOKBACK_MS);
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(agents.adapterType, adapterType),
+        eq(heartbeatRuns.status, "failed"),
+        gt(heartbeatRuns.createdAt, cutoff),
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(50);
+
+    if (recentRuns.some((row) => row.id !== currentRunId && isExperimentalProviderQuotaBlocked(row.error))) {
+      return provider === "claude" ? "tokens_empty" : "rate_limited";
+    }
+
+    return "available";
+  }
+
+  async function resolveExperimentalRoutedAgent(
+    agent: typeof agents.$inferSelect,
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<typeof agents.$inferSelect> {
+    const experimentalSettings = await instanceSettings.getExperimental();
+    const companyExperimentalFeatures = experimentalSettings.companyExperimentalFeatures[agent.companyId];
+    const routing = agentRouting.resolveExecution({
+      currentAdapterType: agent.adapterType,
+      companyExperimentalFeatures,
+      claudeStatus: await resolveExperimentalProviderStatus(agent.companyId, "claude", run.id),
+      codexStatus: await resolveExperimentalProviderStatus(agent.companyId, "codex", run.id),
+    });
+
+    if (!routing.routed || !routing.provider) return agent;
+
+    const nextConfig = {
+      ...parseObject(agent.adapterConfig),
+    };
+    if (routing.model) {
+      nextConfig.model = routing.model;
+    } else if (routing.provider === "codex") {
+      nextConfig.model = DEFAULT_CODEX_LOCAL_MODEL;
+    } else {
+      delete nextConfig.model;
+    }
+    if (routing.provider === "codex") {
+      nextConfig.command = typeof nextConfig.command === "string" && nextConfig.command.trim()
+        ? nextConfig.command
+        : "codex";
+      nextConfig.dangerouslyBypassApprovalsAndSandbox = asBoolean(
+        nextConfig.dangerouslyBypassApprovalsAndSandbox,
+        asBoolean(nextConfig.dangerouslySkipPermissions, true),
+      );
+    }
+
+    logger.info(
+      {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        fromAdapterType: agent.adapterType,
+        toAdapterType: routing.adapterType,
+        provider: routing.provider,
+      },
+      "experimental dual-mode agent routing selected alternate adapter",
+    );
+
+    return {
+      ...agent,
+      adapterType: routing.adapterType,
+      adapterConfig: nextConfig,
+    };
+  }
+
   async function executeRun(runId: string) {
     let run = await getRun(runId);
     if (!run) return;
@@ -6894,7 +6999,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     activeRunExecutions.add(run.id);
 
     try {
-    const agent = await getAgent(run.agentId);
+    let agent = await getAgent(run.agentId);
     if (!agent) {
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
@@ -6909,6 +7014,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
       return;
     }
+    agent = await resolveExperimentalRoutedAgent(agent, run);
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);

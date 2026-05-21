@@ -9,6 +9,12 @@ import {
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import {
+  createUnauthenticatedLoginSession,
+  isUnauthenticatedLoginAvailable,
+  resolveUnauthenticatedLoginCompanyId,
+  serializeUnauthenticatedLoginCookie,
+} from "../services/unauthenticated-login-session.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -36,6 +42,26 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
 
 export function authRoutes(db: Db) {
   const router = Router();
+
+  router.get("/unauthenticated-login/availability", async (req, res) => {
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
+    const resolvedCompanyId = companyId || await resolveUnauthenticatedLoginCompanyId(db);
+    const available = resolvedCompanyId ? await isUnauthenticatedLoginAvailable(db, resolvedCompanyId) : false;
+
+    res.json({ available, companyId: available ? resolvedCompanyId : null });
+  });
+
+  router.post("/unauthenticated-login/session", async (req, res) => {
+    const companyId = typeof req.body?.companyId === "string" ? req.body.companyId.trim() : "";
+    const token = await createUnauthenticatedLoginSession(db, companyId);
+    if (!token) {
+      res.status(403).json({ error: "Unauthenticated development entry is disabled." });
+      return;
+    }
+
+    res.setHeader("Set-Cookie", serializeUnauthenticatedLoginCookie(token));
+    res.json({ ok: true });
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
