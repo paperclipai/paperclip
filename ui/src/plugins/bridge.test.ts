@@ -246,6 +246,9 @@ describe("plugin SDK FileTree bridge", () => {
       react: React,
       reactDom: ReactDOM,
       sdkUi: {},
+      i18n: {
+        registerLanguage: () => undefined,
+      },
     };
 
     expect(() =>
@@ -278,6 +281,9 @@ describe("plugin SDK markdown component bridge", () => {
     globalThis.__paperclipPluginBridge__ = {
       react: React,
       reactDom: ReactDOM,
+      i18n: {
+        registerLanguage: () => undefined,
+      },
       sdkUi: {
         MarkdownBlock: ({ content, enableWikiLinks, wikiLinkRoot }: { content: string; enableWikiLinks?: boolean; wikiLinkRoot?: string }) =>
           React.createElement("article", {

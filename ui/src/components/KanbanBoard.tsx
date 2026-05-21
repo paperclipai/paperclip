@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { useMemo, useState, useEffect } from "react";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -23,6 +24,7 @@ import { Identity } from "./Identity";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
+import { cn } from "../lib/utils";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -42,15 +44,12 @@ export const boardStatuses = [
   "cancelled",
 ] as const satisfies readonly IssueStatus[];
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
-  if ((boardStatuses as readonly string[]).includes(overId)) {
+  if (boardStatuses.includes(overId as IssueStatus)) {
     return overId as IssueStatus;
   }
-  return issues.find((issue) => issue.id === overId)?.status ?? null;
+  const targetIssue = issues.find((i) => i.id === overId);
+  return targetIssue ? targetIssue.status : null;
 }
 
 interface Agent {
@@ -63,7 +62,7 @@ interface KanbanBoardProps {
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   compactCards?: boolean;
-  collapsedStatuses?: string[];
+  collapsedStatuses?: IssueStatus[];
   initialVisibleCount?: number;
   revealIncrement?: number;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
@@ -76,13 +75,13 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
-  compactCards = false,
-  collapsed = false,
+  compactCards,
+  collapsed,
   visibleCount,
   revealIncrement,
   onShowMore,
 }: {
-  status: IssueStatus;
+  status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
@@ -92,41 +91,49 @@ function KanbanColumn({
   revealIncrement: number;
   onShowMore: () => void;
 }) {
+  const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   const isEmpty = issues.length === 0;
-  const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
-  const hiddenCount = Math.max(issues.length - visibleIssues.length, 0);
-  const nextRevealCount = Math.min(revealIncrement, hiddenCount);
+  const visibleIssues = useMemo(() => issues.slice(0, visibleCount), [issues, visibleCount]);
+  const hiddenCount = issues.length - visibleIssues.length;
+  const nextRevealCount = Math.min(hiddenCount, revealIncrement);
 
-  if (collapsed) {
+  if (collapsed && !isOver) {
     return (
       <div
         ref={setNodeRef}
-        className={`flex min-h-[220px] w-[52px] shrink-0 flex-col items-center rounded-md border border-border bg-muted/20 px-1.5 py-2 transition-colors ${
-          isOver ? "bg-accent/50 ring-1 ring-primary/20" : ""
-        }`}
-        title={`${statusLabel(status)}: ${issues.length}`}
+        className="group relative flex w-8 shrink-0 flex-col items-center rounded-md border border-dashed border-border/40 bg-muted/5 py-4 transition-colors hover:bg-muted/10"
       >
-        <StatusIcon status={status} />
-        <span className="mt-2 [writing-mode:vertical-rl] rotate-180 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {statusLabel(status)}
-        </span>
-        <span className="mt-auto rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
-          {issues.length}
-        </span>
+        <div className="flex flex-1 flex-col items-center gap-4 [writing-mode:vertical-lr]">
+          <StatusIcon status={status} className="rotate-90 opacity-60 grayscale group-hover:grayscale-0" />
+          <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60 group-hover:text-muted-foreground">
+            {t(`issues.statuses.${status}`, { defaultValue: status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) })}
+          </span>
+        </div>
+        {!isEmpty && (
+          <span className="mt-auto text-[10px] font-mono font-medium text-muted-foreground/50">
+            {issues.length}
+          </span>
+        )}
       </div>
     );
   }
 
   return (
-    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
-      <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
+    <div className={cn(
+      "flex flex-col shrink-0 transition-[width,min-width]",
+      isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"
+    )}>
+      <div className={cn(
+        "flex items-center gap-2 px-2 py-2 mb-1",
+        isEmpty && !isOver ? "justify-center" : ""
+      )}>
         <StatusIcon status={status} />
         {(!isEmpty || isOver) && (
           <>
             <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {statusLabel(status)}
+              {t(`issues.statuses.${status}`, { defaultValue: status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) })}
             </span>
             <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
               {issues.length}
@@ -136,11 +143,11 @@ function KanbanColumn({
       </div>
       <div
         ref={setNodeRef}
-        className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors ${
+        className={cn(
+          "flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors",
           isOver ? "bg-accent/40" : "bg-muted/20"
-        }`}
+        )}
       >
-        {/* Hidden cards are intentionally excluded from sort targets until revealed. */}
         <SortableContext
           items={visibleIssues.map((i) => i.id)}
           strategy={verticalListSortingStrategy}
@@ -161,12 +168,12 @@ function KanbanColumn({
             className="mt-1 flex w-full items-center justify-center rounded-md border border-dashed border-border bg-background/70 px-2 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
             onClick={onShowMore}
           >
-            Show {nextRevealCount} more
+            {t("kanban.showMore", { count: nextRevealCount, defaultValue: `Show ${nextRevealCount} more` })}
           </button>
         ) : null}
         {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
           <p className="px-1 pt-1 text-[11px] text-muted-foreground">
-            Showing {visibleIssues.length} of {issues.length}
+            {t("kanban.showingCount", { visible: visibleIssues.length, total: issues.length, defaultValue: `Showing ${visibleIssues.length} of ${issues.length}` })}
           </p>
         ) : null}
       </div>
@@ -189,6 +196,7 @@ function KanbanCard({
   isOverlay?: boolean;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const {
     attributes,
     listeners,
@@ -214,11 +222,12 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing transition-shadow ${
-        isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"} ${
+      className={cn(
+        "rounded-md border bg-card cursor-grab active:cursor-grabbing transition-shadow",
+        isDragging && !isOverlay ? "opacity-30" : "",
+        isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm",
         compact ? "p-2" : "p-2.5"
-      }`}
+      )}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
@@ -229,18 +238,18 @@ function KanbanCard({
           if (isDragging) e.preventDefault();
         }}
       >
-        <div className={`flex items-start gap-1.5 ${compact ? "mb-1" : "mb-1.5"}`}>
+        <div className={cn("flex items-start gap-1.5", compact ? "mb-1" : "mb-1.5")}>
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
           {isSuccessfulRunHandoffRequired(issue) ? (
             <span
               className="inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-              title="This issue needs a next step"
-              aria-label="Needs next step"
+              title={t('issues.needsNextStepTitle')}
+              aria-label={t('issues.needsNextStep')}
             >
               <AlertTriangle className="h-3 w-3" />
-              Next step
+              {t('issues.needsNextStep')}
             </span>
           ) : null}
           {isLive && (
@@ -249,11 +258,16 @@ function KanbanCard({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              {compact ? "Live" : null}
+              {compact ? t("kanban.live") : null}
             </span>
           )}
         </div>
-        <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
+        <p className={cn(
+          "leading-snug line-clamp-2",
+          compact ? "mb-1.5 text-xs" : "mb-2 text-sm"
+        )}>
+          {issue.title}
+        </p>
         <div className="flex items-center gap-2 min-w-0">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {

@@ -281,7 +281,7 @@ describe("IssueRow", () => {
 
     const badges = container.querySelectorAll('[data-testid="issue-row-parked-blocker"]');
     expect(badges.length).toBeGreaterThan(0);
-    expect(badges[0]?.textContent).toContain("Blocked by parked work");
+    expect(badges[0]?.textContent).toContain("Parked");
 
     act(() => {
       root.unmount();

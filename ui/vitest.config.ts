@@ -11,5 +11,10 @@ export default defineConfig({
   test: {
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
+    server: {
+      deps: {
+        inline: ["html-encoding-sniffer", "@exodus/bytes"],
+      },
+    },
   },
 });

@@ -281,7 +281,7 @@ describe("Inbox toolbar", () => {
       );
     });
 
-    expect(container.querySelector('input[placeholder="Search inbox…"]')).not.toBeNull();
+    expect(container.querySelector('input[placeholder="Search inbox..."]')).not.toBeNull();
     expect(container.querySelector('[data-testid="inbox-blocked-tab-badge"]')).toBeNull();
     expect(container.querySelector('button[title="Filter"]')).not.toBeNull();
     expect(container.querySelector('button[title="Group"]')).not.toBeNull();
@@ -544,14 +544,18 @@ describe("InboxIssueTrailingColumns", () => {
 
 describe("formatJoinRequestInboxLabel", () => {
   it("shows the human requester's name and email when available", () => {
-    expect(formatJoinRequestInboxLabel(createJoinRequest())).toBe(
-      "Jordan Example (joiner@example.com)",
-    );
+    expect(
+      formatJoinRequestInboxLabel(
+        (k: string, options?: any) => options?.defaultValue ?? k,
+        createJoinRequest(),
+      ),
+    ).toBe("Jordan Example (joiner@example.com)");
   });
 
   it("falls back to the email snapshot when the requester profile is missing", () => {
     expect(
       formatJoinRequestInboxLabel(
+        (k: string, options?: any) => options?.defaultValue ?? k,
         createJoinRequest({
           requesterUser: null,
           requestEmailSnapshot: "snapshot@example.com",

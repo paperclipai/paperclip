@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { ReactNode } from "react";
+import { useTranslation } from 'react-i18next';
 import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Eye, Flag, X } from "lucide-react";
@@ -60,6 +61,7 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
+  const { t } = useTranslation();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
@@ -86,15 +88,14 @@ export function IssueRow({
     </span>
   ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
-  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  const recoveryIndicator = recoveryAction ? <RecoveryChip action={recoveryAction} selected={selected} /> : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
-    <span
       data-testid="issue-row-parked-blocker"
       className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+      title={t('issue.blockedByParkedWork')}
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
-      Blocked by parked work
+      {t('issue.blockedByParkedWork')}
     </span>
   ) : null;
 
@@ -228,7 +229,8 @@ export function IssueRow({
   );
 }
 
-function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): ReactNode {
+function RecoveryChip({ action, selected }: { action: IssueRecoveryAction; selected: boolean }): ReactNode {
+  const { t } = useTranslation();
   const state = deriveActiveRecoveryDisplayState(action);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
@@ -238,16 +240,19 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
       role="status"
-      aria-label={tone.label}
+      aria-label={t(tone.labelKey)}
       className={cn(
         "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
-      title={`${tone.label} — open the source issue to act.`}
+      title={`${t(tone.labelKey)} — open the source issue to act.`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {t(tone.labelKey)}
     </span>
   );
 }
+
+
+

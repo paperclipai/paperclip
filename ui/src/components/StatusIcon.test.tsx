@@ -1,8 +1,37 @@
 // @vitest-environment node
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StatusIcon } from "./StatusIcon";
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: any) => {
+      const dict: Record<string, string | ((opts?: any) => string)> = {
+        "issues.blockerAttention.blocked": "Blocked",
+        "issues.blockerAttention.waitingOnActiveSubIssue": (opts) => `Blocked · waiting on active sub-issue ${opts.identifier}`,
+        "issues.blockerAttention.waitingOnOneActiveSubIssue": "Blocked · waiting on one active sub-issue",
+        "issues.blockerAttention.waitingOnManyActiveSubIssues": (opts) => `Blocked · waiting on active sub-issues ${opts.count}`,
+        "issues.blockerAttention.coveredByActiveDependency": (opts) => `Blocked · covered by active dependency ${opts.identifier}`,
+        "issues.blockerAttention.coveredByOneActiveDependency": "Blocked · covered by one active dependency",
+        "issues.blockerAttention.coveredByManyActiveDependencies": (opts) => `Blocked · covered by ${opts.count} active dependencies`,
+        "issues.blockerAttention.reviewStalledOn": (opts) => `Blocked · review stalled on ${opts.leaf}`,
+        "issues.blockerAttention.reviewStalledNoStep": "Blocked · review stalled",
+        "issues.blockerAttention.reviewsStalledNoStep": (opts) => `Blocked · reviews stalled ${opts.count}`,
+        "issues.blockerAttention.needsAttentionOne": "1 blocker needs attention",
+        "issues.blockerAttention.needsAttentionMany": (opts) => `${opts.count} blockers need attention`,
+        "issues.blockerAttention.attentionWithCovered": (opts) => `Blocked · ${opts.attention}; ${opts.covered} covered by active work`,
+        "issues.blockerAttention.attentionOnly": (opts) => `Blocked · ${opts.attention}`,
+      };
+
+      const val = dict[key];
+      if (typeof val === "function") {
+        return val(options);
+      }
+      return val ?? options?.defaultValue ?? key;
+    },
+  }),
+}));
 
 describe("StatusIcon", () => {
   it("renders covered blocked issues with the cyan covered state visual", () => {

@@ -263,7 +263,7 @@ ${namedExports}
       `;
 }
 
-function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui"): string {
+function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui" | "i18n"): string {
   if (shimBlobUrls[specifier]) return shimBlobUrls[specifier];
 
   let source: string;
@@ -318,6 +318,13 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
         export { usePluginData, usePluginAction, useHostContext, useHostLocation, useHostNavigation, usePluginStream, usePluginToast, MetricCard, StatusBadge, DataTable, TimeseriesChart, MarkdownBlock, MarkdownEditor, KeyValueList, ActionBar, LogView, JsonTree, Spinner, ErrorBoundary, FileTree, IssuesList, AssigneePicker, ProjectPicker, ManagedRoutinesList };
       `;
       break;
+    case "i18n":
+      source = `
+        const I18N = globalThis.__paperclipPluginBridge__?.i18n;
+        const { registerLanguage } = I18N ?? {};
+        export { registerLanguage };
+      `;
+      break;
   }
 
   const blob = new Blob([source], { type: "application/javascript" });
@@ -353,6 +360,8 @@ function rewriteBareSpecifiers(source: string): string {
     "'react-dom'": `'${getShimBlobUrl("react-dom")}'`,
     '"react"': `"${getShimBlobUrl("react")}"`,
     "'react'": `'${getShimBlobUrl("react")}'`,
+    '"@paperclipai/plugin-sdk/i18n"': `"${getShimBlobUrl("i18n")}"`,
+    "'@paperclipai/plugin-sdk/i18n'": `'${getShimBlobUrl("i18n")}'`,
   };
 
   let result = source;

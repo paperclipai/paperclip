@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { t } from "./index";
 import en from "./locales/en.json";
 import { localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";

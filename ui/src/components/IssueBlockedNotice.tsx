@@ -5,6 +5,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { AlertTriangle, Flag } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
@@ -15,6 +16,7 @@ import {
 } from "../lib/recovery-display";
 
 function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
+  const { t } = useTranslation();
   const state = deriveActiveRecoveryDisplayState(action);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
@@ -24,12 +26,12 @@ function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
       data-testid="issue-blocked-notice-recovery-indicator"
       data-recovery-state={state}
       role="status"
-      aria-label={tone.label}
-      title={`${tone.label} — open the source issue to act.`}
+      aria-label={t(tone.labelKey)}
+      title={`${t(tone.labelKey)} — open the source issue to act.`}
       className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {t(tone.labelKey)}
     </span>
   );
 }
@@ -47,11 +49,12 @@ export function IssueBlockedNotice({
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   agentName?: string | null;
 }) {
+  const { t } = useTranslation();
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
 
-  const blockerLabel = blockers.length === 1 ? "the linked issue" : "the linked issues";
+  const blockerLabel = blockers.length === 1 ? t("blocked.theLinkedIssue") : t("blocked.theLinkedIssues");
   const terminalBlockers = blockers
     .flatMap((blocker) => blocker.terminalBlockers ?? [])
     .filter((blocker, index, all) => all.findIndex((candidate) => candidate.id === blocker.id) === index);
@@ -126,19 +129,15 @@ export function IssueBlockedNotice({
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
-              <p className="font-medium leading-5">This issue still needs a next step.</p>
+              <p className="font-medium leading-5">{t("issue.needsNextStep")}</p>
               <p className="leading-5">
-                A run finished successfully, but this issue is still open in{" "}
-                <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
-                  in_progress
-                </code>{" "}
-                with no clear owner for the next action.
+                {t("issue.needsNextStepDesc")}
               </p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
-                <li>Mark it done or cancelled.</li>
-                <li>Send it for review or ask for input.</li>
-                <li>Mark it blocked with a blocker owner.</li>
-                <li>Delegate follow-up work or queue a continuation.</li>
+                <li>{t("issue.markDoneOrCancelled")}</li>
+                <li>{t("issue.sendForReview")}</li>
+                <li>{t("issue.markBlocked")}</li>
+                <li>{t("issue.delegateFollowUp")}</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (
@@ -154,7 +153,7 @@ export function IssueBlockedNotice({
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Corrective wake queued for {agentName ?? "the assignee"}
+                  {t("issue.correctiveWake")} {agentName ?? "the assignee"}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
@@ -173,10 +172,10 @@ export function IssueBlockedNotice({
                 {blockers.length > 0
                   ? isStalled
                     ? stalledLeafBlockers.length > 1
-                      ? <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this issue is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this issue is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-                  : <>Work on this issue is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+                      ? <>{t("blocked.stalledMultiple", { blockerLabel })}</>
+                      : <>{t("blocked.stalledSingle", { blockerLabel })}</>
+                    : <>{blockers.length === 1 ? t("blocked.blockedSingle", { blockerLabel }) : t("blocked.blockedPlural", { blockerLabel })}</>
+                  : <>{t("blocked.blockedTodo")}</>}
               </p>
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -186,14 +185,14 @@ export function IssueBlockedNotice({
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Stalled in review
+                    {t("blocked.stalledInReview")}
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
-                    Ultimately waiting on
+                    {t("blocked.ultimatelyWaitingOn")}
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
                 </div>
@@ -205,7 +204,7 @@ export function IssueBlockedNotice({
                 >
                   <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
                     <Flag className="h-3 w-3" aria-hidden />
-                    Blocked by parked work
+                    {t("blocked.blockedByParked")}
                   </span>
                   {parkedBlockers.map(renderBlockerChip)}
                 </div>
