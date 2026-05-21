@@ -76,6 +76,19 @@ export {
   type CompanySkillFileUpdate,
 } from "./company-skill.js";
 export {
+  companyToolSourceSchema,
+  companyToolRiskSchema,
+  toolAccessModeSchema,
+  companyToolCreateSchema,
+  companyToolUpdateSchema,
+  agentToolGrantSetSchema,
+  agentToolGrantBulkSetSchema,
+  type CompanyToolCreate,
+  type CompanyToolUpdate,
+  type AgentToolGrantSet,
+  type AgentToolGrantBulkSet,
+} from "./tool-access.js";
+export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
   agentSkillEntrySchema,

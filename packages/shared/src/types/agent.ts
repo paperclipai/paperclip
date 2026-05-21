@@ -24,6 +24,14 @@ export interface AgentRuntimeConfig extends Record<string, unknown> {
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
 }
 
+export interface AgentRuntimeIdentity {
+  adapter: string;
+  profileSlug?: string;
+  hermesHome?: string;
+  managedBy?: string;
+  createdAt?: string;
+}
+
 export type AgentInstructionsBundleMode = "managed" | "external";
 
 export interface AgentInstructionsFileSummary {
@@ -91,7 +99,7 @@ export interface Agent {
   pausedAt: Date | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;
-  metadata: Record<string, unknown> | null;
+  metadata: (Record<string, unknown> & { runtimeIdentity?: AgentRuntimeIdentity }) | null;
   createdAt: Date;
   updatedAt: Date;
 }
