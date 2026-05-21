@@ -31,6 +31,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
@@ -563,18 +564,22 @@ export function Costs() {
 
           {preset === "custom" ? (
             <div className="flex flex-wrap items-center gap-2 border border-border p-3">
-              <input
+              <Input
                 type="date"
                 value={customFrom}
                 onChange={(event) => setCustomFrom(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                max={customTo || undefined}
+                aria-label="Start date"
+                className="w-auto min-w-[140px]"
               />
               <span className="text-sm text-muted-foreground">to</span>
-              <input
+              <Input
                 type="date"
                 value={customTo}
                 onChange={(event) => setCustomTo(event.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                min={customFrom || undefined}
+                aria-label="End date"
+                className="w-auto min-w-[140px]"
               />
             </div>
           ) : null}
