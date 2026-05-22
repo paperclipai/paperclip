@@ -95,6 +95,7 @@ interface AcpxPreparedRuntime {
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
+  paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -565,6 +566,99 @@ function buildSessionParams(input: {
   };
 }
 
+interface PaperclipClaudeSettingsResult {
+  filePath: string;
+  allow: string[];
+  additionalDirectories: string[];
+  defaultMode: string;
+  overrodeDontAsk: boolean;
+}
+
+function uniqueSorted(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))].sort();
+}
+
+// Phase 4.1 (PAPA-388): the Claude Code SDK that `claude-agent-acp` runs uses
+// `settingSources: ["user", "project", "local"]`. By writing a per-worktree
+// `.claude/settings.local.json` we override the user's potentially-restrictive
+// `~/.claude/settings.json` (e.g. `defaultMode: "dontAsk"`, which silently
+// denies every non-allowlisted tool and never reaches `canUseTool`), and we
+// widen the SDK's Read sandbox to include the Paperclip state dirs the agent
+// needs to talk to its own control plane.
+async function writePaperclipClaudeSettings(input: {
+  cwd: string;
+  stateDir: string;
+  agentHome: string;
+  companyId: string;
+}): Promise<PaperclipClaudeSettingsResult> {
+  const filePath = path.join(input.cwd, ".claude", "settings.local.json");
+  const instanceRoot = defaultPaperclipInstanceDir();
+  const companyRoot = path.join(instanceRoot, "companies", input.companyId);
+  const paperclipAdditionalDirectories = uniqueSorted([
+    input.stateDir,
+    input.agentHome,
+    companyRoot,
+  ]);
+  const paperclipAllow = uniqueSorted([
+    "Bash(curl:*)",
+    "Bash(env:*)",
+    "Bash(env)",
+    `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
+    `Bash(${input.cwd}/scripts/paperclip:*)`,
+  ]);
+
+  let existing: Record<string, unknown> = {};
+  const existingRaw = await fs.readFile(filePath, "utf8").catch(() => null);
+  if (existingRaw) {
+    try {
+      const parsed = JSON.parse(existingRaw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) existing = parsed as Record<string, unknown>;
+    } catch {
+      // Malformed settings file — leave it alone in `existing` and our merge will replace it with a valid one.
+    }
+  }
+  const existingPerms =
+    existing.permissions && typeof existing.permissions === "object" && !Array.isArray(existing.permissions)
+      ? (existing.permissions as Record<string, unknown>)
+      : {};
+  const existingAllow = Array.isArray(existingPerms.allow)
+    ? (existingPerms.allow as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const existingAdditionalDirectories = Array.isArray(existingPerms.additionalDirectories)
+    ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const mergedAdditionalDirectories = uniqueSorted([
+    ...existingAdditionalDirectories,
+    ...paperclipAdditionalDirectories,
+  ]);
+  const existingDefaultMode =
+    typeof existingPerms.defaultMode === "string" ? (existingPerms.defaultMode as string) : "";
+  const defaultMode =
+    existingDefaultMode && existingDefaultMode !== "dontAsk" ? existingDefaultMode : "default";
+  const overrodeDontAsk = existingDefaultMode === "dontAsk";
+
+  const nextPermissions: Record<string, unknown> = {
+    ...existingPerms,
+    allow: mergedAllow,
+    additionalDirectories: mergedAdditionalDirectories,
+    defaultMode,
+  };
+  const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
+  await writeFileAtomically({
+    target: filePath,
+    contents: `${JSON.stringify(next, null, 2)}\n`,
+    mode: 0o600,
+  });
+  return {
+    filePath,
+    allow: mergedAllow,
+    additionalDirectories: mergedAdditionalDirectories,
+    defaultMode,
+    overrodeDontAsk,
+  };
+}
+
 async function writeAgentWrapper(input: {
   stateDir: string;
   acpxAgent: string;
@@ -744,6 +838,7 @@ async function buildRuntime(input: {
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
+  let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -753,6 +848,17 @@ async function buildRuntime(input: {
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    paperclipClaudeSettings = await writePaperclipClaudeSettings({
+      cwd,
+      stateDir,
+      agentHome,
+      companyId: agent.companyId,
+    });
+    skillCommandNotes.push(
+      `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
+        paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+    );
   } else if (acpxAgent === "codex") {
     const preparedSkills = await prepareCodexSkillRuntime({
       companyId: agent.companyId,
@@ -801,6 +907,13 @@ async function buildRuntime(input: {
     remoteExecutionIdentity,
     skillsIdentity,
     skillPromptInstructions,
+    paperclipClaudeSettings: paperclipClaudeSettings
+      ? {
+          allow: paperclipClaudeSettings.allow,
+          additionalDirectories: paperclipClaudeSettings.additionalDirectories,
+          defaultMode: paperclipClaudeSettings.defaultMode,
+        }
+      : null,
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -838,6 +951,7 @@ async function buildRuntime(input: {
       commandNotes: skillCommandNotes,
     },
     childStderrLogPath,
+    paperclipClaudeSettings,
   };
 }
 

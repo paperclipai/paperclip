@@ -541,4 +541,125 @@ describe("acpx_local runtime skill isolation", () => {
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
   });
+
+  it("writes a Paperclip-managed .claude/settings.local.json for the claude agent so it can reach the Paperclip API", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const { meta } = await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd, agentHome: path.join(root, "agent-home") } } },
+    );
+
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    const written = JSON.parse(await fs.readFile(settingsPath, "utf8")) as {
+      permissions?: {
+        allow?: unknown;
+        additionalDirectories?: unknown;
+        defaultMode?: unknown;
+      };
+    };
+    expect(written.permissions?.defaultMode).toBe("default");
+    const allow = written.permissions?.allow;
+    expect(Array.isArray(allow)).toBe(true);
+    expect(allow).toContain("Bash(curl:*)");
+    expect(allow).toContain(`Bash(${cwd}/scripts/paperclip-issue-update.sh:*)`);
+    const additionalDirectories = written.permissions?.additionalDirectories as string[] | undefined;
+    expect(Array.isArray(additionalDirectories)).toBe(true);
+    expect(additionalDirectories).toContain(stateDir);
+    expect(additionalDirectories).toContain(path.join(root, "agent-home"));
+
+    const note = (meta[0]?.commandNotes as string[] | undefined)?.find((entry) =>
+      entry.includes("Paperclip-managed Claude settings"),
+    );
+    expect(note).toBeTruthy();
+  });
+
+  it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify(
+        {
+          statusLine: { type: "command", command: "preserve-me" },
+          permissions: {
+            allow: ["Bash(npm test:*)"],
+            additionalDirectories: ["/Users/example/custom"],
+            defaultMode: "acceptEdits",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as {
+      statusLine?: unknown;
+      permissions?: {
+        allow?: string[];
+        additionalDirectories?: string[];
+        defaultMode?: string;
+      };
+    };
+    expect(written.statusLine).toEqual({ type: "command", command: "preserve-me" });
+    expect(written.permissions?.defaultMode).toBe("acceptEdits");
+    expect(written.permissions?.allow).toContain("Bash(npm test:*)");
+    expect(written.permissions?.allow).toContain("Bash(curl:*)");
+    expect(written.permissions?.additionalDirectories).toContain("/Users/example/custom");
+    expect(written.permissions?.additionalDirectories).toContain(stateDir);
+  });
+
+  it("overrides a user-supplied dontAsk defaultMode so ACPX can route Bash through canUseTool", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { defaultMode: "dontAsk" } }, null, 2),
+      "utf8",
+    );
+
+    const { meta } = await runExecutor(
+      { agent: "claude", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as { permissions?: { defaultMode?: string } };
+    expect(written.permissions?.defaultMode).toBe("default");
+
+    const overrideNote = (meta[0]?.commandNotes as string[] | undefined)?.find((entry) =>
+      entry.includes("overrode user dontAsk"),
+    );
+    expect(overrideNote).toBeTruthy();
+  });
+
+  it("does not touch .claude/settings.local.json for the codex agent", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor(
+      { agent: "codex", stateDir, cwd },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);
+  });
 });
