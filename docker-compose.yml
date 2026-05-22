@@ -1,5 +1,3 @@
-LABEL org.opencontainers.image.description v2026.407.0-canary10 - gpt 5.5 - companies-create-plugin - early version but working good
-
 services:
   paperclip:
     build:
