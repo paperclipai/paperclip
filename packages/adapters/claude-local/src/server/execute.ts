@@ -933,16 +933,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
+      (initial.proc.exitCode ?? 0) !== 0
     ) {
-      await onLog(
-        "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-      );
-      const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      const isExplicitSessionError = initial.parsed != null && isClaudeUnknownSessionError(initial.parsed);
+      // Also retry when the process crashes before producing any output (e.g. Windows
+      // STATUS_ACCESS_VIOLATION / exit code 3221225477 on stale session re-attach).
+      const isCrashWithNoOutput = initial.parsed === null && initial.parsedStream.resultJson === null;
+      if (isExplicitSessionError || isCrashWithNoOutput) {
+        const reason = isExplicitSessionError
+          ? "is unavailable"
+          : `crashed (exit code ${initial.proc.exitCode ?? -1}) before producing output`;
+        await onLog(
+          "stdout",
+          `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
+        );
+        const retry = await runAttempt(null);
+        return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      }
     }
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
