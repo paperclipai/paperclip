@@ -1,8 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
+import { heartbeatsApi } from "../api/heartbeats";
+import { issuesApi } from "../api/issues";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
@@ -11,15 +14,16 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
+import { IssuesList } from "../components/IssuesList";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
-import type { Goal, Project } from "@paperclipai/shared";
 
 interface GoalPropertiesToggleButtonProps {
   panelVisible: boolean;
@@ -77,6 +81,29 @@ export function GoalDetail() {
     enabled: !!resolvedCompanyId
   });
 
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(resolvedCompanyId!),
+    queryFn: () => agentsApi.list(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+  });
+
+  const { data: liveRuns } = useQuery({
+    queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
+    queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+    refetchInterval: 5000,
+  });
+
+  const { data: linkedIssues, isLoading: linkedIssuesLoading, error: linkedIssuesError } = useQuery({
+    queryKey: resolvedCompanyId && goalId ? queryKeys.issues.listByGoal(resolvedCompanyId, goalId) : ["issues", "goal", "pending"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, {
+      goalId: goalId!,
+      includeBlockedBy: true,
+    }),
+    enabled: !!resolvedCompanyId && !!goalId,
+    initialData: () => goal?.linkedIssues,
+  });
+
   useEffect(() => {
     if (!goal?.companyId || goal.companyId === selectedCompanyId) return;
     setSelectedCompanyId(goal.companyId, { source: "route_sync" });
@@ -109,11 +136,27 @@ export function GoalDetail() {
   });
 
   const childGoals = (allGoals ?? []).filter((g) => g.parentId === goalId);
+  const goalIssues = linkedIssues ?? goal?.linkedIssues ?? [];
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const linkedProjects = (allProjects ?? []).filter((p) => {
     if (!goalId) return false;
     if (p.goalIds.includes(goalId)) return true;
     if (p.goals.some((goalRef) => goalRef.id === goalId)) return true;
     return p.goalId === goalId;
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      if (resolvedCompanyId && goalId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByGoal(resolvedCompanyId, goalId) });
+      }
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.detail(goalId!) });
+    },
   });
 
   useEffect(() => {
@@ -184,6 +227,9 @@ export function GoalDetail() {
           <TabsTrigger value="projects">
             Projects ({linkedProjects.length})
           </TabsTrigger>
+          <TabsTrigger value="issues">
+            Issues ({goalIssues.length})
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="children" className="mt-4 space-y-3">
@@ -220,6 +266,23 @@ export function GoalDetail() {
               ))}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="issues" className="mt-4">
+          <IssuesList
+            issues={goalIssues}
+            isLoading={linkedIssuesLoading}
+            error={linkedIssuesError as Error | null}
+            agents={agents}
+            projects={allProjects}
+            liveIssueIds={liveIssueIds}
+            viewStateKey="paperclip:goal-issues-view"
+            searchFilters={{ goalId, includeBlockedBy: true }}
+            baseCreateIssueDefaults={{ goalId }}
+            createIssueLabel="Issue"
+            showProgressSummary
+            onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+          />
         </TabsContent>
       </Tabs>
     </div>
