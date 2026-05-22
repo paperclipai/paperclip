@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 
 PREFIX="${1:-}"
 START="${2:-}"
@@ -39,8 +39,8 @@ fi
 
 PROJECT="paperclip-linkcast"
 COMPOSE_FILES=(-f docker/docker-compose.yml)
-if [[ -f paperclip-boot-linkcast.yaml ]]; then
-  COMPOSE_FILES+=(-f paperclip-boot-linkcast.yaml)
+if [[ -f local/compose/paperclip-boot-linkcast.yaml ]]; then
+  COMPOSE_FILES+=(-f local/compose/paperclip-boot-linkcast.yaml)
 fi
 
 PSQL=(docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" exec -T db

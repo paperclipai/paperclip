@@ -9,8 +9,8 @@
 #
 set -euo pipefail
 
-# Ensure we are in the project root
-cd "$(dirname "$0")"
+# Navigate to the project root (script lives in local/bin/)
+cd "$(dirname "$0")/../.."
 
 # Source .envrc to get the authoritative OP_SERVICE_ACCOUNT_TOKEN
 if [[ -f .envrc ]]; then

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 # Load PAPERCLIP_COMPANY_ID from .env if not set
+cd "$(dirname "$0")/../.."
 if [ -z "$PAPERCLIP_COMPANY_ID" ] && [ -f .env ]; then
   export PAPERCLIP_COMPANY_ID=$(grep "^PAPERCLIP_COMPANY_ID=" .env | cut -d= -f2 | tr -d '"')
 fi
@@ -10,7 +11,7 @@ if [ -z "$PAPERCLIP_COMPANY_ID" ]; then
   exit 1
 fi
 
-./paperclip-api.sh GET "/api/companies/${PAPERCLIP_COMPANY_ID}/agents" 2>/dev/null | python3 -c "
+./local/bin/paperclip-api.sh GET "/api/companies/${PAPERCLIP_COMPANY_ID}/agents" 2>/dev/null | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)

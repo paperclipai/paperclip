@@ -3,8 +3,8 @@
 # Lifecycle wrapper for the linkcast Paperclip instance.
 #
 # Layered compose: upstream `docker/docker-compose.yml` (the base, kept as
-# shipped) + `paperclip-boot-linkcast.yaml` (this checkout's overlay — env,
-# external volume bindings).
+# shipped) + `local/compose/paperclip-boot-linkcast.yaml` (this checkout's
+# overlay — env, external volume bindings).
 #
 # Secret model: `.env` holds 1Password URIs (op://paperclip/...). For commands
 # that need them resolved (start, restart) we wrap docker compose with `op run`,
@@ -14,9 +14,9 @@
 #
 set -euo pipefail
 
-# All paths below are relative to the script's own directory so the script
-# works regardless of the caller's cwd.
-cd "$(dirname "$0")"
+# All paths below are relative to the repo root. The script lives in
+# local/bin/ so we navigate up two levels.
+cd "$(dirname "$0")/../.."
 
 # ── Parse flags early so VERBOSE is available for all init messages ───────────
 VERBOSE=false
@@ -48,7 +48,7 @@ PROJECT="paperclip-linkcast"
 
 # Order matters: later files override earlier ones in compose's merge. The
 # overlay must come after the upstream base.
-COMPOSE_FILES=(docker/docker-compose.yml paperclip-boot-linkcast.yaml)
+COMPOSE_FILES=(docker/docker-compose.yml local/compose/paperclip-boot-linkcast.yaml)
 
 # If a paperclip overlay is configured, include it.
 # PAPERCLIP_OVERLAY_PATH points to the paperclip/companies folder in the crew
@@ -499,6 +499,6 @@ case "${1:-}" in
   logs)     without_secrets logs -f "${@:2}" ;;
   env)      env_diagnostics ;;
   version)  show_versions ;;
-  make)     make "${@:2}" ;;
+  make)     make -f local/Makefile "${@:2}" ;;
   *)        usage ;;
 esac

@@ -2,7 +2,7 @@ ADAPTER_SRC    := packages/adapters/openrouter-agent
 ADAPTER_DEPLOY := $(HOME)/Projects/linkcast/crew/paperclip/companies/linkcast/adapters/paperclip-openrouter-agent
 
 PROJECT       := paperclip-linkcast
-COMPOSE_FILES := -f docker/docker-compose.yml -f paperclip-boot-linkcast.yaml
+COMPOSE_FILES := -f docker/docker-compose.yml -f local/compose/paperclip-boot-linkcast.yaml
 
 .PHONY: all build-adapter sync-adapter build-container deploy-adapter deploy-container restart help
 
@@ -31,7 +31,7 @@ deploy-adapter: build-adapter sync-adapter restart ## Compile adapter, sync to o
 deploy-container: build-container restart ## Rebuild server image and restart
 
 restart: ## Restart the Paperclip stack (via paperclip-control.sh)
-	./paperclip-control.sh restart
+	./local/bin/paperclip-control.sh restart
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) \
