@@ -8660,6 +8660,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  async function resolveTimerWakeAssignment(agent: typeof agents.$inferSelect) {
+    return await db
+      .select({
+        id: issues.id,
+        projectId: issues.projectId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["in_progress", "todo"]),
+          sql`${issues.projectId} is not null`,
+        ),
+      )
+      .orderBy(
+        sql`case ${issues.status} when 'in_progress' then 0 when 'todo' then 1 else 2 end`,
+        sql`case ${issues.priority} when 'critical' then 0 when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end`,
+        desc(issues.updatedAt),
+        asc(issues.id),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -8698,6 +8723,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+
+    if (
+      source === "timer" &&
+      !issueId &&
+      !readNonEmptyString(enrichedContextSnapshot.projectId) &&
+      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
+      !readNonEmptyString(enrichedContextSnapshot.taskKey)
+    ) {
+      const timerAssignment = await resolveTimerWakeAssignment(agent);
+      if (timerAssignment?.projectId) {
+        issueId = timerAssignment.id;
+        enrichedContextSnapshot.issueId = timerAssignment.id;
+        enrichedContextSnapshot.taskId = timerAssignment.id;
+        enrichedContextSnapshot.taskKey = timerAssignment.id;
+        enrichedContextSnapshot.projectId = timerAssignment.projectId;
+        enrichedContextSnapshot.timerSelectedIssueId = timerAssignment.id;
+      }
+    }
+
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
