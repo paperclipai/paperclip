@@ -18,4 +18,5 @@ export { inboxDismissalRoutes } from "./inbox-dismissals.js";
 export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
+export { gatewayRoutes } from "./gateway.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";

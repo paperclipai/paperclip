@@ -61,6 +61,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import * as gatewayService from "./gateway.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -7766,9 +7767,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      // --- Gateway routing: resolve cross-adapter route if configured ---
+      // Per-agent gateway bypass: if the agent has metadata.gatewayBypass = true,
+      // skip gateway resolution entirely and use the agent's default adapter config.
+      const agentMeta = (agent.metadata ?? {}) as Record<string, unknown>;
+      const gatewayBypassed = agentMeta.gatewayBypass === true;
+      const gatewayDecision = gatewayBypassed
+        ? null
+        : await gatewayService.resolveRoute(db, agent.id, agent.companyId).catch((err) => {
+            logger.warn({ agentId: agent.id, err }, "Gateway route resolution failed, using default adapter");
+            return null;
+          });
+      if (gatewayBypassed) {
+        logger.debug({ agentId: agent.id }, "Gateway bypassed for agent (metadata.gatewayBypass=true)");
+      }
+      const effectiveAdapterType = gatewayDecision?.adapterType ?? agent.adapterType;
+      const adapter = getServerAdapter(effectiveAdapterType);
+
+      // Apply gateway model/timeout/adapter-config overrides
+      const gatewayConfigOverrides: Record<string, unknown> = {};
+      if (gatewayDecision?.model) {
+        gatewayConfigOverrides.model = gatewayDecision.model;
+      }
+      if (gatewayDecision?.timeoutSec != null) {
+        gatewayConfigOverrides.timeoutSec = gatewayDecision.timeoutSec;
+      }
+      // Apply route-level adapter config overrides (env vars, extra args, thinking effort, etc.)
+      if (gatewayDecision?.adapterConfigOverrides) {
+        Object.assign(gatewayConfigOverrides, gatewayDecision.adapterConfigOverrides);
+      }
+      // When gateway routes to a DIFFERENT adapter, clear fallbackModels because they
+      // belong to the original adapter's model namespace (e.g. opencode/* models are
+      // incompatible with gemini_local). Keeping them causes ModelNotFoundError (404)
+      // when the overridden adapter's internal timeout triggers legacy fallback.
+      if (gatewayDecision && effectiveAdapterType !== agent.adapterType) {
+        gatewayConfigOverrides.fallbackModels = [];
+        logger.info(
+          {
+            agentId: agent.id,
+            originalAdapter: agent.adapterType,
+            gatewayAdapter: effectiveAdapterType,
+          },
+          "Gateway cross-adapter routing: cleared incompatible fallbackModels",
+        );
+      }
+      const effectiveConfig = gatewayDecision
+        ? { ...runtimeConfig, ...gatewayConfigOverrides }
+        : runtimeConfig;
+
+      if (gatewayDecision) {
+        await onLog(
+          "stderr",
+          `[paperclip] Gateway routing: using ${effectiveAdapterType}/${gatewayDecision.model} (route=${gatewayDecision.routeId}, priority-based)\n`,
+        );
+      }
+
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, effectiveAdapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -7776,16 +7831,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+            adapterType: effectiveAdapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent,
+        agent: gatewayDecision
+          ? { ...agent, adapterType: effectiveAdapterType }
+          : agent,
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: effectiveConfig,
         context,
         runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
         executionTarget,
@@ -7809,7 +7866,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: effectiveAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -7898,6 +7955,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : outcome === "failed"
               ? (adapterResult.errorCode ?? "adapter_failed")
               : null;
+
+      // --- Gateway: record execution outcome for rate limiting / circuit breaker ---
+      if (gatewayDecision) {
+        const totalTokens = (adapterResult.usage?.inputTokens ?? 0) + (adapterResult.usage?.outputTokens ?? 0);
+        if (outcome === "succeeded") {
+          await gatewayService.recordSuccess(db, gatewayDecision.routeId, totalTokens);
+        } else if (outcome === "failed" || outcome === "timed_out") {
+          await gatewayService.recordFailure(db, gatewayDecision.routeId).catch((err) => {
+            logger.warn({ routeId: gatewayDecision!.routeId, err }, "Gateway recordFailure error, skipping");
+          });
+        }
+      }
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {

@@ -76,3 +76,6 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { gatewayRoutes } from "./gateway_routes.js";
+export { gatewayUsageCounters } from "./gateway_usage_counters.js";
+export { gatewayCircuitState } from "./gateway_circuit_state.js";

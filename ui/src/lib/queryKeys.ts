@@ -194,4 +194,10 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  gateway: {
+    routes: (companyId: string, agentId?: string) =>
+      ["gateway-routes", companyId, agentId] as const,
+    health: (companyId: string) =>
+      ["gateway-health", companyId] as const,
+  },
 };

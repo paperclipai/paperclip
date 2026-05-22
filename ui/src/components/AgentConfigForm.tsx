@@ -14,6 +14,7 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
+import { gatewayApi } from "../api/gateway";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -27,8 +28,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, ArrowUpDown, Zap, ShieldAlert, ToggleLeft, ToggleRight } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { Link } from "@/lib/router";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -227,6 +229,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
+
+  // Check if gateway routes exist for this agent
+  const agentId = !isCreate ? props.agent.id : undefined;
+  const { data: gatewayRoutes } = useQuery({
+    queryKey: queryKeys.gateway.routes(selectedCompanyId ?? "", agentId),
+    queryFn: () => gatewayApi.listRoutes(selectedCompanyId!, agentId),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+    staleTime: 30_000,
+  });
+  const enabledGatewayRoutes = (gatewayRoutes ?? []).filter(r => r.isEnabled);
+  const hasGatewayRoutes = enabledGatewayRoutes.length > 0;
+
+  // Build a sorted priority chain for display
+  const gatewayChain = useMemo(() => {
+    if (!hasGatewayRoutes) return [];
+    const sorted = [...enabledGatewayRoutes].sort((a, b) => b.priority - a.priority);
+    return sorted.map(r => ({
+      name: r.name,
+      adapter: r.adapterType.replace(/_local$/, ""),
+      model: r.model,
+      priority: r.priority,
+      circuitState: r.health?.circuitState ?? "closed",
+    }));
+  }, [enabledGatewayRoutes, hasGatewayRoutes]);
+
+  // Per-agent gateway bypass toggle
+  const agentMetadata = (!isCreate ? ((props.agent.metadata ?? {}) as Record<string, unknown>) : {});
+  const gatewayBypassed = agentMetadata.gatewayBypass === true;
+  const gatewayActive = hasGatewayRoutes && !gatewayBypassed;
+
+  const toggleGatewayBypass = useMutation({
+    mutationFn: async () => {
+      if (isCreate || !agentId || !selectedCompanyId) return;
+      const newMeta = { ...agentMetadata, gatewayBypass: !gatewayBypassed };
+      await agentsApi.update(agentId, { metadata: newMeta }, selectedCompanyId);
+    },
+    onSuccess: () => {
+      if (agentId && selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["agents"] });
+        queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+      }
+    },
+  });
+
+
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to create secrets");
@@ -818,10 +865,93 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Adapter ---- */}
       <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        {/* Gateway Execution Chain Banner */}
+        {hasGatewayRoutes && !isCreate && (
+          <div className={cn(cards ? "mb-4" : "mx-4 mt-2 mb-1")}>
+            <div className={cn(
+              "border rounded-md overflow-hidden",
+              gatewayBypassed
+                ? "border-border bg-muted/30"
+                : "border-blue-500/30 bg-blue-50 dark:bg-blue-500/5"
+            )}>
+              <div className={cn(
+                "flex items-center gap-2 px-3 py-2 border-b",
+                gatewayBypassed
+                  ? "bg-muted/50 border-border"
+                  : "bg-blue-100/80 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20"
+              )}>
+                <Zap className={cn("h-3.5 w-3.5 shrink-0", gatewayBypassed ? "text-muted-foreground" : "text-blue-600 dark:text-blue-400")} />
+                <span className={cn("text-xs font-medium", gatewayBypassed ? "text-muted-foreground line-through" : "text-blue-700 dark:text-blue-300")}>Gateway Routing</span>
+                <button
+                  type="button"
+                  disabled={toggleGatewayBypass.isPending}
+                  onClick={() => toggleGatewayBypass.mutate()}
+                  className={cn(
+                    "ml-auto flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded transition-colors cursor-pointer",
+                    gatewayBypassed
+                      ? "text-muted-foreground hover:text-foreground"
+                      : "text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200"
+                  )}
+                >
+                  {gatewayBypassed ? (
+                    <><ToggleLeft className="h-4 w-4" /> Off</>
+                  ) : (
+                    <><ToggleRight className="h-4 w-4" /> On</>
+                  )}
+                </button>
+              </div>
+              {!gatewayBypassed && (
+                <>
+                  <div className="px-3 py-2 space-y-1">
+                    {gatewayChain.map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs">
+                        <span className={cn(
+                          "inline-flex items-center justify-center w-7 h-4 rounded text-[10px] font-mono font-medium shrink-0",
+                          i === 0 ? "bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400" :
+                          i === gatewayChain.length - 1 ? "bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400" :
+                          "bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400"
+                        )}>P{r.priority}</span>
+                        <span className="text-muted-foreground truncate">
+                          <span className="text-foreground font-medium">{r.adapter}</span>
+                          <span className="text-muted-foreground/60"> / </span>
+                          <span className="font-mono text-muted-foreground">{r.model}</span>
+                        </span>
+                        {r.circuitState === "open" && (
+                          <span className="text-[10px] text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-500/15 px-1.5 rounded">OPEN</span>
+                        )}
+                        {i < gatewayChain.length - 1 && (
+                          <span className="text-muted-foreground/30 text-[10px] ml-auto">↓ fallback</span>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2 text-xs border-t border-border/50 pt-1 mt-1">
+                      <span className="inline-flex items-center justify-center w-7 h-4 rounded text-[10px] font-mono font-medium shrink-0 bg-zinc-100 dark:bg-zinc-500/20 text-zinc-500">—</span>
+                      <span className="text-muted-foreground/60 italic">Default config below (last resort)</span>
+                    </div>
+                  </div>
+                  <div className="px-3 py-1.5 bg-blue-50/50 dark:bg-blue-500/5 border-t border-blue-100 dark:border-blue-500/15">
+                    <Link
+                      to={`/agents/${agentId}/gateway`}
+                      className="text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline decoration-blue-300/30 dark:decoration-blue-400/30 hover:decoration-blue-500/50"
+                    >
+                      Manage routes →
+                    </Link>
+                  </div>
+                </>
+              )}
+              {gatewayBypassed && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                  Gateway is disabled for this agent. Routes exist but will not be used at runtime.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
-            : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
+            ? <h3 className="text-sm font-medium">{gatewayActive ? "Default Adapter (Last Resort)" : "Adapter"}</h3>
+            : <span className="text-xs font-medium text-muted-foreground">{gatewayActive ? "Default Adapter (Last Resort)" : "Adapter"}</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
             <Button
@@ -941,8 +1071,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">{gatewayActive ? "Default Permissions & Configuration (Last Resort)" : "Permissions & Configuration"}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{gatewayActive ? "Default Permissions & Configuration (Last Resort)" : "Permissions & Configuration"}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               <Field label="Command" hint={help.localCommand}>
@@ -1042,6 +1172,45 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
                 />
+              )}
+
+
+              {(adapterType === "gemini_local" || adapterType === "opencode_local") && !isCreate && (
+                <div className="space-y-3">
+                  {gatewayActive ? (
+                    <div className="border border-blue-400/30 dark:border-blue-500/25 bg-blue-50 dark:bg-blue-500/5 rounded-md px-3 py-2 space-y-1.5">
+                      <div className="flex items-center gap-2 text-xs">
+                        <Zap className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                        <span className="text-blue-800 dark:text-blue-200 font-medium">Fallback models managed by Gateway</span>
+                      </div>
+                      <p className="text-[11px] text-blue-700 dark:text-blue-100/70 leading-relaxed">
+                        When Gateway Routing is active, fallback models are configured per-route for finer control. Each route can define its own fallback chain specific to its adapter type.
+                      </p>
+                      <Link
+                        to={`/agents/${agentId}/gateway`}
+                        className="inline-block text-[11px] text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 underline decoration-blue-300/30 dark:decoration-blue-400/30 hover:decoration-blue-500/50"
+                      >
+                        Configure fallback models in Gateway →
+                      </Link>
+                    </div>
+                  ) : (
+                    <Field label="Fallback models" hint="Ordered list of fallback model IDs to try when the primary model hits quota/rate limits. Comma-separated.">
+                      <DraftInput
+                        value={eff("adapterConfig", "fallbackModels", formatArgList(config.fallbackModels))}
+                        onCommit={(v) =>
+                          mark("adapterConfig", "fallbackModels", v ? parseCommaArgs(v) : undefined)
+                        }
+                        immediate
+                        className={inputClass}
+                        placeholder={
+                          adapterType === "gemini_local"
+                            ? "e.g. gemini-2.5-flash, gemini-2.5-flash-lite"
+                            : "e.g. opencode/qwen3.6-plus-free, alibaba-cn/qwen-plus"
+                        }
+                      />
+                    </Field>
+                  )}
+                </div>
               )}
 
               {showThinkingEffort && (
@@ -1334,7 +1503,7 @@ export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmen
 
 /* ---- Internal sub-components ---- */
 
-function AdapterTypeDropdown({
+export function AdapterTypeDropdown({
   value,
   onChange,
   disabledTypes,

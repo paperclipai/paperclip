@@ -58,3 +58,11 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Data exports, DB credentials, and sensitive import scripts — must never be committed
+back/
+*.zip
+*.tar.gz
+import_data.sh
+config_epgsql.json
+paperclip.sh

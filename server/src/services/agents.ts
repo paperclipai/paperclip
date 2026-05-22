@@ -12,6 +12,7 @@ import {
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
+  gatewayRoutes,
   issueExecutionDecisions,
   issues,
   issueComments,
@@ -522,6 +523,7 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx.delete(gatewayRoutes).where(eq(gatewayRoutes.agentId, id));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
