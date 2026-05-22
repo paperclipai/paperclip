@@ -202,7 +202,6 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   await walk(rootPath, "");
   return output.sort((left, right) => left.localeCompare(right));
 }
-}
 
 async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
   const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
