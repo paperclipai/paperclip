@@ -8033,16 +8033,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               modelFamily: rlb.modelFamily ?? null,
               resetsAt: rlb.resetsAt ?? null,
             });
-            await providerRateLimits.upsertBlock({
+            const block = await providerRateLimits.upsertBlock({
               companyId: agent.companyId,
               adapterType: agent.adapterType,
               limitKind: scope.limitKind,
               modelFamily: scope.modelFamily,
               message: adapterResult.rateLimitBlock.message,
               resetsAt: scope.resetsAt,
+              agentId: agent.id,
+              issueId,
+              runId: livenessRun.id,
             });
             await providerRateLimits.pauseAgentsForBlock(
               agent.companyId, agent.adapterType, scope.modelFamily,
+              {
+                blockId: block.id,
+                sourceAgentId: agent.id,
+                issueId,
+                runId: livenessRun.id,
+              },
             );
           } else if (isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);

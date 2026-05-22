@@ -89,7 +89,7 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
 }
 
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       await db.delete(companySkills);
       await db.delete(issueComments);
@@ -105,6 +105,7 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       await db.delete(agentWakeupRequests);
       await db.delete(agentRuntimeState);
       await db.delete(agents);
+      await db.delete(companySkills);
       await db.delete(companies);
       return;
     } catch (error) {
@@ -114,7 +115,7 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       const isLateCompanySkillRace =
         error instanceof Error &&
         error.message.includes("company_skills_company_id_companies_id_fk");
-      if ((!isLateCommentRace && !isLateCompanySkillRace) || attempt === 4) {
+      if ((!isLateCommentRace && !isLateCompanySkillRace) || attempt === 9) {
         throw error;
       }
 

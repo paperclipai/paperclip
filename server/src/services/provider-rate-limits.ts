@@ -481,6 +481,7 @@ export function providerRateLimitService(db: Db) {
     modelFamily: string | null,
     opts?: {
       blockId?: string | null;
+      sourceAgentId?: string | null;
       issueId?: string | null;
       runId?: string | null;
     },
@@ -510,14 +511,17 @@ export function providerRateLimitService(db: Db) {
       const originalStatusByAgentId = new Map(candidates.map((candidate) => [candidate.id, candidate.status]));
       for (const pausedAgent of paused) {
         const originalAgentStatus = originalStatusByAgentId.get(pausedAgent.id) ?? null;
+        const isSourceAgent = opts.sourceAgentId ? pausedAgent.id === opts.sourceAgentId : false;
+        const memberIssueId = isSourceAgent ? opts.issueId ?? null : null;
+        const memberRunId = isSourceAgent ? opts.runId ?? null : null;
         await db
           .insert(providerRateLimitBlockMembers)
           .values({
             blockId: opts.blockId,
             companyId,
             agentId: pausedAgent.id,
-            issueId: opts.issueId ?? null,
-            runId: opts.runId ?? null,
+            issueId: memberIssueId,
+            runId: memberRunId,
             originalAgentStatus,
             releaseStatus: "pending",
             updatedAt: now,
@@ -525,8 +529,8 @@ export function providerRateLimitService(db: Db) {
           .onConflictDoUpdate({
             target: [providerRateLimitBlockMembers.blockId, providerRateLimitBlockMembers.agentId],
             set: {
-              issueId: opts.issueId ?? null,
-              runId: opts.runId ?? null,
+              issueId: memberIssueId,
+              runId: memberRunId,
               updatedAt: now,
             },
           });
@@ -535,12 +539,13 @@ export function providerRateLimitService(db: Db) {
           action: "provider_rate_limit.agent_paused",
           entityId: opts.blockId,
           agentId: pausedAgent.id,
-          runId: opts.runId ?? null,
+          runId: memberRunId,
           details: {
             adapterType,
             modelFamily,
             originalAgentStatus,
-            issueId: opts.issueId ?? null,
+            issueId: memberIssueId,
+            sourceAgent: isSourceAgent,
           },
         });
       }
@@ -795,16 +800,21 @@ export function providerRateLimitService(db: Db) {
       .where(eq(providerRateLimitBlockMembers.blockId, block.id));
     if (members.length > 0) return members;
 
-    const scopedAgentIds = await listAgentIdsForBlockScope(
-      block.companyId,
-      block.adapterType,
-      block.modelFamily,
-    );
-    return scopedAgentIds.map((agentId) => ({
-      id: agentId,
+    const pausedAgents = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(buildAgentScopeFilter(
+        block.companyId,
+        block.adapterType,
+        block.modelFamily,
+        eq(agents.status, "paused"),
+        eq(agents.pauseReason, "provider_rate_limit"),
+      ));
+    return pausedAgents.map((agent) => ({
+      id: agent.id,
       blockId: block.id,
       companyId: block.companyId,
-      agentId,
+      agentId: agent.id,
       issueId: null,
       runId: null,
       originalAgentStatus: null,
@@ -976,7 +986,14 @@ export function providerRateLimitService(db: Db) {
         queuedIssueIds.add(memberIssueId);
       }
 
-      const wakeup = await queueProviderResetWakeup({ block, agent: currentAgent, issueId: member.issueId ?? null, now });
+      if (!memberIssueId) {
+        wakeupsSkipped += 1;
+        await updateMemberRelease(member.id, releaseStatus, "agent_resume_only", now);
+        await recordSkipActivity(block, agent.id, "agent_resume_only");
+        continue;
+      }
+
+      const wakeup = await queueProviderResetWakeup({ block, agent: currentAgent, issueId: memberIssueId, now });
       if (wakeup.queued) {
         wakeupsQueued += 1;
       } else {

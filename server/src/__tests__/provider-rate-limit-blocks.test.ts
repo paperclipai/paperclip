@@ -154,7 +154,7 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
 
     const result = await providerRateLimitService(db).releaseAndResumeForBlock(block);
 
-    expect(result.affectedAgents).toBe(2);
+    expect(result.affectedAgents).toBe(0);
     const wakeups = await db
       .select()
       .from(agentWakeupRequests)
@@ -232,6 +232,74 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     expect(issue?.status).toBe("blocked");
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent?.status).toBe("idle");
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("does not fan out reset wakeups for memberless legacy blocks", async () => {
+    const svc = providerRateLimitService(db);
+    const now = new Date("2026-05-06T07:32:00.000Z");
+    const companyId = await seedCompany(db);
+    const firstAgentId = await seedAgent(db, companyId, {
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(now.getTime() - 60_000),
+    });
+    const secondAgentId = await seedAgent(db, companyId, {
+      status: "paused",
+      pauseReason: "provider_rate_limit",
+      pausedAt: new Date(now.getTime() - 60_000),
+    });
+    const idleAgentId = await seedAgent(db, companyId, {
+      status: "idle",
+    });
+
+    const block = await seedBlock(db, companyId, {
+      resetsAt: new Date(now.getTime() - 1_000),
+      createdAt: new Date(now.getTime() - 60_000),
+      updatedAt: now,
+    });
+
+    const result = await svc.releaseAndResumeForBlock(block);
+
+    expect(result).toMatchObject({ affectedAgents: 2, resumed: 2, wakeupsQueued: 0 });
+    const agentRows = await db
+      .select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentRows.find((agent) => agent.id === firstAgentId)).toMatchObject({ status: "idle", pauseReason: null });
+    expect(agentRows.find((agent) => agent.id === secondAgentId)).toMatchObject({ status: "idle", pauseReason: null });
+    expect(agentRows.find((agent) => agent.id === idleAgentId)).toMatchObject({ status: "idle", pauseReason: null });
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(0);
+  });
+
+  it("records issue scope only for the source agent when pausing an adapter block", async () => {
+    const svc = providerRateLimitService(db);
+    const companyId = await seedCompany(db);
+    const sourceAgentId = await seedAgent(db, companyId, { name: "Source" });
+    const otherAgentId = await seedAgent(db, companyId, { name: "Other" });
+    const issueId = await seedIssue(db, companyId, { assigneeAgentId: sourceAgentId });
+    const runId = await seedHeartbeatRun(db, companyId, sourceAgentId, {
+      status: "failed",
+      errorCode: "provider_rate_limit",
+      contextSnapshot: { issueId },
+    });
+    const block = await seedBlock(db, companyId);
+
+    await svc.pauseAgentsForBlock(companyId, "claude_local", null, {
+      blockId: block.id,
+      sourceAgentId,
+      issueId,
+      runId,
+    });
+
+    const members = await db
+      .select()
+      .from(providerRateLimitBlockMembers)
+      .where(eq(providerRateLimitBlockMembers.blockId, block.id));
+    expect(members).toHaveLength(2);
+    expect(members.find((member) => member.agentId === sourceAgentId)).toMatchObject({ issueId, runId });
+    expect(members.find((member) => member.agentId === otherAgentId)).toMatchObject({ issueId: null, runId: null });
   });
 
   it("releases only a changed-scope provider pause and keeps the original provider block active", async () => {
@@ -371,4 +439,3 @@ describeEmbeddedPostgres("provider rate-limit block release", () => {
     expect(agent?.pauseReason).toBe("provider_rate_limit");
   });
 });
-
