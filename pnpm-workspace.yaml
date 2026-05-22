@@ -12,3 +12,18 @@ packages:
   - server
   - ui
   - cli
+
+# ARES supply-chain policy enforcement candidate.
+# Branch: ares-pnpm-policy
+# Guardrail: do not merge until build/test verification passes under the repo's
+# pinned package manager and lifecycle-script allowlist is reviewed.
+minimumReleaseAge: 43200
+trustPolicy: no-downgrade
+strictDepBuilds: true
+allowBuilds:
+  "@paperclipai/plugin-cloudflare-sandbox": true
+  "@paperclipai/plugin-daytona": true
+  "@paperclipai/plugin-e2b": true
+  "@paperclipai/plugin-exe-dev": true
+  "@paperclipai/plugin-modal": true
+  "@paperclipai/plugin-workspace-diff": true
