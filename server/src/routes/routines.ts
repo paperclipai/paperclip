@@ -437,6 +437,36 @@ export function routineRoutes(
     res.status(202).json(run);
   });
 
+  router.delete("/routines/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const routine = await assertCanManageExistingRoutine(req, id);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const deleted = await svc.deleteWithCascade(id);
+    if (!deleted) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.deleted",
+      entityType: "routine",
+      entityId: routine.id,
+    });
+    res.status(204).end();
+  });
+
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
       authorizationHeader: req.header("authorization"),
