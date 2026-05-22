@@ -339,10 +339,10 @@ function resolveClaimedApiKeyPath(value: unknown): string {
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
-  const paperclipEnv: Record<string, string> = {
-    ...buildPaperclipEnv(ctx.agent),
-    PAPERCLIP_RUN_ID: ctx.runId,
-  };
+    const paperclipEnv: Record<string, string> = {
+      ...buildPaperclipEnv(ctx.agent, ctx.runId),
+      PAPERCLIP_RUN_ID: ctx.runId,
+    };
 
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;

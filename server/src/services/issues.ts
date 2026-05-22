@@ -4678,7 +4678,7 @@ export function issueService(db: Db) {
       }
 
       // iOS lane-cap enforcement: only one concurrent iOS issue across all agents
-      const iosLabelNames = ["ios", "iphone", "mobile", "shifts iphone app", "plantonistapro"];
+      const iosLabelNames = ["ios", "iphone", "shifts iphone app", "plantonistapro"];
       const issueLabelRows = await db
         .select({ name: labels.name })
         .from(issueLabels)
