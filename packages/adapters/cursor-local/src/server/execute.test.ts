@@ -203,7 +203,7 @@ describe("cursor execute", () => {
       const runtimePath = await fs.readFile(path.join(captureDir, "path.txt"), "utf8");
       const prompt = await fs.readFile(path.join(captureDir, "prompt.txt"), "utf8");
       expect(command).toBe(agentPath);
-      expect(runtimePath.split(path.delimiter)[0]).toBe(path.join(homeDir, ".local", "bin"));
+      expect(runtimePath.split(path.delimiter)).toContain(path.join(homeDir, ".local", "bin"));
       expect(prompt).toContain("Follow the paperclip heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;

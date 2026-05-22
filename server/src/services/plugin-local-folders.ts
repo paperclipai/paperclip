@@ -538,6 +538,55 @@ export async function writePluginLocalFolderTextAtomic(
   });
 }
 
+export async function deletePluginLocalFolderFile(
+  rootPath: string,
+  relativePath: string,
+  folderKey: string,
+) {
+  const rootRealPath = await fs.realpath(rootPath);
+  let resolved: Awaited<ReturnType<typeof resolvePluginLocalFolderPath>>;
+  try {
+    resolved = await resolvePluginLocalFolderPath(rootRealPath, relativePath, {
+      mustExist: true,
+      allowMissingLeaf: true,
+    });
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+    if (code !== "ENOENT") throw error;
+    return inspectPluginLocalFolder({
+      folderKey,
+      storedConfig: {
+        path: rootPath,
+        access: "readWrite",
+      },
+    });
+  }
+
+  if (resolved.exists) {
+    const stat = await fs.lstat(resolved.absolutePath);
+    if (stat.isDirectory()) {
+      throw badRequest("Local folder delete target must be a file");
+    }
+    await fs.rm(resolved.absolutePath, { force: true });
+    if (process.platform !== "win32") {
+      const dirHandle = await fs.open(path.dirname(resolved.absolutePath), "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    }
+  }
+
+  return inspectPluginLocalFolder({
+    folderKey,
+    storedConfig: {
+      path: rootPath,
+      access: "readWrite",
+    },
+  });
+}
+
 export function defaultLocalFolderBasePath(pluginKey: string, companyId: string) {
   return path.join(os.homedir(), ".paperclip", "plugin-data", companyId, pluginKey);
 }

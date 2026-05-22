@@ -61,7 +61,7 @@ describe("command managed runtime", () => {
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
-          args[0] === "-lc" &&
+          (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
@@ -132,7 +132,7 @@ describe("command managed runtime", () => {
     expect(calls.every((call) => call.stdin == null)).toBe(true);
   });
 
-  it("runs setup commands from the existing sandbox cwd when staging into a nested remote workspace dir", async () => {
+  it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
     cleanupDirs.push(rootDir);
 
@@ -214,7 +214,7 @@ describe("command managed runtime", () => {
     });
 
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every((call) => call.cwd === remoteBaseDir)).toBe(true);
+    expect(calls.every((call) => call.cwd === "/")).toBe(true);
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
   });
 });

@@ -72,6 +72,17 @@ async function waitForUi(assertion: () => void) {
   });
 }
 
+async function waitForRetryButtonText(expected: string) {
+  for (let i = 0; i < 20; i += 1) {
+    if ((getRetryNowButton()?.textContent ?? "").includes(expected)) return;
+    // eslint-disable-next-line no-await-in-loop
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  expect(getRetryNowButton()!.textContent ?? "").toContain(expected);
+}
+
 function renderWithProviders(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -174,12 +185,11 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       button!.click();
     });
-    await waitForUi(() => {
-      expect(retryNowMock).toHaveBeenCalledWith("issue-1");
-      const finalButton = getRetryNowButton();
-      expect(finalButton!.textContent ?? "").toContain("Promoted");
-      expect(finalButton!.disabled).toBe(true);
-    });
+    await waitForRetryButtonText("Promoted");
+    expect(retryNowMock).toHaveBeenCalledWith("issue-1");
+    const finalButton = getRetryNowButton();
+    expect(finalButton!.textContent ?? "").toContain("Promoted");
+    expect(finalButton!.disabled).toBe(true);
   });
 
   it("shows already promoted state when backend reports duplicate click", async () => {
@@ -190,10 +200,9 @@ describe("IssueScheduledRetryCard", () => {
     act(() => {
       getRetryNowButton()!.click();
     });
-    await waitForUi(() => {
-      expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
-      expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
-    });
+    await waitForRetryButtonText("Already promoted");
+    expect(getRetryNowButton()!.textContent ?? "").toContain("Already promoted");
+    expect(container.querySelector('[data-testid="issue-scheduled-retry-error-band"]')).toBeNull();
   });
 
   it("renders an inline error band on backend failure", async () => {

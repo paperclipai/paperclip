@@ -1,13 +1,13 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ChevronRight,
   MoreHorizontal,
   PauseCircle,
   Pencil,
   PlayCircle,
   Plus,
+  Users,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -20,14 +20,18 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
+import {
+  AGENT_SORT_MODE_UPDATED_EVENT,
+  getAgentSortModeStorageKey,
+  readAgentSortMode,
+  type AgentSortModeUpdatedDetail,
+  type AgentSidebarSortMode,
+  writeAgentSortMode,
+} from "../lib/agent-order";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
 import { Button } from "@/components/ui/button";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +40,41 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
+
+const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
+  { value: "top", label: "Top" },
+  { value: "alphabetical", label: "Alphabetical" },
+  { value: "recent", label: "Recent" },
+];
+
+function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
+  const raw = agent[field];
+  if (!raw) return 0;
+  const time = new Date(raw).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function sortAgents(agents: Agent[], sortMode: AgentSidebarSortMode): Agent[] {
+  if (sortMode === "top") return agents;
+  const sorted = [...agents];
+  if (sortMode === "alphabetical") {
+    sorted.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+    return sorted;
+  }
+  sorted.sort((left, right) => {
+    const heartbeatDiff = agentTimestamp(right, "lastHeartbeatAt") - agentTimestamp(left, "lastHeartbeatAt");
+    if (heartbeatDiff !== 0) return heartbeatDiff;
+
+    const updatedDiff = agentTimestamp(right, "updatedAt") - agentTimestamp(left, "updatedAt");
+    if (updatedDiff !== 0) return updatedDiff;
+
+    const createdDiff = agentTimestamp(right, "createdAt") - agentTimestamp(left, "createdAt");
+    return createdDiff !== 0
+      ? createdDiff
+      : left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+  });
+  return sorted;
+}
 
 function SidebarAgentItem({
   activeAgentId,
@@ -195,15 +234,68 @@ export function SidebarAgents() {
     return filtered;
   }, [agents]);
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const sortModeStorageKey = useMemo(() => {
+    if (!selectedCompanyId) return null;
+    return getAgentSortModeStorageKey(selectedCompanyId, currentUserId);
+  }, [currentUserId, selectedCompanyId]);
+  const [sortMode, setSortMode] = useState<AgentSidebarSortMode>(() => {
+    if (!sortModeStorageKey) return "top";
+    return readAgentSortMode(sortModeStorageKey);
+  });
   const { orderedAgents } = useAgentOrder({
     agents: visibleAgents,
     companyId: selectedCompanyId,
     userId: currentUserId,
   });
+  const sortedAgents = useMemo(
+    () => sortAgents(orderedAgents, sortMode),
+    [orderedAgents, sortMode],
+  );
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
   const activeTab = agentMatch?.[2] ?? null;
+
+  useEffect(() => {
+    if (!sortModeStorageKey) {
+      setSortMode("top");
+      return;
+    }
+    setSortMode(readAgentSortMode(sortModeStorageKey));
+  }, [sortModeStorageKey]);
+
+  useEffect(() => {
+    if (!sortModeStorageKey) return;
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== sortModeStorageKey) return;
+      setSortMode(readAgentSortMode(sortModeStorageKey));
+    };
+    const onCustomEvent = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSortModeUpdatedDetail>).detail;
+      if (!detail || detail.storageKey !== sortModeStorageKey) return;
+      setSortMode(detail.sortMode);
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(AGENT_SORT_MODE_UPDATED_EVENT, onCustomEvent);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(AGENT_SORT_MODE_UPDATED_EVENT, onCustomEvent);
+    };
+  }, [sortModeStorageKey]);
+
+  const persistSortMode = useCallback(
+    (value: string) => {
+      const nextSortMode: AgentSidebarSortMode =
+        value === "alphabetical" || value === "recent" ? value : "top";
+      setSortMode(nextSortMode);
+      if (sortModeStorageKey) {
+        writeAgentSortMode(sortModeStorageKey, nextSortMode);
+      }
+    },
+    [sortModeStorageKey],
+  );
 
   const pauseResumeAgent = useMutation({
     mutationFn: ({ agent, action }: { agent: Agent; action: "pause" | "resume" }) =>
@@ -252,53 +344,42 @@ export function SidebarAgents() {
   });
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="group">
-        <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
-            <ChevronRight
-              className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
-                open && "rotate-90"
-              )}
-            />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Agents
-            </span>
-          </CollapsibleTrigger>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              openNewAgent();
-            }}
-            className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New agent"
-          >
-            <Plus className="h-3 w-3" />
-          </button>
-        </div>
-      </div>
-
-      <CollapsibleContent>
-        <div className="flex flex-col gap-0.5 mt-0.5">
-          {orderedAgents.map((agent: Agent) => {
-            const runCount = liveCountByAgent.get(agent.id) ?? 0;
-            return (
-              <SidebarAgentItem
-                key={agent.id}
-                activeAgentId={activeAgentId}
-                activeTab={activeTab}
-                agent={agent}
-                disabled={pendingAgentIds.has(agent.id)}
-                isMobile={isMobile}
-                onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
-                runCount={runCount}
-                setSidebarOpen={setSidebarOpen}
-              />
-            );
-          })}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <SidebarSection
+      label="Agents"
+      collapsible={{ open, onOpenChange: setOpen }}
+      headerAction={{
+        ariaLabel: "New agent",
+        icon: Plus,
+        onClick: openNewAgent,
+      }}
+      menu={{
+        ariaLabel: "Agents section actions",
+        actions: [
+          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "separator" },
+        ],
+        radioLabel: "Agent sort",
+        radioChoices: AGENT_SORT_CHOICES,
+        radioValue: sortMode,
+        onRadioValueChange: persistSortMode,
+      }}
+    >
+      {sortedAgents.map((agent: Agent) => {
+        const runCount = liveCountByAgent.get(agent.id) ?? 0;
+        return (
+          <SidebarAgentItem
+            key={agent.id}
+            activeAgentId={activeAgentId}
+            activeTab={activeTab}
+            agent={agent}
+            disabled={pendingAgentIds.has(agent.id)}
+            isMobile={isMobile}
+            onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
+            runCount={runCount}
+            setSidebarOpen={setSidebarOpen}
+          />
+        );
+      })}
+    </SidebarSection>
   );
 }

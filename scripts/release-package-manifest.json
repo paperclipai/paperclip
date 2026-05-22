@@ -20,6 +20,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/cursor-cloud",
+    "name": "@paperclipai/adapter-cursor-cloud",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/cursor-local",
     "name": "@paperclipai/adapter-cursor-local",
     "publishFromCi": true
@@ -77,6 +82,21 @@
   {
     "dir": "packages/plugins/create-paperclip-plugin",
     "name": "@paperclipai/create-paperclip-plugin",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/cloudflare",
+    "name": "@paperclipai/plugin-cloudflare-sandbox",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/daytona",
+    "name": "@paperclipai/plugin-daytona",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/exe-dev",
+    "name": "@paperclipai/plugin-exe-dev",
     "publishFromCi": true
   },
   {
