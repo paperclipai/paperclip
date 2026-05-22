@@ -110,6 +110,7 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { validate as closureGateValidate } from "../services/closureGate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -846,6 +847,15 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
+
+  const closureGateDisabled = process.env.PAPERCLIP_DISABLE_CLOSURE_GATE === "true";
+  const closureGateShadow = !closureGateDisabled && process.env.PAPERCLIP_CLOSURE_GATE_SHADOW === "true";
+  if (closureGateDisabled) {
+    logger.warn("§B closure gate: PAPERCLIP_DISABLE_CLOSURE_GATE=true — gate disabled globally (gate_disabled_at_startup: true)");
+  } else if (closureGateShadow) {
+    logger.info("§B closure gate: PAPERCLIP_CLOSURE_GATE_SHADOW=true — running in shadow mode (rejections logged but not enforced)");
+  }
+
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
@@ -3422,6 +3432,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      bypassClosureGate,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -3662,6 +3673,83 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    // §B closure gate: validate before transitioning to done
+    if (!closureGateDisabled && updateFields.status === "done" && existing.status !== "done") {
+      const workspace = existing.executionWorkspaceId
+        ? await executionWorkspacesSvc.getById(existing.executionWorkspaceId)
+        : null;
+      const repoPath = workspace?.cwd ?? workspace?.providerRef ?? null;
+
+      if (!repoPath) {
+        const noWorkspaceRejection = {
+          code: "NO_WORKSPACE" as const,
+          message: "No execution workspace resolvable for §B validation.",
+        };
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { rejections: [noWorkspaceRejection], gate_disabled_at_startup: false },
+        });
+        if (!closureGateShadow) {
+          res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: [noWorkspaceRejection] });
+          return;
+        }
+      } else if (bypassClosureGate) {
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.closure_gate_overridden",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { override_reason: bypassClosureGate.reason },
+        });
+      } else {
+        const defaultBranch = workspace?.baseRef
+          ? workspace.baseRef.replace(/^origin\//, "")
+          : "main";
+        const labels = (existing as { labels?: { slug: string }[] }).labels?.map((l) => l.slug) ?? [];
+        const isProcessOnly =
+          labels.includes("process-only") ||
+          /cites no in.repo artifact/i.test(commentBody ?? existing.description ?? "");
+
+        const gateResult = await closureGateValidate(
+          {
+            text: commentBody ?? existing.description ?? "",
+            isProcessOnly,
+            defaultBranch,
+          },
+          repoPath,
+        );
+
+        if (!gateResult.ok) {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { rejections: gateResult.rejections, gate_disabled_at_startup: false },
+          });
+          if (!closureGateShadow) {
+            res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: gateResult.rejections });
+            return;
+          }
+        }
       }
     }
 

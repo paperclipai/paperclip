@@ -618,3 +618,42 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## §B Pre-Close SHA Validation Hook
+
+The closure gate (`server/src/services/closureGate.ts`) validates that any issue being transitioned to `done` contains verifiable §B closure anchors in the closing comment (or issue description if no comment is provided).
+
+### How it works
+
+When `PATCH /issues/:id` is called with `status: "done"`, the hook:
+
+1. Resolves the issue's execution workspace and its `cwd` as `repoPath`.
+2. Extracts the HEAD sha and cited paths from the closing comment body.
+3. Runs `git cat-file -t <headSha>` to confirm the sha is a real commit object.
+4. Runs `git log <defaultBranch> --oneline -- <path>` for each cited path to confirm it is reachable from the default branch.
+5. Returns `422 CLOSURE_GATE_REJECTED` with structured `rejections` if any check fails.
+
+### Environment flags
+
+| Flag | Effect |
+|---|---|
+| `PAPERCLIP_DISABLE_CLOSURE_GATE=true` | Hard kill-switch — gate disabled entirely at startup. All closures pass. |
+| `PAPERCLIP_CLOSURE_GATE_SHADOW=true` | Shadow mode — rejections are logged as `issue.closure_gate_would_reject` activity but the transition proceeds. Use for staged rollout. |
+
+### Manager override
+
+Agents or board users with sufficient authority can bypass the gate by including `bypassClosureGate: { reason: "<reason ≥ 10 chars>" }` in the PATCH body. This logs an `issue.closure_gate_overridden` activity entry and skips validation.
+
+### Process-only tickets
+
+Issues with a `process-only` label, or whose closing comment contains the phrase "cites no in-repo artifact" (case-insensitive), are treated as process-only. Only the HEAD sha is required; no path proofs are needed.
+
+### Cheapest detector
+
+Before pasting any sha into a closing comment, run:
+
+```sh
+git cat-file -t <sha>
+```
+
+If it returns `commit`, the sha is valid. Any other output or non-zero exit means the sha does not exist in the repository.
