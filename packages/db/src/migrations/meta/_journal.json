@@ -633,10 +633,17 @@
       "breakpoints": true
     },
     {
-      "idx": 89,
+      "idx": 90,
       "version": "7",
-      "when": 1778976000003,
-      "tag": "0089_provider_rate_limit_block_members",
+      "when": 1779446400001,
+      "tag": "0090_provider_rate_limit_blocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1779446400002,
+      "tag": "0091_provider_rate_limit_block_members",
       "breakpoints": true
     }
   ]
