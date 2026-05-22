@@ -27,7 +27,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Self-hosted runner reuses its workspace across builds. A previous
       # build (or a developer session sharing the same checkout dir) may
@@ -148,7 +148,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Compute short sha
         id: sha

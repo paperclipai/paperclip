@@ -30,7 +30,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # On workflow_run the default ref is the workflow file's branch,
           # not the head SHA of the triggering run. Pin to the SHA the
