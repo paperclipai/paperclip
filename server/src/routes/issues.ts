@@ -3974,10 +3974,13 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
       details: {
+        identifier: issue.identifier,
         interactionId: interaction.id,
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
+        title: interaction.title ?? null,
+        summary: interaction.summary ?? null,
       },
     });
 

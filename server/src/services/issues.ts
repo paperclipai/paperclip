@@ -4225,14 +4225,58 @@ export function issueService(db: Db) {
         if (results.length >= limit) break;
       }
 
+      const resultIds = results.map((r) => r.id);
+      if (resultIds.length === 0) return results;
+
+      // Explicit waiting paths (request_confirmation/chooser interactions and
+      // linked approvals) are already a live action path. The blocker-resolved
+      // sweep is a lost-wake recovery path; it must not re-wake executor agents
+      // that are parked waiting for a human or reviewer decision.
+      const explicitlyWaitingIssueIds = new Set<string>();
+      const pendingInteractionRows = await db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            inArray(issueThreadInteractions.issueId, resultIds),
+            inArray(issueThreadInteractions.status, BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES),
+          ),
+        );
+      for (const row of pendingInteractionRows) explicitlyWaitingIssueIds.add(row.issueId);
+
+      const pendingApprovalRows = await db
+        .select({ issueId: issueApprovals.issueId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            inArray(issueApprovals.issueId, resultIds),
+            inArray(approvals.status, BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES),
+          ),
+        );
+      for (const row of pendingApprovalRows) explicitlyWaitingIssueIds.add(row.issueId);
+
+      const resultsAfterExplicitWaitingSuppression = explicitlyWaitingIssueIds.size === 0
+        ? results
+        : results.filter((r) => {
+            const suppress = explicitlyWaitingIssueIds.has(r.id);
+            if (suppress) {
+              logger.debug(
+                { issueId: r.id },
+                "blockers_resolved_sweep: suppressed because issue has an explicit pending interaction or approval",
+              );
+            }
+            return !suppress;
+          });
+
       // BLO-3496: companion suppression to listWakeableBlockedDependents. The
       // edge-triggered path checks executive `do not retry before <ts>` markers
       // before waking; the sweep must too, otherwise a CTO hold gets bypassed
       // every time the periodic reconciler runs and fires the wake again.
-      const blockedResultIds = results
+      const blockedResultIds = resultsAfterExplicitWaitingSuppression
         .filter((r) => candidateStatusById.get(r.id) === "blocked")
         .map((r) => r.id);
-      if (blockedResultIds.length === 0) return results;
+      if (blockedResultIds.length === 0) return resultsAfterExplicitWaitingSuppression;
 
       const commentRows = await db
         .select({
@@ -4268,8 +4312,8 @@ export function issueService(db: Db) {
         }
       }
       return suppressedIssueIds.size === 0
-        ? results
-        : results.filter((r) => !suppressedIssueIds.has(r.id));
+        ? resultsAfterExplicitWaitingSuppression
+        : resultsAfterExplicitWaitingSuppression.filter((r) => !suppressedIssueIds.has(r.id));
     },
 
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {

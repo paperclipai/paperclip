@@ -1051,6 +1051,7 @@ export const PLUGIN_EVENT_TYPES = [
   "issue.document.updated",
   "issue.document.deleted",
   "issue.relations.updated",
+  "issue.thread_interaction.created",
   "issue.checked_out",
   "issue.released",
   "issue.assignment_wakeup_requested",

@@ -44,6 +44,7 @@ import {
   formatAssigneeDmIssueCreated,
   formatIssueDone,
   formatApprovalCreated,
+  formatIssueThreadInteractionCreated,
   formatApprovalResolved,
   formatAgentError,
   formatAgentConnected,
@@ -910,6 +911,9 @@ const plugin = definePlugin({
       ctx.events.on("approval.created", async (event) => {
         await notify(event, formatApprovalCreated, config.approvalsChannelId);
       });
+      ctx.events.on("issue.thread_interaction.created", async (event) => {
+        await notify(event, formatIssueThreadInteractionCreated, config.approvalsChannelId);
+      });
     }
     if (config.notifyOnAgentError) {
       ctx.events.on("agent.run.failed", async (event) => {
@@ -1407,6 +1411,7 @@ const plugin = definePlugin({
       "agent.status_changed",
       "cost_event.created",
       "approval.created",
+      "issue.thread_interaction.created",
     ] as const;
     for (const eventType of watchableEvents) {
       ctx.events.on(eventType, async (event) => {

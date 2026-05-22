@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   environments,
@@ -14,7 +15,9 @@ import {
   instanceSettings,
   issueComments,
   issueInboxArchives,
+  issueApprovals,
   issueRelations,
+  issueThreadInteractions,
   issues,
   projectWorkspaces,
   projects,
@@ -2793,6 +2796,41 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
           assigneeAgentId: ctx.assigneeAgentId,
         }),
       ]);
+    });
+
+    it("suppresses the sweep when the dependent has a pending request confirmation", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(),
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        kind: "request_confirmation",
+        status: "pending",
+        payload: {},
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
+    it("suppresses the sweep when the dependent has a pending linked approval", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
+      const approvalId = randomUUID();
+      await db.insert(approvals).values({
+        id: approvalId,
+        companyId: ctx.companyId,
+        type: "issue_review",
+        status: "pending",
+        payload: {},
+      });
+      await db.insert(issueApprovals).values({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        approvalId,
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
     });
 
     it("does NOT suppress the sweep for non-blocked candidates (todo/in_progress) regardless of hold marker", async () => {

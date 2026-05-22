@@ -224,6 +224,49 @@ export function formatApprovalCreated(event: PluginEvent): SlackMessage {
   };
 }
 
+export function formatIssueThreadInteractionCreated(event: PluginEvent): SlackMessage {
+  const p = event.payload as Record<string, unknown>;
+  const interactionId = String(p.interactionId ?? "");
+  const kind = String(p.interactionKind ?? "interaction");
+  const identifier = String(p.identifier ?? event.entityId);
+  const title = p.title ? String(p.title) : "";
+  const summary = p.summary ? String(p.summary) : null;
+  const label = kind === "request_confirmation"
+    ? "Confirmation requested"
+    : kind === "ask_user_questions"
+      ? "Question needs an answer"
+      : "Issue interaction needs attention";
+  const fields: Array<{ type: string; text: string }> = [
+    { type: "mrkdwn", text: `*Type*\n\`${kind}\`` },
+  ];
+  if (p.continuationPolicy) {
+    fields.push({ type: "mrkdwn", text: `*Continuation*\n\`${String(p.continuationPolicy)}\`` });
+  }
+  const issueUrl = `${dashboardBase}/issues/${event.entityId}`;
+  const text = title
+    ? `*${label}*\n*${identifier}* ${title}${summary ? `\n> ${summary.slice(0, 500)}` : ""}`
+    : `*${label}*\n*${identifier}*${summary ? `\n> ${summary.slice(0, 500)}` : ""}`;
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text },
+      accessory: viewButton("Open Issue", issueUrl),
+    },
+    { type: "section", fields },
+  ];
+  if (interactionId) {
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `Interaction: \`${interactionId}\`` }],
+    });
+  }
+  blocks.push(contextFooter(event.occurredAt));
+  return {
+    text: `${label}: ${identifier}${title ? ` - ${title}` : ""}`,
+    blocks,
+  };
+}
+
 export function formatApprovalResolved(
   approvalId: string,
   approved: boolean,
