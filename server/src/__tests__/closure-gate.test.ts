@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BYPASS_REASON_DENYLIST_RE,
   extractCitedPaths,
   extractShas,
   isProcessOnlyDeclared,
@@ -290,5 +291,31 @@ describe("validate", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.rejections[0].code).toBe("PATH_PROOF_MISMATCH");
+  });
+});
+
+describe("BYPASS_REASON_DENYLIST_RE", () => {
+  it("matches D1 (PR not merged) patterns", () => {
+    expect(BYPASS_REASON_DENYLIST_RE.test("PR not yet merged")).toBe(true);
+    expect(BYPASS_REASON_DENYLIST_RE.test("PR is pending review")).toBe(true);
+  });
+
+  it("matches D2 (locally-merged) patterns", () => {
+    expect(BYPASS_REASON_DENYLIST_RE.test("local merge to main")).toBe(true);
+    expect(BYPASS_REASON_DENYLIST_RE.test("Merged to local master, GitHub push blocked")).toBe(true);
+  });
+
+  it("does NOT match 'localization of main module' (false positive fixed by \\blocal\\b)", () => {
+    expect(BYPASS_REASON_DENYLIST_RE.test("localization of main module")).toBe(false);
+  });
+
+  it("matches D3 (no upstream access) patterns", () => {
+    expect(BYPASS_REASON_DENYLIST_RE.test("merged locally")).toBe(true);
+    expect(BYPASS_REASON_DENYLIST_RE.test("no upstream maintainer access to merge")).toBe(true);
+  });
+
+  it("does NOT match unrelated reasons", () => {
+    expect(BYPASS_REASON_DENYLIST_RE.test("CEO approved override")).toBe(false);
+    expect(BYPASS_REASON_DENYLIST_RE.test("emergency hotfix for prod outage")).toBe(false);
   });
 });

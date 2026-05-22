@@ -38,7 +38,7 @@ export type ClosureGateResult =
 // Spec §6.4 rev 3: bypass reason deny-list — D1, D2, D3 patterns
 // D1: PR-not-merged; D2: locally-merged; D3: no upstream access
 export const BYPASS_REASON_DENYLIST_RE =
-  /pr.*(not.*merged|pending|open|review)|local.*(merge|master|main)|merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i;
+  /pr.*(not.*merged|pending|open|review)|\blocal\b.*(merge|master|main)|merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i;
 
 // SHA pattern: 7-40 hex chars at start of line followed by whitespace
 const SHA_LINE_RE = /^([0-9a-f]{7,40})[ \t]/gm;

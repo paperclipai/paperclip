@@ -3778,8 +3778,19 @@ export function issueRoutes(
             return;
           }
         } else if (gateResult.remoteUnreachable) {
-          // §4.4.2 fail-open: fetch failed — log warn and best-effort audit row
+          // §4.4.2 fail-open: fetch failed — log warn, write audit row, and logActivity
           logger.warn({ issueId: existing.id }, "closure_gate.remote_unreachable");
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.closure_gate_remote_unreachable",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { audit_flag: "REMOTE_UNREACHABLE" },
+          });
           try {
             await db.insert(issueClosureGateOverrides).values({
               issueId: existing.id,

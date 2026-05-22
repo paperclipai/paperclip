@@ -240,7 +240,9 @@ When closing any issue (transitioning to `done` via `PATCH /issues/:id`), the co
 }
 ```
 
-Rejection codes: `NO_TEXT`, `NO_HEAD_SHA`, `INVALID_HEAD_SHA`, `PROCESS_ONLY_UNDECLARED`, `PATH_PROOF_MISMATCH`, `NO_WORKSPACE`, `INVALID_PROOF_BRANCH`, `INVALID_BYPASS_REASON`.
+Rejection codes: `NO_TEXT`, `NO_HEAD_SHA`, `INVALID_HEAD_SHA`, `PROCESS_ONLY_UNDECLARED`, `PATH_PROOF_MISMATCH`, `NO_WORKSPACE`, `INVALID_PROOF_BRANCH`, `INVALID_BYPASS_REASON`, `INVALID_REMOTE_REACHABILITY`.
+
+- `INVALID_REMOTE_REACHABILITY` — the HEAD sha is not reachable from `origin/<defaultBranch>` (i.e., branch not merged to remote). Fail-open on network/fetch errors (logged as `issue.closure_gate_remote_unreachable`).
 
 Path-proof lines **must** cite the default branch ref: `git log <defaultBranch> --oneline -- <path>`. A feature-branch ref or a missing ref token rejects with `INVALID_PROOF_BRANCH` even if shas pass `git cat-file -t`.
 
@@ -248,7 +250,12 @@ Path-proof lines **must** cite the default branch ref: `git log <defaultBranch> 
 
 Pass `bypassClosureGate: { reason: "<≥10 chars>" }` in the PATCH body to skip validation (logged as `issue.closure_gate_overridden`).
 
-**Deny-list:** Reasons matching `/pr.*(not.*merged|pending|open|review)/i` are rejected with `INVALID_BYPASS_REASON` regardless of actor tier — merge the PR first.
+**Deny-list:** Reasons are rejected with `INVALID_BYPASS_REASON` if they match any of:
+- D1: `/pr.*(not.*merged|pending|open|review)/i` — PR not yet merged
+- D2: `/\blocal\b.*(merge|master|main)/i` — locally-merged claim
+- D3: `/merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i` — no upstream access
+
+Merge the PR to the remote default branch first.
 
 ### Flags
 
