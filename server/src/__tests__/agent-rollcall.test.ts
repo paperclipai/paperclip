@@ -19,9 +19,9 @@ import { fileURLToPath } from "node:url";
 const exec = promisify(execFile);
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 
-const PROBE_SCRIPT = path.resolve(__dir, "../../../skills/agent-rollcall/scripts/agent-rollcall-probe.sh");
-const POLL_SCRIPT  = path.resolve(__dir, "../../../skills/agent-delegate/scripts/agent-poll-issue.sh");
-const COMMENT_SCRIPT = path.resolve(__dir, "../../../skills/agent-delegate/scripts/agent-comment.sh");
+const PROBE_SCRIPT = path.resolve(__dir, "../../../local/skills/agent-rollcall/scripts/agent-rollcall-probe.sh");
+const POLL_SCRIPT  = path.resolve(__dir, "../../../local/skills/agent-delegate/scripts/agent-poll-issue.sh");
+const COMMENT_SCRIPT = path.resolve(__dir, "../../../local/skills/agent-delegate/scripts/agent-comment.sh");
 
 // ---------------------------------------------------------------------------
 // Mock curl (Node.js script written to a temp dir and prepended to PATH)

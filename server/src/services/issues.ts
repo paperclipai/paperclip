@@ -2430,6 +2430,25 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
+    const hasMonitor = Boolean(row.monitorNextCheckAt && row.monitorNextCheckAt.getTime() > Date.now());
+    const external = row.status === "blocked" && !hasMonitor ? externalWaitFromDescription(row.description) : null;
+    if (external) {
+      result.set(row.id, attentionBase({
+        state: "external_wait",
+        reason: "external_owner_action",
+        severity: "medium",
+        stoppedSinceAt: row.updatedAt,
+        owner: { type: "external", agentId: null, userId: null, label: null },
+        action: {
+          label: "External owner action",
+          detail: null,
+        },
+        sourceIssue: source,
+        externalDetailsRedacted: true,
+      }));
+      continue;
+    }
+
     const finding = findingByIssueId.get(row.id);
     if (finding) {
       const leaf = finding.dependencyPath.length > 1
@@ -2477,25 +2496,6 @@ async function listIssueBlockedInboxAttentionMap(
         leafIssue: issueRef(leaf),
         recoveryIssue: issueRef(issuesById.get(finding.recoveryIssueId)),
         sampleIssueIdentifier: leaf?.identifier ?? finding.identifier,
-      }));
-      continue;
-    }
-
-    const hasMonitor = Boolean(row.monitorNextCheckAt && row.monitorNextCheckAt.getTime() > Date.now());
-    const external = row.status === "blocked" && !hasMonitor ? externalWaitFromDescription(row.description) : null;
-    if (external) {
-      result.set(row.id, attentionBase({
-        state: "external_wait",
-        reason: "external_owner_action",
-        severity: "medium",
-        stoppedSinceAt: row.updatedAt,
-        owner: { type: "external", agentId: null, userId: null, label: null },
-        action: {
-          label: "External owner action",
-          detail: null,
-        },
-        sourceIssue: source,
-        externalDetailsRedacted: true,
       }));
       continue;
     }
