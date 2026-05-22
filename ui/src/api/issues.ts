@@ -41,6 +41,7 @@ export const issuesApi = {
       status?: string;
       projectId?: string;
       parentId?: string;
+      goalId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
       assigneeUserId?: string;
@@ -55,6 +56,7 @@ export const issuesApi = {
       originId?: string;
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
+      excludeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       includeBlockedInboxAttention?: boolean;
       q?: string;
@@ -69,6 +71,7 @@ export const issuesApi = {
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.parentId) params.set("parentId", filters.parentId);
+    if (filters?.goalId) params.set("goalId", filters.goalId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
@@ -83,6 +86,7 @@ export const issuesApi = {
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.excludeRoutineExecutions) params.set("excludeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
     if (filters?.q) params.set("q", filters.q);

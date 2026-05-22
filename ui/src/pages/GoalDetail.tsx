@@ -10,6 +10,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
+import { GoalHealth } from "../components/GoalHealth";
 import { GoalTree } from "../components/GoalTree";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
@@ -109,6 +110,22 @@ export function GoalDetail() {
   });
 
   const childGoals = (allGoals ?? []).filter((g) => g.parentId === goalId);
+
+  // The goal plus every descendant — issues bind to the most specific goal, so
+  // the Health rollup must include the whole subtree, not just direct children.
+  const subtreeGoalIds = (() => {
+    if (!goalId) return [] as string[];
+    const all = allGoals ?? [];
+    const collected = [goalId];
+    let frontier = [goalId];
+    while (frontier.length > 0) {
+      const next = all.filter((g) => g.parentId && frontier.includes(g.parentId)).map((g) => g.id);
+      const fresh = next.filter((id) => !collected.includes(id));
+      collected.push(...fresh);
+      frontier = fresh;
+    }
+    return collected;
+  })();
   const linkedProjects = (allProjects ?? []).filter((p) => {
     if (!goalId) return false;
     if (p.goalIds.includes(goalId)) return true;
@@ -176,8 +193,9 @@ export function GoalDetail() {
         />
       </div>
 
-      <Tabs defaultValue="children">
+      <Tabs defaultValue="health">
         <TabsList>
+          <TabsTrigger value="health">Health</TabsTrigger>
           <TabsTrigger value="children">
             Sub-Goals ({childGoals.length})
           </TabsTrigger>
@@ -185,6 +203,12 @@ export function GoalDetail() {
             Projects ({linkedProjects.length})
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="health" className="mt-4">
+          {resolvedCompanyId && (
+            <GoalHealth goal={goal} companyId={resolvedCompanyId} goalIds={subtreeGoalIds} />
+          )}
+        </TabsContent>
 
         <TabsContent value="children" className="mt-4 space-y-3">
           <div className="flex items-center justify-start">
