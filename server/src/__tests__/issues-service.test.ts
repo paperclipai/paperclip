@@ -2640,7 +2640,110 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         expect.objectContaining({ id: childB, title: "Child B", status: "cancelled" }),
       ],
       childIssueSummaryTruncated: false,
+      openDescendantSummaries: [],
+      openDescendantCount: 0,
+      openDescendantSummaryTruncated: false,
+      subtreeAuditTruncated: false,
     });
+  });
+
+  it("surfaces grandchildren in open statuses when all direct children are terminal (PRE-865)", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childA = randomUUID();
+    const grandchildBacklog = randomUUID();
+    const grandchildInProgress = randomUUID();
+    const grandchildDone = randomUUID();
+    const greatGrandchild = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId,
+      },
+      {
+        id: childA,
+        companyId,
+        parentId,
+        title: "Child A (closed prematurely)",
+        status: "done",
+        priority: "high",
+      },
+      {
+        id: grandchildBacklog,
+        companyId,
+        parentId: childA,
+        title: "Grandchild still in backlog",
+        status: "backlog",
+        priority: "medium",
+      },
+      {
+        id: grandchildInProgress,
+        companyId,
+        parentId: childA,
+        title: "Grandchild in progress",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: grandchildDone,
+        companyId,
+        parentId: childA,
+        title: "Grandchild done",
+        status: "done",
+        priority: "low",
+      },
+      {
+        id: greatGrandchild,
+        companyId,
+        parentId: grandchildDone,
+        title: "Great-grandchild blocked",
+        status: "blocked",
+        priority: "low",
+      },
+    ]);
+
+    const result = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(parentId);
+    expect(result!.assigneeAgentId).toBe(assigneeAgentId);
+    expect(result!.childIssueSummaries.map((child) => child.id)).toEqual([childA]);
+    expect(result!.openDescendantCount).toBe(3);
+    expect(result!.openDescendantSummaries.map((entry) => entry.id).sort()).toEqual(
+      [grandchildBacklog, grandchildInProgress, greatGrandchild].sort(),
+    );
+    const grandchildBacklogEntry = result!.openDescendantSummaries.find((entry) => entry.id === grandchildBacklog);
+    expect(grandchildBacklogEntry?.depth).toBe(2);
+    expect(grandchildBacklogEntry?.parentIssueId).toBe(childA);
+    expect(grandchildBacklogEntry?.status).toBe("backlog");
+    const greatGrandchildEntry = result!.openDescendantSummaries.find((entry) => entry.id === greatGrandchild);
+    expect(greatGrandchildEntry?.depth).toBe(3);
+    expect(greatGrandchildEntry?.parentIssueId).toBe(grandchildDone);
+    expect(greatGrandchildEntry?.status).toBe("blocked");
+    expect(result!.openDescendantSummaryTruncated).toBe(false);
+    expect(result!.subtreeAuditTruncated).toBe(false);
   });
 });
 

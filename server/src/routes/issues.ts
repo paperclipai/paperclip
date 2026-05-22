@@ -4337,6 +4337,10 @@ export function issueRoutes(
               childIssueIds: parent.childIssueIds,
               childIssueSummaries: parent.childIssueSummaries,
               childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              openDescendantSummaries: parent.openDescendantSummaries,
+              openDescendantCount: parent.openDescendantCount,
+              openDescendantSummaryTruncated: parent.openDescendantSummaryTruncated,
+              subtreeAuditTruncated: parent.subtreeAuditTruncated,
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
@@ -4349,6 +4353,10 @@ export function issueRoutes(
               childIssueIds: parent.childIssueIds,
               childIssueSummaries: parent.childIssueSummaries,
               childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              openDescendantSummaries: parent.openDescendantSummaries,
+              openDescendantCount: parent.openDescendantCount,
+              openDescendantSummaryTruncated: parent.openDescendantSummaryTruncated,
+              subtreeAuditTruncated: parent.subtreeAuditTruncated,
             },
           });
         }
