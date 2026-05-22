@@ -62,6 +62,8 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 - reporting line (`reportsTo`)
 - adapter type
 - optional `desiredSkills` from the company skill library when this role needs installed skills on day one
+- for `Coder` hires, include the seven-skill default bundle from `references/agents/coder.md` ("Default `desiredSkills` bundle") in the order documented there; only deviate when the charter diverges from default Coder work, and explain the deviation in the hire comment
+- if any `desiredSkills` or adapter settings expand browser access, external-system reach, filesystem scope, or secret-handling capability, justify each one in the hire comment
 - adapter and runtime config aligned to this environment
 - capabilities
 - run prompt in adapter config (`promptTemplate` where applicable)
