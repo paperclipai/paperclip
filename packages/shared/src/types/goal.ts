@@ -13,7 +13,6 @@ export interface Goal {
   linkedIssues?: Issue[];
   linkedIssueIdentifiers?: string[];
   linkedIssueCount?: number;
-  recentIssues?: Issue[];
   createdAt: Date;
   updatedAt: Date;
 }

@@ -4,6 +4,8 @@ import { goals, issues } from "@paperclipai/db";
 
 type GoalReader = Pick<Db, "select">;
 
+export const GOAL_LINKED_ISSUES_PREVIEW_LIMIT = 20;
+
 export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
   const activeRootGoal = await db
     .select()
@@ -65,7 +67,8 @@ export function goalService(db: Db) {
         .select()
         .from(issues)
         .where(and(eq(issues.companyId, goal.companyId), eq(issues.goalId, id), isNull(issues.hiddenAt)))
-        .orderBy(desc(issues.updatedAt));
+        .orderBy(desc(issues.updatedAt))
+        .limit(GOAL_LINKED_ISSUES_PREVIEW_LIMIT);
       const [countRow] = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(issues)
@@ -76,7 +79,6 @@ export function goalService(db: Db) {
         linkedIssues,
         linkedIssueIdentifiers: linkedIssues.map((issue) => issue.identifier ?? issue.id),
         linkedIssueCount: Number(countRow?.count ?? linkedIssues.length),
-        recentIssues: linkedIssues.slice(0, 10),
       };
     },
 
