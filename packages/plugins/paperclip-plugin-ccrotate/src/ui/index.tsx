@@ -757,8 +757,8 @@ export function CcrotateSettingsPage({ context }: PluginSettingsPageProps) {
   useEffect(() => {
     if (!companyId) return;
     setBusy("loading");
-    getJson<{ blob?: string; capturedAt?: string }>(`/state?companyId=${encodeURIComponent(companyId)}`)
-      .then((r) => { setPersisted(r); setError(null); })
+    getJson<{ snapshot: { blob?: string; capturedAt?: string } | null }>(`/state?companyId=${encodeURIComponent(companyId)}`)
+      .then((r) => { setPersisted(r.snapshot); setError(null); })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy("idle"));
   }, [companyId]);

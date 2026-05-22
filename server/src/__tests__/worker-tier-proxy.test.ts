@@ -74,6 +74,16 @@ function buildApp(workersUrl: string) {
   return app;
 }
 
+async function getFreePort(): Promise<number> {
+  const server = createServer((_req, res) => res.end());
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 describe("registerWorkerTierProxyRoutes", () => {
   let worker: { url: string; close: () => Promise<void> } | undefined;
 
@@ -229,6 +239,41 @@ describe("registerWorkerTierProxyRoutes", () => {
 
     expect(res.status).toBe(502);
     expect(res.body.error).toMatch(/worker tier unreachable/i);
+  });
+
+  it("retries idempotent GET routes during worker startup races", async () => {
+    const port = await getFreePort();
+    const workersUrl = `http://127.0.0.1:${port}`;
+    const app = buildApp(workersUrl);
+    let hits = 0;
+
+    const delayedWorker = createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const listenTimer = setTimeout(() => {
+      delayedWorker.listen(port, "127.0.0.1");
+    }, 150);
+
+    try {
+      const res = await request(app).get(
+        "/api/plugins/kkroo.ccrotate/api/state?companyId=abc",
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true });
+      expect(hits).toBe(1);
+    } finally {
+      clearTimeout(listenTimer);
+      await new Promise<void>((resolve) => {
+        if (!delayedWorker.listening) {
+          resolve();
+          return;
+        }
+        delayedWorker.close(() => resolve());
+      });
+    }
   });
 
   it("streams the worker response body for the SSE bridge route", async () => {

@@ -76,6 +76,8 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
 
 /** Non-streaming proxied requests abort after this long. */
 const PROXY_REQUEST_TIMEOUT_MS = 30_000;
+const PROXY_GET_RETRY_INITIAL_MS = 250;
+const PROXY_GET_RETRY_MAX_MS = 2_000;
 
 /**
  * Hop-by-hop headers (RFC 7230 §6.1) plus headers that must be recomputed by
@@ -127,6 +129,47 @@ function hasRequestBody(req: Request): boolean {
   return req.method !== "GET" && req.method !== "HEAD";
 }
 
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(signal.reason ?? new Error("aborted"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
+}
+
+async function fetchWithStartupRetry(
+  targetUrl: string,
+  init: RequestInit,
+  retry: boolean,
+): Promise<Response> {
+  let attempt = 0;
+  let backoffMs = PROXY_GET_RETRY_INITIAL_MS;
+  while (true) {
+    try {
+      return await fetch(targetUrl, init);
+    } catch (err) {
+      const signal = init.signal instanceof AbortSignal ? init.signal : null;
+      if (!retry || signal?.aborted) throw err;
+      attempt += 1;
+      logger.warn(
+        { err, targetUrl, method: init.method, attempt, nextRetryMs: backoffMs },
+        "worker-tier proxy: worker tier fetch failed; retrying idempotent request",
+      );
+      await sleep(backoffMs, signal ?? new AbortController().signal);
+      backoffMs = Math.min(backoffMs * 2, PROXY_GET_RETRY_MAX_MS);
+    }
+  }
+}
+
 /**
  * Build an Express handler that reverse-proxies the request to the worker
  * tier at `workersInternalUrl`.
@@ -164,13 +207,14 @@ function createWorkerProxyHandler(
         headers.set("content-type", "application/json");
       }
 
-      const upstream = await fetch(targetUrl, {
+      const retryStartupRace = req.method === "GET" && !streaming;
+      const upstream = await fetchWithStartupRetry(targetUrl, {
         method: req.method,
         headers,
         body,
         redirect: "manual",
         signal: controller.signal,
-      });
+      }, retryStartupRace);
 
       if (upstream.status >= 500) {
         // The worker tier reached us but failed the operation. Forward it
