@@ -113,6 +113,7 @@ function parseWhenRow(line: string): {
   tier: string;
   util: { u5: number; u7: number; s7d: number | null; o7d: number | null } | null;
   availability: string;
+  apiLimit: string | null;
 } | null {
   const trimmed = line.trimStart();
   const marker = line.startsWith("★") ? "★" : " ";
@@ -155,6 +156,15 @@ function parseWhenRow(line: string): {
       .replace(/\s+/g, " ")
       .trim();
   }
+  let apiLimit: string | null = null;
+  const apiIdx = postTier.indexOf(" api: ");
+  if (apiIdx >= 0) {
+    apiLimit = postTier.slice(apiIdx + " api: ".length).trim() || null;
+    postTier = postTier.slice(0, apiIdx).trim();
+  } else if (postTier.startsWith("api: ")) {
+    apiLimit = postTier.slice("api: ".length).trim() || null;
+    postTier = "";
+  }
   return {
     marker,
     health,
@@ -163,6 +173,7 @@ function parseWhenRow(line: string): {
     tier,
     util,
     availability: postTier,
+    apiLimit,
   };
 }
 
@@ -191,6 +202,7 @@ function parseWhenOutput(target: CcrotateTarget, stdout: string): {
       utilization7dSonnet: parsed.util?.s7d ?? null,
       utilization7dOpus: parsed.util?.o7d ?? null,
       availability: parsed.availability,
+      apiLimit: parsed.apiLimit,
       isActive: parsed.marker === "★",
       isHealthy: parsed.health === "✓",
     });

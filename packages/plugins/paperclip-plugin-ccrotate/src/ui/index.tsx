@@ -330,12 +330,12 @@ function SkeletonBar({
   );
 }
 
-// Renders N table rows with skeleton cells matching the 9-column PoolTable
-// shape (star, email, tier, 5h, 7d, sonnet, opus, availability, actions).
+// Renders N table rows with skeleton cells matching the 10-column PoolTable
+// shape (star, email, tier, 5h, 7d, sonnet, opus, availability, api, actions).
 // Used inside the same <tbody> the real rows would occupy so column widths
 // don't jump when the data arrives.
 function PoolTableSkeletonRows({ rows = 4 }: { rows?: number }) {
-  const cellWidths: (number | string)[] = [12, 180, 64, 36, 36, 44, 44, 96, 80];
+  const cellWidths: (number | string)[] = [12, 180, 64, 36, 36, 44, 44, 96, 110, 80];
   return (
     <>
       {Array.from({ length: rows }).map((_, i) => (
@@ -463,6 +463,7 @@ function PoolTable({
               <th style={thStyle}>7d sonnet</th>
               <th style={thStyle}>7d opus</th>
               <th style={thStyle}>availability</th>
+              <th style={thStyle}>api limit</th>
               <th style={thStyle}></th>
             </tr>
           </thead>
@@ -516,6 +517,7 @@ function PoolTable({
           <th style={thStyle}>7d sonnet</th>
           <th style={thStyle}>7d opus</th>
           <th style={thStyle}>availability</th>
+          <th style={thStyle}>api limit</th>
           <th style={thStyle}></th>
         </tr>
       </thead>
@@ -541,6 +543,7 @@ function PoolTable({
                 <td style={tdStyle}>{row.utilization7dSonnet != null ? `${row.utilization7dSonnet}%` : "—"}</td>
                 <td style={tdStyle}>{row.utilization7dOpus != null ? `${row.utilization7dOpus}%` : "—"}</td>
                 <td style={tdStyle}>{row.availability || "—"}</td>
+                <td style={tdStyle}>{row.apiLimit || "unknown"}</td>
                 <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
                   {/* F-UI-1: switch button per row */}
                   {target === "claude" && !row.isActive && (
@@ -579,7 +582,7 @@ function PoolTable({
               </tr>
               {isSessionFormOpen && companyId && (
                 <tr key={`${row.email}-form`}>
-                  <td colSpan={9} style={{ ...tdStyle, paddingTop: 0, paddingBottom: "16px" }}>
+                  <td colSpan={10} style={{ ...tdStyle, paddingTop: 0, paddingBottom: "16px" }}>
                     <SetSessionInlineForm
                       email={row.email}
                       companyId={companyId}
@@ -591,7 +594,7 @@ function PoolTable({
               )}
               {rowError && rowError.email === row.email && (
                 <tr key={`${row.email}-err`}>
-                  <td colSpan={9} style={{ ...tdStyle, color: "#ef4444" }}>{rowError.msg}</td>
+                  <td colSpan={10} style={{ ...tdStyle, color: "#ef4444" }}>{rowError.msg}</td>
                 </tr>
               )}
             </>
