@@ -327,6 +327,68 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     );
   }, 15_000);
 
+  it("coalesces routine dispatch into an open stalled execution issue without a live run", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Stalled checkout sweep",
+        description: "Wake stalled work",
+        assigneeAgentId: agentId,
+        concurrencyPolicy: "coalesce_if_active",
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const firstRunRes = await postRoutineRun(app, createRes.body.id, {
+      source: "api",
+    });
+
+    expect(firstRunRes.status, JSON.stringify(firstRunRes.body)).toBe(202);
+    expect(firstRunRes.body.status).toBe("issue_created");
+
+    const [firstIssue] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, firstRunRes.body.linkedIssueId));
+    expect(firstIssue?.executionRunId).toBeTruthy();
+    const staleRunId = firstIssue?.executionRunId as string;
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, staleRunId));
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, firstRunRes.body.linkedIssueId));
+
+    const secondRunRes = await postRoutineRun(app, createRes.body.id, {
+      source: "api",
+    });
+
+    expect(secondRunRes.status, JSON.stringify(secondRunRes.body)).toBe(202);
+    expect(secondRunRes.body.status).toBe("coalesced");
+    expect(secondRunRes.body.linkedIssueId).toBe(firstRunRes.body.linkedIssueId);
+
+    const issueRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, createRes.body.id));
+    expect(issueRows).toHaveLength(1);
+  }, 15_000);
+
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const app = await createApp({

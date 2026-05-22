@@ -48,7 +48,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -571,6 +571,24 @@ export function agentRoutes(
     if (!allowed) {
       throw forbidden("Missing permission: agents:create");
     }
+  }
+
+  async function canAgentWakeTarget(companyId: string, actorAgentId: string | undefined, targetAgentId: string) {
+    if (actorAgentId === targetAgentId) return true;
+    if (typeof actorAgentId !== "string") return false;
+    return access.hasPermission(companyId, "agent", actorAgentId, "tasks:assign");
+  }
+
+  async function assertCanWakeAgent(req: Request, companyId: string, targetAgentId: string) {
+    if (req.actor.type === "agent") {
+      const allowed = await canAgentWakeTarget(companyId, req.actor.agentId, targetAgentId);
+      if (!allowed) {
+        throw forbidden("Agent can only invoke itself or use tasks:assign delegated wakeups");
+      }
+      return;
+    }
+
+    await assertBoardCanManageAgentsForCompany(req, companyId);
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -2917,6 +2935,32 @@ export function agentRoutes(
     source: HeartbeatSource | undefined;
     skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) => unknown | Promise<unknown>;
   };
+
+  async function normalizeStalledCheckoutWakePayload(payload: unknown, companyId: string) {
+    if (!payload || typeof payload !== "object") return payload;
+    const issueId = (payload as { issueId?: unknown }).issueId;
+    if (typeof issueId !== "string" || issueId.trim().length === 0) return payload;
+    const rawIssueId = issueId.trim();
+    if (isUuidLike(rawIssueId)) {
+      return { ...payload, issueId: rawIssueId };
+    }
+    const identifier = normalizeIssueIdentifier(rawIssueId);
+    if (identifier) {
+      const issue = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.companyId, companyId), eq(issuesTable.identifier, identifier)))
+        .then((rows) => rows[0] ?? null);
+      if (issue) {
+        return { ...payload, issueId: issue.id };
+      }
+    }
+    throw badRequest("Invalid stalled checkout wake payload issueId", {
+      field: "payload.issueId",
+      code: "invalid_issue_id",
+    });
+  }
+
   const handleWakeupRoute = async (
     req: Request,
     res: Response,
@@ -2930,13 +2974,10 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, agent.companyId);
 
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    await assertCanWakeAgent(req, agent.companyId, id);
+
+    if (req.body.reason === "stalled_checkout_sweep") {
+      req.body.payload = await normalizeStalledCheckoutWakePayload(req.body.payload ?? null, agent.companyId);
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -2998,14 +3039,7 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, agent.companyId);
 
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    }
+    await assertCanWakeAgent(req, agent.companyId, id);
 
     const body = (req.body ?? {}) as Partial<{
       reason: unknown;
