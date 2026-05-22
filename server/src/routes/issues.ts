@@ -46,6 +46,7 @@ import {
   type CompanySearchResponse,
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
+  type IssueRecoveryActionOutcome,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -603,6 +604,23 @@ function summarizeExecutionParticipants(
 
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
+}
+
+function hasUnresolvedIssueRelations(relations: readonly IssueRelationIssueSummary[] | null | undefined) {
+  return (relations ?? []).some((relation) => !isClosedIssueStatus(relation.status));
+}
+
+function sourceDispositionRecoveryOutcome(input: {
+  status: string | null | undefined;
+  hasUnresolvedFirstClassBlocker: boolean;
+}): IssueRecoveryActionOutcome | null {
+  if (input.status === "blocked") {
+    return input.hasUnresolvedFirstClassBlocker ? "blocked" : null;
+  }
+  if (input.status === "done" || input.status === "in_review") {
+    return "restored";
+  }
+  return null;
 }
 
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
@@ -3066,6 +3084,7 @@ export function issueRoutes(
       blocks?: unknown;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
       referencedIssueIdentifiers?: string[];
+      activeRecoveryAction?: null;
     } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
@@ -3075,6 +3094,34 @@ export function issueRoutes(
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
+    }
+    let autoResolvedRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.resolveActiveForIssue>> | null = null;
+    const sourceDispositionWritten = updateFields.status !== undefined || Array.isArray(req.body.blockedByIssueIds);
+    if (sourceDispositionWritten) {
+      const hasUnresolvedFirstClassBlocker = issue.status === "blocked"
+        ? updatedRelations
+          ? hasUnresolvedIssueRelations(updatedRelations.blockedBy)
+          : (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
+        : false;
+      const recoveryOutcome = sourceDispositionRecoveryOutcome({
+        status: issue.status,
+        hasUnresolvedFirstClassBlocker,
+      });
+      if (recoveryOutcome) {
+        autoResolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+          companyId: issue.companyId,
+          sourceIssueId: issue.id,
+          status: "resolved",
+          outcome: recoveryOutcome,
+          resolutionNote: `Source issue moved to valid disposition: ${issue.status}`,
+        });
+        if (autoResolvedRecoveryAction) {
+          issueResponse = {
+            ...issueResponse,
+            activeRecoveryAction: null,
+          };
+        }
+      }
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
@@ -3171,6 +3218,28 @@ export function issueRoutes(
         .catch((err) => {
           logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution");
         });
+    }
+
+    if (autoResolvedRecoveryAction) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_resolved",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          recoveryActionId: autoResolvedRecoveryAction.id,
+          recoveryActionStatus: autoResolvedRecoveryAction.status,
+          outcome: autoResolvedRecoveryAction.outcome,
+          sourceIssueStatus: issue.status,
+          resolutionNote: autoResolvedRecoveryAction.resolutionNote,
+          source: "source_disposition_auto_resolve",
+        },
+      });
     }
 
     if (Array.isArray(req.body.blockedByIssueIds)) {

@@ -203,6 +203,28 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     return app;
   }
 
+  async function seedActiveRecoveryAction(input: {
+    companyId: string;
+    sourceIssueId: string;
+    ownerAgentId: string;
+    kind?: "missing_disposition" | "issue_graph_liveness";
+    cause?: string;
+    fingerprint?: string;
+  }) {
+    return issueRecoveryActionService(db).upsertSourceScoped({
+      companyId: input.companyId,
+      sourceIssueId: input.sourceIssueId,
+      kind: input.kind ?? "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: input.ownerAgentId,
+      cause: input.cause ?? "successful_run_missing_issue_disposition",
+      fingerprint: input.fingerprint ?? `missing-disposition:${input.sourceIssueId}`,
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+  }
+
   it("upserts one active source-scoped action per issue and keeps company scoping explicit", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const svc = issueRecoveryActionService(db);
@@ -490,6 +512,129 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const list = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
     expect(list.body.active).toMatchObject({ id: action.id });
     expect(list.body.actions).toHaveLength(1);
+  });
+
+  it("auto-resolves an active recovery action when PATCH moves the source issue to blocked with an unresolved blocker", async () => {
+    const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Provide recovery blocker",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    const action = await seedActiveRecoveryAction({
+      companyId,
+      sourceIssueId,
+      ownerAgentId: managerId,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:blocked-with-patch-blocker",
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [blockerIssueId],
+      })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+      activeRecoveryAction: null,
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "blocked",
+      resolutionNote: "Source issue moved to valid disposition: blocked",
+    });
+    expect(actionRow?.resolvedAt).toBeTruthy();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(detail.body.activeRecoveryAction).toBeNull();
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.filter((row) => row.action === "issue.recovery_action_resolved")).toHaveLength(1);
+  });
+
+  it("auto-resolves an active recovery action when PATCH moves the source issue to in_review", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const action = await seedActiveRecoveryAction({
+      companyId,
+      sourceIssueId,
+      ownerAgentId: managerId,
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "in_review" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      activeRecoveryAction: null,
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Source issue moved to valid disposition: in_review",
+    });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("does not auto-resolve an active recovery action when PATCH moves the source issue to blocked without blockers", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const action = await seedActiveRecoveryAction({
+      companyId,
+      sourceIssueId,
+      ownerAgentId: managerId,
+      kind: "issue_graph_liveness",
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:blocked-without-patch-blocker",
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "blocked" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolvedAt: null,
+    });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+    });
   });
 
   it("resolves an active recovery action and removes it from active projections", async () => {
