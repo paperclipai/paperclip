@@ -229,7 +229,8 @@ env:
 persistence:
   enabled: true
   # storageClassName / accessMode / size are ignored when existingClaim is set —
-  # paperclip-data is a 50Gi RWX cephfs PVC pre-created out of band. Kept here
+  # paperclip-data is a 200Gi RWX cephfs PVC managed from onprem-k8s
+  # paperclip/paperclip-data-pvc.yaml. Kept here
   # for documentation only.
   storageClassName: cephfs
   accessMode: ReadWriteMany
