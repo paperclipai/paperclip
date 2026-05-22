@@ -395,4 +395,210 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
     expect(persisted).toEqual([]);
     await cleanup();
   });
+
+  // ─── Plan 3b: record-use via learnings.json `used[]` ──────────────────────
+
+  /** Insert a canonical skill on the guild so we can record use against it. */
+  async function seedSkill(
+    companyId: string,
+    guildId: string,
+    name: string,
+    body: string,
+  ): Promise<string> {
+    const inserted = await db
+      .insert(skills)
+      .values({ companyId, guildId, name, body, provenance: "canonical" })
+      .returning({ id: skills.id });
+    return inserted[0]!.id;
+  }
+
+  it("Plan 3b: used[] increments success_count when success=true", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const skillId = await seedSkill(companyId, agentId, "redis-pool", "use pool size 20");
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [],
+        used: [{ id: skillId, success: true }],
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: randomUUID() },
+      sandboxDir,
+    });
+
+    expect(result.recordedUse).toHaveLength(1);
+    expect(result.recordedUse[0]).toMatchObject({
+      id: skillId,
+      name: "redis-pool",
+      success: true,
+    });
+    expect(result.recordedUseRejected).toEqual([]);
+
+    const persisted = await db.select().from(skills).where(eq(skills.id, skillId));
+    expect(persisted[0]!.successCount).toBe(1);
+    expect(persisted[0]!.failCount).toBe(0);
+    await cleanup();
+  });
+
+  it("Plan 3b: used[] increments fail_count when success=false", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const skillId = await seedSkill(companyId, agentId, "stale-advice", "this is misleading");
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [],
+        used: [{ id: skillId, success: false }],
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: randomUUID() },
+      sandboxDir,
+    });
+
+    expect(result.recordedUse).toHaveLength(1);
+    expect(result.recordedUse[0]!.success).toBe(false);
+
+    const persisted = await db.select().from(skills).where(eq(skills.id, skillId));
+    expect(persisted[0]!.successCount).toBe(0);
+    expect(persisted[0]!.failCount).toBe(1);
+    await cleanup();
+  });
+
+  it("Plan 3b: unknown skill id in used[] is rejected (caught service error)", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const bogusId = randomUUID();
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [],
+        used: [{ id: bogusId, success: true }],
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: randomUUID() },
+      sandboxDir,
+    });
+
+    expect(result.recordedUse).toEqual([]);
+    expect(result.recordedUseRejected).toHaveLength(1);
+    expect(result.recordedUseRejected[0]!.id).toBe(bogusId);
+    expect(result.recordedUseRejected[0]!.reason).toMatch(/not found/i);
+    await cleanup();
+  });
+
+  it("Plan 3b: missing id or non-boolean success rejected per entry; siblings unaffected", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const goodId = await seedSkill(companyId, agentId, "good-one", "useful");
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [],
+        used: [
+          { success: true }, // missing id
+          { id: goodId }, // missing success
+          { id: 42, success: true }, // non-string id
+          "not-an-object", // primitive
+          null, // null entry
+          { id: goodId, success: true }, // good one — survives
+        ],
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: randomUUID() },
+      sandboxDir,
+    });
+
+    expect(result.recordedUse).toHaveLength(1);
+    expect(result.recordedUse[0]!.id).toBe(goodId);
+    expect(result.recordedUseRejected).toHaveLength(5);
+
+    const persisted = await db.select().from(skills).where(eq(skills.id, goodId));
+    expect(persisted[0]!.successCount).toBe(1);
+    await cleanup();
+  });
+
+  it("Plan 3b: used[] coexists with skills[] in one learnings.json (mixed-batch happy path)", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const runId = await seedRun(companyId, agentId);
+    const existingId = await seedSkill(companyId, agentId, "existing-one", "old wisdom");
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [{ name: "newly-learned", body: "fresh insight from this run" }],
+        used: [{ id: existingId, success: true }],
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: runId },
+      sandboxDir,
+    });
+
+    expect(result.ingested).toHaveLength(1);
+    expect(result.ingested[0]!.name).toBe("newly-learned");
+    expect(result.recordedUse).toHaveLength(1);
+    expect(result.recordedUse[0]!.id).toBe(existingId);
+
+    const allSkills = await db.select().from(skills);
+    expect(allSkills).toHaveLength(2);
+    const existing = allSkills.find((s) => s.id === existingId)!;
+    expect(existing.successCount).toBe(1);
+    await cleanup();
+  });
+
+  it("Plan 3b: absent used[] is treated as empty (legacy learnings.json shape still works)", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const runId = await seedRun(companyId, agentId);
+    const { sandboxDir, cleanup } = await withSandbox(
+      // Legacy shape — only `skills`, no `used`.
+      JSON.stringify({ skills: [{ name: "legacy-skill", body: "legacy body" }] }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: runId },
+      sandboxDir,
+    });
+
+    expect(result.ingested).toHaveLength(1);
+    expect(result.recordedUse).toEqual([]);
+    expect(result.recordedUseRejected).toEqual([]);
+    await cleanup();
+  });
+
+  it("Plan 3b: non-array `used` value is treated as no used entries (lenient)", async () => {
+    const { companyId, agentId } = await seed("guild");
+    const runId = await seedRun(companyId, agentId);
+    const { sandboxDir, cleanup } = await withSandbox(
+      JSON.stringify({
+        skills: [{ name: "lenient-shape", body: "valid" }],
+        used: "not-an-array",
+      }),
+    );
+
+    const result = await ingestGuildLearnings({
+      db,
+      agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
+      run: { id: runId },
+      sandboxDir,
+    });
+
+    // `skills` still ingests; `used` malformed top-level is silently
+    // dropped (no rejection rows — the entire array is absent).
+    expect(result.ingested).toHaveLength(1);
+    expect(result.recordedUse).toEqual([]);
+    expect(result.recordedUseRejected).toEqual([]);
+    await cleanup();
+  });
 });

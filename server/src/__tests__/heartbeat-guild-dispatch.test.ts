@@ -155,7 +155,10 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
   /** Worker script: write a learnings.json file at WORKER_LEARNINGS_PATH
    * with the given payload. Atomic via .partial-then-rename per the
    * spec D12 worker contract. */
-  function learningsWriteScript(learnings: { skills: Array<{ name: string; body: string }> }) {
+  function learningsWriteScript(learnings: {
+    skills: Array<{ name: string; body: string }>;
+    used?: Array<{ id: string; success: boolean }>;
+  }) {
     return [
       `const fs = require('node:fs');`,
       `const dst = process.env.WORKER_LEARNINGS_PATH;`,
@@ -746,5 +749,111 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
     const snapshot = JSON.parse(await fs.readFile(snapshotCopyPath, "utf-8"));
     expect(snapshot.totalCanonical).toBe(0);
     expect(snapshot.skills).toEqual([]);
+  }, 30_000);
+
+  it("(Plan 3b) worker writes used[] in learnings.json → success_count moves + activity row carries usedSuccessCount + recordedUse", async () => {
+    const companyId = await setupCompany();
+    const agentId = randomUUID();
+    const bundleRoot = await fs.mkdtemp(path.join(testTmpRoot, "p3b-bundle-"));
+    await fs.writeFile(path.join(bundleRoot, "autonomy.json"), "{}", "utf-8");
+
+    // Insert agent FIRST so the FK on skills.guild_id is satisfied.
+    const reusedSuccessId = randomUUID();
+    const reusedFailureId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "p3b-record-use-guild",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      kind: "guild",
+      adapterConfig: {
+        workerAdapterType: "process",
+        instructionsRootPath: bundleRoot,
+        command: process.execPath,
+        args: [
+          "-e",
+          learningsWriteScript({
+            // Also write a NEW provisional skill, so we cover both
+            // ingest + record-use in one batch (matches the documented
+            // "mixed-batch happy path" worker contract).
+            skills: [{ name: "p3b-newly-learned", body: "something I learned today" }],
+            used: [
+              { id: reusedSuccessId, success: true },
+              { id: reusedFailureId, success: false },
+            ],
+          }),
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(skills).values([
+      {
+        id: reusedSuccessId,
+        guildId: agentId,
+        companyId,
+        name: "p3b-success-skill",
+        body: "this skill helped",
+        provenance: "canonical",
+      },
+      {
+        id: reusedFailureId,
+        guildId: agentId,
+        companyId,
+        name: "p3b-failure-skill",
+        body: "this skill was misleading",
+        provenance: "canonical",
+      },
+    ]);
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("succeeded");
+
+    // Activity_log: usedCount/usedSuccessCount/usedFailureCount populated.
+    const ingestedRows = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.action, "guild.worker.skills_ingested"),
+          eq(activityLog.runId, queued!.id),
+        ),
+      );
+    expect(ingestedRows).toHaveLength(1);
+    const d = ingestedRows[0]!.details as Record<string, unknown>;
+    expect(d.usedCount).toBe(2);
+    expect(d.usedSuccessCount).toBe(1);
+    expect(d.usedFailureCount).toBe(1);
+    expect(d.usedRejectedCount).toBe(0);
+    const recordedUse = d.recordedUse as Array<{
+      id: string;
+      name: string;
+      success: boolean;
+    }>;
+    expect(recordedUse).toHaveLength(2);
+    expect(recordedUse.find((u) => u.id === reusedSuccessId)?.success).toBe(true);
+    expect(recordedUse.find((u) => u.id === reusedFailureId)?.success).toBe(false);
+
+    // skills table: counts moved.
+    const persistedSuccess = await db
+      .select()
+      .from(skills)
+      .where(eq(skills.id, reusedSuccessId));
+    expect(persistedSuccess[0]!.successCount).toBe(1);
+    expect(persistedSuccess[0]!.failCount).toBe(0);
+    const persistedFailure = await db
+      .select()
+      .from(skills)
+      .where(eq(skills.id, reusedFailureId));
+    expect(persistedFailure[0]!.successCount).toBe(0);
+    expect(persistedFailure[0]!.failCount).toBe(1);
+
+    // Mixed batch: the new skill was also ingested.
+    expect(d.ingestedCount).toBe(1);
+    const ingested = d.ingested as Array<{ name: string }>;
+    expect(ingested[0]!.name).toBe("p3b-newly-learned");
   }, 30_000);
 });

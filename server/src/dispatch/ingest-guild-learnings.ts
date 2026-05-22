@@ -62,12 +62,37 @@ export interface RejectedSkill {
   reason: string;
 }
 
+/**
+ * Plan 3b — record-use telemetry per entry in the worker's `used[]`
+ * array. Reports back which canonical skill the worker actually
+ * consulted and whether it helped. Powers downstream auto-promotion
+ * heuristics (success_count / fail_count on the skills row).
+ */
+export interface RecordedUse {
+  id: string;
+  name: string;
+  success: boolean;
+}
+
+export interface RejectedRecordedUse {
+  /** May be null when the worker didn't supply a string id at all. */
+  id: string | null;
+  reason: string;
+}
+
 export interface IngestGuildLearningsResult {
   /** Skills successfully persisted (in insertion order). */
   ingested: IngestedSkill[];
   /** Per-skill rejections with a short reason string (kept for
    * logging + persisting on resultJson). */
   rejected: RejectedSkill[];
+  /** Skills the worker reported using during the run, with success
+   * outcomes recorded on the skills row (success_count++ on
+   * success=true, fail_count++ on success=false). Plan 3b. */
+  recordedUse: RecordedUse[];
+  /** Per-use rejections (unknown id, malformed shape, cross-guild,
+   * etc.). Same logging + resultJson treatment as `rejected`. */
+  recordedUseRejected: RejectedRecordedUse[];
   /** True when the worker did not write `learnings.json`. Not a
    * failure: a worker that learned nothing skips the file by design. */
   fileMissing: boolean;
@@ -80,6 +105,8 @@ export interface IngestGuildLearningsResult {
 const EMPTY_RESULT: IngestGuildLearningsResult = {
   ingested: [],
   rejected: [],
+  recordedUse: [],
+  recordedUseRejected: [],
   fileMissing: true,
   topLevelError: null,
 };
@@ -112,6 +139,8 @@ export async function ingestGuildLearnings(
     return {
       ingested: [],
       rejected: [],
+      recordedUse: [],
+      recordedUseRejected: [],
       fileMissing: false,
       topLevelError: `learnings.json is not valid JSON: ${
         err instanceof Error ? err.message : String(err)
@@ -127,16 +156,29 @@ export async function ingestGuildLearnings(
     return {
       ingested: [],
       rejected: [],
+      recordedUse: [],
+      recordedUseRejected: [],
       fileMissing: false,
       topLevelError:
         "learnings.json must be an object with a `skills` array (top-level shape mismatch)",
     };
   }
 
+  // Plan 3b: optional `used[]` array. Top-level shape check is lenient
+  // — a non-array value is treated as if absent + a rejection note is
+  // pushed below when iterating. Keeps the file-shape rules simple
+  // (mandatory: `skills`; optional: `used`).
+  const usedCandidatesRaw = (parsed as { used?: unknown }).used;
+  const usedCandidates: unknown[] = Array.isArray(usedCandidatesRaw)
+    ? usedCandidatesRaw
+    : [];
+
   const candidates = (parsed as { skills: unknown[] }).skills;
   const svc = guildSkillService(input.db);
   const ingested: IngestedSkill[] = [];
   const rejected: RejectedSkill[] = [];
+  const recordedUse: RecordedUse[] = [];
+  const recordedUseRejected: RejectedRecordedUse[] = [];
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
@@ -193,9 +235,66 @@ export async function ingestGuildLearnings(
     }
   }
 
+  // Plan 3b: process `used[]` entries. Each entry reports an outcome
+  // on an existing canonical skill (the worker may also be allowed to
+  // record use against a provisional skill — service-level decides;
+  // currently `recordUse` allows any non-retired skill). The service
+  // already enforces:
+  //   - skill belongs to this guild + company (cross-tenant safety);
+  //   - skill exists (404 → rejected here with the service error).
+  // We pre-validate the shape (string id, boolean success) and surface
+  // service errors as per-entry rejections, never throwing through.
+  for (let i = 0; i < usedCandidates.length; i++) {
+    const candidate = usedCandidates[i];
+    if (!candidate || typeof candidate !== "object") {
+      recordedUseRejected.push({
+        id: null,
+        reason: `used entry at index ${i} is not an object`,
+      });
+      continue;
+    }
+    const obj = candidate as { id?: unknown; success?: unknown };
+    const id = typeof obj.id === "string" ? obj.id : null;
+    const success = typeof obj.success === "boolean" ? obj.success : null;
+    if (!id) {
+      recordedUseRejected.push({
+        id: null,
+        reason: `used entry at index ${i} is missing 'id' (must be a string)`,
+      });
+      continue;
+    }
+    if (success === null) {
+      recordedUseRejected.push({
+        id,
+        reason: `used entry at index ${i} is missing 'success' (must be a boolean)`,
+      });
+      continue;
+    }
+    try {
+      const updated = await svc.recordUse(
+        input.agent.companyId,
+        input.agent.id,
+        id,
+        success,
+      );
+      recordedUse.push({
+        id: updated.id,
+        name: updated.name,
+        success,
+      });
+    } catch (err) {
+      recordedUseRejected.push({
+        id,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return {
     ingested,
     rejected,
+    recordedUse,
+    recordedUseRejected,
     fileMissing: false,
     topLevelError: null,
   };

@@ -6834,6 +6834,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ingest = {
         ingested: [],
         rejected: [],
+        recordedUse: [],
+        recordedUseRejected: [],
         fileMissing: false,
         topLevelError:
           err instanceof Error ? err.message : "ingestGuildLearnings threw unexpectedly",
@@ -6866,15 +6868,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cleanup.warning,
       );
     }
+    // Plan 3b: record-use telemetry. Counts how many existing skills
+    // the worker reported using during the run; success/failure split
+    // powers the future auto-promotion heuristic.
+    const usedSuccessCount = ingest.recordedUse.filter((u) => u.success).length;
+    const usedFailureCount = ingest.recordedUse.length - usedSuccessCount;
     const marker: Record<string, unknown> = {
       at: new Date().toISOString(),
       ingestedCount: ingest.ingested.length,
       rejectedCount: ingest.rejected.length,
+      usedCount: ingest.recordedUse.length,
+      usedSuccessCount,
+      usedFailureCount,
+      usedRejectedCount: ingest.recordedUseRejected.length,
       fileMissing: ingest.fileMissing,
       sandboxDir,
       ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
       ...(ingest.ingested.length > 0 ? { ingested: ingest.ingested } : {}),
       ...(ingest.rejected.length > 0 ? { rejected: ingest.rejected } : {}),
+      ...(ingest.recordedUse.length > 0 ? { recordedUse: ingest.recordedUse } : {}),
+      ...(ingest.recordedUseRejected.length > 0
+        ? { recordedUseRejected: ingest.recordedUseRejected }
+        : {}),
     };
     // Plan 3 Phase E3: post-hook telemetry. activity_log row is
     // persistent + plugin-bus-published (action is in PLUGIN_EVENT_SET).
@@ -6902,10 +6917,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           guildSlug: args.agent.name,
           ingestedCount: ingest.ingested.length,
           rejectedCount: ingest.rejected.length,
+          // Plan 3b: record-use telemetry. Operator queries can find
+          // workers that successfully re-applied existing knowledge
+          // vs. those that found existing skills unhelpful.
+          usedCount: ingest.recordedUse.length,
+          usedSuccessCount,
+          usedFailureCount,
+          usedRejectedCount: ingest.recordedUseRejected.length,
           fileMissing: ingest.fileMissing,
           ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
           ...(ingest.ingested.length > 0 ? { ingested: ingest.ingested } : {}),
           ...(ingest.rejected.length > 0 ? { rejected: ingest.rejected } : {}),
+          ...(ingest.recordedUse.length > 0 ? { recordedUse: ingest.recordedUse } : {}),
+          ...(ingest.recordedUseRejected.length > 0
+            ? { recordedUseRejected: ingest.recordedUseRejected }
+            : {}),
         },
       });
     } catch (telemetryErr) {
@@ -6924,6 +6950,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       guildSlug: args.agent.name,
       ingestedCount: ingest.ingested.length,
       rejectedCount: ingest.rejected.length,
+      usedCount: ingest.recordedUse.length,
+      usedSuccessCount,
+      usedFailureCount,
       fileMissing: ingest.fileMissing,
       ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
     };
