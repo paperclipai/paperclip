@@ -200,6 +200,36 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue for source-scoped recovery action runs", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          source: "issue_recovery_action",
+          wakeReason: "source_scoped_recovery_action",
+          recoveryActionId: "action-1",
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "source-scoped recovery run owns its own recovery path",
+    });
+    // also skips on source match alone (without wakeReason)
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          source: "issue_recovery_action",
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "source-scoped recovery run owns its own recovery path",
+    });
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",
