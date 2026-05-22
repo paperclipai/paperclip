@@ -168,8 +168,21 @@ describe("Sidebar", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    const sidebarSlot = [...container.querySelectorAll("nav [data-plugin-slot-types]")]
-      .find((node) => node.getAttribute("data-plugin-slot-types") === "sidebar");
+    // Upstream renders two sidebar plugin slots: one above the Work section
+    // (in the Chat / launcher row at the top of the nav) and one inside it.
+    // Pick the slot that's actually a descendant of the Work section so the
+    // ordering assertion below is meaningful.
+    const sidebarSlots = [...container.querySelectorAll("nav [data-plugin-slot-types]")]
+      .filter((node) => node.getAttribute("data-plugin-slot-types") === "sidebar");
+    const sidebarSlot = sidebarSlots.find((node) => {
+      let parent: Element | null = node.parentElement;
+      while (parent && parent.tagName !== "NAV") {
+        const pt = parent.textContent ?? "";
+        if (pt.includes("Issues") && pt.includes("Goals")) return true;
+        parent = parent.parentElement;
+      }
+      return false;
+    });
     expect(sidebarSlot?.textContent).toContain("Plugin slot outlet");
     const workSectionContainer = sidebarSlot?.parentElement?.parentElement;
     const workText = workSectionContainer?.textContent ?? "";
