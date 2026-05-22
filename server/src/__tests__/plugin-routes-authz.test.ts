@@ -613,6 +613,28 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  it("forwards authorized bridge company scope to the plugin worker", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA, params: { view: "compact" } });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "getData", {
+      key: "health",
+      companyId: companyA,
+      params: { view: "compact" },
+      renderEnvironment: null,
+    });
+  });
+
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });

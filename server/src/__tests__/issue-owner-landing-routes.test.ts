@@ -72,7 +72,10 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
     return app;
   }
 
-  async function seedCompany(userIds: string[] = ["board-user"]) {
+  async function seedCompany(
+    userIds: string[] = ["board-user"],
+    membershipRole: "admin" | "viewer" = "admin",
+  ) {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -87,7 +90,7 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
         principalType: "user",
         principalId: userId,
         status: "active",
-        membershipRole: "admin",
+        membershipRole,
       });
     }
 
@@ -110,12 +113,16 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
     return agentId;
   }
 
-  function boardActor(companyId: string, userId = "board-user"): Express.Request["actor"] {
+  function boardActor(
+    companyId: string,
+    userId = "board-user",
+    membershipRole: "admin" | "viewer" = "admin",
+  ): Express.Request["actor"] {
     return {
       type: "board",
       userId,
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+      memberships: [{ companyId, membershipRole, status: "active" }],
       isInstanceAdmin: false,
       source: "session",
     };
@@ -190,8 +197,8 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
     });
   });
 
-  it("still rejects assigning another user without tasks:assign", async () => {
-    const { companyId } = await seedCompany(["board-user", "other-user"]);
+  it("still rejects viewer-owned assignment to another user without tasks:assign", async () => {
+    const { companyId } = await seedCompany(["board-user", "other-user"], "viewer");
     const parentId = randomUUID();
     await db.insert(issues).values({
       id: parentId,
@@ -201,7 +208,7 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
       priority: "high",
     });
 
-    const res = await request(createApp(boardActor(companyId)))
+    const res = await request(createApp(boardActor(companyId, "board-user", "viewer")))
       .post(`/api/issues/${parentId}/children`)
       .send({
         title: "Other-user assignment should fail",
@@ -211,7 +218,7 @@ describeEmbeddedPostgres("issue owner landing routes", () => {
       });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(res.body.error).toBe("Viewer access is read-only");
   });
 
   it("lets an agent checkout a user-owned issue and clear the user landing owner", async () => {

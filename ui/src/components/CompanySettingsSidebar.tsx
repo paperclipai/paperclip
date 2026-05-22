@@ -1,16 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, KeyRound, MailPlus, MonitorCog, Settings, Shield, SlidersHorizontal } from "lucide-react";
+import { ChevronLeft, KeyRound, MailPlus, MonitorCog, Puzzle, Settings, SlidersHorizontal, Users } from "lucide-react";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { ApiError } from "@/api/client";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
+import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const { slots: companySettingsPluginSlots } = usePluginSlots({
+    slotTypes: ["companySettingsPage"],
+    companyId: selectedCompanyId,
+    enabled: !!selectedCompanyId,
+  });
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.sidebarBadges(selectedCompanyId)
@@ -61,12 +67,23 @@ export function CompanySettingsSidebar() {
             end
           />
           <SidebarNavItem
-            to="/company/settings/access"
-            label="Access"
-            icon={Shield}
+            to="/company/settings/members"
+            label="Members"
+            icon={Users}
             badge={badges?.joinRequests ?? 0}
             end
           />
+          {companySettingsPluginSlots
+            .filter((slot) => slot.routePath)
+            .map((slot) => (
+              <SidebarNavItem
+                key={`${slot.pluginKey}:${slot.id}`}
+                to={`/company/settings/${slot.routePath}`}
+                label={slot.displayName}
+                icon={Puzzle}
+                end
+              />
+            ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
         </div>

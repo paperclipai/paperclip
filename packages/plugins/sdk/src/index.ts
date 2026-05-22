@@ -58,6 +58,7 @@ export {
   createHostClientHandlers,
   getRequiredCapability,
   CapabilityDeniedError,
+  InvocationScopeDeniedError,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol helpers and constants
@@ -137,6 +138,9 @@ export type {
   JsonRpcMessage,
   JsonRpcErrorCode,
   PluginRpcErrorCode,
+  PluginInvocationScope,
+  PluginInvocationContext,
+  WorkerHostCallContext,
   InitializeParams,
   InitializeResult,
   ConfigChangedParams,
@@ -218,6 +222,17 @@ export type {
   PluginIssueSubtree,
   PluginIssueSummariesClient,
   PluginAgentsClient,
+  PluginAccessClient,
+  PluginAccessMembersClient,
+  PluginAccessInvitesClient,
+  PluginAccessMember,
+  PluginAccessInvite,
+  PluginAuthorizationClient,
+  PluginAuthorizationPolicySummary,
+  PluginAuthorizationPolicyRecord,
+  PluginAssignmentPreviewInput,
+  PluginAuthorizationDecisionResult,
+  PluginAuthorizationAuditEntry,
   PluginAgentSessionsClient,
   AgentSession,
   AgentSessionEvent,
@@ -253,7 +268,12 @@ export type {
   IssueDocumentSummary,
   Agent,
   Goal,
+  PermissionKey,
+  PrincipalPermissionGrant,
+  PrincipalType,
   PluginDatabaseClient,
+  HumanCompanyMembershipRole,
+  MembershipStatus,
 } from "./types.js";
 
 // Manifest and constant types re-exported from @paperclipai/shared
@@ -353,6 +373,7 @@ export {
   PLUGIN_CAPABILITIES,
   PLUGIN_UI_SLOT_TYPES,
   PLUGIN_UI_SLOT_ENTITY_TYPES,
+  PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS,
   PLUGIN_STATE_SCOPE_KINDS,
   PLUGIN_JOB_STATUSES,
   PLUGIN_JOB_RUN_STATUSES,
@@ -360,4 +381,9 @@ export {
   PLUGIN_WEBHOOK_DELIVERY_STATUSES,
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
+  PERMISSION_KEYS,
+  HUMAN_COMPANY_MEMBERSHIP_ROLES,
+  HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  MEMBERSHIP_STATUSES,
+  PRINCIPAL_TYPES,
 } from "@paperclipai/shared";

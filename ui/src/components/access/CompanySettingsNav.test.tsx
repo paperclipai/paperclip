@@ -60,27 +60,29 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/environments")).toBe("environments");
     expect(getCompanySettingsTab("/PAP/company/settings/environments")).toBe("environments");
-    expect(getCompanySettingsTab("/company/settings/access")).toBe("access");
-    expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("access");
+    expect(getCompanySettingsTab("/company/settings/members")).toBe("members");
+    expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
+    expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
+    expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
   });
 
   it("renders the active tab and navigates when a different tab is selected", async () => {
-    currentPathname = "/PAP/company/settings/access";
+    currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
 
     await act(async () => {
       root.render(<CompanySettingsNav />);
     });
 
-    expect(container.textContent).toContain("access");
+    expect(container.textContent).toContain("members");
     expect(pageTabBarMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        value: "access",
+        value: "members",
         items: [
           { value: "general", label: "General" },
           { value: "environments", label: "Environments" },
-          { value: "access", label: "Access" },
+          { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
         ],
       }),

@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
+  createHostClientHandlers,
   JsonRpcCallError,
+  PLUGIN_RPC_ERROR_CODES,
+  type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
 import {
@@ -14,6 +17,10 @@ import {
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DELAYED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-delayed.cjs");
+const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
+  FIXTURES_DIR,
+  "plugin-worker-invocation-scope.cjs",
+);
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
@@ -175,6 +182,88 @@ describe("plugin-worker-manager stderr failure context", () => {
       expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
       process.off("unhandledRejection", unhandledRejection);
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("passes echoed invocation scope to worker-to-host handlers", async () => {
+    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers: {
+        "companies.get": companiesGet,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "echo",
+          requestedCompanyId: "company-1",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-1" });
+
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-1" },
+        { invocationScope: { companyId: "company-1" } },
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects missing or unknown invocation ids while a company invocation is active", async () => {
+    const companiesGet = vi.fn(async () => ({ id: "company-2" }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+
+      for (const mode of ["omit", "unknown"]) {
+        await expect(handle.call("getData", {
+          key: "probe",
+          companyId: "company-1",
+          params: {
+            mode,
+            requestedCompanyId: "company-2",
+          },
+        } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+          code: PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED,
+        });
+      }
+
+      expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
       await handle.stop().catch(() => undefined);
     }
   });

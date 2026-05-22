@@ -152,7 +152,8 @@ describe("CompanyInvites", () => {
     expect(container.textContent).toContain("Choose a role");
     expect(container.textContent).toContain("Each invite link is single-use.");
     expect(container.textContent).toContain("Can create agents, invite users, assign tasks, and approve join requests.");
-    expect(container.textContent).toContain("Everything in Admin, plus managing members and permission grants.");
+    expect(container.textContent).toContain("Everything in Admin, plus managing members.");
+    expect(container.textContent).not.toContain("permission grants");
     expect(listInvitesMock).toHaveBeenCalledWith("company-1", { limit: 5, offset: 0 });
 
     const viewMoreButton = Array.from(container.querySelectorAll("button")).find(

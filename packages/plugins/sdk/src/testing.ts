@@ -38,6 +38,10 @@ import type {
   AgentSessionEvent,
   PluginLocalFolderEntry,
   PluginLocalFolderStatus,
+  PluginAccessMember,
+  PrincipalPermissionGrant,
+  PermissionKey,
+  PrincipalType,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -73,7 +77,7 @@ export interface TestHarnessLogEntry {
 export interface TestHarness {
   /** Fully-typed in-memory plugin context passed to `plugin.setup(ctx)`. */
   ctx: PluginContext;
-  /** Seed host entities for `ctx.companies/projects/issues/agents/goals` reads. */
+  /** Seed host entities for `ctx.companies/projects/issues/agents/goals/access/authorization` reads. */
   seed(input: {
     companies?: Company[];
     projects?: Project[];
@@ -83,6 +87,8 @@ export interface TestHarness {
     goals?: Goal[];
     projectWorkspaces?: PluginWorkspace[];
     executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
+    accessMembers?: PluginAccessMember[];
+    principalGrants?: PrincipalPermissionGrant[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -440,6 +446,39 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueDocuments = new Map<string, IssueDocument>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
+  const accessMembers = new Map<string, PluginAccessMember>();
+  const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+
+  function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
+    return `${companyId}:${principalType}:${principalId}`;
+  }
+  function getPrincipalGrants(companyId: string, principalType: PrincipalType, principalId: string) {
+    return principalGrants.get(principalGrantsKey(companyId, principalType, principalId)) ?? [];
+  }
+  function setPrincipalGrants(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+    grants: Array<{ permissionKey: PermissionKey; scope?: Record<string, unknown> | null }>,
+  ) {
+    const stamped = grants.map((grant) => ({
+      principalType,
+      principalId,
+      permissionKey: grant.permissionKey,
+      scope: grant.scope && typeof grant.scope === "object" ? grant.scope : null,
+    })) as PrincipalPermissionGrant[];
+    principalGrants.set(principalGrantsKey(companyId, principalType, principalId), stamped);
+    const member = [...accessMembers.values()].find(
+      (entry) =>
+        entry.companyId === companyId
+        && entry.principalType === principalType
+        && entry.principalId === principalId,
+    );
+    if (member) {
+      accessMembers.set(member.id, { ...member, grants: stamped, updatedAt: new Date().toISOString() });
+    }
+    return stamped;
+  }
   const projectWorkspaces = new Map<string, PluginWorkspace[]>();
   const executionWorkspaces = new Map<string, PluginExecutionWorkspaceMetadata>();
   const localFolderStatuses = new Map<string, PluginLocalFolderStatus>();
@@ -1983,6 +2022,156 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return updated;
       },
     },
+    access: {
+      members: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "access.members.read");
+          const cid = requireCompanyId(input.companyId);
+          const includeArchived = input.includeArchived === true;
+          return [...accessMembers.values()]
+            .filter((member) => member.companyId === cid)
+            .filter((member) => includeArchived || member.status !== ("archived" as PluginAccessMember["status"]))
+            .map((member) => ({
+              ...member,
+              grants: getPrincipalGrants(cid, member.principalType, member.principalId),
+            }));
+        },
+        async get(memberId, companyId) {
+          requireCapability(manifest, capabilitySet, "access.members.read");
+          const cid = requireCompanyId(companyId);
+          const member = accessMembers.get(memberId);
+          if (!member || member.companyId !== cid) return null;
+          return {
+            ...member,
+            grants: getPrincipalGrants(cid, member.principalType, member.principalId),
+          };
+        },
+        async update(memberId, patch, companyId) {
+          requireCapability(manifest, capabilitySet, "access.members.write");
+          const cid = requireCompanyId(companyId);
+          const member = accessMembers.get(memberId);
+          if (!member || member.companyId !== cid) {
+            throw new Error(`Membership not found: ${memberId}`);
+          }
+          const updated: PluginAccessMember = {
+            ...member,
+            membershipRole: patch.membershipRole === undefined ? member.membershipRole : patch.membershipRole,
+            status: patch.status === undefined ? member.status : patch.status,
+            updatedAt: new Date().toISOString(),
+          };
+          accessMembers.set(memberId, updated);
+          return {
+            ...updated,
+            grants: getPrincipalGrants(cid, updated.principalType, updated.principalId),
+          };
+        },
+      },
+      invites: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "access.invites.read");
+          requireCompanyId(input.companyId);
+          return { invites: [], nextOffset: null };
+        },
+        async create(input) {
+          requireCapability(manifest, capabilitySet, "access.invites.write");
+          requireCompanyId(input.companyId);
+          throw new Error("Invite creation is not implemented in the plugin test harness");
+        },
+        async revoke(inviteId, companyId) {
+          requireCapability(manifest, capabilitySet, "access.invites.write");
+          requireCompanyId(companyId);
+          throw new Error(`Invite not found: ${inviteId}`);
+        },
+      },
+    },
+    authorization: {
+      grants: {
+        async list(input) {
+          requireCapability(manifest, capabilitySet, "authorization.grants.read");
+          const cid = requireCompanyId(input.companyId);
+          if (input.principalType && input.principalId) {
+            return getPrincipalGrants(cid, input.principalType, input.principalId);
+          }
+          const out: PrincipalPermissionGrant[] = [];
+          for (const [key, grants] of principalGrants.entries()) {
+            if (!key.startsWith(`${cid}:`)) continue;
+            for (const grant of grants) {
+              if (input.principalType && grant.principalType !== input.principalType) continue;
+              if (input.principalId && grant.principalId !== input.principalId) continue;
+              out.push(grant);
+            }
+          }
+          return out;
+        },
+        async set(input) {
+          requireCapability(manifest, capabilitySet, "authorization.grants.write");
+          const cid = requireCompanyId(input.companyId);
+          return setPrincipalGrants(cid, input.principalType, input.principalId, input.grants);
+        },
+      },
+      policies: {
+        async summary(companyId) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          const cid = requireCompanyId(companyId);
+          const members = [...accessMembers.values()].filter((member) => member.companyId === cid);
+          let grantCount = 0;
+          for (const [key, grants] of principalGrants.entries()) {
+            if (key.startsWith(`${cid}:`)) grantCount += grants.length;
+          }
+          return {
+            companyId: cid,
+            permissionsMode: "simple",
+            memberCount: members.length,
+            activeMemberCount: members.filter((member) => member.status === "active").length,
+            grantCount,
+            advancedPolicyAvailable: false,
+          };
+        },
+        async get(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return null;
+        },
+        async update(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.write");
+          const cid = requireCompanyId(input.companyId);
+          return {
+            companyId: cid,
+            resourceType: input.resourceType,
+            resourceId: input.resourceId,
+            policy: input.policy,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+        async previewAssignment(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return {
+            allowed: true,
+            action: "issue.assign",
+            explanation: "Allowed by simple company-wide defaults in the plugin test harness.",
+            reason: "simple_mode",
+          };
+        },
+        async explainAssignment(input) {
+          requireCapability(manifest, capabilitySet, "authorization.policies.read");
+          requireCompanyId(input.companyId);
+          return {
+            allowed: true,
+            action: "issue.assign",
+            explanation: "Allowed by simple company-wide defaults in the plugin test harness.",
+            reason: "simple_mode",
+          };
+        },
+      },
+      audit: {
+        async search(input) {
+          requireCapability(manifest, capabilitySet, "authorization.audit.read");
+          requireCompanyId(input.companyId);
+          return [];
+        },
+      },
+    },
     data: {
       register(key, handler) {
         dataHandlers.set(key, handler);
@@ -2065,6 +2254,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         projectWorkspaces.set(row.projectId, list);
       }
       for (const row of input.executionWorkspaces ?? []) executionWorkspaces.set(row.id, row);
+      for (const row of input.accessMembers ?? []) accessMembers.set(row.id, row);
+      for (const row of input.principalGrants ?? []) {
+        const list = principalGrants.get(principalGrantsKey(row.companyId, row.principalType, row.principalId)) ?? [];
+        list.push(row);
+        principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
+      }
     },
     setConfig(config) {
       currentConfig = { ...config };

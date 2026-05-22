@@ -230,6 +230,18 @@ export interface PluginPageProps {
 }
 
 /**
+ * Props passed to a plugin company settings page component.
+ *
+ * A company settings page is mounted at
+ * `/:companyPrefix/company/settings/:routePath` and always receives the active
+ * company id and prefix when available.
+ */
+export interface PluginCompanySettingsPageProps {
+  /** The current host context, including company id and prefix. */
+  context: PluginHostContext;
+}
+
+/**
  * Props passed to a plugin dashboard widget component.
  *
  * A dashboard widget is rendered as a card or section on the main dashboard.

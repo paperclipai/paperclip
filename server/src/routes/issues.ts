@@ -1246,55 +1246,48 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
-  }
+  type TaskAssignmentAuthorizationScope = {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
-    }
-    throw unauthorized();
-  }
-
-  function isBoardSelfOwnerLandingRequest(input: {
-    req: Request;
-    requestedAssigneeAgentId: string | null | undefined;
-    requestedAssigneeUserId: string | null | undefined;
-    currentAssigneeAgentId?: string | null;
-    currentAssigneeUserId?: string | null;
+  async function resolveAssignmentProjectId(input: {
+    companyId: string;
+    projectId: string | null | undefined;
+    parentIssueId?: string | null;
   }) {
-    if (input.req.actor.type !== "board") return false;
-    if (input.requestedAssigneeAgentId != null) return false;
+    if (input.projectId !== undefined) return input.projectId;
+    if (!input.parentIssueId) return null;
+    const parent = await svc.getById(input.parentIssueId);
+    if (!parent || parent.companyId !== input.companyId) return null;
+    return parent.projectId ?? null;
+  }
 
-    const actorUserId = input.req.actor.userId;
-    const currentAssigneeAgentId = input.currentAssigneeAgentId ?? null;
-    const currentAssigneeUserId = input.currentAssigneeUserId ?? null;
-
-    if (input.requestedAssigneeUserId === actorUserId) {
-      return currentAssigneeAgentId === null
-        && (currentAssigneeUserId === null || currentAssigneeUserId === actorUserId);
-    }
-
-    if (input.requestedAssigneeUserId === null) {
-      return currentAssigneeAgentId === null && currentAssigneeUserId === actorUserId;
-    }
-
-    return false;
+  async function assertCanAssignTasks(
+    req: Request,
+    companyId: string,
+    assignmentScope?: TaskAssignmentAuthorizationScope,
+  ) {
+    assertCompanyAccess(req, companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
+      scope: assignmentScope ?? null,
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1310,31 +1303,12 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgentId,
-      "tasks:manage_active_checkouts",
-    );
-    if (allowedByGrant) return true;
-
-    const companyAgents = await agentsSvc.list(companyId);
-    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
-    const actorAgent = agentsById.get(actorAgentId);
-    if (!actorAgent) return false;
-    if (canCreateAgentsLegacy(actorAgent)) return true;
-
-    // Reporting-chain managers may intervene in an agent's active checkout
-    // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId, assigneeAgentId },
+    });
+    return decision.allowed;
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -3171,15 +3145,17 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
-    if (
-      (req.body.assigneeAgentId || req.body.assigneeUserId)
-      && !isBoardSelfOwnerLandingRequest({
-        req,
-        requestedAssigneeAgentId: req.body.assigneeAgentId as string | null | undefined,
-        requestedAssigneeUserId: req.body.assigneeUserId as string | null | undefined,
-      })
-    ) {
-      await assertCanAssignTasks(req, companyId);
+    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+      await assertCanAssignTasks(req, companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId,
+          projectId: req.body.projectId,
+          parentIssueId: req.body.parentId,
+        }),
+        parentIssueId: req.body.parentId ?? null,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3274,15 +3250,13 @@ export function issueRoutes(
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
-    if (
-      (req.body.assigneeAgentId || req.body.assigneeUserId)
-      && !isBoardSelfOwnerLandingRequest({
-        req,
-        requestedAssigneeAgentId: req.body.assigneeAgentId as string | null | undefined,
-        requestedAssigneeUserId: req.body.assigneeUserId as string | null | undefined,
-      })
-    ) {
-      await assertCanAssignTasks(req, parent.companyId);
+    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+      await assertCanAssignTasks(req, parent.companyId, {
+        projectId: req.body.projectId ?? parent.projectId ?? null,
+        parentIssueId: parent.id,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3668,19 +3642,26 @@ export function issueRoutes(
       typeof nextAssigneeUserId === "string" &&
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
-    const isBoardUsingSelfOwnerLanding =
-      assigneeWillChange &&
-      isBoardSelfOwnerLandingRequest({
-        req,
-        requestedAssigneeAgentId: nextAssigneeAgentId,
-        requestedAssigneeUserId: nextAssigneeUserId,
-        currentAssigneeAgentId: existing.assigneeAgentId,
-        currentAssigneeUserId: existing.assigneeUserId,
-      });
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator && !isBoardUsingSelfOwnerLanding) {
-        await assertCanAssignTasks(req, existing.companyId);
+      if (!isAgentReturningIssueToCreator) {
+        await assertCanAssignTasks(req, existing.companyId, {
+          issueId: existing.id,
+          projectId: await resolveAssignmentProjectId({
+            companyId: existing.companyId,
+            projectId: updateFields.projectId === undefined
+              ? existing.projectId
+              : updateFields.projectId as string | null | undefined,
+            parentIssueId: (updateFields.parentId === undefined
+              ? existing.parentId
+              : updateFields.parentId) as string | null | undefined,
+          }),
+          parentIssueId: (updateFields.parentId === undefined
+            ? existing.parentId
+            : updateFields.parentId) as string | null | undefined,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        });
       }
     }
 
@@ -4448,6 +4429,16 @@ export function issueRoutes(
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
       res.status(403).json({ error: "Agent can only checkout as itself" });
       return;
+    }
+
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: req.body.agentId,
+        assigneeUserId: null,
+      });
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
