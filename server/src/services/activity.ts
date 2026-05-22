@@ -23,6 +23,8 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  action?: string;
+  afterId?: string;
   limit?: number;
 }
 
@@ -338,6 +340,43 @@ export function activityService(db: Db) {
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
       }
+      if (filters.action) {
+        conditions.push(eq(activityLog.action, filters.action));
+      }
+
+      const visibilityClause = or(
+        sql`${activityLog.entityType} != 'issue'`,
+        isNull(issues.hiddenAt),
+      );
+
+      if (filters.afterId) {
+        // Resolve afterId → its createdAt, then return rows STRICTLY newer in
+        // ASCENDING order so consumers (e.g. the Plan 3 Phase F notifier in
+        // ceo-chat) can process oldest first and commit a per-row cursor.
+        // If afterId references an unknown id the subquery returns NULL and
+        // the strict comparison yields no rows.
+        const afterCreatedAt = sql`(select created_at from activity_log where id = ${filters.afterId})`;
+        return db
+          .select({ activityLog })
+          .from(activityLog)
+          .leftJoin(
+            issues,
+            and(
+              eq(activityLog.entityType, sql`'issue'`),
+              eq(activityLog.entityId, issueIdAsText),
+            ),
+          )
+          .where(
+            and(
+              ...conditions,
+              sql`${activityLog.createdAt} > ${afterCreatedAt}`,
+              visibilityClause,
+            ),
+          )
+          .orderBy(asc(activityLog.createdAt), asc(activityLog.id))
+          .limit(limit)
+          .then((rows) => rows.map((r) => r.activityLog));
+      }
 
       return db
         .select({ activityLog })
@@ -349,15 +388,7 @@ export function activityService(db: Db) {
             eq(activityLog.entityId, issueIdAsText),
           ),
         )
-        .where(
-          and(
-            ...conditions,
-            or(
-              sql`${activityLog.entityType} != 'issue'`,
-              isNull(issues.hiddenAt),
-            ),
-          ),
-        )
+        .where(and(...conditions, visibilityClause))
         .orderBy(desc(activityLog.createdAt))
         .limit(limit)
         .then((rows) => rows.map((r) => r.activityLog));

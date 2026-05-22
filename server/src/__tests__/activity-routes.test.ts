@@ -106,6 +106,8 @@ describe.sequential("activity routes", () => {
       agentId: undefined,
       entityType: undefined,
       entityId: undefined,
+      action: undefined,
+      afterId: undefined,
       limit: 100,
     });
   });
@@ -124,7 +126,31 @@ describe.sequential("activity routes", () => {
       agentId: undefined,
       entityType: "issue",
       entityId: undefined,
+      action: undefined,
+      afterId: undefined,
       limit: 500,
+    });
+  });
+
+  it("forwards action + after_id query params to the service (Plan 3 Phase F)", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(
+        "/api/companies/company-1/activity?action=guild.worker.skills_ingested&after_id=00000000-0000-0000-0000-000000000001&limit=100",
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: undefined,
+      entityType: undefined,
+      entityId: undefined,
+      action: "guild.worker.skills_ingested",
+      afterId: "00000000-0000-0000-0000-000000000001",
+      limit: 100,
     });
   });
 

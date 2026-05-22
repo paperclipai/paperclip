@@ -117,6 +117,176 @@ describeEmbeddedPostgres("activity service", () => {
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
   });
 
+  it("filters company activity by action when filters.action is set", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "guild.worker.skills_ingested",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.run.started",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:01:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "guild.worker.skills_ingested",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:02:00.000Z"),
+      },
+    ]);
+
+    const result = await activityService(db).list({
+      companyId,
+      action: "guild.worker.skills_ingested",
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result.every((row) => row.action === "guild.worker.skills_ingested")).toBe(true);
+  });
+
+  it("returns rows strictly newer than afterId in ASC order when afterId is set", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const row0Id = randomUUID();
+    const row1Id = randomUUID();
+    const row2Id = randomUUID();
+    const row3Id = randomUUID();
+
+    await db.insert(activityLog).values([
+      {
+        id: row0Id,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.row0",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-05-22T10:00:00.000Z"),
+      },
+      {
+        id: row1Id,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.row1",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-05-22T10:01:00.000Z"),
+      },
+      {
+        id: row2Id,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.row2",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-05-22T10:02:00.000Z"),
+      },
+      {
+        id: row3Id,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "test.row3",
+        entityType: "company",
+        entityId: companyId,
+        createdAt: new Date("2026-05-22T10:03:00.000Z"),
+      },
+    ]);
+
+    const result = await activityService(db).list({ companyId, afterId: row1Id });
+
+    // Strictly newer than row1: row2 + row3, in ASC order.
+    expect(result.map((row) => row.action)).toEqual(["test.row2", "test.row3"]);
+  });
+
+  it("combines action filter with afterId pagination", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const targetId = randomUUID();
+    const noiseId = randomUUID();
+    const newerTargetId = randomUUID();
+
+    await db.insert(activityLog).values([
+      {
+        id: targetId,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "guild.worker.skills_ingested",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:00:00.000Z"),
+      },
+      {
+        id: noiseId,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.run.started",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:01:00.000Z"),
+      },
+      {
+        id: newerTargetId,
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "guild.worker.skills_ingested",
+        entityType: "heartbeat_run",
+        entityId: randomUUID(),
+        createdAt: new Date("2026-05-22T10:02:00.000Z"),
+      },
+    ]);
+
+    const result = await activityService(db).list({
+      companyId,
+      action: "guild.worker.skills_ingested",
+      afterId: targetId,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.id).toBe(newerTargetId);
+  });
+
   it("returns compact usage and result summaries for issue runs", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
