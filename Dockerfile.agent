@@ -22,6 +22,9 @@ USER root
 # Build essentials + unzip (kubelogin ships as a zip)
 # chromium runtime libs (BLO-3663) — required for headless browser / Playwright / screenshot capabilities
 # Canonical list from `npx playwright install-deps chromium --dry-run`
+# Cypress runtime libs (BLO-6436) — libgtk-3-0t64 + libxss1 + libxtst6 +
+# xauth + libnotify4 cover what Cypress 14's Electron runtime needs on top
+# of the Playwright set (Playwright bundles Chromium and skips these).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
         build-essential pkg-config libssl-dev unzip \
@@ -30,6 +33,7 @@ RUN apt-get update \
         libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
         libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
         libxfixes3 libxkbcommon0 libxrandr2 xvfb \
+        libgtk-3-0t64 libxss1 libxtst6 xauth libnotify4 \
         fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 \
         xfonts-scalable fonts-liberation fonts-ipafont-gothic \
         fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf \
