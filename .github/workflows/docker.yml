@@ -15,6 +15,9 @@ permissions:
   # doesn't push anything, so read scope is enough.
   packages: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-and-push:
     runs-on: self-hosted
