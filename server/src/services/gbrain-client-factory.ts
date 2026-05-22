@@ -277,6 +277,14 @@ export function createServerGbrainClient(opts: ServerGbrainClientOptions = {}): 
     url: opts.url ?? process.env.PAPERCLIP_GBRAIN_MCP_URL ?? DEFAULT_GBRAIN_MCP_URL,
     bearerSource: resolveBearerSource(opts),
     fetch: opts.fetch ?? fetch,
-    timeoutMs: opts.timeoutMs ?? 500,
+    // The default budget covers HTTP + OAuth bearer mint (on first call after
+    // refresh) + gbrain's postgres lookup + response. 500ms (the prior default)
+    // was too aggressive: BLO-6388 flag-flip 2026-05-22 12:48Z observed 100%
+    // gbrain_error verdicts whose underlying err.message was
+    // "This operation was aborted" — the client-side AbortController firing
+    // before the upstream call completed, especially with gbrain-mcp admin-ui
+    // liveness flapping. 5s gives realistic headroom while still being
+    // tight enough to keep the gate's preflight latency tail in check.
+    timeoutMs: opts.timeoutMs ?? 5000,
   });
 }
