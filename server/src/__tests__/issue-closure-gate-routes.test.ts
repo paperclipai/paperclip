@@ -355,7 +355,7 @@ describe.sequential("issue closure gate routes", () => {
   // (d) Process-only ticket with only HEAD sha → 200 OK
   it("(d) accepts process-only ticket with only HEAD sha", async () => {
     mockIssueService.getById.mockResolvedValue(
-      makeIssue({ labels: [{ id: "label-1", slug: "process-only", name: "Process Only" }] }),
+      makeIssue({ labels: [{ id: "label-1", name: "Process Only" }] }),
     );
 
     const comment = `${tmpRepoHeadSha} process complete — cites no in-repo artifact`;
