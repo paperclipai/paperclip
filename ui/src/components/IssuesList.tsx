@@ -78,6 +78,7 @@ import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@pap
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
+const ISSUE_LIST_STATUS_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
@@ -746,6 +747,37 @@ export function IssuesList({
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
+  const listViewStatuses = useMemo(() => {
+    if (viewState.viewMode !== "list" || searchWithinLoadedIssues || viewState.statuses.length === 0) return null;
+    return viewState.statuses as IssueStatus[];
+  }, [viewState.viewMode, viewState.statuses, searchWithinLoadedIssues]);
+
+  const listIssueQueries = useQueries({
+    queries: (listViewStatuses ?? []).map((status) => ({
+      queryKey: [
+        ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
+        "list-view-column",
+        status,
+        normalizedIssueSearch,
+        projectId ?? "__all-projects__",
+        searchFilters ?? {},
+        ISSUE_LIST_STATUS_RESULT_LIMIT,
+        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      ],
+      queryFn: () =>
+        issuesApi.list(selectedCompanyId!, {
+          ...searchFilters,
+          ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
+          projectId,
+          status,
+          limit: ISSUE_LIST_STATUS_RESULT_LIMIT,
+          ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        }),
+      enabled: !!selectedCompanyId && viewState.viewMode === "list" && !searchWithinLoadedIssues && (listViewStatuses?.length ?? 0) > 0,
+      placeholderData: (previousData: Issue[] | undefined) => previousData,
+    })),
+  });
+
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
@@ -964,9 +996,32 @@ export function IssuesList({
   }, [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode]);
   const boardColumnLimitReached = boardCappedStatuses.size > 0;
 
+  const listIssues = useMemo(() => {
+    if (!listViewStatuses || listViewStatuses.length === 0) return null;
+    const merged = new Map<string, Issue>();
+    let isPending = false;
+    for (const query of listIssueQueries) {
+      isPending ||= query.isPending;
+      for (const issue of query.data ?? []) {
+        merged.set(issue.id, issue);
+      }
+    }
+    if (merged.size > 0) return [...merged.values()];
+    return isPending ? issues : [];
+  }, [listIssueQueries, listViewStatuses, issues]);
+
+  const listCappedStatuses = useMemo(() => {
+    if (!listViewStatuses) return new Set<IssueStatus>();
+    return new Set<IssueStatus>(
+      listViewStatuses.filter((_, i) => (listIssueQueries[i]?.data?.length ?? 0) === ISSUE_LIST_STATUS_RESULT_LIMIT),
+    );
+  }, [listIssueQueries, listViewStatuses]);
+
+  const listColumnLimitReached = listCappedStatuses.size > 0;
+
   const filtered = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+    const sourceIssues = boardIssues ?? listIssues ?? (useRemoteSearch ? searchedIssues : issues);
     const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues;
@@ -1196,7 +1251,7 @@ export function IssuesList({
 
   const canLoadMoreIssues = viewState.viewMode === "list"
     && !isLoading
-    && (hasMoreRenderedRows || (hasMoreIssues && !isLoadingMoreIssues));
+    && (hasMoreRenderedRows || (listIssues === null && hasMoreIssues && !isLoadingMoreIssues));
 
   useEffect(() => {
     if (!canLoadMoreIssues) return;
@@ -1583,6 +1638,11 @@ export function IssuesList({
           </button>
         </div>
       )}
+      {listColumnLimitReached && (
+        <p className="text-xs text-muted-foreground">
+          Showing up to {ISSUE_LIST_STATUS_RESULT_LIMIT} issues per status. Refine filters or search to narrow further.
+        </p>
+      )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
@@ -1967,7 +2027,7 @@ export function IssuesList({
           </Collapsible>
           );
           })}
-          {(remainingIssueRowCount > 0 || hasMoreIssues || isLoadingMoreIssues) && (
+          {(remainingIssueRowCount > 0 || (listIssues === null && hasMoreIssues) || isLoadingMoreIssues) && (
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
