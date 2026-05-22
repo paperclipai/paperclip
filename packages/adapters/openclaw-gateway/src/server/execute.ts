@@ -446,6 +446,15 @@ function buildWakeText(
         ]
       : []),
     "",
+    "Coordination Rules:",
+    "- You have browser use, computer use, and SSH access. Use these capabilities autonomously.",
+    "- SSH into the MacBook (macbook-de-chris.tail606c16.ts.net) to verify information or check system state when needed.",
+    "- Pull code from GitHub, run tests, and build on the Mac Mini or MacBook without asking the board.",
+    "- Verify facts using your available tools before escalating to the board (human).",
+    "- Do not ask the board to do things you can do yourself.",
+    "- If another agent asks you for information you have access to, provide it directly.",
+    "- The Engineer, CTO, Reviewer, and Merger agents handle all PR review and merging autonomously — no branch or PR should wait for the board's personal review.",
+    "",
     "Complete the workflow in this run.",
   ];
   return lines.join("\n");
