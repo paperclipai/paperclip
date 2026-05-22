@@ -2227,6 +2227,9 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   });
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -2809,6 +2812,13 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         status: "pending",
         payload: {},
       });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
+    it("suppresses the sweep for in_review dependents even without a pending interaction", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
 
       await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
     });

@@ -7296,9 +7296,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // in normal-path flows.
     const minBlockerResolvedAgeMs = opts?.minBlockerResolvedAgeMs ?? 5 * 60 * 1000;
     // A successful sweep means the dependent has already been reminded that
-    // its blockers are done. Do not re-fire on every periodic loop while the
-    // assignee is still working/reviewing the issue.
-    const minRepeatWakeIntervalMs = opts?.minRepeatWakeIntervalMs ?? 30 * 60 * 1000;
+    // its blockers are done. Do not turn lost-wake recovery into a short
+    // polling loop while the assignee is still working the issue.
+    const minRepeatWakeIntervalMs = opts?.minRepeatWakeIntervalMs ?? 24 * 60 * 60 * 1000;
 
     const candidates = await issuesSvc.listResolvedBlockerDependentsToSweep(opts?.companyId, {
       limit,

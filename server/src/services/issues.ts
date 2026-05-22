@@ -4154,7 +4154,9 @@ export function issueService(db: Db) {
         isNotNull(issues.assigneeAgentId),
         isNull(issues.completedAt),
         isNull(issues.cancelledAt),
-        notInArray(issues.status, ["done", "cancelled", "backlog"]),
+        // This is lost-wake recovery for executable work. `in_review` issues
+        // already have a reviewer/CI path and should not be polled by agents.
+        inArray(issues.status, ["todo", "in_progress", "blocked"]),
       ];
       if (companyId) candidateConditions.push(eq(issues.companyId, companyId));
 
