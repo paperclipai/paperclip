@@ -9,7 +9,17 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 300_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
+const MODELS_FAILURE_CACHE_TTL_MS = 60_000;
+const MODELS_DISCOVERY_TIMEOUT_MS_DEFAULT = 30_000;
+
+function resolveModelsTimeoutMs(): number {
+  const envValue =
+    typeof process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS === "string" &&
+    process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS.trim().length > 0
+      ? Number(process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS.trim())
+      : NaN;
+  return Number.isFinite(envValue) && envValue > 0 ? envValue : MODELS_DISCOVERY_TIMEOUT_MS_DEFAULT;
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -20,7 +30,11 @@ function resolveOpenCodeCommand(input: unknown): string {
   return asString(input, envOverride);
 }
 
-const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+type DiscoveryCacheEntry =
+  | { kind: "success"; expiresAt: number; models: AdapterModel[] }
+  | { kind: "failure"; expiresAt: number };
+
+const discoveryCache = new Map<string, DiscoveryCacheEntry>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -109,12 +123,13 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
-const MODELS_DISCOVERY_RETRY_DELAYS_MS = [1_000, 4_000];
+const MODELS_DISCOVERY_RETRY_DELAYS_MS = [2_000];
 
 async function discoverOpenCodeModelsOnce(params: {
   command: string;
   cwd: string;
   env: Record<string, string>;
+  timeoutMs: number;
 }): Promise<AdapterModel[]> {
   const runtimeEnv = normalizeEnv(
     ensurePathInEnv({
@@ -131,14 +146,14 @@ async function discoverOpenCodeModelsOnce(params: {
     {
       cwd: params.cwd,
       env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+      timeoutSec: params.timeoutMs / 1000,
       graceSec: 3,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    throw new Error(`\`opencode models\` timed out after ${params.timeoutMs / 1000}s.`);
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
@@ -163,7 +178,8 @@ export async function discoverOpenCodeModels(input: {
   }
 
   const runtimeEnv = { ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}) };
-  const baseParams = { command, cwd, env: runtimeEnv };
+  const timeoutMs = resolveModelsTimeoutMs();
+  const baseParams = { command, cwd, env: runtimeEnv, timeoutMs };
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= MODELS_DISCOVERY_RETRY_DELAYS_MS.length; attempt++) {
@@ -192,11 +208,19 @@ export async function discoverOpenCodeModelsCached(input: {
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.models;
+  if (cached && cached.expiresAt > now) {
+    if (cached.kind === "failure") throw new Error("OpenCode model discovery failed (cached failure).");
+    return cached.models;
+  }
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
-  discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
-  return models;
+  try {
+    const models = await discoverOpenCodeModels({ command, cwd, env });
+    discoveryCache.set(key, { kind: "success", expiresAt: now + MODELS_CACHE_TTL_MS, models });
+    return models;
+  } catch (err) {
+    discoveryCache.set(key, { kind: "failure", expiresAt: now + MODELS_FAILURE_CACHE_TTL_MS });
+    throw err;
+  }
 }
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {

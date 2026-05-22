@@ -55,19 +55,19 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 
 export const models: Array<{ id: string; label: string }> = [
   { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "github-copilot/gpt-5.2-codex", label: "github-copilot/gpt-5.2-codex" },
+  { id: "github-copilot/gpt-5.2", label: "github-copilot/gpt-5.2" },
+  { id: "github-copilot/gpt-5-mini", label: "github-copilot/gpt-5-mini" },
+  { id: "deepseek/deepseek-v4-flash", label: "deepseek/deepseek-v4-flash" },
 ];
 
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description: "Use OpenCode's budget-friendly gpt-5-mini model.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
+      model: "github-copilot/gpt-5-mini",
       variant: "low",
     },
     source: "adapter_default",
