@@ -1417,7 +1417,7 @@ export function issueRoutes(
             details: {
               routerAgentId: actorAgentId,
               assigneeAgentId: issue.assigneeAgentId,
-              isRouter: true,
+              routingCorrection: true,
               patchedFields: Object.keys(req.body).filter((k) => k !== "comment"),
             },
           });
