@@ -64,16 +64,15 @@ describe("mapAdapterToCcrotateTarget", () => {
     expect(mapAdapterToCcrotateTarget("claude_k8s")).toBe("claude");
   });
 
+  it("maps opencode_k8s to codex for OpenAI-backed OpenCode agents", () => {
+    expect(mapAdapterToCcrotateTarget("opencode_k8s")).toBe("codex");
+  });
+
   it("returns null for adapters without a ccrotate provider", () => {
     expect(mapAdapterToCcrotateTarget("cursor")).toBeNull();
     expect(mapAdapterToCcrotateTarget("gemini_local")).toBeNull();
     expect(mapAdapterToCcrotateTarget("process")).toBeNull();
     expect(mapAdapterToCcrotateTarget("http")).toBeNull();
-    // opencode_k8s intentionally NOT mapped — its backing provider varies
-    // per deployment (OpenAI- or Anthropic-backed), so we can't blanket-
-    // gate it on either pool. Revisit when the unified ccrotate_runtime
-    // adapter lands with per-agent target config.
-    expect(mapAdapterToCcrotateTarget("opencode_k8s")).toBeNull();
   });
 });
 

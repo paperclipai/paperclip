@@ -1065,11 +1065,22 @@ export function pluginLoader(
       return plugin;
     }
 
-    await registry.update(plugin.id, {
-      packageName: plugin.packageName,
-      version: manifest.version,
-      manifest,
-    });
+    try {
+      await registry.update(plugin.id, {
+        packageName: plugin.packageName,
+        version: manifest.version,
+        manifest,
+      });
+    } catch (err) {
+      log.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "plugin-loader: manifest refresh persistence failed; activating with package manifest",
+      );
+    }
 
     return {
       ...plugin,

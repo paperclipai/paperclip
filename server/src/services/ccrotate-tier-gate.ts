@@ -6,8 +6,9 @@
  * returns a deferral with the soonest plausible resume time so the heartbeat
  * scheduler can stop burning quota until ccrotate has a fresh account.
  *
- * Provider mapping: only `claude_local` and `codex_local` are routed through
- * ccrotate today. All other adapter types are passed through (no opinion).
+ * Provider mapping: Claude adapters use the `claude` ccrotate target; Codex
+ * and OpenCode/OpenAI adapters use the `codex` ccrotate target. Other adapter
+ * types are passed through (no opinion).
  *
  * The cache file lives at:
  *   - ~/.ccrotate/tier-cache.json        (Claude target)
@@ -184,14 +185,19 @@ const DEFAULT_MAX_DEFERRAL_MS = 5 * 60_000;
  * key shares billing/quota with the host's `claude` pool — so the tier-cache
  * IS authoritative for whether the adapter has any usable credit. Mapping it
  * to "claude" gives the heartbeat scheduler quota-aware deferral on
- * exhaustion (instead of looping 401s every heartbeat). Actual rotation of
- * the adapter's LLM call is a separate adapter (claude_k8s_ccrotate), not
- * this gate.
+ * exhaustion (instead of looping 401s every heartbeat).
+ *
+ * `opencode_k8s` in the Blockcast deployment is OpenAI-backed (`openai/*`
+ * models) and authenticates through the same ChatGPT/Codex subscription pool
+ * that `codex_local` uses. The relogin trigger already maps opencode/codex to
+ * the codex target; the scheduler must do the same or OpenCode agents keep
+ * waking while every OpenAI account is unusable.
  */
 export function mapAdapterToCcrotateTarget(adapterType: string): CcrotateTarget | null {
   if (adapterType === "claude_local") return "claude";
   if (adapterType === "claude_k8s") return "claude";
   if (adapterType === "codex_local") return "codex";
+  if (adapterType === "opencode_k8s") return "codex";
   return null;
 }
 
