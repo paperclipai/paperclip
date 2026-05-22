@@ -467,4 +467,65 @@ describe.sequential("issue closure gate routes", () => {
     expect(res.body.error).not.toBe("CLOSURE_GATE_REJECTED");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  // (k) Non-default-branch path proof → 422 INVALID_PROOF_BRANCH (rev 2, UPG-838)
+  it("(k) rejects INVALID_PROOF_BRANCH when path proof cites non-default-branch ref", async () => {
+    const featureBranch = "ben/upg-833-pre-close-sha-validation-hook";
+    const comment = [
+      `${tmpRepoHeadSha} feat: add closure gate`,
+      `git log ${featureBranch} --oneline -- ${tmpRepoFilePath}`,
+      `${tmpRepoHeadSha} feat: add closure gate`,
+    ].join("\n");
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_PROOF_BRANCH");
+    const rejection = res.body.rejections.find((r: { code: string }) => r.code === "INVALID_PROOF_BRANCH");
+    expect(rejection.message).toContain(featureBranch);
+    expect(rejection.message).toContain("master");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  // (l) bypassClosureGate reason matches PR-not-merged deny-list → 422 INVALID_BYPASS_REASON (rev 2, UPG-838)
+  it("(l) rejects INVALID_BYPASS_REASON when bypass reason matches PR-not-merged deny-list", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        comment: `${tmpRepoHeadSha} done`,
+        bypassClosureGate: { reason: "PR not yet merged" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_BYPASS_REASON");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  // (m) Malformed reachability line missing ref token → 422 INVALID_PROOF_BRANCH (<REF>=<missing>) (rev 2, UPG-838)
+  it("(m) rejects INVALID_PROOF_BRANCH for malformed reachability line missing ref token", async () => {
+    const comment = [
+      `${tmpRepoHeadSha} feat: add closure gate`,
+      `git log --oneline -- ${tmpRepoFilePath}`,
+      `${tmpRepoHeadSha} feat: add closure gate`,
+    ].join("\n");
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_PROOF_BRANCH");
+    const rejection = res.body.rejections.find((r: { code: string }) => r.code === "INVALID_PROOF_BRANCH");
+    expect(rejection.detail?.capturedRef).toBe("<missing>");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
 });

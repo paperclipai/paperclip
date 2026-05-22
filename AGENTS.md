@@ -240,11 +240,15 @@ When closing any issue (transitioning to `done` via `PATCH /issues/:id`), the co
 }
 ```
 
-Rejection codes: `NO_TEXT`, `NO_HEAD_SHA`, `INVALID_HEAD_SHA`, `PROCESS_ONLY_UNDECLARED`, `PATH_PROOF_MISMATCH`, `NO_WORKSPACE`.
+Rejection codes: `NO_TEXT`, `NO_HEAD_SHA`, `INVALID_HEAD_SHA`, `PROCESS_ONLY_UNDECLARED`, `PATH_PROOF_MISMATCH`, `NO_WORKSPACE`, `INVALID_PROOF_BRANCH`, `INVALID_BYPASS_REASON`.
+
+Path-proof lines **must** cite the default branch ref: `git log <defaultBranch> --oneline -- <path>`. A feature-branch ref or a missing ref token rejects with `INVALID_PROOF_BRANCH` even if shas pass `git cat-file -t`.
 
 ### Override
 
 Pass `bypassClosureGate: { reason: "<≥10 chars>" }` in the PATCH body to skip validation (logged as `issue.closure_gate_overridden`).
+
+**Deny-list:** Reasons matching `/pr.*(not.*merged|pending|open|review)/i` are rejected with `INVALID_BYPASS_REASON` regardless of actor tier — merge the PR first.
 
 ### Flags
 

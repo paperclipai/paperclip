@@ -8,7 +8,9 @@ export type ClosureGateRejectionCode =
   | "NO_HEAD_SHA"
   | "INVALID_HEAD_SHA"
   | "PROCESS_ONLY_UNDECLARED"
-  | "PATH_PROOF_MISMATCH";
+  | "PATH_PROOF_MISMATCH"
+  | "INVALID_PROOF_BRANCH"
+  | "INVALID_BYPASS_REASON";
 
 export type ClosureGateRejection = {
   code: ClosureGateRejectionCode;
@@ -30,11 +32,20 @@ export type ClosureGateResult =
   | { ok: true; verifiedHeadSha: string; citedPathsVerified: string[] }
   | { ok: false; rejections: ClosureGateRejection[] };
 
+// Spec §6.4: bypass reason deny-list — PR-status reasons are not valid emergency justifications
+export const BYPASS_REASON_DENYLIST_RE = /pr.*(not.*merged|pending|open|review)/i;
+
 // SHA pattern: 7-40 hex chars at start of line followed by whitespace
 const SHA_LINE_RE = /^([0-9a-f]{7,40})[ \t]/gm;
 
-// Git log cited-path pattern: `git ... -- <path>` (spec §4.3)
-const GIT_LOG_PATH_RE = /\bgit\b[^\n]*--[ \t]+(\S+)/g;
+// Extractor C (spec §3.1 rev 2): git log <REF> --oneline -- <path>
+// Group 1: ref token; Group 2: path. First char of ref must be alphanum/dot/underscore to exclude --flags.
+const EXTRACTOR_C_RE =
+  /(?:^|\s)git\s+(?:-C\s+\S+\s+)?log\s+(?!--oneline\b)([A-Za-z0-9._][A-Za-z0-9._/\-]*)\s+--oneline\s+--\s+(\S+)/gm;
+
+// Extractor C malformed: git log --oneline -- <path> (missing ref token → §4.4.0 rejects)
+const EXTRACTOR_C_MALFORMED_RE =
+  /(?:^|\s)git\s+(?:-C\s+\S+\s+)?log\s+--oneline\s+--\s+(\S+)/gm;
 
 export function extractShas(text: string): {
   headSha: string | null;
@@ -53,19 +64,39 @@ export function extractShas(text: string): {
   return { headSha, subShas };
 }
 
-export function extractCitedPaths(text: string): string[] {
-  const paths: string[] = [];
+// §3.2: Returns cited artifacts with captured ref token (undefined = malformed or free-text mention)
+export function extractCitedArtifacts(text: string): { path: string; ref?: string }[] {
+  const artifacts: { path: string; ref?: string }[] = [];
   const seen = new Set<string>();
-  const re = new RegExp(GIT_LOG_PATH_RE.source, "g");
+
+  // Match git log <REF> --oneline -- <path>
+  const re1 = new RegExp(EXTRACTOR_C_RE.source, "gm");
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const p = m[1].trim();
-    if (p && !seen.has(p)) {
-      seen.add(p);
-      paths.push(p);
+  while ((m = re1.exec(text)) !== null) {
+    const ref = m[1].trim();
+    const path = m[2].trim();
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      artifacts.push({ path, ref });
     }
   }
-  return paths;
+
+  // Match malformed git log --oneline -- <path> (ref missing → §4.4.0 will reject)
+  const re2 = new RegExp(EXTRACTOR_C_MALFORMED_RE.source, "gm");
+  while ((m = re2.exec(text)) !== null) {
+    const path = m[1].trim();
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      artifacts.push({ path }); // ref: undefined
+    }
+  }
+
+  return artifacts;
+}
+
+// Backward-compat wrapper: returns paths only (unit tests rely on this signature)
+export function extractCitedPaths(text: string): string[] {
+  return extractCitedArtifacts(text).map((a) => a.path);
 }
 
 export function isProcessOnlyDeclared(text: string): boolean {
@@ -102,14 +133,14 @@ export async function validate(
   }
 
   const { headSha, subShas } = extractShas(input.text);
-  const citedPaths = extractCitedPaths(input.text);
+  const citedArtifacts = extractCitedArtifacts(input.text);
   const processOnly = input.isProcessOnly || isProcessOnlyDeclared(input.text);
 
-  if (!processOnly && citedPaths.length === 0 && subShas.length === 0) {
+  if (!processOnly && citedArtifacts.length === 0 && subShas.length === 0) {
     rejections.push({
       code: "PROCESS_ONLY_UNDECLARED",
       message:
-        "No cited paths found. Implementation tickets require per-path reachability proofs (`git log <branch> --oneline -- <path>`). If process-only, add 'cites no in-repo artifact' to the closing comment.",
+        "No cited paths found. Implementation tickets require per-path reachability proofs (`git log <defaultBranch> --oneline -- <path>`). If process-only, add 'cites no in-repo artifact' to the closing comment.",
     });
   }
 
@@ -140,26 +171,45 @@ export async function validate(
   }
 
   const verifiedPaths: string[] = [];
-  for (const path of citedPaths) {
+  for (const artifact of citedArtifacts) {
+    // §4.4.0 ref-validation gate: reject if ref is missing (malformed line) or ≠ defaultBranch
+    if (artifact.ref === undefined) {
+      rejections.push({
+        code: "INVALID_PROOF_BRANCH",
+        message: `Path-proof line for "${artifact.path}" is missing the ref token (expected \`git log ${input.defaultBranch} --oneline -- ${artifact.path}\`). The §B predicate is canonical-default-branch reachability, NOT 'reachable from any branch where the work exists'. Path proofs against a feature branch with real shas still fail this gate.`,
+        detail: { capturedRef: "<missing>", expectedRef: input.defaultBranch, path: artifact.path },
+      });
+      continue;
+    }
+    if (artifact.ref !== input.defaultBranch) {
+      rejections.push({
+        code: "INVALID_PROOF_BRANCH",
+        message: `Path-proof line for "${artifact.path}" cites ref \`${artifact.ref}\` but the workspace default branch is \`${input.defaultBranch}\`. The §B predicate is canonical-default-branch reachability, NOT 'reachable from any branch where the work exists'. Path proofs against a feature branch with real shas still fail this gate.`,
+        detail: { capturedRef: artifact.ref, expectedRef: input.defaultBranch, path: artifact.path },
+      });
+      continue;
+    }
+
+    // §4.4.1: reachability check (only reached when ref === defaultBranch)
     try {
       const result = await runGit(
-        ["log", input.defaultBranch, "--oneline", "--", path],
+        ["log", input.defaultBranch, "--oneline", "--", artifact.path],
         repoPath,
       );
       if (result.stdout.trim() === "") {
         rejections.push({
           code: "PATH_PROOF_MISMATCH",
-          message: `Path "${path}" has no commits on ${input.defaultBranch}. The artifact may not be merged yet.`,
-          detail: { path, branch: input.defaultBranch },
+          message: `Path "${artifact.path}" has no commits on ${input.defaultBranch}. The artifact may not be merged yet.`,
+          detail: { path: artifact.path, branch: input.defaultBranch },
         });
       } else {
-        verifiedPaths.push(path);
+        verifiedPaths.push(artifact.path);
       }
     } catch {
       rejections.push({
         code: "PATH_PROOF_MISMATCH",
-        message: `Could not verify path "${path}" on branch ${input.defaultBranch}.`,
-        detail: { path, branch: input.defaultBranch },
+        message: `Could not verify path "${artifact.path}" on branch ${input.defaultBranch}.`,
+        detail: { path: artifact.path, branch: input.defaultBranch },
       });
     }
   }
