@@ -49,6 +49,9 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     "- 日本語: ドキュメント本文を保持します。",
     "- हिन्दी: दस्तावेज़ पाठ सुरक्षित रहता है।",
   ].join("\n");
+  const controlCharComment = ["control comment line 1", "line 2\twith tab"].join("\r\n");
+  const controlCharDocument = ["# Control notes", "", "- first\tcolumn", "- second line"].join("\r\n");
+  const controlCharCompletionNote = ["control patch line 1", "line 2\twith tab"].join("\r\n");
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-multilingual-issues-");
@@ -161,6 +164,41 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(completeRes.status, JSON.stringify(completeRes.body)).toBe(200);
     expect(completeRes.body.status).toBe("done");
     expect(completeRes.body.comment.body).toBe(completionNote);
+  });
+
+  it("preserves comment, document, and patch-comment bodies with CRLF and tabs", async () => {
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Control character body test",
+        description: "Verifies CRLF and tab preservation.",
+        status: "todo",
+        priority: "medium",
+      });
+    expect(createRes.status, JSON.stringify(createRes.body)).toBe(201);
+    const issueRef = createRes.body.identifier;
+
+    const commentRes = await request(app)
+      .post(`/api/issues/${issueRef}/comments`)
+      .send({ body: controlCharComment });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+    expect(commentRes.body.body).toBe(controlCharComment);
+
+    const documentRes = await request(app)
+      .put(`/api/issues/${issueRef}/documents/control-notes`)
+      .send({
+        title: "Control character QA",
+        format: "markdown",
+        body: controlCharDocument,
+      });
+    expect(documentRes.status, JSON.stringify(documentRes.body)).toBe(201);
+    expect(documentRes.body.body).toBe(controlCharDocument);
+
+    const patchRes = await request(app)
+      .patch(`/api/issues/${issueRef}`)
+      .send({ status: "done", comment: controlCharCompletionNote });
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(200);
+    expect(patchRes.body.comment.body).toBe(controlCharCompletionNote);
   });
 
   it("lists multilingual comments in write order", async () => {
