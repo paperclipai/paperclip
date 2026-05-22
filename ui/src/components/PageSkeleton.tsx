@@ -6,6 +6,7 @@ interface PageSkeletonProps {
     | "issues-list"
     | "detail"
     | "dashboard"
+    | "command-center"
     | "approvals"
     | "costs"
     | "inbox"
@@ -33,6 +34,54 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
         <div className="grid gap-4 md:grid-cols-2">
           <Skeleton className="h-72 w-full" />
           <Skeleton className="h-72 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === "command-center") {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-lg border border-border p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <Skeleton className="h-3 w-44" />
+              <Skeleton className="h-8 w-72" />
+              <Skeleton className="h-4 w-[min(36rem,100%)]" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-16 w-24" />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {Array.from({ length: 2 }).map((_, group) => (
+            <div key={group} className="rounded-lg border border-border">
+              <div className="border-b border-border px-4 py-3">
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="mt-2 h-3 w-28" />
+              </div>
+              <div className="divide-y divide-border">
+                {Array.from({ length: 3 }).map((_, row) => (
+                  <div key={row} className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(160px,0.7fr)_minmax(220px,1fr)]">
+                    <div className="space-y-2">
+                      <Skeleton className="h-5 w-56" />
+                      <Skeleton className="h-4 w-full" />
+                      <Skeleton className="h-3 w-36" />
+                    </div>
+                    <div className="space-y-2">
+                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-3 w-40" />
+                    </div>
+                    <Skeleton className="h-16 w-full" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
