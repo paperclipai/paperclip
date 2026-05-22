@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  getById: vi.fn(async () => null),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
@@ -867,6 +868,76 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when local_implicit actor tries to accept a request_confirmation", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce({
+      id: "interaction-3",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+    });
+    const app = await createApp(); // default local_implicit actor
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when local_implicit actor tries to reject a request_confirmation", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce({
+      id: "interaction-3",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+    });
+    const app = await createApp(); // default local_implicit actor
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/reject")
+      .send({ reason: "Rejected" });
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+  });
+
+  it("allows authenticated board user to accept a request_confirmation", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: { version: 1, prompt: "Approve?" },
+        result: { version: 1, outcome: "accepted" },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "real-user-id",
+      companyIds: ["company-1"],
+      source: "board_key",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalled();
   });
 
   it("allows agent-authored interaction creation and stamps the active run id", async () => {

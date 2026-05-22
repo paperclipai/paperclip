@@ -58,6 +58,7 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type InteractionResolutionMethod,
   type IssueRelationIssueSummary,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
@@ -92,7 +93,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -1853,14 +1854,42 @@ export function issueRoutes(
       parentId: string | null;
       status: string;
       assigneeAgentId: string | null;
-      assigneeUserId: string | null;
+      assigneeUserId?: string | null;
+      labels?: Array<{ name?: string | null }> | null;
     },
+    options: { allowBoardOwned?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    const hasAwaitingBoardLabel = (issue.labels ?? []).some((label) => label?.name === "awaiting-board");
+    if ((issue.assigneeUserId || hasAwaitingBoardLabel) && !options.allowBoardOwned) {
+      res.status(403).json({
+        error: "Agent cannot mutate board-owned or board-hold issues",
+        details: {
+          issueId: issue.id,
+          assigneeUserId: issue.assigneeUserId ?? null,
+          hasAwaitingBoardLabel,
+          actorAgentId,
+        },
+      });
+      return false;
+    }
+    if (issue.status === "in_review") {
+      const interactions = await issueThreadInteractionsSvc.listForIssue(issue.id);
+      if (interactions.some((interaction) => interaction.status === "pending")) {
+        res.status(403).json({
+          error: "Agent cannot mutate in_review issues with pending interactions",
+          details: {
+            issueId: issue.id,
+            actorAgentId,
+          },
+        });
+        return false;
+      }
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
@@ -2657,6 +2686,44 @@ export function issueRoutes(
     res.json({ count });
   });
 
+  router.get("/companies/:companyId/interactions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const resolvedAfterRaw = typeof req.query.resolvedAfter === "string" ? req.query.resolvedAfter.trim() : null;
+    const resolvedBeforeRaw = typeof req.query.resolvedBefore === "string" ? req.query.resolvedBefore.trim() : null;
+    const methodRaw = typeof req.query.method === "string" ? req.query.method.trim() : null;
+
+    const resolvedAfter = resolvedAfterRaw ? new Date(resolvedAfterRaw) : null;
+    if (resolvedAfterRaw && (!resolvedAfter || Number.isNaN(resolvedAfter.getTime()))) {
+      throw unprocessable("resolvedAfter must be a valid ISO-8601 timestamp");
+    }
+
+    const resolvedBefore = resolvedBeforeRaw ? new Date(resolvedBeforeRaw) : null;
+    if (resolvedBeforeRaw && (!resolvedBefore || Number.isNaN(resolvedBefore.getTime()))) {
+      throw unprocessable("resolvedBefore must be a valid ISO-8601 timestamp");
+    }
+
+    const allowedMethods: Set<InteractionResolutionMethod> =
+      new Set(["ui_click", "api_explicit", "api_automated", "unknown"]);
+    const method = methodRaw
+      ? (allowedMethods.has(methodRaw as InteractionResolutionMethod)
+        ? methodRaw as InteractionResolutionMethod
+        : null)
+      : null;
+    if (methodRaw && !method) {
+      throw unprocessable("method must be one of ui_click, api_explicit, api_automated, unknown");
+    }
+
+    const interactions = await issueThreadInteractionService(db).listForCompany({
+      companyId,
+      resolvedAfter,
+      resolvedBefore,
+      method,
+    });
+    res.json(interactions);
+  });
+
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -2962,7 +3029,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowBoardOwned: true }))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
     if (
       !(await assertRecoveryActionAuthority(
@@ -6150,6 +6217,12 @@ export function issueRoutes(
     });
   });
 
+  router.get("/admin/heartbeat/storage-report", async (req, res) => {
+    assertInstanceAdmin(req);
+    const report = await heartbeat.getStorageReport();
+    res.json(report);
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -6267,10 +6340,26 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
+      // Block unauthenticated local_trusted requests from resolving request_confirmation.
+      // In local_trusted mode every unauthenticated request is attributed to local-board,
+      // making it impossible to verify explicit human intent. Board authentication
+      // (board claim + board API key) is required for governance confirmations.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before confirming.",
+          });
+          return;
+        }
+      }
+
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        requestId: (req as Request & { id?: string }).id ?? null,
+        resolutionMethod: req.actor.source === "local_implicit" ? "api_explicit" : req.actor.type === "board" ? "ui_click" : "api_explicit",
       });
       const continuationWakeIssue = continuationIssue ?? issue;
 
@@ -6374,10 +6463,24 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
+      // Block unauthenticated local_trusted requests from rejecting request_confirmation.
+      // Same reasoning as the accept guard above: local_implicit cannot prove human intent.
+      if (req.actor.source === "local_implicit") {
+        const candidate = await issueThreadInteractionService(db).getById(interactionId);
+        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
+          res.status(403).json({
+            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before declining.",
+          });
+          return;
+        }
+      }
+
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        requestId: (req as Request & { id?: string }).id ?? null,
+        resolutionMethod: req.actor.source === "local_implicit" ? "api_explicit" : req.actor.type === "board" ? "ui_click" : "api_explicit",
       });
 
       await logActivity(db, {
@@ -6434,6 +6537,8 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        requestId: (req as Request & { id?: string }).id ?? null,
+        resolutionMethod: req.actor.type === "board" ? "ui_click" : "api_explicit",
       });
 
       await logActivity(db, {
@@ -6486,6 +6591,8 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        requestId: (req as Request & { id?: string }).id ?? null,
+        resolutionMethod: req.actor.type === "board" ? "ui_click" : "api_explicit",
       });
 
       await logActivity(db, {
