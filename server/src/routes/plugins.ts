@@ -147,6 +147,14 @@ const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "last-modified",
   "x-request-id",
 ]);
+const SENSITIVE_PERSISTED_HEADER_NAMES = new Set([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "set-cookie",
+]);
+const SENSITIVE_PERSISTED_HEADER_PATTERN = /(?:^|[-_])(auth|key|secret|signature|token)(?:$|[-_])/i;
+const REDACTED_HEADER_VALUE = "[redacted]";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -414,6 +422,23 @@ export function pluginRoutes(
       } else if (typeof value === "string") {
         headers[lower] = value;
       }
+    }
+    return headers;
+  }
+
+  function sanitizePersistedWebhookHeaders(req: Request): Record<string, string> {
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      const lower = name.toLowerCase();
+      const shouldRedact = SENSITIVE_PERSISTED_HEADER_NAMES.has(lower)
+        || SENSITIVE_PERSISTED_HEADER_PATTERN.test(lower);
+      const normalized = Array.isArray(value)
+        ? value.join(", ")
+        : typeof value === "string"
+          ? value
+          : undefined;
+      if (normalized === undefined) continue;
+      headers[lower] = shouldRedact ? REDACTED_HEADER_VALUE : normalized;
     }
     return headers;
   }
@@ -2383,14 +2408,7 @@ export function pluginRoutes(
 
     // Step 5: Extract request data
     const requestId = randomUUID();
-    const rawHeaders: Record<string, string> = {};
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (typeof value === "string") {
-        rawHeaders[key] = value;
-      } else if (Array.isArray(value)) {
-        rawHeaders[key] = value.join(", ");
-      }
-    }
+    const persistedHeaders = sanitizePersistedWebhookHeaders(req);
 
     // Use the raw buffer stashed by the express.json() `verify` callback.
     // This preserves the exact bytes the provider signed, whereas
@@ -2409,7 +2427,7 @@ export function pluginRoutes(
         webhookKey: endpointKey,
         status: "pending",
         payload,
-        headers: rawHeaders,
+        headers: persistedHeaders,
         startedAt,
       })
       .returning({ id: pluginWebhookDeliveries.id });

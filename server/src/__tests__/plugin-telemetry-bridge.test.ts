@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHostClientHandlers } from "../../../packages/plugins/sdk/src/host-client-factory.js";
 import { PLUGIN_RPC_ERROR_CODES } from "../../../packages/plugins/sdk/src/protocol.js";
-import { buildHostServices } from "../services/plugin-host-services.js";
+import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
@@ -110,5 +111,49 @@ describe("plugin telemetry bridge", () => {
     });
 
     expect(mockGetTelemetryClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("plugin log security", () => {
+  it("redacts plugin log messages and metadata before persistence", async () => {
+    const insertedRows: Array<Record<string, unknown>> = [];
+    const values = vi.fn(async (rows: Array<Record<string, unknown>>) => {
+      insertedRows.push(...rows);
+    });
+    const db = {
+      insert: vi.fn(() => ({ values })),
+    };
+
+    const services = buildHostServices(
+      db as never,
+      "plugin-record-id",
+      "linear",
+      createEventBusStub(),
+    );
+
+    await services.logger.log({
+      level: "info",
+      message: "Authorization: Bearer sk-plugin-log-secret",
+      meta: {
+        apiKey: "sk-plugin-meta-secret",
+        nested: {
+          password: "meta-password",
+          requestId: "request-1",
+        },
+        level: "attempted-pino-override",
+      },
+    });
+    await flushPluginLogBuffer();
+
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]?.message).toBe(`Authorization: Bearer ${REDACTED_EVENT_VALUE}`);
+    expect(insertedRows[0]?.meta).toMatchObject({
+      apiKey: REDACTED_EVENT_VALUE,
+      nested: {
+        password: REDACTED_EVENT_VALUE,
+        requestId: "request-1",
+      },
+    });
+    expect(insertedRows[0]?.meta).not.toHaveProperty("level");
   });
 });
