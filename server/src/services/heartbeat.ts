@@ -7287,6 +7287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     companyId?: string;
     limit?: number;
     minBlockerResolvedAgeMs?: number;
+    minRepeatWakeIntervalMs?: number;
   }) {
     const now = opts?.now ?? new Date();
     const limit = opts?.limit ?? 100;
@@ -7294,6 +7295,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // the becameDone edge wake its chance to land first, avoiding double-wakes
     // in normal-path flows.
     const minBlockerResolvedAgeMs = opts?.minBlockerResolvedAgeMs ?? 5 * 60 * 1000;
+    // A successful sweep means the dependent has already been reminded that
+    // its blockers are done. Do not re-fire on every periodic loop while the
+    // assignee is still working/reviewing the issue.
+    const minRepeatWakeIntervalMs = opts?.minRepeatWakeIntervalMs ?? 30 * 60 * 1000;
 
     const candidates = await issuesSvc.listResolvedBlockerDependentsToSweep(opts?.companyId, {
       limit,
@@ -7304,9 +7309,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let skipped = 0;
     let failed = 0;
     const minuteBucket = new Date(Math.floor(now.getTime() / 60000) * 60000).toISOString();
+    const repeatWakeCutoff = new Date(now.getTime() - minRepeatWakeIntervalMs);
 
     for (const candidate of candidates) {
       try {
+        if (minRepeatWakeIntervalMs > 0) {
+          const recentSweepRun = await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, candidate.companyId),
+                eq(heartbeatRuns.contextIssueId, candidate.id),
+                eq(heartbeatRuns.contextWakeReason, "issue_blockers_resolved_sweep"),
+                inArray(heartbeatRuns.status, ["queued", "running", "succeeded"]),
+                gt(heartbeatRuns.createdAt, repeatWakeCutoff),
+              ),
+            )
+            .limit(1);
+          if (recentSweepRun.length > 0) {
+            skipped += 1;
+            continue;
+          }
+        }
         const preflight = await runSweepWakePreflight({
           db,
           gbrain: sweepWakePreflightGbrain,

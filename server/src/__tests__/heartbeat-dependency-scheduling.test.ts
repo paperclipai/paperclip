@@ -345,6 +345,74 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("does not re-fire resolved-blocker sweep wakes for the same issue inside the repeat window", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished blocker",
+        status: "done",
+        priority: "high",
+        completedAt: new Date(Date.now() - 10 * 60 * 1000),
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Dependent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const firstSweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 30 * 60 * 1000,
+    });
+    expect(firstSweep).toMatchObject({ scanned: 1, woken: 1, skipped: 0, failed: 0 });
+
+    const secondSweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 30 * 60 * 1000,
+    });
+    expect(secondSweep).toMatchObject({ scanned: 1, woken: 0, skipped: 1, failed: 0 });
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
