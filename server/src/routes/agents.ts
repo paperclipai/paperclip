@@ -2942,7 +2942,14 @@ export function agentRoutes(
     if (typeof issueId !== "string" || issueId.trim().length === 0) return payload;
     const rawIssueId = issueId.trim();
     if (isUuidLike(rawIssueId)) {
-      return { ...payload, issueId: rawIssueId };
+      const issue = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.companyId, companyId), eq(issuesTable.id, rawIssueId)))
+        .then((rows) => rows[0] ?? null);
+      if (issue) {
+        return { ...payload, issueId: issue.id };
+      }
     }
     const identifier = normalizeIssueIdentifier(rawIssueId);
     if (identifier) {
@@ -3065,8 +3072,11 @@ export function agentRoutes(
     if (typeof body.reason === "string" && body.reason.length > 0) {
       wakeOpts.reason = body.reason;
     }
-    if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
-      wakeOpts.payload = body.payload as Record<string, unknown>;
+    const normalizedPayload = body.reason === "stalled_checkout_sweep"
+      ? await normalizeStalledCheckoutWakePayload(body.payload ?? null, agent.companyId)
+      : body.payload;
+    if (normalizedPayload && typeof normalizedPayload === "object" && !Array.isArray(normalizedPayload)) {
+      wakeOpts.payload = normalizedPayload as Record<string, unknown>;
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;

@@ -913,6 +913,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -939,6 +940,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -966,6 +968,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
