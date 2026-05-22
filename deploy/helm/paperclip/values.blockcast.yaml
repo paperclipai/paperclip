@@ -290,10 +290,12 @@ serviceAccount:
 rbac:
   create: true
 
-# Pin paperclip-0 to the dedicated paperclip worker (k8s-paperclip-1).
-# Spawned k8s-Job agent pods inherit this scheduling from the parent pod by
-# default. Per-agent adapter config can still override it when needed.
+# Pin Paperclip off k8s-paperclip-2 for now. On 2026-05-22, pods on
+# k8s-paperclip-2 intermittently timed out resolving even in-cluster service
+# names through kube-dns, which crashlooped the singleton worker during
+# startup. Revisit after Cilium/CoreDNS service routing on that node is fixed.
 nodeSelector:
+  kubernetes.io/hostname: k8s-paperclip-1
   workload: paperclip
 
 tolerations:
