@@ -1221,12 +1221,12 @@ export function NewIssueDialog() {
           }
           // Radix Dialog's modal DismissableLayer calls preventDefault() on
           // pointerdown events that originate outside the Dialog DOM tree.
-          // Popover portals render at the body level (outside the Dialog), so
-          // touch events on popover content get their default prevented — which
-          // kills scroll gesture recognition on mobile.  Telling Radix "this
-          // event is handled" skips that preventDefault, restoring touch scroll.
+          // Popover and editor autocomplete portals render at the body level
+          // (outside the Dialog), so touch/click events on their content get
+          // their default prevented. Telling Radix "this event is handled" skips
+          // that preventDefault, restoring popover scroll and autocomplete taps.
           const target = event.detail.originalEvent.target as HTMLElement | null;
-          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+          if (target?.closest("[data-radix-popper-content-wrapper], [data-paperclip-floating-ui]")) {
             event.preventDefault();
           }
         }}

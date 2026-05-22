@@ -2,12 +2,16 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   createDb,
   heartbeatRuns,
+  issueApprovals,
   issueRelations,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -15,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
+import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -37,6 +42,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
@@ -52,20 +61,30 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   async function createCompany(prefix = "PBA") {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const pausedAgentId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: `Company ${prefix}`,
       issuePrefix: prefix,
       requireBoardApprovalForNewAgents: false,
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: `${prefix} Agent`,
-      role: "engineer",
-      status: "idle",
-    });
-    return { companyId, agentId };
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: `${prefix} Agent`,
+        role: "engineer",
+        status: "idle",
+      },
+      {
+        id: pausedAgentId,
+        companyId,
+        name: `${prefix} Paused`,
+        role: "engineer",
+        status: "paused",
+      },
+    ]);
+    return { companyId, agentId, pausedAgentId };
   }
 
   async function insertIssue(input: {
@@ -80,6 +99,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
+    executionState?: Record<string, unknown> | null;
+    description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -95,6 +116,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
+      executionState: input.executionState ?? null,
+      description: input.description ?? null,
     });
     return id;
   }
@@ -481,6 +504,194 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PBY-2",
+    });
+  });
+
+  it("returns blocked inbox attention for an unassigned blocker leaf and supports count/search", async () => {
+    const { companyId } = await createCompany("BIA");
+    const parentId = await insertIssue({ companyId, identifier: "BIA-1", title: "Blocked source", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "BIA-2",
+      title: "Unassigned leaf",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const rows = await svc.list(companyId, { attention: "blocked", q: "BIA-2" });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(parentId);
+    expect(rows[0]?.blockedBy).toEqual([
+      expect.objectContaining({ id: blockerId, identifier: "BIA-2" }),
+    ]);
+    expect(rows[0]?.blockedInboxAttention).toMatchObject({
+      kind: "blocked",
+      state: "needs_attention",
+      reason: "blocked_by_unassigned_issue",
+      severity: "critical",
+      owner: { type: "unknown", agentId: null, userId: null },
+      action: { label: "Assign blocker" },
+      leafIssue: { id: blockerId, identifier: "BIA-2" },
+      redaction: { secretFieldsOmitted: true },
+    });
+    await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
+  });
+
+  it("redacts external wait details from blocked inbox payloads and search", async () => {
+    const { companyId } = await createCompany("BIX");
+    const owner = "Private Vendor Security Team";
+    const action = "Send the confidential access token for customer Alpha";
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "BIX-1",
+      title: "Blocked on vendor",
+      status: "blocked",
+      description: [
+        "Public context stays visible.",
+        `external owner: ${owner}`,
+        `external action: ${action}`,
+        "Continue after the vendor confirms receipt.",
+      ].join("\n"),
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const issue = rows.find((row) => row.id === issueId);
+
+    expect(issue?.description).toContain("Public context stays visible.");
+    expect(issue?.description).toContain("Continue after the vendor confirms receipt.");
+    expect(issue?.description).not.toContain(owner);
+    expect(issue?.description).not.toContain(action);
+    expect(issue?.blockedInboxAttention).toMatchObject({
+      state: "external_wait",
+      reason: "external_owner_action",
+      owner: { type: "external", label: null },
+      action: { label: "External owner action", detail: null },
+      redaction: { externalDetailsRedacted: true, secretFieldsOmitted: true },
+    });
+    expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(owner);
+    expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(action);
+
+    await expect(svc.list(companyId, { attention: "blocked", q: owner })).resolves.toEqual([]);
+    await expect(svc.count(companyId, { attention: "blocked", q: action })).resolves.toBe(0);
+    await expect(svc.count(companyId, { attention: "blocked", q: "Public context" })).resolves.toBe(1);
+  });
+
+  it("excludes healthy active blockers from blocked inbox attention", async () => {
+    const { companyId, agentId } = await createCompany("BIB");
+    const parentId = await insertIssue({ companyId, identifier: "BIB-1", title: "Blocked source", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "BIB-2",
+      title: "Running leaf",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: blockerId });
+
+    expect(await svc.list(companyId, { attention: "blocked" })).toEqual([]);
+  });
+
+  it("classifies assigned backlog and invalid review leaves for blocked inbox attention", async () => {
+    const { companyId, agentId, pausedAgentId } = await createCompany("BIC");
+    const backlogParentId = await insertIssue({ companyId, identifier: "BIC-1", title: "Blocked by parked work", status: "blocked" });
+    const backlogLeafId = await insertIssue({
+      companyId,
+      identifier: "BIC-2",
+      title: "Parked blocker",
+      status: "backlog",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: backlogLeafId, blockedIssueId: backlogParentId });
+
+    const reviewId = await insertIssue({
+      companyId,
+      identifier: "BIC-3",
+      title: "Invalid review",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: pausedAgentId },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(byId.get(backlogParentId)?.blockedInboxAttention).toMatchObject({
+      reason: "blocked_by_assigned_backlog_issue",
+      severity: "high",
+      owner: { type: "agent", agentId },
+      leafIssue: { id: backlogLeafId },
+    });
+    expect(byId.get(reviewId)?.blockedInboxAttention).toMatchObject({
+      reason: "invalid_review_participant",
+      severity: "critical",
+      action: { label: "Repair review participant" },
+    });
+  });
+
+  it("classifies recovery issues and missing successful-run dispositions", async () => {
+    const { companyId, agentId } = await createCompany("BID");
+    const sourceId = await insertIssue({ companyId, identifier: "BID-1", title: "Stopped source", status: "blocked" });
+    const leafId = await insertIssue({ companyId, identifier: "BID-2", title: "Stopped leaf", status: "todo" });
+    const recoveryId = await insertIssue({
+      companyId,
+      identifier: "BID-3",
+      title: "Recovery issue",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind: "harness_liveness_escalation",
+      originId: buildIssueGraphLivenessIncidentKey({
+        companyId,
+        issueId: sourceId,
+        state: "blocked_by_unassigned_issue",
+        blockerIssueId: leafId,
+      }),
+    });
+    const handoffId = await insertIssue({
+      companyId,
+      identifier: "BID-4",
+      title: "Needs disposition",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: handoffId,
+      agentId,
+      details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(byId.get(recoveryId)?.blockedInboxAttention).toMatchObject({
+      state: "recovery_open",
+      reason: "open_recovery_issue",
+      sourceIssue: { id: sourceId },
+      leafIssue: { id: leafId },
+      recoveryIssue: { id: recoveryId },
+    });
+    expect(byId.get(handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+      owner: { type: "agent", agentId },
+      action: { label: "Choose disposition" },
     });
   });
 });

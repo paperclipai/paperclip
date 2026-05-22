@@ -5,7 +5,7 @@ SET
     WHEN source_issue."status" = 'blocked' THEN 'blocked'
     ELSE 'restored'
   END,
-  "resolution_note" = 'Auto-resolved during migration 0085: source issue already has a valid disposition',
+  "resolution_note" = 'Auto-resolved during migration 0087: source issue already has a valid disposition',
   "resolved_at" = COALESCE(recovery_action."resolved_at", now()),
   "updated_at" = now()
 FROM "issues" AS source_issue

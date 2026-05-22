@@ -58,6 +58,11 @@ function registerModuleMocks() {
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
     }),
+    issueThreadInteractionService: () => ({
+      listForIssue: vi.fn(async () => []),
+      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+    }),
     issueRecoveryActionService: () => ({
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),

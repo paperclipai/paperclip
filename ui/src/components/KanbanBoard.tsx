@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import {
   DndContext,
@@ -20,11 +20,19 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 
-const boardStatuses = [
+export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
+export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+export type KanbanColumnPageSize = (typeof KANBAN_COLUMN_PAGE_SIZE_OPTIONS)[number];
+export const KANBAN_COLUMN_DEFAULT_PAGE_SIZE: KanbanColumnPageSize = 10;
+export const KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT = KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
+export const KANBAN_COLUMN_REVEAL_INCREMENT = KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
+export const KANBAN_COLD_STATUSES = ["backlog", "done", "cancelled"] as const;
+
+export const boardStatuses = [
   "backlog",
   "todo",
   "in_progress",
@@ -32,10 +40,17 @@ const boardStatuses = [
   "blocked",
   "done",
   "cancelled",
-];
+] as const satisfies readonly IssueStatus[];
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
+  if ((boardStatuses as readonly string[]).includes(overId)) {
+    return overId as IssueStatus;
+  }
+  return issues.find((issue) => issue.id === overId)?.status ?? null;
 }
 
 interface Agent {
@@ -47,6 +62,10 @@ interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  compactCards?: boolean;
+  collapsedStatuses?: string[];
+  initialVisibleCount?: number;
+  revealIncrement?: number;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -57,15 +76,48 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  compactCards = false,
+  collapsed = false,
+  visibleCount,
+  revealIncrement,
+  onShowMore,
 }: {
-  status: string;
+  status: IssueStatus;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  compactCards?: boolean;
+  collapsed?: boolean;
+  visibleCount: number;
+  revealIncrement: number;
+  onShowMore: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
   const isEmpty = issues.length === 0;
+  const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
+  const hiddenCount = Math.max(issues.length - visibleIssues.length, 0);
+  const nextRevealCount = Math.min(revealIncrement, hiddenCount);
+
+  if (collapsed) {
+    return (
+      <div
+        ref={setNodeRef}
+        className={`flex min-h-[220px] w-[52px] shrink-0 flex-col items-center rounded-md border border-border bg-muted/20 px-1.5 py-2 transition-colors ${
+          isOver ? "bg-accent/50 ring-1 ring-primary/20" : ""
+        }`}
+        title={`${statusLabel(status)}: ${issues.length}`}
+      >
+        <StatusIcon status={status} />
+        <span className="mt-2 [writing-mode:vertical-rl] rotate-180 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {statusLabel(status)}
+        </span>
+        <span className="mt-auto rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+          {issues.length}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
@@ -88,19 +140,35 @@ function KanbanColumn({
           isOver ? "bg-accent/40" : "bg-muted/20"
         }`}
       >
+        {/* Hidden cards are intentionally excluded from sort targets until revealed. */}
         <SortableContext
-          items={issues.map((i) => i.id)}
+          items={visibleIssues.map((i) => i.id)}
           strategy={verticalListSortingStrategy}
         >
-          {issues.map((issue) => (
+          {visibleIssues.map((issue) => (
             <KanbanCard
               key={issue.id}
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              compact={compactCards}
             />
           ))}
         </SortableContext>
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            className="mt-1 flex w-full items-center justify-center rounded-md border border-dashed border-border bg-background/70 px-2 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            onClick={onShowMore}
+          >
+            Show {nextRevealCount} more
+          </button>
+        ) : null}
+        {issues.length > 0 && (hiddenCount > 0 || issues.length >= visibleCount) ? (
+          <p className="px-1 pt-1 text-[11px] text-muted-foreground">
+            Showing {visibleIssues.length} of {issues.length}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -113,11 +181,13 @@ function KanbanCard({
   agents,
   isLive,
   isOverlay,
+  compact = false,
 }: {
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
   isOverlay?: boolean;
+  compact?: boolean;
 }) {
   const {
     attributes,
@@ -144,9 +214,11 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
+      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing transition-shadow ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"} ${
+        compact ? "p-2" : "p-2.5"
+      }`}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
@@ -157,7 +229,7 @@ function KanbanCard({
           if (isDragging) e.preventDefault();
         }}
       >
-        <div className="flex items-start gap-1.5 mb-1.5">
+        <div className={`flex items-start gap-1.5 ${compact ? "mb-1" : "mb-1.5"}`}>
           <span className="text-xs text-muted-foreground font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
@@ -172,14 +244,17 @@ function KanbanCard({
             </span>
           ) : null}
           {isLive && (
-            <span className="relative flex h-2 w-2 shrink-0 mt-0.5">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+              {compact ? "Live" : null}
             </span>
           )}
         </div>
-        <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
-        <div className="flex items-center gap-2">
+        <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
+        <div className="flex items-center gap-2 min-w-0">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {
             const name = agentName(issue.assigneeAgentId);
@@ -203,16 +278,26 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  compactCards = false,
+  collapsedStatuses = [],
+  initialVisibleCount = KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
+  revealIncrement = KANBAN_COLUMN_REVEAL_INCREMENT,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [visibleCountByStatus, setVisibleCountByStatus] = useState<Record<string, number>>({});
+  const collapsedStatusSet = useMemo(() => new Set(collapsedStatuses), [collapsedStatuses]);
+
+  useEffect(() => {
+    setVisibleCountByStatus({});
+  }, [initialVisibleCount, revealIncrement]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
   const columnIssues = useMemo(() => {
-    const grouped: Record<string, Issue[]> = {};
+    const grouped: Record<IssueStatus, Issue[]> = {} as Record<IssueStatus, Issue[]>;
     for (const status of boardStatuses) {
       grouped[status] = [];
     }
@@ -244,17 +329,7 @@ export function KanbanBoard({
 
     // Determine target status: the "over" could be a column id (status string)
     // or another card's id. Find which column the "over" belongs to.
-    let targetStatus: string | null = null;
-
-    if (boardStatuses.includes(over.id as string)) {
-      targetStatus = over.id as string;
-    } else {
-      // It's a card - find which column it's in
-      const targetIssue = issues.find((i) => i.id === over.id);
-      if (targetIssue) {
-        targetStatus = targetIssue.status;
-      }
-    }
+    const targetStatus = resolveKanbanTargetStatus(over.id as string, issues);
 
     if (targetStatus && targetStatus !== issue.status) {
       onUpdateIssue(issueId, { status: targetStatus });
@@ -280,12 +355,22 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            compactCards={compactCards}
+            collapsed={collapsedStatusSet.has(status)}
+            visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
+            revealIncrement={revealIncrement}
+            onShowMore={() => {
+              setVisibleCountByStatus((current) => ({
+                ...current,
+                [status]: (current[status] ?? initialVisibleCount) + revealIncrement,
+              }));
+            }}
           />
         ))}
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />
         ) : null}
       </DragOverlay>
     </DndContext>
