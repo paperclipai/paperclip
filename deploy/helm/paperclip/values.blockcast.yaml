@@ -9,7 +9,7 @@
 
 image:
   repository: harbor.blockcast.net/paperclip/paperclip
-  tag: sha-5f5a6e0-k8s-vendored
+  tag: sha-ccbab04-k8s-vendored
   pullPolicy: Always
   # Bump this to the kkroo image tag built from this repo when deploying.
 
