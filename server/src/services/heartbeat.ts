@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -8891,8 +8891,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit?: number, executedOnly?: boolean) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const baseFilter = agentId
+        ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
+        : eq(heartbeatRuns.companyId, companyId);
+      const whereClause = executedOnly
+        ? and(baseFilter, isNotNull(heartbeatRuns.startedAt))
+        : baseFilter;
       const query = db
         .select(
           safeForLegacyEncoding
@@ -8908,12 +8914,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
         )
         .from(heartbeatRuns)
-        .where(
-          agentId
-            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
-            : eq(heartbeatRuns.companyId, companyId),
-        )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .where(whereClause)
+        .orderBy(executedOnly ? desc(heartbeatRuns.startedAt) : desc(heartbeatRuns.createdAt));
 
       const rows = limit ? await query.limit(limit) : await query;
       return rows.map((row) => {
