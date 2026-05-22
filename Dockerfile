@@ -86,8 +86,14 @@ WORKDIR /vendor
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
 ARG CCROTATE_REF=306da1767a7eeac0e49c33bcbaee2706396da2e6
-ARG CLAUDE_K8S_REF=5ef9ad2bf367f7089690e80c738431ae81a44367
-ARG OPENCODE_K8S_REF=eeee66c9e5f0ac9b2b85b0211e3c0c2007356bdd
+# Bumped 2026-05-22 to pull in `--group=1000` for the DinD sidecar so the
+# main agent container (uid 1000) can access /var/run/docker.sock. Without
+# this, enableDocker:true provisions dind but every docker call from the
+# agent returns "permission denied". Both refs are still pre-merge on a
+# branch in the kkroo forks (PRs claude-k8s#3, opencode-k8s#16); bump again
+# once those merge to master. BLO-5492.
+ARG CLAUDE_K8S_REF=9913b7ef587a1830a6c3da5ac837c63adc8c8bad
+ARG OPENCODE_K8S_REF=0fcad7b52b0a5a1b7f63b7d387a57fd5d8ca8167
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
