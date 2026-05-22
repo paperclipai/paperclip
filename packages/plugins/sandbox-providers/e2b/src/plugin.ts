@@ -395,7 +395,14 @@ const plugin = definePlugin({
     // the absolute sandbox lifetime from create/connect; without this, a run
     // longer than `config.timeoutMs` will have its sandbox killed mid-command
     // and the next call throws "Sandbox is probably not running anymore".
-    await sandbox.setTimeout(config.timeoutMs);
+    // The refresh is best-effort: the sandbox is already healthy at this
+    // point, so a transient API error on setTimeout should not block the
+    // command from running. Worst case the existing lifetime stands.
+    try {
+      await sandbox.setTimeout(config.timeoutMs);
+    } catch {
+      // ignore — keep going with the existing sandbox lifetime
+    }
     const baseCommand = buildLoginShellScript({
       command: params.command,
       args: params.args ?? [],

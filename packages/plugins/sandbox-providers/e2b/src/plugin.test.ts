@@ -404,6 +404,34 @@ describe("E2B sandbox provider plugin", () => {
     expect(sandbox.setTimeout).toHaveBeenCalledWith(1_800_000);
   });
 
+  it("still runs the command when the setTimeout refresh fails transiently", async () => {
+    const sandbox = createMockSandbox();
+    sandbox.setTimeout.mockRejectedValueOnce(new Error("transient e2b api error"));
+    mockConnect.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 1_800_000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(1_800_000);
+    expect(sandbox.commands.run).toHaveBeenCalled();
+    expect(result?.exitCode).toBe(0);
+  });
+
   it("cleans up staged stdin even when writing it fails", async () => {
     const sandbox = createMockSandbox();
     const failure = new Error("write failed");
