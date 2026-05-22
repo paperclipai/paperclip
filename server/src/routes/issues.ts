@@ -5173,22 +5173,48 @@ export function issueRoutes(
 
     let scheduledRetrySupersededByComment = false;
     let cancelledScheduledRetryRunId: string | null = null;
+    let scheduledRetryCancellationFailed = false;
     if (
       effectiveMoveToTodoRequested &&
       (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
     ) {
       scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
-      cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
-        ? await cancelScheduledRetrySupersededByComment({
-            scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
-            issue,
-            actor,
-          })
-        : null;
+      // Persist the status change BEFORE cancelling the scheduled retry. If the
+      // order were reversed, a failure of `svc.update` (or a 404 race) after a
+      // successful `cancelScheduledRetrySupersededByComment` would leave the
+      // issue stuck `in_progress` with no scheduled retry path — nothing would
+      // resume it.
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;
+      }
+      // Scheduled-retry cancellation is a best-effort optimization (it avoids
+      // a redundant retry firing against the now-`todo` issue). If it fails,
+      // log and swallow: the retry will eventually fire, observe the issue
+      // is no longer in its scheduled-retry state, and exit cleanly. Failing
+      // the whole comment-post for this reason would penalize the primary
+      // intent (adding a comment + reopening) for a downstream housekeeping
+      // miss.
+      if (scheduledRetrySupersededByComment) {
+        try {
+          cancelledScheduledRetryRunId = await cancelScheduledRetrySupersededByComment({
+            scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+            issue,
+            actor,
+          });
+        } catch (err) {
+          scheduledRetryCancellationFailed = true;
+          logger.warn(
+            {
+              err,
+              issueId: id,
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+              actorType: actor.actorType,
+            },
+            "cancelScheduledRetrySupersededByComment failed after issue.todo update; retry will fire harmlessly against the now-todo issue and be a no-op",
+          );
+        }
       }
       reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
       reopenFromStatus = reopened ? issue.status : null;
@@ -5211,6 +5237,7 @@ export function issueRoutes(
                 scheduledRetrySupersededByComment: true,
                 scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
                 ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+                ...(scheduledRetryCancellationFailed ? { scheduledRetryCancellationFailed: true } : {}),
               }
             : {}),
           source: "comment",

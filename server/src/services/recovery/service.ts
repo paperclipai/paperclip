@@ -1262,8 +1262,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ].join("\n"), { runId: input.run.id });
     }
 
+    // Only resolve the active recovery action if process cleanup is
+    // confirmed terminal. Outcomes `termination_sent_still_running` and
+    // `failed` mean we may have a zombie local process: marking the
+    // recovery as resolved would hide that from operators. The source
+    // issue did reach a terminal disposition, so the run/watchdog
+    // finalization above is still correct — but the OS-level cleanup
+    // concern must remain operator-visible.
+    const cleanupConfirmed =
+      !cleanup.attempted ||
+      cleanup.outcome === "terminated" ||
+      cleanup.outcome === "not_running" ||
+      cleanup.outcome === "no_process_metadata" ||
+      cleanup.outcome === "skipped_non_local_adapter";
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.run.companyId, input.sourceIssue.id);
-    if (activeRecoveryAction?.kind === "active_run_watchdog") {
+    if (activeRecoveryAction?.kind === "active_run_watchdog" && cleanupConfirmed) {
       await recoveryActionsSvc.resolveActiveForIssue({
         companyId: input.run.companyId,
         sourceIssueId: input.sourceIssue.id,
@@ -1287,8 +1300,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .returning();
 
     await appendRecoveryRunEvent(finalizedRun, {
-      level: cleanup.outcome === "failed" ? "warn" : "info",
-      message: "Source-resolved watchdog fold finalized stale active run",
+      // Promote to warn whenever process cleanup is unconfirmed (not just on
+      // hard `failed`): `termination_sent_still_running` is equally operator-
+      // visible because a local process may still be alive.
+      level: cleanupConfirmed ? "info" : "warn",
+      message: cleanupConfirmed
+        ? "Source-resolved watchdog fold finalized stale active run"
+        : "Source-resolved watchdog fold finalized stale active run; recovery action kept open due to unconfirmed process cleanup",
       payload: resultJson.sourceResolvedWatchdogFold,
     });
     await logActivity(db, {

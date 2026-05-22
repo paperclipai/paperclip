@@ -639,7 +639,15 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
+  it("still moves scheduled-retry issues to todo and adds the comment when retry cancellation fails (best-effort cancel)", async () => {
+    // Contract change vs. original: the issue.todo update is durable and now
+    // happens BEFORE the scheduled-retry cancellation. Reversing the order
+    // would risk orphaning the issue in `in_progress` with no retry path if
+    // the update failed mid-flight. Cancellation itself is best-effort — a
+    // failure logs + records a `scheduledRetryCancellationFailed` flag on
+    // the activity, then continues through comment-add and wake-up. The
+    // original retry will fire harmlessly against the now-`todo` issue and
+    // exit clean.
     const issue = {
       ...makeIssue("in_progress"),
       executionRunId: "retry-run-1",
@@ -657,19 +665,42 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
     mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "I added the missing detail; please continue." });
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "todo",
+          scheduledRetrySupersededByComment: true,
+          scheduledRetryRunId: "retry-run-1",
+          scheduledRetryCancellationFailed: true,
+        }),
+      }),
+    );
+    // cancelledScheduledRetryRunId should be absent — the cancel did not succeed.
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ action: "issue.updated" }),
+      expect.objectContaining({
+        details: expect.objectContaining({ cancelledScheduledRetryRunId: expect.anything() }),
+      }),
     );
   });
 

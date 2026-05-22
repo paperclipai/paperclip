@@ -348,12 +348,16 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
-  /** Repository URL, when known. */
-  repoUrl: string | null;
-  /** Checkout/ref requested for the workspace, when known. */
-  repoRef: string | null;
-  /** Default comparison ref for workspace tooling, when known. */
-  defaultRef: string | null;
+  /**
+   * Repository URL, when known. Optional for SDK back-compat — external
+   * plugin authors constructing `PluginWorkspace` literals predate these
+   * fields and would otherwise see a TypeScript breaking change.
+   */
+  repoUrl?: string | null;
+  /** Checkout/ref requested for the workspace, when known. Optional for SDK back-compat. */
+  repoRef?: string | null;
+  /** Default comparison ref for workspace tooling, when known. Optional for SDK back-compat. */
+  defaultRef?: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
