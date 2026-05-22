@@ -2745,6 +2745,77 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(result!.openDescendantSummaryTruncated).toBe(false);
     expect(result!.subtreeAuditTruncated).toBe(false);
   });
+
+  it("sets subtreeAuditTruncated=true when descendant-audit cap is reached with unvisited frontier (PRE-865 iter:2)", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childA = randomUUID();
+    // Single done direct child, then 500 done grandchildren. descendantsAudited
+    // starts at 1 (the direct child), audit walks grandchildren until cap (500)
+    // is reached. Cap hits mid-frontier so nextFrontier holds 499 unvisited
+    // grandchildren IDs → subtreeAuditTruncated must be true.
+    // All grandchildren are terminal (done) so openDescendantCount stays 0 —
+    // this is the false-completion shape the renderer iter:2 fix protects against.
+    const grandchildIds = Array.from({ length: 500 }, () => randomUUID());
+
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Large parent",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId,
+      },
+      {
+        id: childA,
+        companyId,
+        parentId,
+        title: "Child A (closed prematurely)",
+        status: "done",
+        priority: "high",
+      },
+    ]);
+
+    const grandchildRows = grandchildIds.map((id, index) => ({
+      id,
+      companyId,
+      parentId: childA,
+      title: `Grandchild ${index}`,
+      status: "done" as const,
+      priority: "low" as const,
+    }));
+    // Batch inserts to avoid single-statement parameter limit on embedded pg.
+    for (let i = 0; i < grandchildRows.length; i += 100) {
+      await db.insert(issues).values(grandchildRows.slice(i, i + 100));
+    }
+
+    const result = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe(parentId);
+    expect(result!.openDescendantCount).toBe(0);
+    expect(result!.openDescendantSummaries).toEqual([]);
+    expect(result!.subtreeAuditTruncated).toBe(true);
+  }, 30_000);
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

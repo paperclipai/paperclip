@@ -806,6 +806,43 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Do NOT mark the parent issue done");
     expect(prompt).not.toContain("Subtree audit: no open descendants detected");
   });
+
+  it("renders subtree-audit caution when audit truncated and no open descendants found in audited portion (PRE-865 iter:2)", () => {
+    const payload = {
+      reason: "issue_children_completed",
+      issue: {
+        id: "parent-3",
+        identifier: "PAP-500",
+        title: "Large parent",
+        status: "in_progress",
+        priority: "high",
+      },
+      childIssueSummaries: [
+        {
+          id: "child-a",
+          identifier: "PAP-501",
+          title: "Phase A",
+          status: "done",
+          priority: "high",
+          summary: "Phase A closed.",
+        },
+      ],
+      openDescendantSummaries: [],
+      openDescendantCount: 0,
+      openDescendantSummaryTruncated: false,
+      subtreeAuditTruncated: true,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Direct child issue summaries:");
+    expect(prompt).toContain("PAP-501 Phase A (done)");
+    expect(prompt).toContain("Subtree audit INCOMPLETE");
+    expect(prompt).toContain("descendant-audit cap was reached");
+    expect(prompt).toContain("Do NOT close the parent issue");
+    expect(prompt).toContain("Re-check the subtree via the API");
+    expect(prompt).not.toContain("Subtree audit: no open descendants detected");
+    expect(prompt).not.toContain("WARNING: the tree is NOT complete.");
+  });
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {

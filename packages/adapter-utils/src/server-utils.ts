@@ -902,9 +902,14 @@ export function renderPaperclipWakePrompt(
       "Resolve or re-open the listed grandchildren first, then re-evaluate parent closure.",
     );
   } else if (normalized.childIssueSummaries.length > 0) {
-    lines.push("", "Subtree audit: no open descendants detected below the direct children.");
     if (normalized.subtreeAuditTruncated) {
-      lines.push("[subtree audit truncated — re-check via API before closing parent if subtree is large]");
+      lines.push(
+        "",
+        "Subtree audit INCOMPLETE — the descendant-audit cap was reached before the full subtree could be inspected and no open descendants were found in the audited portion.",
+        "Do NOT close the parent issue or claim \"all phases complete\" on this signal alone. Re-check the subtree via the API (paginate children/grandchildren) before closing.",
+      );
+    } else {
+      lines.push("", "Subtree audit: no open descendants detected below the direct children.");
     }
   }
 
