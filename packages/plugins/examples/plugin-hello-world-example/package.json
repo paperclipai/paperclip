@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-hello-world-example",
-  "version": "2026.428.1-fork.7",
+  "version": "2026.428.1-fork.8",
   "description": "First-party reference plugin that adds a Hello World dashboard widget",
   "type": "module",
   "private": true,

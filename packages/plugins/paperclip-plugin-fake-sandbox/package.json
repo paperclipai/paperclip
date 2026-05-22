@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-fake-sandbox",
-  "version": "2026.428.1-fork.7",
+  "version": "2026.428.1-fork.8",
   "description": "First-party deterministic fake sandbox provider plugin for Paperclip environments",
   "type": "module",
   "private": true,

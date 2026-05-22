@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-kitchen-sink-example",
-  "version": "2026.428.1-fork.7",
+  "version": "2026.428.1-fork.8",
   "description": "Reference plugin that demonstrates the full Paperclip plugin surface area in one package",
   "type": "module",
   "private": true,

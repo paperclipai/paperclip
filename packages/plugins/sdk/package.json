@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-sdk",
-  "version": "2026.428.1-fork.7",
+  "version": "2026.428.1-fork.8",
   "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
