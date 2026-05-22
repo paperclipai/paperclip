@@ -589,14 +589,16 @@ describe("codex execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("codex_transient_upstream");
-      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorCode).toBe("codex_hard_limit");
+      expect(result.errorFamily).toBe("provider_rate_limit");
       const expectedRetryNotBefore = new Date(2026, 3, 22, 23, 31, 0, 0).toISOString();
-      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
-      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
-      expect(new Date(String(result.resultJson?.transientRetryNotBefore)).getTime()).toBe(
-        new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
-      );
+      expect(result.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.retryNotBefore ?? null).toBeNull();
+      expect(result.resultJson?.transientRetryNotBefore ?? null).toBeNull();
+      expect(result.rateLimitBlock).toMatchObject({
+        limitKind: "weekly",
+        resetsAt: expectedRetryNotBefore,
+      });
     } finally {
       vi.useRealTimers();
       if (previousHome === undefined) delete process.env.HOME;

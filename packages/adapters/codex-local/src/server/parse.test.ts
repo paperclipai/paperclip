@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractCodexHardLimitBlock,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -102,11 +103,12 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies usage-limit windows as transient and extracts the retry time", () => {
+  it("does NOT classify usage-limit windows as transient (they are provider_rate_limit)", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
     const now = new Date(2026, 3, 22, 22, 29, 2);
 
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+    // extractCodexRetryNotBefore still works for the resetsAt derivation
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
     );
@@ -119,6 +121,14 @@ describe("isCodexTransientUpstreamError", () => {
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
       "2026-04-23T04:31:00.000Z",
     );
+  });
+
+  it("does not classify high-demand transient errors as hard limits", () => {
+    expect(
+      extractCodexHardLimitBlock({
+        errorMessage: "Error running remote compact task: We're currently experiencing high demand.",
+      }),
+    ).toBeNull();
   });
 
   it("does not classify deterministic compaction errors as transient", () => {
@@ -136,5 +146,26 @@ describe("isCodexTransientUpstreamError", () => {
         ].join("\n"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("extractCodexHardLimitBlock", () => {
+  it("returns null for non-limit errors", () => {
+    expect(extractCodexHardLimitBlock({ errorMessage: "We're currently experiencing high demand." })).toBeNull();
+    expect(extractCodexHardLimitBlock({ errorMessage: "Unknown parameter: foo" })).toBeNull();
+  });
+
+  it("classifies usage-limit hits as weekly hard limit", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
+    const block = extractCodexHardLimitBlock({ errorMessage });
+    expect(block?.limitKind).toBe("weekly");
+    expect(block?.modelFamily).toBeNull();
+  });
+
+  it("includes resetsAt when a retry time is present", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM (America/Chicago).";
+    const block = extractCodexHardLimitBlock({ errorMessage });
+    expect(block?.limitKind).toBe("weekly");
+    expect(block?.resetsAt).not.toBeNull();
   });
 });

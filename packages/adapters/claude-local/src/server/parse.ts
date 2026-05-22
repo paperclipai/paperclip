@@ -10,14 +10,28 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
-  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
-const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception)/i;
+
+// Hard limits: the provider window is exhausted — retrying is pointless until it resets.
+export const CLAUDE_HARD_LIMIT_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|you(?:'|’)?\s*ve?\s+hit\s+your\s+(?:opus\s+|sonnet\s+|haiku\s+)?(?:weekly\s+|5[-\s]?hour\s+)?limit|hit\s+your\s+(?:opus\s+|sonnet\s+|haiku\s+)?(?:weekly\s+|5[-\s]?hour\s+)?limit\b)/i;
+const CLAUDE_HARD_LIMIT_RESET_RE =
+  /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached|hit\s+your\s+(?:opus\s+|sonnet\s+|haiku\s+)?(?:weekly\s+|5[-\s]?hour\s+)?limit)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!·]|\n|$)/i;
+
+export type ClaudeRateLimitInfo = {
+  status: string;
+  rateLimitType: string | null;
+  resetsAt: number | null;
+  overageStatus?: string | null;
+  overageDisabledReason?: string | null;
+  isUsingOverage?: boolean | null;
+};
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
+  let rateLimitInfo: ClaudeRateLimitInfo | null = null;
   const assistantTexts: string[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -30,6 +44,22 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "system" && asString(event.subtype, "") === "init") {
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       model = asString(event.model, model);
+      continue;
+    }
+
+    if (type === "rate_limit_event") {
+      const info = parseObject(event.rate_limit_info);
+      const status = asString(info.status, "");
+      if (status) {
+        rateLimitInfo = {
+          status,
+          rateLimitType: asString(info.rateLimitType, "") || null,
+          resetsAt: typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt) ? info.resetsAt : null,
+          overageStatus: asString(info.overageStatus, "") || null,
+          overageDisabledReason: asString(info.overageDisabledReason, "") || null,
+          isUsingOverage: typeof info.isUsingOverage === "boolean" ? info.isUsingOverage : null,
+        };
+      }
       continue;
     }
 
@@ -62,6 +92,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      rateLimitInfo,
     };
   }
 
@@ -82,6 +113,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    rateLimitInfo,
   };
 }
 
@@ -362,9 +394,71 @@ export function extractClaudeRetryNotBefore(
   now = new Date(),
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
-  const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
+  const match = haystack.match(CLAUDE_HARD_LIMIT_RESET_RE);
   if (!match) return null;
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+}
+
+const STRUCTURED_LIMIT_KIND_TO_MODEL_FAMILY: Record<string, string | null> = {
+  five_hour: null,
+  seven_day: null,
+  seven_day_opus: "claude-opus",
+  seven_day_sonnet: "claude-sonnet",
+  weekly: null,
+  extra_usage: null,
+};
+
+export function extractClaudeHardLimitBlock(
+  input: {
+    parsed?: Record<string, unknown> | null;
+    stdout?: string | null;
+    stderr?: string | null;
+    errorMessage?: string | null;
+    rateLimitInfo?: ClaudeRateLimitInfo | null;
+  },
+  now: Date = new Date(),
+): { limitKind: string; modelFamily: string | null; resetsAt: string | null; message: string } | null {
+  const info = input.rateLimitInfo ?? null;
+  if (info && info.status === "rejected" && info.rateLimitType) {
+    const limitKind = info.rateLimitType;
+    const modelFamily = STRUCTURED_LIMIT_KIND_TO_MODEL_FAMILY[limitKind] ?? null;
+    const resetsAt = typeof info.resetsAt === "number"
+      ? new Date(info.resetsAt * 1000).toISOString()
+      : null;
+    const raw = input.errorMessage ?? input.stderr ?? input.stdout ?? "";
+    return { limitKind, modelFamily, resetsAt, message: raw.slice(0, 1000) };
+  }
+  if (info?.status) {
+    return null;
+  }
+
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!CLAUDE_HARD_LIMIT_RE.test(haystack)) return null;
+
+  let limitKind = "generic";
+  let modelFamily: string | null = null;
+  if (/seven[-_\s]day[-_\s]opus|opus[-_\s]+weekly|hit\s+your\s+opus\s+weekly\s+limit/i.test(haystack)) {
+    limitKind = "seven_day_opus";
+    modelFamily = "claude-opus";
+  } else if (/seven[-_\s]day[-_\s]sonnet|sonnet[-_\s]+weekly|hit\s+your\s+sonnet\s+weekly\s+limit/i.test(haystack)) {
+    limitKind = "seven_day_sonnet";
+    modelFamily = "claude-sonnet";
+  } else if (/5[-\s]?hour/i.test(haystack)) {
+    limitKind = "five_hour";
+  } else if (/weekly|seven[-_\s]day/i.test(haystack)) {
+    limitKind = "seven_day";
+  } else if (/extra\s+usage/i.test(haystack)) {
+    limitKind = "extra_usage";
+  } else if (/hit\s+your\s+limit\b/i.test(haystack)) {
+    // Live CLI wording without an explicit window keyword — current observation
+    // shows the CLI uses this for the 5-hour window. Default to five_hour.
+    limitKind = "five_hour";
+  }
+
+  const resetsAt = extractClaudeRetryNotBefore(input, now)?.toISOString() ?? null;
+  const raw = input.errorMessage ?? input.stderr ?? input.stdout ?? "";
+  const message = raw.slice(0, 1000);
+  return { limitKind, modelFamily, resetsAt, message };
 }
 
 export function isClaudeTransientUpstreamError(input: {
@@ -372,7 +466,13 @@ export function isClaudeTransientUpstreamError(input: {
   stdout?: string | null;
   stderr?: string | null;
   errorMessage?: string | null;
+  rateLimitInfo?: ClaudeRateLimitInfo | null;
 }): boolean {
+  // A rejected rate_limit_event is always a hard limit, never transient.
+  if (input.rateLimitInfo && input.rateLimitInfo.status === "rejected") {
+    return false;
+  }
+
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
   if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed))) {
@@ -387,5 +487,6 @@ export function isClaudeTransientUpstreamError(input: {
 
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
+  if (CLAUDE_HARD_LIMIT_RE.test(haystack)) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
 }

@@ -347,6 +347,7 @@ export type {
   UserCompanyAccessResponse,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export type { ProviderRateLimitBlock } from "./provider_rate_limit.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,
