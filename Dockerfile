@@ -86,14 +86,16 @@ WORKDIR /vendor
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
 ARG CCROTATE_REF=306da1767a7eeac0e49c33bcbaee2706396da2e6
-# Bumped 2026-05-22 to pull in `--group=1000` for the DinD sidecar so the
-# main agent container (uid 1000) can access /var/run/docker.sock. Without
-# this, enableDocker:true provisions dind but every docker call from the
-# agent returns "permission denied". Both refs are still pre-merge on a
-# branch in the kkroo forks (PRs claude-k8s#3, opencode-k8s#16); bump again
-# once those merge to master. BLO-5492.
-ARG CLAUDE_K8S_REF=9913b7ef587a1830a6c3da5ac837c63adc8c8bad
-ARG OPENCODE_K8S_REF=0fcad7b52b0a5a1b7f63b7d387a57fd5d8ca8167
+# Re-pinned 2026-05-22 to master tips after kkroo claude-k8s#3 / #4 and
+# opencode-k8s#16 / #17 merged. Brings in:
+#  - `--group=1000` on the DinD sidecar so uid-1000 main containers can
+#    use /var/run/docker.sock (closes BLO-5492).
+#  - Raised dind defaults: dockerCpuLimit 2 → 4, dockerMemoryLimit 2Gi → 8Gi.
+#    Heavy CIAB-class agents still override to 4/16Gi explicitly; this
+#    only changes the floor for agents that enable dind without setting
+#    explicit limits.
+ARG CLAUDE_K8S_REF=8246446d2ec0a1f66f1d71519493107785a34f13
+ARG OPENCODE_K8S_REF=f640b5139f391877db19e239fdc28adde8763ede
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
