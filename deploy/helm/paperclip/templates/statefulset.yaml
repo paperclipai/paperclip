@@ -452,13 +452,20 @@ spec:
                 # claude expects $HOME to point at the user's claude dir for
                 # plugin scope=user installs (default scope).
                 export HOME="${BASE}"
+                run_claude_plugin_seed() {
+                  label="$1"
+                  shift
+                  if ! timeout 45s "$@" 2>&1; then
+                    echo "seed: ${label} failed or timed out (non-fatal)"
+                  fi
+                }
                 echo "seed: registering Claude Code plugin marketplaces"
-                "${CLAUDE_BIN}" plugin marketplace add anthropics/claude-plugins-official 2>&1 | grep -v "already" || true
+                run_claude_plugin_seed "marketplace add claude-plugins-official" "${CLAUDE_BIN}" plugin marketplace add anthropics/claude-plugins-official | grep -v "already" || true
                 if jq -e '.hindsight.source.repo == "vectorize-io/hindsight"' "${BASE}/.claude/plugins/known_marketplaces.json" >/dev/null 2>&1; then
                   echo "seed: replacing hindsight marketplace with Blockcast fork"
-                  "${CLAUDE_BIN}" plugin marketplace remove hindsight 2>&1 | grep -v "not found" || true
+                  run_claude_plugin_seed "marketplace remove old hindsight" "${CLAUDE_BIN}" plugin marketplace remove hindsight | grep -v "not found" || true
                 fi
-                "${CLAUDE_BIN}" plugin marketplace add Blockcast/hindsight 2>&1 | grep -v "already" || true
+                run_claude_plugin_seed "marketplace add Blockcast/hindsight" "${CLAUDE_BIN}" plugin marketplace add Blockcast/hindsight | grep -v "already" || true
                 echo "seed: installing Claude Code plugins (idempotent)"
                 for plugin in \
                   pr-review-toolkit@claude-plugins-official \
@@ -472,8 +479,7 @@ spec:
                   frontend-design@claude-plugins-official \
                   hindsight-memory@hindsight \
                 ; do
-                  "${CLAUDE_BIN}" plugin install "${plugin}" 2>&1 | tail -2 || \
-                    echo "seed: plugin install ${plugin} failed (non-fatal)"
+                  run_claude_plugin_seed "plugin install ${plugin}" "${CLAUDE_BIN}" plugin install "${plugin}" | tail -2 || true
                 done
                 chown -R 1000:1000 "${BASE}/.claude" 2>/dev/null || true
               else
