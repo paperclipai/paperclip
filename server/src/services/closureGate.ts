@@ -10,7 +10,8 @@ export type ClosureGateRejectionCode =
   | "PROCESS_ONLY_UNDECLARED"
   | "PATH_PROOF_MISMATCH"
   | "INVALID_PROOF_BRANCH"
-  | "INVALID_BYPASS_REASON";
+  | "INVALID_BYPASS_REASON"
+  | "INVALID_REMOTE_REACHABILITY";
 
 export type ClosureGateRejection = {
   code: ClosureGateRejectionCode;
@@ -26,14 +27,18 @@ export type ClosureGateInput = {
 
 export type ClosureGateOptions = {
   runGit?: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
+  runFetch?: (branch: string, cwd: string) => Promise<{ stdout: string; stderr: string }>;
+  fetchTimeoutMs?: number;
 };
 
 export type ClosureGateResult =
-  | { ok: true; verifiedHeadSha: string; citedPathsVerified: string[] }
+  | { ok: true; verifiedHeadSha: string; citedPathsVerified: string[]; remoteUnreachable?: boolean }
   | { ok: false; rejections: ClosureGateRejection[] };
 
-// Spec §6.4: bypass reason deny-list — PR-status reasons are not valid emergency justifications
-export const BYPASS_REASON_DENYLIST_RE = /pr.*(not.*merged|pending|open|review)/i;
+// Spec §6.4 rev 3: bypass reason deny-list — D1, D2, D3 patterns
+// D1: PR-not-merged; D2: locally-merged; D3: no upstream access
+export const BYPASS_REASON_DENYLIST_RE =
+  /pr.*(not.*merged|pending|open|review)|local.*(merge|master|main)|merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i;
 
 // SHA pattern: 7-40 hex chars at start of line followed by whitespace
 const SHA_LINE_RE = /^([0-9a-f]{7,40})[ \t]/gm;
@@ -111,12 +116,39 @@ async function defaultRunGit(
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
+// §4.4.2: fetch with AbortController-based timeout
+async function defaultRunFetch(
+  branch: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await execFileAsync(
+      "git",
+      ["-C", cwd, "fetch", "origin", branch, "--no-tags", "--no-recurse-submodules"],
+      { cwd, signal: controller.signal as AbortSignal },
+    );
+    return { stdout: result.stdout, stderr: result.stderr };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function validate(
   input: ClosureGateInput,
   repoPath: string,
   opts?: ClosureGateOptions,
 ): Promise<ClosureGateResult> {
   const runGit = opts?.runGit ?? defaultRunGit;
+  const fetchTimeoutMs =
+    opts?.fetchTimeoutMs ??
+    parseInt(process.env.PAPERCLIP_CLOSURE_GATE_FETCH_TIMEOUT_MS ?? "5000", 10);
+  const runFetch = opts?.runFetch
+    ? (branch: string, cwd: string) => opts.runFetch!(branch, cwd)
+    : (branch: string, cwd: string) => defaultRunFetch(branch, cwd, fetchTimeoutMs);
+
   const rejections: ClosureGateRejection[] = [];
 
   if (!input.text || input.text.trim() === "") {
@@ -217,5 +249,53 @@ export async function validate(
   if (rejections.length > 0) {
     return { ok: false, rejections };
   }
-  return { ok: true, verifiedHeadSha: headSha, citedPathsVerified: verifiedPaths };
+
+  // §4.4.2: remote-reachability gate (rev 3, UPG-840)
+  // Fetch then check merge-base --is-ancestor. Fail-open on fetch errors.
+  let remoteUnreachable = false;
+  try {
+    await runFetch(input.defaultBranch, repoPath);
+    // merge-base --is-ancestor exits 0 if ancestor, 1 if not
+    try {
+      await runGit(
+        ["merge-base", "--is-ancestor", headSha, `origin/${input.defaultBranch}`],
+        repoPath,
+      );
+      // exit 0 → sha is on remote branch, continue
+    } catch (mergeBaseErr: unknown) {
+      const exitCode =
+        mergeBaseErr &&
+        typeof mergeBaseErr === "object" &&
+        "code" in mergeBaseErr
+          ? (mergeBaseErr as { code: unknown }).code
+          : undefined;
+      if (exitCode === 1) {
+        // Definitive rejection: sha is not an ancestor of origin/<defaultBranch>
+        let remoteSha = "unknown";
+        try {
+          const r = await runGit(["rev-parse", "--short", `origin/${input.defaultBranch}`], repoPath);
+          remoteSha = r.stdout.trim();
+        } catch {
+          // ignore
+        }
+        return {
+          ok: false,
+          rejections: [
+            {
+              code: "INVALID_REMOTE_REACHABILITY",
+              message: `SHA ${headSha} is not reachable from origin/${input.defaultBranch} (remote HEAD: ${remoteSha}). The §B predicate requires the cited sha to be on the externally-observable remote-tracking branch — merge your branch to origin/${input.defaultBranch} before closing.`,
+              detail: { sha: headSha, remoteRef: `origin/${input.defaultBranch}`, remoteSha },
+            },
+          ],
+        };
+      }
+      // exit != 1 (e.g. 128 — bad ref, remote/master doesn't exist yet): fail-open
+      remoteUnreachable = true;
+    }
+  } catch {
+    // fetch failed (network error, timeout, bad remote URL): fail-open
+    remoteUnreachable = true;
+  }
+
+  return { ok: true, verifiedHeadSha: headSha, citedPathsVerified: verifiedPaths, remoteUnreachable };
 }

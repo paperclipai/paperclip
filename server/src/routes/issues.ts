@@ -8,6 +8,7 @@ import {
   activityLog,
   executionWorkspaces,
   heartbeatRuns,
+  issueClosureGateOverrides,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -3775,6 +3776,21 @@ export function issueRoutes(
           if (!closureGateShadow) {
             res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: gateResult.rejections });
             return;
+          }
+        } else if (gateResult.remoteUnreachable) {
+          // §4.4.2 fail-open: fetch failed — log warn and best-effort audit row
+          logger.warn({ issueId: existing.id }, "closure_gate.remote_unreachable");
+          try {
+            await db.insert(issueClosureGateOverrides).values({
+              issueId: existing.id,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              overrideReason: null,
+              auditFlag: "REMOTE_UNREACHABLE",
+              detectorFindings: [],
+            });
+          } catch (err: unknown) {
+            logger.warn({ issueId: existing.id, err }, "closure_gate.remote_unreachable_audit_insert_failed");
           }
         }
       }

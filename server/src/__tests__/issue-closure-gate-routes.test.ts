@@ -206,6 +206,40 @@ function createTmpGitRepo(opts: { branch?: string; filePath?: string } = {}) {
   return { repoPath: dir, headSha: sha, branch };
 }
 
+// Creates a working repo with a bare "remote". The working commit is on local
+// branch only (not pushed to remote) unless opts.pushCommit is true.
+function createTmpRepoWithRemote(opts: { branch?: string; pushCommit?: boolean } = {}) {
+  const branch = opts.branch ?? "master";
+  // Bare remote
+  const remoteDir = mkdtempSync(join(tmpdir(), "closure-gate-remote-"));
+  execSync("git init --bare", { cwd: remoteDir });
+  // Working repo
+  const workDir = mkdtempSync(join(tmpdir(), "closure-gate-work-"));
+  execSync(`git init -b ${branch}`, { cwd: workDir });
+  execSync("git config user.email 'test@test.com'", { cwd: workDir });
+  execSync("git config user.name 'Test'", { cwd: workDir });
+  execSync(`git remote add origin ${remoteDir}`, { cwd: workDir });
+  // Initial commit — pushed so remote has the branch ref
+  writeFileSync(join(workDir, "initial.txt"), "initial\n");
+  execSync("git add .", { cwd: workDir });
+  execSync("git commit -m 'initial'", { cwd: workDir });
+  execSync(`git push origin ${branch}`, { cwd: workDir });
+  // Working commit (the sha we'll reference in the closing comment)
+  const filePath = tmpRepoFilePath;
+  const parts = filePath.split("/");
+  if (parts.length > 1) {
+    mkdirSync(join(workDir, parts.slice(0, -1).join("/")), { recursive: true });
+  }
+  writeFileSync(join(workDir, filePath), "// closure gate\n");
+  execSync("git add .", { cwd: workDir });
+  execSync("git commit -m 'feat: add closure gate'", { cwd: workDir });
+  const sha = execSync("git log --oneline -1", { cwd: workDir }).toString().trim().split(" ")[0];
+  if (opts.pushCommit) {
+    execSync(`git push origin ${branch}`, { cwd: workDir });
+  }
+  return { repoPath: workDir, remoteDir, headSha: sha, branch };
+}
+
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
     id: issueId,
@@ -526,6 +560,107 @@ describe.sequential("issue closure gate routes", () => {
     expect(codes).toContain("INVALID_PROOF_BRANCH");
     const rejection = res.body.rejections.find((r: { code: string }) => r.code === "INVALID_PROOF_BRANCH");
     expect(rejection.detail?.capturedRef).toBe("<missing>");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  // (n) Real sha on local branch NOT pushed to remote → 422 INVALID_REMOTE_REACHABILITY (rev 3, UPG-840)
+  it("(n) rejects INVALID_REMOTE_REACHABILITY when sha is local-only (not pushed to remote)", async () => {
+    const { repoPath, remoteDir, headSha } = createTmpRepoWithRemote({ pushCommit: false });
+    altRepoDirs.push(repoPath, remoteDir);
+    workspaceCwdOverride = repoPath;
+
+    const comment = [
+      `${headSha} feat: add closure gate`,
+      `git log master --oneline -- ${tmpRepoFilePath}`,
+      `${headSha} feat: add closure gate`,
+    ].join("\n");
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_REMOTE_REACHABILITY");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  // (o) Real sha pushed to remote → 200 OK (rev 3, UPG-840)
+  it("(o) accepts closure when sha is reachable from origin/<defaultBranch>", async () => {
+    const { repoPath, remoteDir, headSha } = createTmpRepoWithRemote({ pushCommit: true });
+    altRepoDirs.push(repoPath, remoteDir);
+    workspaceCwdOverride = repoPath;
+
+    const comment = [
+      `${headSha} feat: add closure gate`,
+      `git log master --oneline -- ${tmpRepoFilePath}`,
+      `${headSha} feat: add closure gate`,
+    ].join("\n");
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  // (p) Fetch fails (unreachable remote URL) → 200 OK fail-open, warn-log emitted (rev 3, UPG-840)
+  it("(p) fail-open and accepts closure when git fetch to remote fails", async () => {
+    // Point working repo's origin at a non-existent path → fetch fails immediately
+    const { repoPath, remoteDir, headSha } = createTmpRepoWithRemote({ pushCommit: true });
+    altRepoDirs.push(repoPath, remoteDir);
+    // Break origin so fetch always fails
+    execSync("git remote set-url origin /nonexistent-bare-repo-xyz", { cwd: repoPath });
+    workspaceCwdOverride = repoPath;
+
+    const comment = [
+      `${headSha} feat: add closure gate`,
+      `git log master --oneline -- ${tmpRepoFilePath}`,
+      `${headSha} feat: add closure gate`,
+    ].join("\n");
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment });
+
+    // Fail-open: closure proceeds despite fetch failure
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  // (q) bypassClosureGate reason matches D2 (locally-merged) → 422 INVALID_BYPASS_REASON (rev 3, UPG-840)
+  it("(q) rejects INVALID_BYPASS_REASON for D2 deny-list pattern (locally-merged)", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        comment: `${tmpRepoHeadSha} done`,
+        bypassClosureGate: { reason: "Merged to local master, GitHub push blocked" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_BYPASS_REASON");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  // (r) bypassClosureGate reason matches D3 (no upstream access) → 422 INVALID_BYPASS_REASON (rev 3, UPG-840)
+  it("(r) rejects INVALID_BYPASS_REASON for D3 deny-list pattern (no upstream access)", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "done",
+        comment: `${tmpRepoHeadSha} done`,
+        bypassClosureGate: { reason: "No upstream maintainer access to merge" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("CLOSURE_GATE_REJECTED");
+    const codes = res.body.rejections.map((r: { code: string }) => r.code);
+    expect(codes).toContain("INVALID_BYPASS_REASON");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });
