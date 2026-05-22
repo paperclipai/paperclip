@@ -1271,6 +1271,32 @@ export function issueRoutes(
     throw unauthorized();
   }
 
+  function isBoardSelfOwnerLandingRequest(input: {
+    req: Request;
+    requestedAssigneeAgentId: string | null | undefined;
+    requestedAssigneeUserId: string | null | undefined;
+    currentAssigneeAgentId?: string | null;
+    currentAssigneeUserId?: string | null;
+  }) {
+    if (input.req.actor.type !== "board") return false;
+    if (input.requestedAssigneeAgentId != null) return false;
+
+    const actorUserId = input.req.actor.userId;
+    const currentAssigneeAgentId = input.currentAssigneeAgentId ?? null;
+    const currentAssigneeUserId = input.currentAssigneeUserId ?? null;
+
+    if (input.requestedAssigneeUserId === actorUserId) {
+      return currentAssigneeAgentId === null
+        && (currentAssigneeUserId === null || currentAssigneeUserId === actorUserId);
+    }
+
+    if (input.requestedAssigneeUserId === null) {
+      return currentAssigneeAgentId === null && currentAssigneeUserId === actorUserId;
+    }
+
+    return false;
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -3145,7 +3171,14 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (
+      (req.body.assigneeAgentId || req.body.assigneeUserId)
+      && !isBoardSelfOwnerLandingRequest({
+        req,
+        requestedAssigneeAgentId: req.body.assigneeAgentId as string | null | undefined,
+        requestedAssigneeUserId: req.body.assigneeUserId as string | null | undefined,
+      })
+    ) {
       await assertCanAssignTasks(req, companyId);
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
@@ -3241,7 +3274,14 @@ export function issueRoutes(
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (
+      (req.body.assigneeAgentId || req.body.assigneeUserId)
+      && !isBoardSelfOwnerLandingRequest({
+        req,
+        requestedAssigneeAgentId: req.body.assigneeAgentId as string | null | undefined,
+        requestedAssigneeUserId: req.body.assigneeUserId as string | null | undefined,
+      })
+    ) {
       await assertCanAssignTasks(req, parent.companyId);
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
@@ -3628,9 +3668,18 @@ export function issueRoutes(
       typeof nextAssigneeUserId === "string" &&
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
+    const isBoardUsingSelfOwnerLanding =
+      assigneeWillChange &&
+      isBoardSelfOwnerLandingRequest({
+        req,
+        requestedAssigneeAgentId: nextAssigneeAgentId,
+        requestedAssigneeUserId: nextAssigneeUserId,
+        currentAssigneeAgentId: existing.assigneeAgentId,
+        currentAssigneeUserId: existing.assigneeUserId,
+      });
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentReturningIssueToCreator && !isBoardUsingSelfOwnerLanding) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
