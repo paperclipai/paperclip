@@ -20,12 +20,21 @@ const cheapProfile: AdapterModelProfileDefinition = {
 };
 
 describe("heartbeat model profile application", () => {
-  it("uses the Codex local adapter cheap default when the agent has no runtime override", async () => {
+  it("keeps the Codex local primary model when the agent has no runtime cheap override", async () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
       agentRuntimeConfig: {},
       issueModelProfile: "cheap",
       contextSnapshot: {},
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: {
+        model: "gpt-5.4",
+        modelReasoningEffort: "high",
+      },
+      modelProfile,
+      issueAdapterConfig: null,
     });
 
     expect(modelProfile).toMatchObject({
@@ -35,9 +44,13 @@ describe("heartbeat model profile application", () => {
       configSource: "adapter_default",
       fallbackReason: null,
       adapterConfig: {
-        model: "gpt-5.3-codex-spark",
-        modelReasoningEffort: "high",
+        modelReasoningEffort: "low",
       },
+    });
+    expect(modelProfile.adapterConfig).not.toHaveProperty("model");
+    expect(merged).toEqual({
+      model: "gpt-5.4",
+      modelReasoningEffort: "low",
     });
   });
 
