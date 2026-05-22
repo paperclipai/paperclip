@@ -48,7 +48,7 @@ jobs:
       # Cluster pulls exclusively from harbor.blockcast.net; ghcr.io
       # mirroring was removed because nothing in the deploy path consumes it.
       - name: Login to Harbor
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: harbor.blockcast.net
           username: ${{ secrets.HARBOR_USERNAME }}
@@ -60,14 +60,14 @@ jobs:
       # tripping master builds with `failed to fetch oauth token: denied`.
       # Authenticated pulls use the per-repo limit which is high enough.
       - name: Login to ghcr.io for base-image pulls
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           # Tear the builder down at end-of-job so a corrupt content-store
           # blob can't survive into the next run. Commit 822ebd0 bumped
@@ -88,7 +88,7 @@ jobs:
       # Dockerfile's `COPY vendor/*` lines).
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             harbor.blockcast.net/paperclip/paperclip
@@ -98,7 +98,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
