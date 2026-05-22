@@ -52,6 +52,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
+    hasActiveRoutineParent: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -122,6 +123,23 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "explicit blocker path owns the next action",
     });
+  });
+
+  it("suppresses recovery when the issue parents an active routine", () => {
+    expect(decide({ hasActiveRoutineParent: true })).toEqual({
+      kind: "skip",
+      reason: "suppressed by active routine parentage",
+    });
+  });
+
+  it("still queues recovery when only paused or disabled routines parent the issue", () => {
+    const decision = decide({ hasActiveRoutineParent: false });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("still queues recovery when no routines parent the issue", () => {
+    const decision = decide({ hasActiveRoutineParent: false });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("does not queue when a successful run has no progress signal", () => {
