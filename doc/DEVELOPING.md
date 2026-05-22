@@ -43,6 +43,8 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
@@ -113,6 +115,8 @@ pnpm test:release-smoke
 
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
 
+For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -153,6 +157,27 @@ See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) 
 
 For a separate review-oriented container that keeps `codex`/`claude` login state in Docker volumes and checks out PRs into an isolated scratch workspace, see `doc/UNTRUSTED-PR-REVIEW.md`.
 
+## Local Instance Layout
+
+Every local install keeps runtime state directly under the selected instance root:
+
+```text
+~/.paperclip/instances/default/                  # instance root
+  config.json                                    # runtime config
+  .env                                           # instance env file
+  db/                                            # embedded PostgreSQL data
+  data/
+    storage/                                     # local_disk uploads
+    backups/                                     # automatic DB backups
+  logs/
+  secrets/master.key                             # local_encrypted master key
+  workspaces/<agent-id>/                         # default agent workspaces
+  projects/                                      # project execution workspaces
+  companies/<company-id>/codex-home/             # per-company codex_local home
+```
+
+`PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
+
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
@@ -160,7 +185,7 @@ The server will automatically use embedded PostgreSQL and persist data at:
 
 - `~/.paperclip/instances/default/db`
 
-Override home and instance:
+Override home or instance:
 
 ```sh
 PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
@@ -193,6 +218,8 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 - `~/.paperclip/instances/default/companies/<company-id>/codex-home`
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
+
+Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
 ## Worktree-local Instances
 
@@ -274,7 +301,7 @@ paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
 
-Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install:
+Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install. Point `--from-config` at the instance config:
 
 ```sh
 cd /path/to/paperclip/.paperclip/worktrees/PAP-884-ai-commits-component
@@ -415,7 +442,9 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Paperclip can run automatic DB backups on a timer. Defaults:
+Paperclip can run automatic logical database backups on a timer. These backups cover
+non-system database schemas, including migration history and plugin-owned database
+schemas. Defaults:
 
 - enabled
 - every 60 minutes
@@ -443,6 +472,10 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
 
+DB backups are not full instance filesystem backups. For full local disaster
+recovery, also back up local storage files and the local encrypted secrets key if
+those providers are enabled.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
@@ -450,6 +483,7 @@ Agent env vars now support secret references. By default, secret values are stor
 - Default local key path: `~/.paperclip/instances/default/secrets/master.key`
 - Override key material directly: `PAPERCLIP_SECRETS_MASTER_KEY`
 - Override key file path: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`
+- Back up the key file and database together; either one alone is not enough to restore local encrypted secrets.
 
 Strict mode (recommended outside local trusted machines):
 
@@ -458,12 +492,20 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 ```
 
 When strict mode is enabled, sensitive env keys (for example `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
+Authenticated deployments default strict mode on unless explicitly overridden.
 
 CLI configuration support:
 
 - `pnpm paperclipai onboard` writes a default `secrets` config section (`local_encrypted`, strict mode off, key file path set) and creates a local key file when needed.
 - `pnpm paperclipai configure --section secrets` lets you update provider/strict mode/key path and creates the local key file when needed.
-- `pnpm paperclipai doctor` validates secrets adapter configuration and can create a missing local key file with `--repair`.
+- `pnpm paperclipai doctor` validates secrets adapter configuration, can create a missing local key file with `--repair`, and reports missing AWS Secrets Manager bootstrap env when that provider is selected.
+- Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
+
+Per-company provider vaults are configured in the board UI under
+`Company Settings → Secrets → Provider vaults`, backed by
+`/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
+vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
+for the operator model.
 
 Migration helper for existing inline env secrets:
 

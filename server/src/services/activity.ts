@@ -1,9 +1,11 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   documentRevisions,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -21,6 +23,15 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  limit?: number;
+}
+
+const DEFAULT_ACTIVITY_LIMIT = 100;
+const MAX_ACTIVITY_LIMIT = 500;
+
+export function normalizeActivityLimit(limit: number | undefined) {
+  if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
+  return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
 }
 
 export function activityService(db: Db) {
@@ -316,6 +327,7 @@ export function activityService(db: Db) {
   return {
     list: (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId)];
+      const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {
         conditions.push(eq(activityLog.agentId, filters.agentId));
@@ -347,6 +359,7 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(activityLog.createdAt))
+        .limit(limit)
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
@@ -364,7 +377,7 @@ export function activityService(db: Db) {
 
     runsForIssue: async (companyId: string, issueId: string) => {
       scheduleRunLivenessBackfill(companyId, issueId);
-      return db
+      const runs = await db
         .select({
           runId: heartbeatRuns.id,
           status: heartbeatRuns.status,
@@ -377,11 +390,16 @@ export function activityService(db: Db) {
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+          scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+          scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
           livenessState: heartbeatRuns.livenessState,
           livenessReason: heartbeatRuns.livenessReason,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -408,6 +426,94 @@ export function activityService(db: Db) {
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
+
+      if (runs.length === 0) return runs;
+      const runIds = runs.map((run) => run.runId);
+      if (runIds.length === 0) return runs;
+
+      const exhaustionRows = await db
+        .select({
+          runId: heartbeatRunEvents.runId,
+          message: heartbeatRunEvents.message,
+        })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            inArray(heartbeatRunEvents.runId, runIds),
+            eq(heartbeatRunEvents.eventType, "lifecycle"),
+            sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          ),
+        )
+        .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id));
+
+      const retryExhaustedReasonByRunId = new Map<string, string>();
+      for (const row of exhaustionRows) {
+        if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
+        retryExhaustedReasonByRunId.set(row.runId, row.message);
+      }
+
+      const leaseRows = await db
+        .select({
+          lease: environmentLeases,
+          environment: {
+            id: environments.id,
+            name: environments.name,
+            driver: environments.driver,
+          },
+        })
+        .from(environmentLeases)
+        .innerJoin(environments, eq(environmentLeases.environmentId, environments.id))
+        .where(
+          and(
+            eq(environmentLeases.companyId, companyId),
+            inArray(environmentLeases.heartbeatRunId, runIds),
+          ),
+        )
+        .orderBy(desc(environmentLeases.lastUsedAt), desc(environmentLeases.createdAt));
+
+      const leaseByRunId = new Map<string, (typeof leaseRows)[number]>();
+      for (const row of leaseRows) {
+        if (row.lease.heartbeatRunId && !leaseByRunId.has(row.lease.heartbeatRunId)) {
+          leaseByRunId.set(row.lease.heartbeatRunId, row);
+        }
+      }
+
+      return runs.map((run) => {
+        const leaseRow = leaseByRunId.get(run.runId);
+        const leaseMetadata = leaseRow?.lease.metadata ?? null;
+        const workspacePath =
+          typeof leaseMetadata?.remoteCwd === "string" && leaseMetadata.remoteCwd.trim().length > 0
+            ? leaseMetadata.remoteCwd
+            : typeof leaseMetadata?.remoteWorkspacePath === "string" && leaseMetadata.remoteWorkspacePath.trim().length > 0
+              ? leaseMetadata.remoteWorkspacePath
+              : null;
+        return {
+          ...run,
+          environment: leaseRow
+            ? {
+                id: leaseRow.environment.id,
+                name: leaseRow.environment.name,
+                driver: leaseRow.environment.driver,
+              }
+            : null,
+          environmentLease: leaseRow
+            ? {
+                id: leaseRow.lease.id,
+                status: leaseRow.lease.status,
+                leasePolicy: leaseRow.lease.leasePolicy,
+                provider: leaseRow.lease.provider,
+                providerLeaseId: leaseRow.lease.providerLeaseId,
+                executionWorkspaceId: leaseRow.lease.executionWorkspaceId,
+                workspacePath,
+                failureReason: leaseRow.lease.failureReason,
+                cleanupStatus: leaseRow.lease.cleanupStatus,
+                acquiredAt: leaseRow.lease.acquiredAt,
+                releasedAt: leaseRow.lease.releasedAt,
+              }
+            : null,
+          retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+        };
+      });
     },
 
     issuesForRun: async (runId: string) => {

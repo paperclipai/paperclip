@@ -1311,6 +1311,7 @@ async function seedWorktreeDatabase(input: {
       backupDir: path.resolve(input.targetPaths.backupDir, "seed"),
       retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: `${input.instanceId}-seed`,
+      backupEngine: "javascript",
       includeMigrationJournal: true,
       excludeTables: seedPlan.excludedTables,
       nullifyColumns: seedPlan.nullifyColumns,
@@ -1384,7 +1385,12 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
 
   if (opts.force) {
-    rmSync(paths.repoConfigDir, { recursive: true, force: true });
+    // Only remove the specific files we're about to rewrite, not the whole
+    // repoConfigDir — that directory can contain sibling state such as
+    // <repo>/.paperclip/worktrees/ holding every repo-managed worktree
+    // checkout, and a recursive rmSync here would nuke them all.
+    rmSync(paths.configPath, { force: true });
+    rmSync(paths.envPath, { force: true });
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 

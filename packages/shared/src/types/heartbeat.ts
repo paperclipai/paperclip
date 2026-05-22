@@ -37,8 +37,16 @@ export interface HeartbeatRun {
   processPid: number | null;
   processGroupId?: number | null;
   processStartedAt: Date | null;
+  lastOutputAt: Date | null;
+  lastOutputSeq: number;
+  lastOutputStream: "stdout" | "stderr" | null;
+  lastOutputBytes: number | null;
   retryOfRunId: string | null;
   processLossRetryCount: number;
+  scheduledRetryAt?: Date | null;
+  scheduledRetryAttempt?: number;
+  scheduledRetryReason?: string | null;
+  retryExhaustedReason?: string | null;
   livenessState: RunLivenessState | null;
   livenessReason: string | null;
   continuationAttempt: number;
@@ -47,6 +55,29 @@ export interface HeartbeatRun {
   contextSnapshot: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+  outputSilence?: HeartbeatRunOutputSilence;
+}
+
+export type HeartbeatRunOutputSilenceLevel =
+  | "not_applicable"
+  | "ok"
+  | "suspicious"
+  | "critical"
+  | "snoozed";
+
+export interface HeartbeatRunOutputSilence {
+  lastOutputAt: Date | string | null;
+  lastOutputSeq: number;
+  lastOutputStream: "stdout" | "stderr" | null;
+  silenceStartedAt: Date | string | null;
+  silenceAgeMs: number | null;
+  level: HeartbeatRunOutputSilenceLevel;
+  suspicionThresholdMs: number;
+  criticalThresholdMs: number;
+  snoozedUntil: Date | string | null;
+  evaluationIssueId: string | null;
+  evaluationIssueIdentifier: string | null;
+  evaluationIssueAssigneeAgentId: string | null;
 }
 
 export interface AgentWakeupSkipped {

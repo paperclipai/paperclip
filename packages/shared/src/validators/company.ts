@@ -1,14 +1,23 @@
 import { z } from "zod";
-import { COMPANY_STATUSES } from "../constants.js";
+import {
+  COMPANY_STATUSES,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+} from "../constants.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
+const attachmentMaxBytesSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
+  attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
@@ -25,6 +34,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

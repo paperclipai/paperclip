@@ -19,6 +19,7 @@ import { PathInstructionsModal } from "@/components/PathInstructionsModal";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
+import type { Agent } from "@paperclipai/shared";
 import {
   storybookAgents,
   storybookAuthSession,
@@ -328,7 +329,7 @@ function DialogBackdropFrame({
 }
 
 function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.setQueryData(queryKeys.companies.all, storybookCompanies);
+  queryClient.setQueryData(queryKeys.companies.all, { companies: storybookCompanies, unauthorized: false });
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(COMPANY_ID), storybookProjects);
@@ -382,6 +383,7 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
         supportsSkills: true,
         supportsLocalAgentJwt: true,
         requiresMaterializedRuntimeSkills: false,
+        supportsModelProfiles: true,
       },
     },
     {
@@ -396,6 +398,7 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
         supportsSkills: true,
         supportsLocalAgentJwt: true,
         requiresMaterializedRuntimeSkills: false,
+        supportsModelProfiles: true,
       },
     },
   ]);
@@ -403,7 +406,40 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
     { id: "gpt-5.4", label: "GPT-5.4" },
     { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
   ]);
+  queryClient.setQueryData(queryKeys.agents.adapterModelProfiles(COMPANY_ID, "codex_local"), [
+    {
+      key: "cheap",
+      label: "Cheap",
+      adapterConfig: { model: "gpt-5.4-mini" },
+      source: "adapter_default",
+    },
+  ]);
 }
+
+const HERMES_AGENT: Agent = {
+  id: "agent-hermes",
+  companyId: COMPANY_ID,
+  name: "HermesRouter",
+  urlKey: "hermesrouter",
+  role: "engineer",
+  title: "Lightweight Routing",
+  icon: "code",
+  status: "idle",
+  reportsTo: "agent-cto",
+  capabilities: "Hermes-backed assistant on an adapter without the cheap-profile contract.",
+  adapterType: "opencode_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 60_000,
+  spentMonthlyCents: 9_000,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: false },
+  lastHeartbeatAt: new Date("2026-04-29T08:30:00.000Z"),
+  metadata: null,
+  createdAt: new Date("2026-04-12T08:00:00.000Z"),
+  updatedAt: new Date("2026-04-29T08:30:00.000Z"),
+};
 
 function StorybookDialogFixtures({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -655,6 +691,128 @@ function ImageGalleryModalStory() {
   );
 }
 
+type CheapLaneVariant = "primary" | "cheap" | "custom" | "unsupported";
+
+function clickModelLaneButton(label: "Primary" | "Cheap" | "Custom") {
+  const radiogroup = document.querySelector<HTMLElement>("[aria-label='Model lane']");
+  if (!radiogroup) return false;
+  const buttons = Array.from(radiogroup.querySelectorAll<HTMLButtonElement>("button[role='radio']"));
+  const button = buttons.find((candidate) => candidate.textContent?.trim() === label);
+  if (!button) return false;
+  button.click();
+  return true;
+}
+
+function findAssigneeOptionsButton() {
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+  return (
+    buttons.find((candidate) => /(Codex|Claude|OpenCode|Agent) options$/.test(candidate.textContent?.trim() ?? "")) ?? null
+  );
+}
+
+function useCheapLaneAdapterOverrides(variant: CheapLaneVariant) {
+  const queryClient = useQueryClient();
+  useLayoutEffect(() => {
+    if (variant !== "unsupported") return;
+    queryClient.setQueryData(
+      queryKeys.agents.list(COMPANY_ID),
+      [...storybookAgents, HERMES_AGENT],
+    );
+    queryClient.setQueryData(queryKeys.adapters.all, [
+      {
+        type: "codex_local",
+        label: "Codex local",
+        source: "builtin",
+        modelsCount: 5,
+        loaded: true,
+        disabled: false,
+        capabilities: {
+          supportsInstructionsBundle: true,
+          supportsSkills: true,
+          supportsLocalAgentJwt: true,
+          requiresMaterializedRuntimeSkills: false,
+          supportsModelProfiles: true,
+        },
+      },
+      {
+        type: "opencode_local",
+        label: "OpenCode local",
+        source: "builtin",
+        modelsCount: 2,
+        loaded: true,
+        disabled: false,
+        capabilities: {
+          supportsInstructionsBundle: true,
+          supportsSkills: true,
+          supportsLocalAgentJwt: true,
+          requiresMaterializedRuntimeSkills: true,
+          supportsModelProfiles: false,
+        },
+      },
+    ]);
+    queryClient.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "opencode_local"), [
+      { id: "anthropic/claude-haiku-4-5", label: "Claude Haiku 4.5" },
+      { id: "openai/gpt-5.4-mini", label: "GPT-5.4 Mini" },
+    ]);
+  }, [queryClient, variant]);
+}
+
+function CheapLaneIssueDialogOpener({ variant }: { variant: CheapLaneVariant }) {
+  const { openNewIssue } = useDialog();
+  useCheapLaneAdapterOverrides(variant);
+
+  const assigneeAgentId = variant === "unsupported" ? "agent-hermes" : "agent-codex";
+  const title =
+    variant === "unsupported"
+      ? "Route research summary to HermesRouter"
+      : "Generate weekly Storybook coverage report";
+  const description =
+    variant === "unsupported"
+      ? "HermesRouter runs on an adapter that does not advertise a cheap profile, so the Cheap lane should disappear instead of being greyed."
+      : "Lower-cost runs should still pick up the agent's cheap profile so the model badge can show the requested lane.";
+
+  useOpenWhenCompanyReady(() => {
+    openNewIssue({
+      title,
+      description,
+      status: "todo",
+      priority: "medium",
+      projectId: "project-board-ui",
+      projectWorkspaceId: "workspace-board-ui",
+      assigneeAgentId,
+    });
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const timers: number[] = [];
+
+    timers.push(
+      window.setTimeout(() => {
+        if (cancelled) return;
+        const optionsButton = findAssigneeOptionsButton();
+        optionsButton?.click();
+      }, 300),
+    );
+
+    if (variant === "cheap" || variant === "custom") {
+      timers.push(
+        window.setTimeout(() => {
+          if (cancelled) return;
+          clickModelLaneButton(variant === "cheap" ? "Cheap" : "Custom");
+        }, 600),
+      );
+    }
+
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [variant]);
+
+  return <NewIssueDialog />;
+}
+
 function PathInstructionsModalStory() {
   return (
     <DialogStory
@@ -722,6 +880,62 @@ export const NewIssueValidationError: Story = {
       badges={["validation", "422", "error"]}
     >
       <IssueDialogOpener variant="validation" />
+    </DialogStory>
+  ),
+};
+
+export const NewIssueCheapLanePrimary: Story = {
+  name: "New Issue - Cheap lane (Primary)",
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Model lane segmented control - Primary selected"
+      description="Codex assignee with the assignee-options drawer expanded so the Primary | Cheap | Custom segmented control is visible. Default helper copy is shown."
+      badges={["model lane", "primary", "default"]}
+    >
+      <CheapLaneIssueDialogOpener variant="primary" />
+    </DialogStory>
+  ),
+};
+
+export const NewIssueCheapLaneCheap: Story = {
+  name: "New Issue - Cheap lane (Cheap)",
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Model lane segmented control - Cheap selected"
+      description='Codex assignee with the Cheap lane selected so the helper line "Sends modelProfile: \"cheap\" · adapter default …" is visible.'
+      badges={["model lane", "cheap", "modelProfile"]}
+    >
+      <CheapLaneIssueDialogOpener variant="cheap" />
+    </DialogStory>
+  ),
+};
+
+export const NewIssueCheapLaneCustom: Story = {
+  name: "New Issue - Cheap lane (Custom)",
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Model lane segmented control - Custom selected"
+      description="Custom selected so the explicit model picker and thinking-effort sub-fields render the way they did before the cheap lane was added."
+      badges={["model lane", "custom", "regression"]}
+    >
+      <CheapLaneIssueDialogOpener variant="custom" />
+    </DialogStory>
+  ),
+};
+
+export const NewIssueCheapLaneUnsupported: Story = {
+  name: "New Issue - Cheap lane (Unsupported adapter)",
+  render: () => (
+    <DialogStory
+      eyebrow="NewIssueDialog"
+      title="Model lane on an adapter without supportsModelProfiles"
+      description="HermesRouter runs on opencode_local with supportsModelProfiles disabled, so the Cheap option should be hidden — the segmented control collapses to Primary | Custom rather than showing a greyed Cheap entry."
+      badges={["model lane", "unsupported", "cheap hidden"]}
+    >
+      <CheapLaneIssueDialogOpener variant="unsupported" />
     </DialogStory>
   ),
 };

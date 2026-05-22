@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.js";
+import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -15,27 +17,23 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
   createRecorder: vi.fn(),
 }));
 
-function registerServiceMocks() {
-  vi.doMock("../services/index.js", () => ({
-    executionWorkspaceService: () => mockExecutionWorkspaceService,
-    logActivity: vi.fn(async () => undefined),
-    workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
-}
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
-async function createApp() {
-  const [{ executionWorkspaceRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/execution-workspaces.js")>("../routes/execution-workspaces.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+vi.mock("../services/index.js", () => ({
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  logActivity: mockLogActivity,
+  workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+function createApp(companyIds = ["company-1"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
+      companyIds,
+      source: "session",
       isInstanceAdmin: false,
     };
     next();
@@ -45,15 +43,9 @@ async function createApp() {
   return app;
 }
 
-describe("execution workspace routes", () => {
+describe.sequential("execution workspace routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/execution-workspaces.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerServiceMocks();
-    vi.resetAllMocks();
+    vi.clearAllMocks();
     mockExecutionWorkspaceService.list.mockResolvedValue([]);
     mockExecutionWorkspaceService.listSummaries.mockResolvedValue([
       {
@@ -63,10 +55,11 @@ describe("execution workspace routes", () => {
         projectWorkspaceId: null,
       },
     ]);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
-    const res = await request(await createApp())
+    const res = await request(createApp())
       .get("/api/companies/company-1/execution-workspaces?summary=true&reuseEligible=true");
 
     expect(res.status).toBe(200);
@@ -87,4 +80,5 @@ describe("execution workspace routes", () => {
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
+
 });

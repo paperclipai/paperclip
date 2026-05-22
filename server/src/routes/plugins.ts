@@ -66,6 +66,17 @@ import {
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import {
+  findLocalFolderDeclaration,
+  getStoredLocalFolders,
+  inspectPluginLocalFolder,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+} from "../services/plugin-local-folders.js";
+import {
+  extractSecretRefPathsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -109,7 +120,7 @@ interface AvailablePluginExample {
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  tag: "example" | "first-party";
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -141,6 +152,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
+  {
+    packageName: "@paperclipai/plugin-workspace-diff",
+    pluginKey: "paperclip.workspace-diff",
+    displayName: "Workspace Changes",
+    description: "First-party workspace Changes tab backed by plugin-local Git diff computation.",
+    localPath: "packages/plugins/plugin-workspace-diff",
+    tag: "first-party",
+  },
   {
     packageName: "@paperclipai/plugin-hello-world-example",
     pluginKey: "paperclip.hello-world-example",
@@ -188,9 +207,9 @@ function listBundledPluginExamples(): AvailablePluginExample[] {
  *
  * Lookup order:
  * - UUID-like IDs: getById first, then getByKey.
- * - Scoped package keys (e.g. "@scope/name"): getByKey only, never getById.
- * - Other non-UUID IDs: try getById first (test/memory registries may allow this),
- *   then fallback to getByKey. Any UUID parse error from getById is ignored.
+ * - All non-UUID values: getByKey only, never getById. The persisted plugin
+ *   ID column is a PostgreSQL UUID, so probing it with keys such as
+ *   "acme.plugin" raises a database cast error before a key lookup can happen.
  *
  * @param registry - The plugin registry service instance
  * @param pluginId - Either a database UUID or plugin key (manifest id)
@@ -201,27 +220,13 @@ async function resolvePlugin(
   pluginId: string,
 ) {
   const isUuid = UUID_REGEX.test(pluginId);
-  const isScopedPackageKey = pluginId.startsWith("@") || pluginId.includes("/");
 
-  // Scoped package IDs are valid plugin keys but invalid UUIDs.
-  // Skip getById() entirely to avoid Postgres uuid parse errors.
-  if (isScopedPackageKey && !isUuid) {
+  if (!isUuid) {
     return registry.getByKey(pluginId);
   }
 
-  try {
-    const byId = await registry.getById(pluginId);
-    if (byId) return byId;
-  } catch (error) {
-    const maybeCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    // Ignore invalid UUID cast errors and continue with key lookup.
-    if (maybeCode !== "22P02") {
-      throw error;
-    }
-  }
+  const byId = await registry.getById(pluginId);
+  if (byId) return byId;
 
   return registry.getByKey(pluginId);
 }
@@ -1016,6 +1021,34 @@ export function pluginRoutes(
     };
   }
 
+  function attachPluginBridgeErrorContext(
+    req: Request,
+    res: Response,
+    err: unknown,
+    bridgeError: PluginBridgeErrorResponse,
+    metadata: Record<string, unknown>,
+  ): void {
+    const rootError = err instanceof Error ? err : new Error(String(err));
+    (res as any).__errorContext = {
+      error: {
+        message: bridgeError.message,
+        stack: rootError.stack,
+        name: rootError.name,
+        details: {
+          ...metadata,
+          bridgeCode: bridgeError.code,
+          bridgeDetails: bridgeError.details,
+        },
+      },
+      method: req.method,
+      url: req.originalUrl,
+      reqBody: req.body,
+      reqParams: req.params,
+      reqQuery: req.query,
+    };
+    (res as any).err = rootError;
+  }
+
   /**
    * POST /api/plugins/:pluginId/bridge/data
    *
@@ -1067,6 +1100,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1093,6 +1131,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1148,6 +1192,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1174,6 +1223,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1230,6 +1285,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1255,6 +1316,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1307,6 +1374,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1332,6 +1405,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1934,6 +2013,12 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      if (secretRefsByPath.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });
@@ -2377,6 +2462,152 @@ export function pluginRoutes(
         error: errorMessage,
       });
     }
+  });
+
+  // ===========================================================================
+  // Company-scoped trusted local folders
+  // ===========================================================================
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const folderKeys = declarations.map((declaration) => declaration.folderKey);
+
+    const statuses = await Promise.all(folderKeys.map((folderKey) =>
+      inspectPluginLocalFolder({
+        folderKey,
+        declaration: findLocalFolderDeclaration(declarations, folderKey),
+        storedConfig: storedFolders[folderKey] ?? null,
+      })));
+
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      declarations,
+      folders: statuses,
+    });
+  });
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const declaration = requireLocalFolderDeclaration(declarations, folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: storedFolders[folderKey] ?? null,
+    });
+    res.json(status);
+  });
+
+  router.post("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/validate", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+    res.json(status);
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const existing = await registry.getCompanySettings(plugin.id, companyId);
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: getStoredLocalFolders(existing?.settingsJson)[folderKey] ?? null,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+
+    const nextSettings = setStoredLocalFolder(existing?.settingsJson, folderKey, {
+      path: body.path,
+      access: status.access,
+      requiredDirectories: status.requiredDirectories,
+      requiredFiles: status.requiredFiles,
+    });
+    await registry.upsertCompanySettings(plugin.id, companyId, {
+      enabled: existing?.enabled ?? true,
+      settingsJson: nextSettings,
+      lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+    });
+    await logPluginMutationActivity(req, "plugin.local_folder.configured", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+      folderKey,
+      healthy: status.healthy,
+    });
+
+    res.json(status);
   });
 
   // ===========================================================================

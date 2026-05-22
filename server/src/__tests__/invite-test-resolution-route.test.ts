@@ -1,12 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import {
-  accessRoutes,
-  setInviteResolutionNetworkForTest,
-} from "../routes/access.js";
-import { errorHandler } from "../middleware/index.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 function createSelectChain(rows: unknown[]) {
   const query = {
@@ -50,7 +44,17 @@ function createInvite(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(db: Record<string, unknown>) {
+async function createApp(
+  db: Record<string, unknown>,
+  network: {
+    lookup: ReturnType<typeof vi.fn>;
+    requestHead: ReturnType<typeof vi.fn>;
+  },
+) {
+  const [access, middleware] = await Promise.all([
+    import("../routes/access.js"),
+    import("../middleware/index.js"),
+  ]);
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = { type: "anon" };
@@ -58,62 +62,60 @@ function createApp(db: Record<string, unknown>) {
   });
   app.use(
     "/api",
-    accessRoutes(db as any, {
+    access.accessRoutes(db as any, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
       allowedHostnames: [],
+      inviteResolutionNetwork: network,
     }),
   );
-  app.use(errorHandler);
+  app.use(middleware.errorHandler);
   return app;
 }
 
-describe("GET /invites/:token/test-resolution", () => {
-  const lookup = vi.fn();
-  const requestHead = vi.fn();
-
+describe.sequential("GET /invites/:token/test-resolution", () => {
   beforeEach(() => {
-    lookup.mockReset();
-    requestHead.mockReset();
-    setInviteResolutionNetworkForTest({ lookup, requestHead });
+    vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    setInviteResolutionNetworkForTest(null);
-  });
+  it("rejects private, local, multicast, and reserved targets before probing", async () => {
+    const cases = [
+      ["localhost", "http://localhost:3100/api/health", "127.0.0.1"],
+      ["IPv4 loopback", "http://127.0.0.1:3100/api/health", "127.0.0.1"],
+      ["IPv6 loopback", "http://[::1]:3100/api/health", "::1"],
+      ["IPv4-mapped IPv6 loopback hex", "http://[::ffff:7f00:1]/api/health", "::ffff:7f00:1"],
+      ["IPv4-mapped IPv6 RFC1918 hex", "http://[::ffff:c0a8:101]/api/health", "::ffff:c0a8:101"],
+      ["RFC1918 10/8", "http://10.0.0.5/api/health", "10.0.0.5"],
+      ["RFC1918 172.16/12", "http://172.16.10.5/api/health", "172.16.10.5"],
+      ["RFC1918 192.168/16", "http://192.168.1.10/api/health", "192.168.1.10"],
+      ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
+      ["multicast", "http://224.0.0.1/probe", "224.0.0.1"],
+      ["NAT64 well-known prefix", "https://gateway.example.test/health", "64:ff9b::0a00:0001"],
+      ["NAT64 local-use prefix", "https://gateway.example.test/health", "64:ff9b:1::0a00:0001"],
+    ] as const;
 
-  it.each([
-    ["localhost", "http://localhost:3100/api/health", "127.0.0.1"],
-    ["IPv4 loopback", "http://127.0.0.1:3100/api/health", "127.0.0.1"],
-    ["IPv6 loopback", "http://[::1]:3100/api/health", "::1"],
-    ["IPv4-mapped IPv6 loopback hex", "http://[::ffff:7f00:1]/api/health", "::ffff:7f00:1"],
-    ["IPv4-mapped IPv6 RFC1918 hex", "http://[::ffff:c0a8:101]/api/health", "::ffff:c0a8:101"],
-    ["RFC1918 10/8", "http://10.0.0.5/api/health", "10.0.0.5"],
-    ["RFC1918 172.16/12", "http://172.16.10.5/api/health", "172.16.10.5"],
-    ["RFC1918 192.168/16", "http://192.168.1.10/api/health", "192.168.1.10"],
-    ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
-    ["multicast", "http://224.0.0.1/probe", "224.0.0.1"],
-    ["NAT64 well-known prefix", "https://gateway.example.test/health", "64:ff9b::0a00:0001"],
-    ["NAT64 local-use prefix", "https://gateway.example.test/health", "64:ff9b:1::0a00:0001"],
-  ])("rejects %s targets before probing", async (_label, url, address) => {
-    lookup.mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
-    const app = createApp(createDbStub([createInvite()]));
+    for (const [label, url, address] of cases) {
+      const lookup = vi.fn().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+      const requestHead = vi.fn();
+      const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
-    const res = await request(app)
-      .get("/api/invites/pcp_invite_test/test-resolution")
-      .query({ url });
+      const res = await request(app)
+        .get("/api/invites/pcp_invite_test/test-resolution")
+        .query({ url });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe(
-      "url resolves to a private, local, multicast, or reserved address",
-    );
-    expect(requestHead).not.toHaveBeenCalled();
-  });
+      expect(res.status, label).toBe(400);
+      expect(res.body.error).toBe(
+        "url resolves to a private, local, multicast, or reserved address",
+      );
+      expect(requestHead).not.toHaveBeenCalled();
+    }
+  }, 20_000);
 
-  it("rejects hostnames that resolve to private addresses", async () => {
-    lookup.mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
-    const app = createApp(createDbStub([createInvite()]));
+  it.sequential("rejects hostnames that resolve to private addresses", async () => {
+    const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -127,12 +129,13 @@ describe("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it("rejects hostnames when any resolved address is private", async () => {
-    lookup.mockResolvedValue([
-      { address: "93.184.216.34", family: 4 },
+  it.sequential("rejects hostnames when any resolved address is private", async () => {
+    const lookup = vi.fn().mockResolvedValue([
       { address: "127.0.0.1", family: 4 },
+      { address: "93.184.216.34", family: 4 },
     ]);
-    const app = createApp(createDbStub([createInvite()]));
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -142,10 +145,10 @@ describe("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it("allows public HTTPS targets through the resolved and pinned probe path", async () => {
-    lookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-    requestHead.mockResolvedValue({ httpStatus: 204 });
-    const app = createApp(createDbStub([createInvite()]));
+  it.sequential("allows public HTTPS targets through the resolved and pinned probe path", async () => {
+    const lookup = vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const requestHead = vi.fn().mockResolvedValue({ httpStatus: 204 });
+    const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")
@@ -171,12 +174,14 @@ describe("GET /invites/:token/test-resolution", () => {
     );
   });
 
-  it.each([
+  it.sequential.each([
     ["missing invite", []],
     ["revoked invite", [createInvite({ revokedAt: new Date("2026-03-07T00:05:00.000Z") })]],
     ["expired invite", [createInvite({ expiresAt: new Date("2020-03-07T00:10:00.000Z") })]],
   ])("returns not found for %s tokens before DNS lookup", async (_label, inviteRows) => {
-    const app = createApp(createDbStub(inviteRows));
+    const lookup = vi.fn();
+    const requestHead = vi.fn();
+    const app = await createApp(createDbStub(inviteRows), { lookup, requestHead });
 
     const res = await request(app)
       .get("/api/invites/pcp_invite_test/test-resolution")

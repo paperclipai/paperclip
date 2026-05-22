@@ -46,8 +46,10 @@ describe("routine variable helpers", () => {
 
   it("identifies built-in variable names", () => {
     expect(isBuiltinRoutineVariable("date")).toBe(true);
+    expect(isBuiltinRoutineVariable("timestamp")).toBe(true);
     expect(isBuiltinRoutineVariable("repo")).toBe(false);
     expect(BUILTIN_ROUTINE_VARIABLE_NAMES.has("date")).toBe(true);
+    expect(BUILTIN_ROUTINE_VARIABLE_NAMES.has("timestamp")).toBe(true);
   });
 
   it("getBuiltinRoutineVariableValues returns date in YYYY-MM-DD format", () => {
@@ -56,9 +58,17 @@ describe("routine variable helpers", () => {
     expect(values.date).toBe(new Date().toISOString().slice(0, 10));
   });
 
+  it("getBuiltinRoutineVariableValues returns a human-readable timestamp with year, time, and UTC", () => {
+    const values = getBuiltinRoutineVariableValues();
+    const year = String(new Date().getUTCFullYear());
+    expect(values.timestamp).toContain(year);
+    expect(values.timestamp).toMatch(/\d{1,2}:\d{2}\s?(AM|PM)/);
+    expect(values.timestamp).toContain("UTC");
+  });
+
   it("excludes built-in variables from syncRoutineVariablesWithTemplate", () => {
     const result = syncRoutineVariablesWithTemplate(
-      "Daily report for {{date}} — {{repo}}",
+      "Daily report for {{date}} at {{timestamp}} — {{repo}}",
       [],
     );
     expect(result).toEqual([
@@ -66,11 +76,11 @@ describe("routine variable helpers", () => {
     ]);
   });
 
-  it("interpolates built-in date variable alongside user variables", () => {
+  it("interpolates built-in variables alongside user variables", () => {
     const builtins = getBuiltinRoutineVariableValues();
     const allVars = { ...builtins, repo: "paperclip" };
     expect(
-      interpolateRoutineTemplate("Report for {{date}} on {{repo}}", allVars),
-    ).toBe(`Report for ${builtins.date} on paperclip`);
+      interpolateRoutineTemplate("Report for {{date}} ({{timestamp}}) on {{repo}}", allVars),
+    ).toBe(`Report for ${builtins.date} (${builtins.timestamp}) on paperclip`);
   });
 });

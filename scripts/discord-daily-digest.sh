@@ -24,7 +24,6 @@ COMMITS=$(git log --since="${DATE}T00:00:00" --until="${NEXT_DATE}T00:00:00" mas
 json_escape() {
   python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().rstrip("\n"))[1:-1])'
 }
-
 if [[ -z "$COMMITS" ]]; then
   PAYLOAD=$(cat <<ENDJSON
 {

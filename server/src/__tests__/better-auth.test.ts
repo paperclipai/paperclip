@@ -4,6 +4,7 @@ import { getCookies } from "better-auth/cookies";
 import {
   buildBetterAuthAdvancedOptions,
   deriveAuthCookiePrefix,
+  deriveAuthTrustedOrigins,
 } from "../auth/better-auth.js";
 
 const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
@@ -39,5 +40,39 @@ describe("Better Auth cookie scoping", () => {
       cookiePrefix: "paperclip-pap-worktree",
       useSecureCookies: false,
     });
+  });
+
+  it("adds hostname port variants for authenticated mode on non-default ports", () => {
+    const trustedOrigins = deriveAuthTrustedOrigins({
+      deploymentMode: "authenticated",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      allowedHostnames: ["Board.Example.Test"],
+      port: 3101,
+    } as Parameters<typeof deriveAuthTrustedOrigins>[0]);
+
+    expect(trustedOrigins).toEqual(expect.arrayContaining([
+      "https://board.example.test",
+      "http://board.example.test",
+      "https://board.example.test:3101",
+      "http://board.example.test:3101",
+    ]));
+  });
+
+  it("prefers an explicit resolved listen port over the configured port", () => {
+    const trustedOrigins = deriveAuthTrustedOrigins({
+      deploymentMode: "authenticated",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: undefined,
+      allowedHostnames: ["board.example.test"],
+      port: 3100,
+    } as Parameters<typeof deriveAuthTrustedOrigins>[0], { listenPort: 3101 });
+
+    expect(trustedOrigins).toEqual(expect.arrayContaining([
+      "https://board.example.test:3101",
+      "http://board.example.test:3101",
+    ]));
+    expect(trustedOrigins).not.toContain("https://board.example.test:3100");
+    expect(trustedOrigins).not.toContain("http://board.example.test:3100");
   });
 });

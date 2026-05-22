@@ -20,12 +20,16 @@ import type {
   IssueComment,
   PluginIssueAssigneeSummary,
   PluginIssueOrchestrationSummary,
+  PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { IssueDocumentSummary } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, IssueDocumentSummary } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -33,15 +37,33 @@ import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { activityService } from "./activity.js";
 import { costService } from "./costs.js";
 import { assetService } from "./assets.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { pluginManagedAgentService } from "./plugin-managed-agents.js";
+import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
+import { pluginManagedSkillService } from "./plugin-managed-skills.js";
+import {
+  assertConfiguredLocalFolder,
+  assertWritableConfiguredLocalFolder,
+  getStoredLocalFolders,
+  deletePluginLocalFolderFile,
+  inspectPluginLocalFolder,
+  listPluginLocalFolderEntries,
+  preparePluginLocalFolder,
+  readPluginLocalFolderText,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+  writePluginLocalFolderTextAtomic,
+} from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
@@ -458,6 +480,7 @@ export function buildHostServices(
   pluginKey: string,
   eventBus: PluginEventBus,
   notifyWorker?: (method: string, params: unknown) => void,
+  options: { pluginWorkerManager?: PluginWorkerManager; manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 } = {},
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -465,8 +488,41 @@ export function buildHostServices(
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
-  const heartbeat = heartbeatService(db);
+  const managedAgents = pluginManagedAgentService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    instructionTemplateVariables: async (companyId) => {
+      const variables: Record<string, string | null | undefined> = {};
+      for (const declaration of options.manifest?.localFolders ?? []) {
+        const status = await inspectPluginLocalFolder({
+          folderKey: declaration.folderKey,
+          declaration,
+          storedConfig: await getStoredLocalFolderConfig(companyId, declaration.folderKey),
+        });
+        const prefix = `localFolders.${declaration.folderKey}`;
+        variables[`${prefix}.path`] = status.realPath ?? status.path ?? null;
+        variables[`${prefix}.agentsPath`] = status.realPath ? path.join(status.realPath, "AGENTS.md") : null;
+      }
+      return variables;
+    },
+  });
+  const managedRoutines = pluginManagedRoutineService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const managedSkills = pluginManagedSkillService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
   const projects = projectService(db);
+  const executionWorkspaces = executionWorkspaceService(db);
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
@@ -513,10 +569,56 @@ export function buildHostServices(
    */
   const ensurePluginAvailableForCompany = async (_companyId: string) => {};
 
+  const getLocalFolderDeclaration = (folderKey: string) =>
+    requireLocalFolderDeclaration(options.manifest?.localFolders, folderKey);
+
+  const getStoredLocalFolderConfig = async (companyId: string, folderKey: string) => {
+    ensureCompanyId(companyId);
+    await ensurePluginAvailableForCompany(companyId);
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    return getStoredLocalFolders(settings?.settingsJson)[folderKey] ?? null;
+  };
+
+  const inspectStoredLocalFolder = async (companyId: string, folderKey: string) =>
+    inspectPluginLocalFolder({
+      folderKey,
+      declaration: getLocalFolderDeclaration(folderKey),
+      storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
+    });
+
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
     companyId: string,
   ): record is T => Boolean(record && record.companyId === companyId);
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  const readProviderMetadata = (metadata: Record<string, unknown> | null | undefined) => {
+    if (!isRecord(metadata)) return null;
+    if (isRecord(metadata.providerMetadata)) return { ...metadata.providerMetadata };
+    const rebuild = metadata.rebuild;
+    if (!isRecord(rebuild)) return null;
+    const rebuildMetadata = rebuild.metadata;
+    if (!isRecord(rebuildMetadata) || !isRecord(rebuildMetadata.providerMetadata)) return null;
+    return { ...rebuildMetadata.providerMetadata };
+  };
+
+  const toPluginExecutionWorkspaceMetadata = (
+    workspace: NonNullable<Awaited<ReturnType<typeof executionWorkspaces.getById>>>,
+  ): PluginExecutionWorkspaceMetadata => ({
+    id: workspace.id,
+    companyId: workspace.companyId,
+    projectId: workspace.projectId,
+    projectWorkspaceId: workspace.projectWorkspaceId,
+    path: workspace.cwd ?? workspace.providerRef,
+    cwd: workspace.cwd,
+    repoUrl: workspace.repoUrl,
+    baseRef: workspace.baseRef,
+    branchName: workspace.branchName,
+    providerType: workspace.providerType,
+    providerMetadata: readProviderMetadata(workspace.metadata),
+  });
 
   const requireInCompany = <T extends { companyId: string | null | undefined }>(
     entityName: string,
@@ -747,6 +849,91 @@ export function buildHostServices(
       },
     },
 
+    localFolders: {
+      async declarations() {
+        return options.manifest?.localFolders ?? [];
+      },
+
+      async configure(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const declaration = getLocalFolderDeclaration(params.folderKey);
+        const existing = await registry.getCompanySettings(pluginId, companyId);
+        const existingConfig = getStoredLocalFolders(existing?.settingsJson)[params.folderKey] ?? null;
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+        const status = await inspectPluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration,
+          storedConfig: existingConfig,
+          overrideConfig: {
+            path: params.path,
+          },
+        });
+
+        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
+          path: params.path,
+          access: status.access,
+          requiredDirectories: status.requiredDirectories,
+          requiredFiles: status.requiredFiles,
+        });
+        await registry.upsertCompanySettings(pluginId, companyId, {
+          enabled: existing?.enabled ?? true,
+          settingsJson: nextSettings,
+          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+        });
+        return status;
+      },
+
+      async status(params) {
+        return inspectStoredLocalFolder(params.companyId, params.folderKey);
+      },
+
+      async list(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        const listing = await listPluginLocalFolderEntries(status.realPath!, {
+          relativePath: params.relativePath,
+          recursive: params.recursive,
+          maxEntries: params.maxEntries,
+        });
+        return { ...listing, folderKey: params.folderKey };
+      },
+
+      async readText(params) {
+        const status = await inspectStoredLocalFolder(params.companyId, params.folderKey);
+        assertConfiguredLocalFolder(status);
+        return readPluginLocalFolderText(status.realPath!, params.relativePath);
+      },
+
+      async writeTextAtomic(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await preparePluginLocalFolder({
+          folderKey: params.folderKey,
+          declaration: getLocalFolderDeclaration(params.folderKey),
+          storedConfig: await getStoredLocalFolderConfig(companyId, params.folderKey),
+        });
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await writePluginLocalFolderTextAtomic(status.realPath!, params.relativePath, params.contents);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
+      },
+
+      async deleteFile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        const status = await inspectStoredLocalFolder(companyId, params.folderKey);
+        assertWritableConfiguredLocalFolder(status);
+        await deletePluginLocalFolderFile(status.realPath!, params.relativePath, params.folderKey);
+        return inspectStoredLocalFolder(companyId, params.folderKey);
+      },
+    },
+
     state: {
       async get(params) {
         return stateStore.get(pluginId, params.scopeKind as any, params.stateKey, {
@@ -961,6 +1148,9 @@ export function buildHostServices(
             projectId: row.projectId,
             name,
             path,
+            repoUrl: row.repoUrl,
+            repoRef: row.repoRef,
+            defaultRef: row.defaultRef,
             isPrimary: row.isPrimary,
             createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
@@ -980,6 +1170,9 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
@@ -1003,10 +1196,114 @@ export function buildHostServices(
           projectId: project.id,
           name,
           path,
+          repoUrl: row?.repoUrl ?? project.codebase.repoUrl,
+          repoRef: row?.repoRef ?? project.codebase.repoRef,
+          defaultRef: row?.defaultRef ?? project.codebase.defaultRef,
           isPrimary: true,
           createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
           updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
+      },
+      async getManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          createIfMissing: false,
+        });
+      },
+      async reconcileManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+        });
+      },
+      async resetManaged(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projects.resolveManagedProject({
+          companyId,
+          pluginId,
+          pluginKey,
+          projectKey: params.projectKey,
+          reset: true,
+        });
+      },
+    },
+
+    executionWorkspaces: {
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const workspace = await executionWorkspaces.getById(params.workspaceId);
+        if (inCompany(workspace, companyId)) {
+          return toPluginExecutionWorkspaceMetadata(workspace);
+        }
+        return null;
+      },
+    },
+
+    routines: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.get(params.routineKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reconcile(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.reset(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+      async managedUpdate(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.update(params.routineKey, companyId, {
+          status: params.status,
+        });
+      },
+      async managedRun(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedRoutines.run(params.routineKey, companyId, {
+          assigneeAgentId: params.assigneeAgentId,
+          projectId: params.projectId,
+        });
+      },
+    },
+
+    skills: {
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.get(params.skillKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reconcile(params.skillKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedSkills.reset(params.skillKey, companyId);
       },
     },
 
@@ -1026,8 +1323,12 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, ...issueInput } = params;
-        const normalizedOriginKind = normalizePluginOriginKind(originKind);
+        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const normalizedOriginKind = normalizePluginOriginKind(
+          surfaceVisibility === "plugin_operation" && !originKind
+            ? pluginOperationIssueOriginKind(pluginKey)
+            : originKind,
+        );
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
@@ -1506,6 +1807,29 @@ export function buildHostServices(
         });
         return comment;
       },
+      async createInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const interaction = await issueThreadInteractionService(db).create(issue, params.interaction as CreateIssueThreadInteraction, {
+          agentId: params.authorAgentId ?? null,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.thread_interaction_created",
+          entityType: "issue",
+          entityId: issue.id,
+          actor: { actorAgentId: params.authorAgentId ?? null },
+          details: {
+            identifier: issue.identifier,
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            continuationPolicy: interaction.continuationPolicy,
+          },
+        });
+        return interaction as any;
+      },
     },
 
     issueDocuments: {
@@ -1612,6 +1936,21 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
+      },
+      async managedGet(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.get(params.agentKey, companyId);
+      },
+      async managedReconcile(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reconcile(params.agentKey, companyId);
+      },
+      async managedReset(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedAgents.reset(params.agentKey, companyId);
       },
     },
 

@@ -27,16 +27,12 @@ function sanitizeWorktreeInstanceId(rawValue: string): string {
   return normalized || "worktree";
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  const value = hostname.trim().toLowerCase();
-  return value === "127.0.0.1" || value === "localhost" || value === "::1";
-}
-
 function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
-    if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+    // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+    if (!parsed.port) return rawUrl;
     parsed.port = String(port);
     return parsed.toString();
   } catch {

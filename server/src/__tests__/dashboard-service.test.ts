@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { dashboardService } from "../services/dashboard.ts";
+import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -25,6 +25,17 @@ function utcDay(offsetDays: number): Date {
 function utcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
+
+describe("getUtcMonthStart", () => {
+  it("anchors the monthly spend window to UTC month boundaries", () => {
+    expect(getUtcMonthStart(new Date("2026-03-31T20:30:00.000-05:00")).toISOString()).toBe(
+      "2026-04-01T00:00:00.000Z",
+    );
+    expect(getUtcMonthStart(new Date("2026-04-01T00:30:00.000+14:00")).toISOString()).toBe(
+      "2026-03-01T00:00:00.000Z",
+    );
+  });
+});
 
 describeEmbeddedPostgres("dashboard service", () => {
   let db!: ReturnType<typeof createDb>;
