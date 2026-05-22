@@ -63,7 +63,7 @@ describe("workspace restore merge", () => {
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    const rootDir = await mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "paperclip-restore-merge-"));
     cleanupDirs.push(rootDir);
     const socketPath = path.join(rootDir, "runtime.sock");
     const server = net.createServer();
