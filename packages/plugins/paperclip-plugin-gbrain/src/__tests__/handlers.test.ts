@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleRunFinished } from "../handlers.js";
+import { handleRunFinished, isRetryLimitChurnOutput } from "../handlers.js";
 import type { GbrainCallable } from "../pages.js";
 
 function makeEvent(overrides: Partial<{ payload: Record<string, unknown>; companyId: string }> = {}) {
@@ -85,6 +85,47 @@ describe("handleRunFinished", () => {
       lookupAgentName: vi.fn(),
     });
     expect(client.call).not.toHaveBeenCalled();
+  });
+
+  it("skips retry limit churn before writing to gbrain", async () => {
+    const client = { call: vi.fn() };
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    await handleRunFinished({
+      event: makeEvent({
+        payload: {
+          runId: "r-1",
+          agentId: "a-1",
+          status: "succeeded",
+          issueId: "i-1",
+          output: [
+            "Wake reason: transient_failure_retry",
+            "Continue from where you left off.",
+            "You've hit your usage limit. Try again at May 26, 2026 11:57 AM.",
+            "No response requested.",
+          ].join("\n"),
+          finishedAt: "2026-05-15T12:00:00Z",
+        },
+      }),
+      makeClient: () => client,
+      logger,
+      autoRetain: true,
+      lookupIssueIdentifier: vi.fn(),
+      lookupAgentName: vi.fn(),
+    });
+
+    expect(client.call).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      "gbrain retain skip: retry/limit/continue churn",
+      expect.objectContaining({ runId: "r-1" }),
+    );
+  });
+
+  it("does not classify real diagnostic work as retry limit churn", () => {
+    expect(
+      isRetryLimitChurnOutput(
+        "Diagnosed usage limit burn: the queue was over-producing work and full-session retains repeated useful transcripts.",
+      ),
+    ).toBe(false);
   });
 
   it("logs.warn and does not throw when client.call fails", async () => {

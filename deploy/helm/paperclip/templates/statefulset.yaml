@@ -432,7 +432,7 @@ spec:
               fi
 
               # Install Claude Code plugins from claude-plugins-official +
-              # vectorize-io/hindsight marketplaces. The image bakes
+              # Blockcast/hindsight marketplaces. The image bakes
               # @anthropic-ai/claude-code but no plugins; the PVC at /paperclip
               # masks anything baked under HOME, so plugins must be installed
               # at pod boot (idempotent — `claude plugin install` no-ops if
@@ -454,7 +454,11 @@ spec:
                 export HOME="${BASE}"
                 echo "seed: registering Claude Code plugin marketplaces"
                 "${CLAUDE_BIN}" plugin marketplace add anthropics/claude-plugins-official 2>&1 | grep -v "already" || true
-                "${CLAUDE_BIN}" plugin marketplace add vectorize-io/hindsight 2>&1 | grep -v "already" || true
+                if jq -e '.hindsight.source.repo == "vectorize-io/hindsight"' "${BASE}/.claude/plugins/known_marketplaces.json" >/dev/null 2>&1; then
+                  echo "seed: replacing hindsight marketplace with Blockcast fork"
+                  "${CLAUDE_BIN}" plugin marketplace remove hindsight 2>&1 | grep -v "not found" || true
+                fi
+                "${CLAUDE_BIN}" plugin marketplace add Blockcast/hindsight 2>&1 | grep -v "already" || true
                 echo "seed: installing Claude Code plugins (idempotent)"
                 for plugin in \
                   pr-review-toolkit@claude-plugins-official \
