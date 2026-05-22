@@ -176,22 +176,26 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
   async function walk(currentPath: string, relativeDir: string) {
     const entries = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (shouldIgnoreInstructionsEntry(entry)) continue;
       const absolutePath = path.join(currentPath, entry.name);
+      const stat = await fs.stat(absolutePath).catch(() => null);
+      if (!stat) continue;
+      const resolvedEntry = { name: entry.name, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile() };
+      if (shouldIgnoreInstructionsEntry(resolvedEntry)) continue;
       const relativePath = normalizeRelativeFilePath(
         relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name,
       );
-      if (entry.isDirectory()) {
+      if (stat.isDirectory()) {
         await walk(absolutePath, relativePath);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!stat.isFile()) continue;
       output.push(relativePath);
     }
   }
 
   await walk(rootPath, "");
   return output.sort((left, right) => left.localeCompare(right));
+}
 }
 
 async function readFileSummary(rootPath: string, relativePath: string, entryFile: string): Promise<AgentInstructionsFileSummary> {
