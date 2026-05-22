@@ -1559,6 +1559,50 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("defaults the project workspace when an existing issue is attached to a project", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "workspace-key",
+    });
+
+    const orphan = await svc.create(companyId, {
+      title: "Attach old issue to project",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(orphan.projectId).toBeNull();
+    expect(orphan.projectWorkspaceId).toBeNull();
+
+    const attached = await svc.update(orphan.id, { projectId });
+
+    expect(attached).not.toBeNull();
+    expect(attached!.projectId).toBe(projectId);
+    expect(attached!.projectWorkspaceId).toBe(projectWorkspaceId);
+  });
+
   it("captures the assignee default environment when neither issue nor project specifies one", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
