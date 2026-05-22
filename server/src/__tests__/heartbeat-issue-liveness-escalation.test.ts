@@ -117,7 +117,19 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   }
 
-  async function seedBlockedChain(opts: { notYetStale?: boolean } = {}) {
+  async function seedBlockedChain(
+    opts: {
+      notYetStale?: boolean;
+      // Override the blocker leaf's status (default "todo"). The
+      // "assigned backlog blocker leaf" scenario passes "backlog".
+      blockerStatus?: "backlog" | "todo" | "in_progress" | "blocked" | "in_review";
+      // Symbolic agent reference for the blocker's assignee — "coder",
+      // "manager", or undefined (unassigned). The escalation engine
+      // distinguishes assigned-vs-unassigned blockers when deciding the
+      // recovery owner and origin fingerprint.
+      blockerAssigneeAgentId?: "coder" | "manager" | null;
+    } = {},
+  ) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
@@ -183,8 +195,14 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         id: blockerIssueId,
         companyId,
         title: "Missing unblock owner",
-        status: "todo",
+        status: opts.blockerStatus ?? "todo",
         priority: "medium",
+        assigneeAgentId:
+          opts.blockerAssigneeAgentId === "coder"
+            ? coderId
+            : opts.blockerAssigneeAgentId === "manager"
+              ? managerId
+              : null,
         issueNumber: 2,
         identifier: `${issuePrefix}-2`,
         createdAt: issueTimestamp,
