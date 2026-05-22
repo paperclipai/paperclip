@@ -240,6 +240,7 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const url = new URL(req.url, "http://localhost");
+
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {
       socket.destroy();

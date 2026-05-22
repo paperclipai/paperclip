@@ -185,8 +185,18 @@ async function listFilesRecursive(rootPath: string): Promise<string[]> {
         await walk(absolutePath, relativePath);
         continue;
       }
-      if (!entry.isFile()) continue;
-      output.push(relativePath);
+      if (entry.isFile()) {
+        output.push(relativePath);
+        continue;
+      }
+      if (entry.isSymbolicLink()) {
+        const linkStat = await fs.stat(absolutePath).catch(() => null);
+        if (linkStat?.isFile()) {
+          output.push(relativePath);
+        } else if (linkStat?.isDirectory()) {
+          await walk(absolutePath, relativePath);
+        }
+      }
     }
   }
 

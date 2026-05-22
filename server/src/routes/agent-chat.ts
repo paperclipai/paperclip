@@ -1,22 +1,25 @@
 /**
- * Agent direct-chat — Anthropic SDK + bash tool.
- * Fast SDK streaming (~0.8s) with full local tool access via bash.
- * No CLI spawn, no board pollution, no heartbeat.
+ * Agent direct-chat — Claude Agent SDK (subscription auth).
+ *
+ * Uses @anthropic-ai/claude-agent-sdk `query()`, which drives the local Claude
+ * Code runtime and authenticates the same way the `claude` CLI does — the user's
+ * Max-plan subscription (macOS keychain) when ANTHROPIC_API_KEY is unset, or a
+ * CLAUDE_CODE_OAUTH_TOKEN if provided. No per-token API billing, no separate key.
+ *
+ * Streams token-level deltas + tool calls over SSE. Multi-turn continuity is via
+ * the SDK session id (resume), not a hand-maintained message array.
  */
 import { Router } from "express";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import Anthropic from "@anthropic-ai/sdk";
+import { randomUUID } from "node:crypto";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { eq } from "drizzle-orm";
 import { agents } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { parse as parseYaml } from "yaml";
 import { logger } from "../middleware/logger.js";
-
-const execAsync = promisify(exec);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface ChatMessage {
@@ -28,9 +31,9 @@ export interface ChatMessage {
 
 interface AgentChatState {
   messages: ChatMessage[];
-  apiMessages: Anthropic.MessageParam[];
   systemPrompt: string | null; // loaded once, cached
-  cwd: string | null;          // loaded once, cached
+  cwd: string | null; // loaded once, cached
+  sessionId: string | null; // Agent SDK session — drives multi-turn resume
 }
 
 // ── In-memory state ───────────────────────────────────────────────────────────
@@ -38,7 +41,7 @@ const chatState = new Map<string, AgentChatState>();
 
 function getState(agentId: string): AgentChatState {
   if (!chatState.has(agentId)) {
-    chatState.set(agentId, { messages: [], apiMessages: [], systemPrompt: null, cwd: null });
+    chatState.set(agentId, { messages: [], systemPrompt: null, cwd: null, sessionId: null });
   }
   return chatState.get(agentId)!;
 }
@@ -92,7 +95,7 @@ async function resolveSystemPrompt(adapterConfig: Record<string, unknown>): Prom
       ? adapterConfig.instructionsRootPath.trim()
       : null;
   if (!bundle) return "";
-  // Load all instruction files and concatenate — gives agent full operating context
+  // Load all instruction files and concatenate — gives the agent its full persona
   const candidates = ["SOUL.md", "AGENTS.md", "HEARTBEAT.md", "Specific-Instructions.md", "TOOLS.md"];
   const parts: string[] = [];
   for (const name of candidates) {
@@ -104,51 +107,17 @@ async function resolveSystemPrompt(adapterConfig: Record<string, unknown>): Prom
   return parts.join("\n\n---\n\n");
 }
 
-// ── Bash tool execution ───────────────────────────────────────────────────────
-const BASH_TIMEOUT_MS = 30_000;
-
-async function runBash(command: string, cwd: string): Promise<string> {
-  try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd,
-      timeout: BASH_TIMEOUT_MS,
-      env: { ...process.env, HOME: os.homedir() },
-    });
-    const out = stdout.trim();
-    const err = stderr.trim();
-    if (!out && err) return `stderr: ${err}`;
-    if (out && err) return `${out}\n(stderr: ${err})`;
-    return out || "(no output)";
-  } catch (e: unknown) {
-    const err = e as { message?: string; stdout?: string; stderr?: string };
-    const detail = err.stderr?.trim() || err.stdout?.trim() || err.message || "unknown error";
-    return `error: ${detail}`;
-  }
+// ── Stream-event shape (minimal; avoids cross-version Beta type coupling) ───────
+interface RawStreamEvent {
+  type: string;
+  index?: number;
+  delta?: { type?: string; text?: string; partial_json?: string };
+  content_block?: { type?: string; name?: string };
 }
-
-// ── Tool definition ───────────────────────────────────────────────────────────
-const TOOLS: Anthropic.Tool[] = [
-  {
-    name: "bash",
-    description: `Run a bash command in the agent's working directory.
-Use this to query the Paperclip API (curl http://localhost:3100/...), read files, check git, etc.
-Rules: no 'find /' or full-filesystem scans; no interactive commands; timeout is 30s.
-Prefer targeted paths. For the Paperclip API see HEARTBEAT.md — use the documented endpoints.`,
-    input_schema: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Bash command to execute" },
-      },
-      required: ["command"],
-    },
-  },
-];
 
 // ── Route factory ─────────────────────────────────────────────────────────────
 export function agentChatRoutes(db: Db): Router {
   const router = Router();
-
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   router.get("/agents/:id/chat/messages", (req, res) => {
     res.json({ messages: getState(req.params.id).messages });
@@ -161,11 +130,25 @@ export function agentChatRoutes(db: Db): Router {
 
   router.post("/agents/:id/chat/messages", async (req, res) => {
     const { id } = req.params;
-    const { message } = req.body as { message?: string };
-    if (!message?.trim()) { res.status(400).json({ error: "message required" }); return; }
+    const { message, images } = req.body as {
+      message?: string;
+      images?: { mediaType?: string; data?: string }[];
+    };
+    const text = message?.trim() ?? "";
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      res.status(503).json({ error: "ANTHROPIC_API_KEY not configured on server" });
+    // Vision input: base64 image blocks. Only the formats Claude accepts.
+    const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+    type ImageMediaType = (typeof ALLOWED_IMAGE_TYPES)[number];
+    const validImages = (Array.isArray(images) ? images : [])
+      .filter((im): im is { mediaType: ImageMediaType; data: string } =>
+        !!im &&
+        typeof im.data === "string" && im.data.length > 0 &&
+        typeof im.mediaType === "string" &&
+        (ALLOWED_IMAGE_TYPES as readonly string[]).includes(im.mediaType))
+      .slice(0, 4); // cap attachments per message
+
+    if (!text && validImages.length === 0) {
+      res.status(400).json({ error: "message or image required" });
       return;
     }
 
@@ -189,12 +172,16 @@ export function agentChatRoutes(db: Db): Router {
 
     const state = getState(id);
 
-    // Record user message
-    const userMsg: ChatMessage = { id: `${Date.now()}-u`, role: "user", content: message.trim(), timestamp: Date.now() };
+    // Record user message (history bubbles are text-only; note any attachments)
+    const imageNote = validImages.length
+      ? `${text ? "\n\n" : ""}🖼 ${validImages.length} image${validImages.length > 1 ? "s" : ""} attached`
+      : "";
+    const userMsg: ChatMessage = { id: `${Date.now()}-u`, role: "user", content: text + imageNote, timestamp: Date.now() };
     state.messages.push(userMsg);
     send("user_message", userMsg);
     send("processing", { processing: true });
 
+    const tempFiles: string[] = [];
     try {
       const adapterConfig = agentRow.adapterConfig as Record<string, unknown>;
 
@@ -207,89 +194,139 @@ export function agentChatRoutes(db: Db): Router {
 
       const cwd = state.cwd ?? os.homedir();
 
-      // Append new user message to API history
-      state.apiMessages.push({ role: "user", content: message.trim() });
-
-      let fullText = "";
-
-      // Agentic loop — runs until end_turn (no more tool calls)
-      while (true) {
-        let currentText = "";
-        let stopReason: string | null = null;
-        const toolUses: Array<{ id: string; name: string; inputJson: string }> = [];
-        let activeToolIdx = -1;
-
-        const stream = anthropic.messages.stream({
-          model: "claude-sonnet-4-6",
-          max_tokens: 8096,
-          ...(state.systemPrompt ? { system: state.systemPrompt } : {}),
-          tools: TOOLS,
-          messages: state.apiMessages,
-        });
-
-        for await (const event of stream) {
-          if (event.type === "content_block_start") {
-            if (event.content_block.type === "tool_use") {
-              activeToolIdx = toolUses.length;
-              toolUses.push({ id: event.content_block.id, name: event.content_block.name, inputJson: "" });
-            }
-          } else if (event.type === "content_block_delta") {
-            if (event.delta.type === "text_delta") {
-              currentText += event.delta.text;
-              fullText += event.delta.text;
-              send("delta", { text: event.delta.text });
-            } else if (event.delta.type === "input_json_delta" && activeToolIdx >= 0) {
-              toolUses[activeToolIdx].inputJson += event.delta.partial_json;
-            }
-          } else if (event.type === "message_delta") {
-            stopReason = event.delta.stop_reason ?? null;
-          }
+      // Images: write to temp files so the claude CLI can read them natively with
+      // its Read tool (vision). The AsyncIterable<SDKUserMessage> approach crashes
+      // the subprocess when image content blocks are piped via IPC.
+      let prompt = text;
+      if (validImages.length > 0) {
+        const extMap: Record<string, string> = {
+          "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif",
+        };
+        const tmpDir = os.tmpdir();
+        const paths: string[] = [];
+        for (const im of validImages) {
+          const ext = extMap[im.mediaType] ?? "png";
+          const p = path.join(tmpDir, `pchat-${randomUUID()}.${ext}`);
+          await fs.writeFile(p, Buffer.from(im.data, "base64"));
+          tempFiles.push(p);
+          paths.push(p);
         }
-
-        if (stopReason !== "tool_use" || toolUses.length === 0) break;
-
-        // Build assistant message with text + tool_use blocks
-        const assistantContent: Anthropic.ContentBlock[] = [];
-        if (currentText) assistantContent.push({ type: "text", text: currentText });
-        for (const tu of toolUses) {
-          let input: unknown = {};
-          try { input = JSON.parse(tu.inputJson || "{}"); } catch { /* keep empty */ }
-          assistantContent.push({ type: "tool_use", id: tu.id, name: tu.name, input });
-        }
-        state.apiMessages.push({ role: "assistant", content: assistantContent });
-
-        // Execute tools and build tool_result message
-        const toolResults: Anthropic.ToolResultBlockParam[] = [];
-        for (const tu of toolUses) {
-          let input: { command?: string } = {};
-          try { input = JSON.parse(tu.inputJson || "{}"); } catch { /* keep empty */ }
-
-          send("tool_call", { name: tu.name, command: input.command ?? "" });
-
-          let result = "(unknown tool)";
-          if (tu.name === "bash" && input.command) {
-            result = await runBash(input.command, cwd);
-          }
-          toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: result });
-        }
-        state.apiMessages.push({ role: "user", content: toolResults });
-        // loop continues to get the assistant's follow-up response
+        const fileList = paths.map((p, i) => `Image ${i + 1}: ${p}`).join("\n");
+        prompt = `${text ? text + "\n\n" : ""}The following image file${paths.length > 1 ? "s have" : " has"} been saved for you to view:\n${fileList}\nPlease read and analyse ${paths.length > 1 ? "them" : "it"} to answer the user's request.`;
       }
 
-      // Push final assistant message to API history
-      state.apiMessages.push({ role: "assistant", content: fullText || "(no response)" });
+      const q = query({
+        prompt,
+        options: {
+          cwd,
+          model: "claude-sonnet-4-6",
+          // Plain-string systemPrompt replaces the default and carries the agent's persona.
+          ...(state.systemPrompt ? { systemPrompt: state.systemPrompt } : {}),
+          allowedTools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+          // Headless server — no human to approve. Matches the platform's heartbeat
+          // posture (claude_local runs with --dangerously-skip-permissions).
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          includePartialMessages: true,
+          maxTurns: 30,
+          // Multi-turn continuity across messages in this chat.
+          ...(state.sessionId ? { resume: state.sessionId } : {}),
+        },
+      });
 
-      const assistantMsg: ChatMessage = {
-        id: `${Date.now()}-a`,
-        role: "assistant",
-        content: fullText || "(no response)",
-        timestamp: Date.now(),
-      };
-      state.messages.push(assistantMsg);
-      send("assistant_message", assistantMsg);
+      // Stop the agent if the client disconnects mid-stream.
+      req.on("close", () => { void q.interrupt().catch(() => {}); });
+
+      let fullText = "";
+      let terminal = false;
+      const toolBlocks = new Map<number, { name: string; json: string }>();
+
+      for await (const msg of q as AsyncIterable<SDKMessage>) {
+        if (msg.type === "system" && msg.subtype === "init") {
+          state.sessionId = msg.session_id;
+          continue;
+        }
+
+        if (msg.type === "stream_event") {
+          const ev = msg.event as unknown as RawStreamEvent;
+          if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
+            const name = ev.content_block.name ?? "tool";
+            if (typeof ev.index === "number") toolBlocks.set(ev.index, { name, json: "" });
+            send("tool_call", { name });
+          } else if (ev.type === "content_block_delta") {
+            if (ev.delta?.type === "text_delta" && ev.delta.text) {
+              fullText += ev.delta.text;
+              send("delta", { text: ev.delta.text });
+            } else if (ev.delta?.type === "input_json_delta" && typeof ev.index === "number") {
+              const t = toolBlocks.get(ev.index);
+              if (t) t.json += ev.delta.partial_json ?? "";
+            }
+          } else if (ev.type === "content_block_stop" && typeof ev.index === "number") {
+            const t = toolBlocks.get(ev.index);
+            if (t) {
+              try {
+                const input = JSON.parse(t.json || "{}") as { command?: string };
+                if (typeof input.command === "string") send("tool_call", { command: input.command });
+              } catch { /* partial / non-bash input */ }
+            }
+          }
+          continue;
+        }
+
+        // Auth/billing failures surface as an error on the assistant message.
+        if (msg.type === "assistant" && msg.error) {
+          const m =
+            msg.error === "authentication_failed"
+              ? "Subscription auth failed. Run `claude` to log in (Max plan), or set CLAUDE_CODE_OAUTH_TOKEN on the server."
+              : `Agent error: ${msg.error}`;
+          send("error", { message: m });
+          terminal = true;
+          break;
+        }
+
+        if (msg.type === "result") {
+          if (msg.subtype === "success" && !msg.is_error) {
+            const content = fullText || msg.result || "(no response)";
+            const assistantMsg: ChatMessage = {
+              id: `${Date.now()}-a`,
+              role: "assistant",
+              content,
+              timestamp: Date.now(),
+            };
+            state.messages.push(assistantMsg);
+            send("assistant_message", assistantMsg);
+          } else {
+            const reason =
+              ("errors" in msg && msg.errors?.length ? msg.errors.join("; ") : null) ??
+              `Agent stopped (${msg.subtype})`;
+            send("error", { message: reason });
+          }
+          terminal = true;
+          break;
+        }
+      }
+
+      if (!terminal) {
+        // Stream ended without a result — surface what we have, or a generic error.
+        if (fullText) {
+          const assistantMsg: ChatMessage = {
+            id: `${Date.now()}-a`,
+            role: "assistant",
+            content: fullText,
+            timestamp: Date.now(),
+          };
+          state.messages.push(assistantMsg);
+          send("assistant_message", assistantMsg);
+        } else {
+          send("error", { message: "Agent ended without a response." });
+        }
+      }
     } catch (err) {
       logger.error({ err, agentId: id }, "agent chat error");
       send("error", { message: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      // Clean up any temp image files written for this turn.
+      for (const p of tempFiles) { await fs.unlink(p).catch(() => {}); }
     }
 
     send("processing", { processing: false });
