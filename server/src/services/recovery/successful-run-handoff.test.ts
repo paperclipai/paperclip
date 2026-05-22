@@ -194,6 +194,30 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not trigger finish_successful_run_handoff for source_scoped_recovery_action runs (CAR-1882)", () => {
+    // Regression guard: recovery runs must not re-enter the handoff cycle. Without this guard,
+    // a productive recovery run (advanced liveness) caused: recovery run → handoff wake →
+    // needs_followup → exhausted → blocked → recovery wake, repeating every ~30s.
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: "source_scoped_recovery_action",
+          source: "issue_recovery_action",
+          recoveryActionId: "action-1",
+        },
+      } as any,
+    })).toEqual({ kind: "skip", reason: "source-scoped recovery run owns its own recovery path" });
+    // Also skips on source match alone (wakeReason may differ in edge cases)
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: { issueId: "issue-1", source: "issue_recovery_action" },
+      } as any,
+    })).toEqual({ kind: "skip", reason: "source-scoped recovery run owns its own recovery path" });
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",

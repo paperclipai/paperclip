@@ -295,6 +295,17 @@ function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
   return Boolean(wakeReason?.startsWith("issue_monitor") || source?.startsWith("issue.monitor"));
 }
 
+function isSourceScopedRecoveryRun(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  const wakeReason = readString(context.wakeReason);
+  const source = readString(context.source);
+  // source_scoped_recovery_action runs are dispatched by the recovery system and already have
+  // their own resolution path (recovery action management). Firing finish_successful_run_handoff
+  // on top of them creates a compounding loop: recovery run → productive → handoff wake →
+  // handoff exhausted → blocked, regardless of whether the source issue legitimately needs work.
+  return wakeReason === "source_scoped_recovery_action" || source === "issue_recovery_action";
+}
+
 function isCommentInteractionRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   const wakeReason = readString(context.wakeReason);
@@ -358,6 +369,7 @@ export function decideSuccessfulRunHandoff(input: {
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
+  if (isSourceScopedRecoveryRun(run)) return { kind: "skip", reason: "source-scoped recovery run owns its own recovery path" };
   if (isCommentInteractionRun(run)) return { kind: "skip", reason: "comment interaction run owns its own follow-up path" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
