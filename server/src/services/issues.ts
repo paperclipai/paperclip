@@ -39,6 +39,7 @@ import type {
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
+  IssuePrivilegedHumanGate,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -120,6 +121,22 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeIssuePrivilegedHumanGate(
+  input: IssuePrivilegedHumanGate,
+  fallbackOwner: { agentId: string | null; userId: string | null },
+  routedToAgentId: string | null,
+): IssuePrivilegedHumanGate {
+  const returnToOwnerAgentId = input.returnToOwnerAgentId ?? null;
+  const returnToOwnerUserId = input.returnToOwnerUserId ?? null;
+  return {
+    ...input,
+    returnToOwnerAgentId: returnToOwnerAgentId ?? (returnToOwnerUserId ? null : fallbackOwner.agentId),
+    returnToOwnerUserId: returnToOwnerUserId ?? (returnToOwnerAgentId ? null : fallbackOwner.userId),
+    routedToAgentId,
+    routedAt: input.routedAt ?? new Date().toISOString(),
+  };
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -1585,6 +1602,7 @@ const issueListSelect = {
   monitorAttemptCount: issues.monitorAttemptCount,
   monitorNotes: issues.monitorNotes,
   monitorScheduledBy: issues.monitorScheduledBy,
+  privilegedHumanGate: issues.privilegedHumanGate,
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
@@ -1832,6 +1850,14 @@ function isoDate(value: Date | string | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function blockedInboxClassification(
+  reason: IssueBlockedInboxAttention["reason"],
+): IssueBlockedInboxAttention["nextStep"]["classification"] {
+  return reason === "blocked_by_cancelled_issue" || reason === "open_recovery_issue"
+    ? "stale_cleanable"
+    : "real_blocker";
+}
+
 function attentionBase(input: {
   state: IssueBlockedInboxAttention["state"];
   reason: IssueBlockedInboxAttention["reason"];
@@ -1866,6 +1892,18 @@ function attentionBase(input: {
       ?? input.recoveryIssue?.identifier
       ?? input.sourceIssue?.identifier
       ?? null,
+    nextStep: {
+      identifier:
+        input.sampleIssueIdentifier
+        ?? input.leafIssue?.identifier
+        ?? input.recoveryIssue?.identifier
+        ?? input.sourceIssue?.identifier
+        ?? null,
+      blockerType: input.reason,
+      classification: blockedInboxClassification(input.reason),
+      nextOwner: input.owner,
+      nextAction: input.action,
+    },
     redaction: {
       externalDetailsRedacted: input.externalDetailsRedacted ?? false,
       secretFieldsOmitted: true,
@@ -4288,6 +4326,40 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      const incomingPrivilegedHumanGate = issueData.privilegedHumanGate as IssuePrivilegedHumanGate | null | undefined;
+      if (incomingPrivilegedHumanGate) {
+        const privilegedSignals = new Set<IssuePrivilegedHumanGate["signal"]>(["missing_tooling", "privileged_action"]);
+        let routedToAgentId: string | null = null;
+        if (privilegedSignals.has(incomingPrivilegedHumanGate.signal)) {
+          const devopsAgent = await dbOrTx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(
+              and(
+                eq(agents.companyId, existing.companyId),
+                eq(agents.role, "devops"),
+                eq(agents.status, "active"),
+              ),
+            )
+            .orderBy(asc(agents.createdAt), asc(agents.id))
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+          if (!devopsAgent) {
+            throw unprocessable("Privileged human gate requires an active DevOps assignee");
+          }
+          routedToAgentId = devopsAgent.id;
+          patch.assigneeAgentId = routedToAgentId;
+          patch.assigneeUserId = null;
+        }
+        patch.status = "blocked";
+        patch.privilegedHumanGate = normalizeIssuePrivilegedHumanGate(
+          incomingPrivilegedHumanGate,
+          {
+            agentId: existing.assigneeAgentId,
+            userId: existing.assigneeUserId,
+          },
+          routedToAgentId,
+        ) as unknown as Record<string, unknown>;
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -4544,6 +4616,52 @@ export function issueService(db: Db) {
               );
           }
         }
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status
+        ) {
+          const [resolvedRecoveryAction] = await tx
+            .update(issueRecoveryActions)
+            .set({
+              status: "cancelled",
+              outcome: "cancelled",
+              resolutionNote: `Source issue reached terminal status ${issueData.status}; stale recovery metadata auto-cleared.`,
+              resolvedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issueRecoveryActions.companyId, existing.companyId),
+                eq(issueRecoveryActions.sourceIssueId, existing.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ),
+            )
+            .returning();
+
+          if (resolvedRecoveryAction) {
+            const recoveryActorType = actorUserId ? "user" : actorAgentId ? "agent" : "system";
+            await tx.insert(activityLog).values({
+              companyId: existing.companyId,
+              actorType: recoveryActorType,
+              actorId: actorAgentId ?? actorUserId ?? "system",
+              agentId: actorAgentId ?? null,
+              runId: null,
+              action: "issue.recovery_action_resolved",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                identifier: updated.identifier,
+                recoveryActionId: resolvedRecoveryAction.id,
+                recoveryActionStatus: resolvedRecoveryAction.status,
+                outcome: resolvedRecoveryAction.outcome,
+                sourceIssueStatus: issueData.status,
+                resolutionNote: resolvedRecoveryAction.resolutionNote,
+                source: "terminal_status_auto_cleanup",
+                trigger: "issue_update",
+              },
+            });
+          }
+        }
         return enriched;
       };
 
@@ -4641,10 +4759,13 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+      const issueReadiness = dependencyReadiness.get(id) ?? createIssueDependencyReadiness(id);
+      const unresolvedBlockerIssueIds = issueReadiness.unresolvedBlockerIssueIds;
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
       }
+      const allowBlockedCheckout =
+        issueReadiness.blockerIssueIds.length > 0 && issueReadiness.unresolvedBlockerCount === 0;
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
@@ -4670,7 +4791,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            ne(issues.status, "blocked"),
+            or(ne(issues.status, "blocked"), allowBlockedCheckout ? sql`true` : sql`false`),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),

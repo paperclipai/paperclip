@@ -624,6 +624,13 @@
       "when": 1748476801000,
       "tag": "0088_privileged_human_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1748476802000,
+      "tag": "0089_agent_is_router",
+      "breakpoints": true
     }
   ]
 }

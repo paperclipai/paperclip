@@ -1131,6 +1131,68 @@ export function issueRoutes(
     });
   }
 
+  function enforceInReviewAssigneeRouting(input: {
+    existing: {
+      id: string;
+      identifier: string;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId?: string | null;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+    workflowControlledAssignment?: boolean;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (nextStatus !== "in_review" || input.workflowControlledAssignment === true) {
+      return { corrected: false, previousAssigneeAgentId: null as string | null, requestedAssigneeAgentId: null as string | null };
+    }
+
+    const previousAssigneeAgentId = input.existing.assigneeAgentId;
+    if (!previousAssigneeAgentId) {
+      return { corrected: false, previousAssigneeAgentId: null as string | null, requestedAssigneeAgentId: null as string | null };
+    }
+
+    const hasAgentPatch = Object.prototype.hasOwnProperty.call(input.updateFields, "assigneeAgentId");
+    if (!hasAgentPatch) {
+      return { corrected: false, previousAssigneeAgentId: null as string | null, requestedAssigneeAgentId: null as string | null };
+    }
+
+    const requestedAssigneeAgentId = input.updateFields.assigneeAgentId as string | null;
+    if (requestedAssigneeAgentId === previousAssigneeAgentId) {
+      return { corrected: false, previousAssigneeAgentId: null as string | null, requestedAssigneeAgentId: null as string | null };
+    }
+
+    const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+      ? (input.existing.assigneeUserId ?? null)
+      : (input.updateFields.assigneeUserId as string | null);
+    const namedReviewer = typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0;
+    if (namedReviewer) {
+      return { corrected: false, previousAssigneeAgentId: null as string | null, requestedAssigneeAgentId: null as string | null };
+    }
+
+    if (input.actorType === "agent") {
+      throw unprocessable(
+        "in_review issues must stay assigned to the accountable lead unless a named reviewer is set",
+        {
+          code: "invalid_issue_disposition",
+          missing: "in_review_owner",
+          previousAssigneeAgentId,
+          requestedAssigneeAgentId,
+        },
+      );
+    }
+
+    input.updateFields.assigneeAgentId = previousAssigneeAgentId;
+    return {
+      corrected: true,
+      previousAssigneeAgentId,
+      requestedAssigneeAgentId,
+    };
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
@@ -1270,10 +1332,60 @@ export function issueRoutes(
     return false;
   }
 
+  function assertRouterAgentPatchAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId?: string | null },
+    routerAgentId: string,
+  ): boolean {
+    const ROUTER_PERMITTED_FIELDS = new Set(["assigneeAgentId", "blockedByIssueIds", "status", "comment"]);
+    const ROUTER_PERMITTED_STATUSES = new Set(["blocked", "in_progress", "todo"]);
+
+    const requestedFields = Object.keys(req.body);
+    const forbiddenFields = requestedFields.filter((k) => !ROUTER_PERMITTED_FIELDS.has(k));
+    if (forbiddenFields.length > 0) {
+      res.status(403).json({
+        error: "Router agent may only patch routing fields",
+        details: {
+          forbiddenFields,
+          permittedFields: [...ROUTER_PERMITTED_FIELDS],
+          issueId: issue.id,
+          routerAgentId,
+        },
+      });
+      return false;
+    }
+
+    const requestedStatus = req.body.status as string | undefined;
+    if (requestedStatus !== undefined && !ROUTER_PERMITTED_STATUSES.has(requestedStatus)) {
+      res.status(403).json({
+        error: "Router agent cannot set status to done or cancelled",
+        details: {
+          requestedStatus,
+          permittedStatuses: [...ROUTER_PERMITTED_STATUSES],
+          issueId: issue.id,
+          routerAgentId,
+        },
+      });
+      return false;
+    }
+
+    // Board-assignment preservation: do not allow routing over a board-user-assigned issue
+    if (issue.assigneeUserId && req.body.assigneeAgentId !== undefined) {
+      res.status(403).json({
+        error: "Router agent cannot reassign an issue owned by a board user",
+        details: { issueId: issue.id, assigneeUserId: issue.assigneeUserId, routerAgentId },
+      });
+      return false;
+    }
+
+    return true;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; assigneeUserId?: string | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1287,6 +1399,30 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      const actorAgent = await agentsSvc.getById(actorAgentId);
+      if (actorAgent?.isRouter) {
+        const allowed = assertRouterAgentPatchAllowed(req, res, issue, actorAgentId);
+        if (allowed) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.router_agent_cross_patch",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              routerAgentId: actorAgentId,
+              assigneeAgentId: issue.assigneeAgentId,
+              isRouter: true,
+              patchedFields: Object.keys(req.body).filter((k) => k !== "comment"),
+            },
+          });
+        }
+        return allowed;
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -2216,7 +2352,6 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
-
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const result = await db.transaction(async (tx) => {
       let issue = existing;
@@ -2239,6 +2374,21 @@ export function issueRoutes(
         }
       }
 
+      // Resolve the recovery action first so the auto-cancel inside svc.update
+      // (triggered on done/cancelled transitions) does not race this explicit resolution.
+      const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+        {
+          companyId: existing.companyId,
+          sourceIssueId: existing.id,
+          actionId: actionId ?? null,
+          status: actionStatus,
+          outcome,
+          resolutionNote: resolutionNote ?? null,
+        },
+        tx,
+      );
+      if (!recoveryAction) throw notFound("Active recovery action not found");
+
       if (sourceIssueStatus) {
         const updatedIssue = await svc.update(
           id,
@@ -2252,19 +2402,6 @@ export function issueRoutes(
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
       }
-
-      const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
-        {
-          companyId: existing.companyId,
-          sourceIssueId: existing.id,
-          actionId: actionId ?? null,
-          status: actionStatus,
-          outcome,
-          resolutionNote: resolutionNote ?? null,
-        },
-        tx,
-      );
-      if (!recoveryAction) throw notFound("Active recovery action not found");
 
       return { issue, recoveryAction };
     });
@@ -3535,6 +3672,12 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+    const inReviewRoutingCorrection = enforceInReviewAssigneeRouting({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+      workflowControlledAssignment: transition.workflowControlledAssignment,
+    });
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -3777,6 +3920,25 @@ export function issueRoutes(
         ),
       },
     });
+    if (inReviewRoutingCorrection.corrected) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.in_review_assignment_corrected",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          reason: "in_review_accountable_owner_enforced",
+          previousAssigneeAgentId: inReviewRoutingCorrection.previousAssigneeAgentId,
+          requestedAssigneeAgentId: inReviewRoutingCorrection.requestedAssigneeAgentId,
+          effectiveAssigneeAgentId: issue.assigneeAgentId,
+        },
+      });
+    }
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
       await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])

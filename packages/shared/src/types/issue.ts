@@ -187,6 +187,7 @@ export type IssueBlockedInboxReason =
   | "open_recovery_issue";
 
 export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
+export type IssueBlockedInboxClassification = "real_blocker" | "stale_cleanable";
 
 export interface IssueBlockedInboxIssueRef {
   id: string;
@@ -210,6 +211,14 @@ export interface IssueBlockedInboxAction {
   detail: string | null;
 }
 
+export interface IssueBlockedInboxNextStep {
+  identifier: string | null;
+  blockerType: IssueBlockedInboxReason;
+  classification: IssueBlockedInboxClassification;
+  nextOwner: IssueBlockedInboxOwner;
+  nextAction: IssueBlockedInboxAction;
+}
+
 export interface IssueBlockedInboxAttention {
   kind: IssueInboxAttentionKind;
   state: IssueBlockedInboxState;
@@ -224,10 +233,24 @@ export interface IssueBlockedInboxAttention {
   approvalId: string | null;
   interactionId: string | null;
   sampleIssueIdentifier: string | null;
+  nextStep: IssueBlockedInboxNextStep;
   redaction: {
     externalDetailsRedacted: boolean;
     secretFieldsOmitted: true;
   };
+}
+
+export type IssuePrivilegedHumanGateSignal = "missing_tooling" | "privileged_action";
+
+export interface IssuePrivilegedHumanGate {
+  signal: IssuePrivilegedHumanGateSignal;
+  action: string;
+  evidenceRequirement: string;
+  returnToOwnerAgentId: string | null;
+  returnToOwnerUserId: string | null;
+  returnToNextAction: string;
+  routedToAgentId: string | null;
+  routedAt: string;
 }
 
 export type IssueProductivityReviewTrigger =
@@ -465,6 +488,7 @@ export interface Issue {
   monitorAttemptCount?: number;
   monitorNotes?: string | null;
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
+  privilegedHumanGate: IssuePrivilegedHumanGate | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
