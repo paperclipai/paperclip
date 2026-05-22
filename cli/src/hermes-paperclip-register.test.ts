@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildExistingIssueUpdatePatch, buildListSummary } from "./hermes-paperclip-register-utils";
+import { buildExistingIssueUpdatePatch, buildListSummary } from "./hermes-paperclip-register-utils.js";
 
 describe("hermes-paperclip-register", () => {
   it("lists companies with their projects and issues without connection details", () => {
