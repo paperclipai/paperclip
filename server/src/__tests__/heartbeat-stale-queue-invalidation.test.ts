@@ -67,13 +67,26 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   `));
 }
 
-async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
+// Wait until `fn()` returns true, polling every 50ms up to `timeoutMs`. The
+// default is 15s, not 3s, because each await chain here goes:
+//   queued → dispatcher poll → adapter execute → status running → postRun
+//   write → status succeeded
+// which is a few hundred ms in isolation but bursts to 2-5s under CI load
+// (embedded-postgres warm-up after a fork-pool reset, shared-runner I/O
+// contention, etc.). The 3s default was the direct cause of intermittent
+// 'expected running to be succeeded' failures on verify_canary — see
+// run 26258560789 job 77286814262 on PR #129.
+//
+// Throws on deadline expiry so the timeout surfaces directly instead of
+// being masked by a downstream `expect(...).toBe(...)` symptom.
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return fn();
+  if (await fn()) return true;
+  throw new Error(`waitForCondition: predicate did not become true within ${timeoutMs}ms`);
 }
 
 type SeedOptions = {
