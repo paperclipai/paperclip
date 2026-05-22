@@ -117,6 +117,61 @@ RUN npm i -g \
     agent-browser@${AGENT_BROWSER_VERSION} \
   && which designer && which agent-browser
 
+# ---------------------------------------------------------------------------
+# Protocol Buffers (BLO-5492)
+# ---------------------------------------------------------------------------
+# magma's orc8r/cloud/go genpb step needs `protoc` + protoc-gen-go +
+# protoc-gen-go-grpc. Pinned versions match the magma go.mod toolchain
+# (google.golang.org/protobuf v1.34+, google.golang.org/grpc v1.65+).
+ARG PROTOC_VERSION=27.2
+ARG PROTOC_GEN_GO_VERSION=v1.34.2
+ARG PROTOC_GEN_GO_GRPC_VERSION=v1.4.0
+RUN curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+       -o /tmp/protoc.zip \
+  && unzip -q /tmp/protoc.zip 'bin/protoc' 'include/*' -d /usr/local \
+  && chmod -R a+rX /usr/local/include/google \
+  && rm /tmp/protoc.zip \
+  && GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+       google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} \
+  && GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+       google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION} \
+  && rm -rf /root/go /root/.cache \
+  && protoc --version \
+  && protoc-gen-go --version \
+  && protoc-gen-go-grpc --version
+
+# ---------------------------------------------------------------------------
+# Self-serve dependency installation (BLO-5492)
+# ---------------------------------------------------------------------------
+# Agents run as `USER node` below; without sudo they cannot apt-install a
+# missing tool when one comes up (terraform, awscli, a new lint binary, …).
+# Every gap would otherwise require a Dockerfile.agent rebuild + image roll
+# — the structural pattern this issue is fixing.
+#
+# Sudo is scoped NOPASSWD to package-management commands only — `apt`,
+# `apt-get`, `dpkg`, `dpkg-reconfigure`, and `pipx`. Not `sudo bash` /
+# `sudo -i`, so the blast radius stays inside Debian's package
+# infrastructure. Agent code that wants arbitrary root must change the
+# Dockerfile.
+#
+# npm-global prefix is moved to /home/node/.npm-global so `npm i -g`
+# from the node user also works without sudo. The existing root-installed
+# globals (designer, agent-browser) remain under /usr/local/bin and stay
+# on PATH; the new prefix is prepended to PATH so user installs win on
+# name collisions.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends sudo pipx \
+  && rm -rf /var/lib/apt/lists/* \
+  && install -m 0440 /dev/null /etc/sudoers.d/node-pkg-install \
+  && printf 'node ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/dpkg-reconfigure, /usr/bin/pipx\n' \
+       > /etc/sudoers.d/node-pkg-install \
+  && chmod 0440 /etc/sudoers.d/node-pkg-install \
+  && visudo -c -f /etc/sudoers.d/node-pkg-install \
+  && install -d -o node -g node -m 0755 /home/node/.npm-global /home/node/.npm-cache
+ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
+ENV NPM_CONFIG_CACHE=/home/node/.npm-cache
+ENV PATH=/home/node/.npm-global/bin:$PATH
+
 # Hand back to the non-root `node` user — paperclip's docker-entrypoint.sh
 # runs as that uid (matches the host user mapping established in the base
 # image's USER_UID/USER_GID args).

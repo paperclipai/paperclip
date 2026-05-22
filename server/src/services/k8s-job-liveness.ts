@@ -6,6 +6,17 @@ import { logger } from "../middleware/logger.js";
 // Job pods. Matches the chart's deploy namespace; an explicit env override
 // is supported for unusual deployments.
 const PAPERCLIP_K8S_NAMESPACE = process.env.PAPERCLIP_K8S_NAMESPACE ?? "paperclip";
+const ENABLE_K8S_JOB_LIVENESS_IN_TESTS =
+  process.env.PAPERCLIP_ENABLE_K8S_JOB_LIVENESS_IN_TESTS === "true";
+const IS_TEST_ENVIRONMENT = process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+const K8S_JOB_LIVENESS_TIMEOUT_MS = Number(
+  process.env.PAPERCLIP_K8S_JOB_LIVENESS_TIMEOUT_MS ??
+    (IS_TEST_ENVIRONMENT ? "100" : "2000"),
+);
+const K8S_JOB_LIVENESS_TIMEOUT_SECONDS = Math.max(
+  1,
+  Math.ceil(K8S_JOB_LIVENESS_TIMEOUT_MS / 1000),
+);
 
 // Agent Job manifests carry app.kubernetes.io/managed-by=paperclip and a
 // paperclip.io/run-id label that maps directly to heartbeat_runs.id. The
@@ -21,10 +32,31 @@ type ClientState =
 
 let clientState: ClientState = { kind: "uninitialized" };
 
+function requestOptionsWithTimeout() {
+  return {
+    middlewareMergeStrategy: "append" as const,
+    promiseMiddleware: [
+      {
+        async pre(context: { setSignal(signal: AbortSignal): void }) {
+          context.setSignal(AbortSignal.timeout(K8S_JOB_LIVENESS_TIMEOUT_MS));
+          return context;
+        },
+        async post<T>(context: T) {
+          return context;
+        },
+      },
+    ],
+  };
+}
+
 function initClient(): ClientState {
   if (clientState.kind !== "uninitialized") return clientState;
   try {
     const kc = new k8s.KubeConfig();
+    if (IS_TEST_ENVIRONMENT && !ENABLE_K8S_JOB_LIVENESS_IN_TESTS) {
+      clientState = { kind: "unavailable", reason: "disabled in test environment" };
+      return clientState;
+    }
     // In-cluster (mounted SA token) is the production path. For local dev
     // we deliberately don't fall back to loadFromDefault — the reaper would
     // otherwise hit the developer's personal kubeconfig and list Jobs in
@@ -61,10 +93,14 @@ export async function listLiveAgentJobRunIds(): Promise<Set<string> | null> {
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const list = await state.api.listNamespacedJob({
-      namespace: PAPERCLIP_K8S_NAMESPACE,
-      labelSelector: AGENT_JOB_LABEL_SELECTOR,
-    });
+    const list = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: AGENT_JOB_LABEL_SELECTOR,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
     const runIds = new Set<string>();
     for (const job of list.items ?? []) {
       const runId = job.metadata?.labels?.[RUN_ID_LABEL];
@@ -97,20 +133,27 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const list = await state.api.listNamespacedJob({
-      namespace: PAPERCLIP_K8S_NAMESPACE,
-      labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${RUN_ID_LABEL_FILTER_PREFIX}${runId}`,
-    });
+    const list = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${RUN_ID_LABEL_FILTER_PREFIX}${runId}`,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
     let deleted = 0;
     for (const job of list.items ?? []) {
       const name = job.metadata?.name;
       if (!name) continue;
       try {
-        await state.api.deleteNamespacedJob({
-          name,
-          namespace: PAPERCLIP_K8S_NAMESPACE,
-          propagationPolicy: "Background",
-        });
+        await state.api.deleteNamespacedJob(
+          {
+            name,
+            namespace: PAPERCLIP_K8S_NAMESPACE,
+            propagationPolicy: "Background",
+          },
+          requestOptionsWithTimeout(),
+        );
         deleted += 1;
       } catch (error) {
         logger.warn(
@@ -144,10 +187,14 @@ export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
   const state = initClient();
   if (state.kind !== "ready") return false;
   try {
-    const res = await state.api.listNamespacedJob({
-      namespace: PAPERCLIP_K8S_NAMESPACE,
-      labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
-    });
+    const res = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
     const items = res.items ?? [];
     return items.some((job) => {
       const status = job.status;
