@@ -3719,7 +3719,7 @@ export function issueRoutes(
         const defaultBranch = workspace?.baseRef
           ? workspace.baseRef.replace(/^origin\//, "")
           : "main";
-        const labels = (existing as { labels?: { slug: string }[] }).labels?.map((l) => l.slug) ?? [];
+        const labels = (existing as unknown as { labels?: Array<{ slug: string }> }).labels?.map((l) => l.slug) ?? [];
         const isProcessOnly =
           labels.includes("process-only") ||
           /cites no in.repo artifact/i.test(commentBody ?? existing.description ?? "");
