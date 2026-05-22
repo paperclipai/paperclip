@@ -1,21 +1,12 @@
 name: Deploy CrewBrief API
 
+# NOTE: CrewBrief is deployed on the Hostinger VPS via nginx → Paperclip server (port 3100).
+# This Railway workflow is NOT the active deployment path.
+# The Railway service "crewbrief-api" has not been created in the Railway dashboard.
+# Keep as workflow_dispatch-only in case Railway deployment is set up in the future.
+
 on:
   workflow_dispatch:
-
-  push:
-    branches:
-      - master
-      - main
-    paths:
-      - 'server/**'
-      - 'packages/db/**'
-      - 'packages/shared/**'
-      - 'Dockerfile.crewbrief'
-      - 'railway.json'
-      - 'pnpm-lock.yaml'
-      - 'package.json'
-      - '.github/workflows/deploy-crewbrief-api.yml'
 
 concurrency:
   group: deploy-crewbrief-api-${{ github.ref }}
