@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRecoveryActions,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -6007,6 +6008,146 @@ export function issueRoutes(
     });
 
     res.json(result);
+  });
+
+  router.post("/issues/:id/admin/repair-recovery-action", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    if (issue.status !== "done" && issue.status !== "cancelled") {
+      res.status(409).json({
+        error: "Issue must be in terminal status",
+        details: { status: issue.status },
+      });
+      return;
+    }
+
+    const resolutionNote = `Admin repair: cancelled stale recovery action after source issue reached ${issue.status}.`;
+    const repairedAction = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: issue.companyId,
+      sourceIssueId: issue.id,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_repair_recovery_action",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        issueId: issue.id,
+        actorUserId: req.actor.userId,
+        repaired: Boolean(repairedAction),
+        issueStatus: issue.status,
+        recoveryActionId: repairedAction?.id ?? null,
+      },
+    });
+
+    res.json({
+      issueId: issue.id,
+      repaired: Boolean(repairedAction),
+      recoveryAction: repairedAction,
+    });
+  });
+
+  router.post("/admin/recovery-actions/repair", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const companyIdInput =
+      req.body && typeof req.body === "object" && typeof (req.body as Record<string, unknown>).companyId === "string"
+        ? ((req.body as Record<string, unknown>).companyId as string).trim()
+        : "";
+    if (!companyIdInput) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+    assertCompanyAccess(req, companyIdInput);
+
+    const staleActions = await db
+      .select({
+        id: issueRecoveryActions.id,
+      })
+      .from(issueRecoveryActions)
+      .innerJoin(issueRows, eq(issueRecoveryActions.sourceIssueId, issueRows.id))
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyIdInput),
+          eq(issueRows.companyId, companyIdInput),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(issueRows.status, ["done", "cancelled"]),
+        ),
+      );
+    const staleActionIds = staleActions.map((row) => row.id);
+
+    let repairedCount = 0;
+    if (staleActionIds.length > 0) {
+      const repaired = await db
+        .update(issueRecoveryActions)
+        .set({
+          status: "cancelled",
+          outcome: "cancelled",
+          resolutionNote: "Admin repair sweep: source issue already in terminal status.",
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyIdInput),
+            inArray(issueRecoveryActions.id, staleActionIds),
+          ),
+        )
+        .returning({ id: issueRecoveryActions.id });
+      repairedCount = repaired.length;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: companyIdInput,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.admin_repair_recovery_actions",
+      entityType: "company",
+      entityId: companyIdInput,
+      details: {
+        actorUserId: req.actor.userId,
+        scannedCount: staleActionIds.length,
+        repairedCount,
+      },
+    });
+
+    res.json({
+      companyId: companyIdInput,
+      scannedCount: staleActionIds.length,
+      repairedCount,
+    });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

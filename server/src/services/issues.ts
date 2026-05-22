@@ -88,6 +88,7 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -129,6 +130,16 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasTypedReviewParticipant(state: unknown): boolean {
+  if (!state || typeof state !== "object") return false;
+  const currentParticipant = (state as Record<string, unknown>).currentParticipant;
+  if (!currentParticipant || typeof currentParticipant !== "object") return false;
+  const type = readStringFromRecord(currentParticipant, "type");
+  if (type === "user" && readStringFromRecord(currentParticipant, "userId")) return true;
+  if (type === "agent" && readStringFromRecord(currentParticipant, "agentId")) return true;
+  return false;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -772,6 +783,38 @@ async function listUnresolvedBlockerIssueIds(
       ),
     )
     .then((rows) => rows.map((row) => row.id));
+}
+
+async function clearTerminalBlockersForIssue(
+  dbOrTx: Pick<Db, "select" | "delete">,
+  companyId: string,
+  issueId: string,
+) {
+  const terminalBlockerRows = await dbOrTx
+    .select({ blockerIssueId: issueRelations.issueId })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issues.status, [...TERMINAL_ISSUE_STATUSES]),
+      ),
+    );
+  const terminalBlockerIssueIds = terminalBlockerRows.map((row) => row.blockerIssueId);
+  if (terminalBlockerIssueIds.length === 0) return;
+
+  await dbOrTx
+    .delete(issueRelations)
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issueRelations.issueId, terminalBlockerIssueIds),
+      ),
+    );
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -5390,6 +5433,55 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [updated]);
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status
+        ) {
+          await tx
+            .update(issueRecoveryActions)
+            .set({
+              status: "cancelled",
+              outcome: "cancelled",
+              resolutionNote:
+                `Recovery action became stale because the source issue reached ${issueData.status}.`,
+              resolvedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issueRecoveryActions.companyId, existing.companyId),
+                eq(issueRecoveryActions.sourceIssueId, existing.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ),
+            );
+        }
+        if (issueData.status === "in_review" && existing.status !== "in_review") {
+          const nextExecutionState =
+            issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+          const hasValidReviewer =
+            (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.length > 0) ||
+            hasTypedReviewParticipant(nextExecutionState);
+          if (hasValidReviewer) {
+            await tx
+              .update(issueRecoveryActions)
+              .set({
+                status: "cancelled",
+                outcome: "cancelled",
+                resolutionNote:
+                  "Recovery action became stale because the source issue entered in_review with a valid reviewer.",
+                resolvedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(issueRecoveryActions.companyId, existing.companyId),
+                  eq(issueRecoveryActions.sourceIssueId, existing.id),
+                  eq(issueRecoveryActions.kind, "missing_disposition"),
+                  inArray(issueRecoveryActions.status, ["active", "escalated"]),
+                ),
+              );
+          }
+        }
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
           existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
         ) {
@@ -5503,6 +5595,7 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
+      await clearTerminalBlockersForIssue(db, issueCompany.companyId, id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
