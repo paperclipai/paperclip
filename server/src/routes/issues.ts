@@ -5610,7 +5610,7 @@ export function issueRoutes(
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
             : issue.id;
-        wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+        wakeups.set(`${agentId}:${wakeIssueId}:${wakeup.reason}`, { agentId, wakeup });
       };
 
       if (executionStageWakeup) {
