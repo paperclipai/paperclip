@@ -9903,7 +9903,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     buildRunOutputSilence,
 
+    releaseDueProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.releaseDueBlocks(now, "system"),
+
+    recoverLegacyProviderRateLimitBlocks: (now = new Date()) =>
+      providerRateLimits.recoverLegacyResolvedBlocks(now),
+
     tickTimers: async (now = new Date()) => {
+      const providerReleases = await providerRateLimits.releaseDueBlocks(now, "system");
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9937,21 +9944,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const issueMonitors = await tickDueIssueMonitors(now);
 
-      // Auto-resolve expired provider rate-limit blocks.
-      const expiredBlocks = await providerRateLimits.resolveExpiredBlocks(now);
-      for (const block of expiredBlocks) {
-        const stillBlocked = await providerRateLimits.isWindowStillBlocked(
-          block.adapterType, block.limitKind,
-        );
-        if (!stillBlocked) {
-          await providerRateLimits.releaseAndResumeForBlock(block);
-        }
-      }
-
       return {
         checked: checked + issueMonitors.checked,
-        enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        enqueued: enqueued + issueMonitors.triggered + providerReleases.wakeupsQueued,
+        skipped: skipped + issueMonitors.skipped + providerReleases.wakeupsSkipped,
       };
     },
 
