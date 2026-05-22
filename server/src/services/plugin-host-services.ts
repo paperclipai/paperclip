@@ -69,6 +69,7 @@ import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -372,7 +373,7 @@ function truncStr(s: string, max: number): string {
   return s.slice(0, max) + "...[truncated]";
 }
 
-/** Sanitise a plugin-supplied meta object: enforce size limit and strip reserved keys. */
+/** Sanitise a plugin-supplied meta object: redact secrets, enforce size limit, and strip reserved keys. */
 function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (meta == null) return null;
   // Strip pino reserved keys
@@ -382,17 +383,18 @@ function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<
       cleaned[k] = v;
     }
   }
+  const redacted = sanitizeRecord(cleaned);
   // Enforce total serialised size
   let json: string;
   try {
-    json = JSON.stringify(cleaned);
+    json = JSON.stringify(redacted);
   } catch {
     return { _sanitised: true, _error: "meta was not JSON-serialisable" };
   }
   if (json.length > MAX_LOG_META_JSON_LENGTH) {
     return { _sanitised: true, _error: `meta exceeded ${MAX_LOG_META_JSON_LENGTH} chars` };
   }
-  return cleaned;
+  return redacted;
 }
 
 interface BufferedLogEntry {
@@ -1049,7 +1051,10 @@ export function buildHostServices(
     logger: {
       async log(params) {
         const { level, meta } = params;
-        const safeMessage = truncStr(String(params.message ?? ""), MAX_LOG_MESSAGE_LENGTH);
+        const safeMessage = truncStr(
+          redactSensitiveText(String(params.message ?? "")),
+          MAX_LOG_MESSAGE_LENGTH,
+        );
         const safeMeta = sanitiseMeta(meta);
         const pluginLogger = logger.child({ service: "plugin-worker", pluginId });
         const logFields = {

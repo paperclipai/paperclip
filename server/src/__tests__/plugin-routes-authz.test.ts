@@ -40,6 +40,7 @@ async function createApp(
   routeOverrides: {
     db?: unknown;
     jobDeps?: unknown;
+    webhookDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
   } = {},
@@ -64,7 +65,7 @@ async function createApp(
     (routeOverrides.db ?? {}) as never,
     loader as never,
     routeOverrides.jobDeps as never,
-    undefined,
+    routeOverrides.webhookDeps as never,
     routeOverrides.toolDeps as never,
     routeOverrides.bridgeDeps as never,
   ));
@@ -381,6 +382,75 @@ describe.sequential("scoped plugin API routes", () => {
       }),
     );
   }, 20_000);
+});
+
+describe.sequential("plugin webhook security", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("redacts sensitive webhook headers before persisting deliveries while forwarding originals to the worker", async () => {
+    const values = vi.fn(() => ({
+      returning: vi.fn().mockResolvedValue([{ id: "delivery-1" }]),
+    }));
+    const db = {
+      insert: vi.fn(() => ({ values })),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+    };
+    const workerManager = {
+      call: vi.fn().mockResolvedValue(undefined),
+    };
+
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["webhooks.receive"],
+        webhooks: [{ endpointKey: "telegram" }],
+      },
+    });
+
+    const { app } = await createApp(boardActor(), {}, {
+      db,
+      webhookDeps: { workerManager },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/webhooks/telegram`)
+      .set("Authorization", "Bearer provider-secret")
+      .set("X-Hub-Signature-256", "sha256=provider-signature")
+      .set("X-Custom-Token", "provider-token")
+      .set("X-Request-Id", "request-1")
+      .send({ ok: true });
+
+    expect(res.status).toBe(200);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      headers: expect.objectContaining({
+        authorization: "[redacted]",
+        "x-hub-signature-256": "[redacted]",
+        "x-custom-token": "[redacted]",
+        "x-request-id": "request-1",
+      }),
+    }));
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "handleWebhook",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: "Bearer provider-secret",
+          "x-hub-signature-256": "sha256=provider-signature",
+          "x-custom-token": "provider-token",
+        }),
+      }),
+    );
+  });
 });
 
 describe.sequential("plugin local folder routes", () => {
