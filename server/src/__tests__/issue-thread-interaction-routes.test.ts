@@ -27,6 +27,26 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+  decide: vi.fn(async (input: { action?: string }) => ({
+    allowed: true,
+    action: input.action,
+    reason: "allow_explicit_grant",
+    explanation: "Allowed by test grant.",
+  })),
+  hasPermission: vi.fn(async () => true),
+}));
+
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+  resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
+    ambiguous: false,
+    agent: { id: raw },
+  })),
+  list: vi.fn(async () => []),
+}));
+
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
@@ -41,23 +61,8 @@ function registerModuleMocks() {
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
-      hasPermission: vi.fn(async () => true),
-    }),
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-      resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-        ambiguous: false,
-        agent: { id: raw },
-      })),
-    }),
+    accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
     clampIssueListLimit: (value: number) => value,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
@@ -161,6 +166,20 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "tasks:manage_active_checkouts",
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, raw: string) => ({
+      ambiguous: false,
+      agent: { id: raw },
+    }));
+    mockAgentService.list.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
@@ -437,6 +456,130 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("allows an agent with issue-management authority to answer question interactions", async () => {
+    const managerAgentId = "33333333-3333-4333-8333-333333333333";
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId: "company-1",
+      runId: "agent-run-1",
+    });
+    mockIssueService.getById.mockResolvedValue(createIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      status: "in_progress",
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      expect.objectContaining({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      }),
+      expect.objectContaining({ agentId: managerAgentId, userId: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: managerAgentId,
+        action: "issue.thread_interaction_answered",
+      }),
+    );
+  });
+
+  it("rejects agent question answers for another agent's active checkout without management authority", async () => {
+    const peerAgentId = "33333333-3333-4333-8333-333333333333";
+    const app = await createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId: "company-1",
+      runId: "agent-run-1",
+    });
+    mockIssueService.getById.mockResolvedValue(createIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      status: "in_progress",
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "tasks:manage_active_checkouts",
+      reason: "no_matching_grant",
+      explanation: "No matching grant.",
+    });
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: peerAgentId,
+        companyId: "company-1",
+        role: "engineer",
+        reportsTo: null,
+        permissions: {},
+      },
+      {
+        id: ASSIGNEE_AGENT_ID,
+        companyId: "company-1",
+        role: "engineer",
+        reportsTo: null,
+        permissions: {},
+      },
+    ]);
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
+
+  it("rejects unassigned question answers from agents without management authority", async () => {
+    const peerAgentId = "33333333-3333-4333-8333-333333333333";
+    const app = await createApp({
+      type: "agent",
+      agentId: peerAgentId,
+      companyId: "company-1",
+      runId: "agent-run-1",
+    });
+    mockIssueService.getById.mockResolvedValue(createIssue({
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "tasks:manage_active_checkouts",
+      reason: "no_matching_grant",
+      explanation: "No matching grant.",
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: peerAgentId,
+      companyId: "company-1",
+      role: "engineer",
+      reportsTo: null,
+      permissions: {},
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission to answer question interaction");
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
+
   it("cancels question interactions and emits a continuation wake", async () => {
     const app = await createApp();
 
@@ -518,6 +661,123 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("allows an agent with issue-management authority to accept request confirmations", async () => {
+    const managerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(createIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      status: "in_progress",
+    }));
+    mockInteractionService.listForIssue.mockResolvedValueOnce([
+      {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+        result: null,
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:00:00.000Z",
+      },
+    ]);
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId: "company-1",
+      runId: "agent-run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-3",
+      {},
+      expect.objectContaining({ agentId: managerAgentId, userId: null }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "agent",
+        actorId: managerAgentId,
+        action: "issue.thread_interaction_accepted",
+      }),
+    );
+  });
+
+  it("keeps suggested-task acceptance board-only for agent callers", async () => {
+    const managerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockInteractionService.listForIssue.mockResolvedValueOnce([
+      {
+        id: "interaction-1",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "suggest_tasks",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-1",
+        payload: {
+          version: 1,
+          tasks: [{ clientKey: "task-1", title: "One" }],
+        },
+        result: null,
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:00:00.000Z",
+      },
+    ]);
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId: "company-1",
+      runId: "agent-run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/accept")
+      .send({ selectedClientKeys: ["task-1"] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
   it("forces a fresh workspace-aware session when accepting a planning confirmation", async () => {

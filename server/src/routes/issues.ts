@@ -46,6 +46,7 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssueThreadInteraction,
   type IssueRelationIssueSummary,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -1106,6 +1107,12 @@ export function issueRoutes(
     return value === true || value === "true" || value === "1";
   }
 
+  function canCreateAgentsLegacy(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
+    if (agent.role === "ceo") return true;
+    if (!agent.permissions || typeof agent.permissions !== "object") return false;
+    return Boolean(agent.permissions.canCreateAgents);
+  }
+
   async function assertIssueEnvironmentSelection(
     companyId: string,
     environmentId: string | null | undefined,
@@ -1458,6 +1465,70 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function assertCanResolveDelegatedInteraction(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    input: { permissionError: string },
+  ) {
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "board") return true;
+    if (req.actor.type !== "agent") throw unauthorized();
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (issue.assigneeAgentId) {
+      return assertAgentIssueMutationAllowed(req, res, issue);
+    }
+    const allowedByGrant = await access.hasPermission(
+      issue.companyId,
+      "agent",
+      actorAgentId,
+      "tasks:manage_active_checkouts",
+    );
+    if (allowedByGrant) return true;
+    const actorAgent = await agentsSvc.getById(actorAgentId);
+    if (actorAgent && actorAgent.companyId === issue.companyId && canCreateAgentsLegacy(actorAgent)) return true;
+    res.status(403).json({
+      error: input.permissionError,
+      details: {
+        issueId: issue.id,
+        actorAgentId,
+        securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+      },
+    });
+    return false;
+  }
+
+  async function assertCanAnswerQuestionInteraction(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+  ) {
+    return assertCanResolveDelegatedInteraction(req, res, issue, {
+      permissionError: "Missing permission to answer question interaction",
+    });
+  }
+
+  async function assertCanAcceptInteraction(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    interaction: Pick<IssueThreadInteraction, "kind">,
+  ) {
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "board") return true;
+    if (interaction.kind !== "request_confirmation") {
+      res.status(403).json({ error: "Board access required" });
+      return false;
+    }
+    return assertCanResolveDelegatedInteraction(req, res, issue, {
+      permissionError: "Missing permission to accept request confirmation",
+    });
   }
 
   function assertStructuredCommentFieldsAllowed(
@@ -4685,10 +4756,22 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+
+      const interactionSvc = issueThreadInteractionService(db);
+      if (req.actor.type === "board") {
+        assertBoard(req);
+      } else {
+        const interaction = (await interactionSvc.listForIssue(issue.id))
+          .find((candidate) => candidate.id === interactionId);
+        if (!interaction) {
+          res.status(404).json({ error: "Interaction not found" });
+          return;
+        }
+        if (!await assertCanAcceptInteraction(req, res, issue, interaction)) return;
+      }
 
       const actor = getActorInfo(req);
-      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+      const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -4843,8 +4926,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!await assertCanAnswerQuestionInteraction(req, res, issue)) return;
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
