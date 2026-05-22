@@ -640,9 +640,25 @@ When `PATCH /issues/:id` is called with `status: "done"`, the hook:
 | `PAPERCLIP_DISABLE_CLOSURE_GATE=true` | Hard kill-switch — gate disabled entirely at startup. All closures pass. |
 | `PAPERCLIP_CLOSURE_GATE_SHADOW=true` | Shadow mode — rejections are logged as `issue.closure_gate_would_reject` activity but the transition proceeds. Use for staged rollout. |
 
+### Rejection codes
+
+| Code | Meaning |
+|---|---|
+| `NO_TEXT` | No closing comment or description to validate |
+| `NO_HEAD_SHA` | No HEAD sha found in closing comment |
+| `INVALID_HEAD_SHA` | `git cat-file -t <sha>` returned non-zero or non-commit type |
+| `PROCESS_ONLY_UNDECLARED` | No paths cited and no process-only declaration |
+| `PATH_PROOF_MISMATCH` | Cited path has no commits on default branch |
+| `INVALID_PROOF_BRANCH` | Path-proof line cites a non-default-branch ref, or the ref token is missing from the `git log` command. Added rev 2 per UPG-838. |
+| `INVALID_BYPASS_REASON` | `bypassClosureGate.reason` matches the §6.4 deny-list (e.g. "PR not yet merged"). Added rev 2 per UPG-838. |
+
 ### Manager override
 
 Agents or board users with sufficient authority can bypass the gate by including `bypassClosureGate: { reason: "<reason ≥ 10 chars>" }` in the PATCH body. This logs an `issue.closure_gate_overridden` activity entry and skips validation.
+
+**Bypass deny-list (§6.4):** Reasons matching `/pr.*(not.*merged|pending|open|review)/i` are rejected outright with `INVALID_BYPASS_REASON` regardless of actor tier. Merge the PR and paste canonical-default-branch anchors instead.
+
+**Path-proof ref requirement (§4.4.0):** Path-proof lines must cite the default branch ref explicitly: `git log <defaultBranch> --oneline -- <path>`. A feature-branch ref (e.g. `git log ben/feature --oneline -- path`) rejects with `INVALID_PROOF_BRANCH` even if the shas pass `cat-file -t`.
 
 ### Process-only tickets
 

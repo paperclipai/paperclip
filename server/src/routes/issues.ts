@@ -110,7 +110,11 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { validate as closureGateValidate } from "../services/closureGate.js";
+import {
+  validate as closureGateValidate,
+  BYPASS_REASON_DENYLIST_RE,
+  type ClosureGateRejection,
+} from "../services/closureGate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -3704,17 +3708,40 @@ export function issueRoutes(
           return;
         }
       } else if (bypassClosureGate) {
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.closure_gate_overridden",
-          entityType: "issue",
-          entityId: existing.id,
-          details: { override_reason: bypassClosureGate.reason },
-        });
+        // §6.4 deny-list: reject before consulting actor tier — PR-status reasons are invalid
+        if (BYPASS_REASON_DENYLIST_RE.test(bypassClosureGate.reason)) {
+          const bypassRejection: ClosureGateRejection = {
+            code: "INVALID_BYPASS_REASON",
+            message: `Bypass reason "${bypassClosureGate.reason}" matches the §6.4 deny-list. PR-status reasons are not valid emergency justifications — merge the PR and paste canonical-default-branch anchors instead.`,
+          };
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { rejections: [bypassRejection], gate_disabled_at_startup: false },
+          });
+          if (!closureGateShadow) {
+            res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: [bypassRejection] });
+            return;
+          }
+        } else {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.closure_gate_overridden",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { override_reason: bypassClosureGate.reason },
+          });
+        }
       } else {
         const defaultBranch = workspace?.baseRef
           ? workspace.baseRef.replace(/^origin\//, "")
