@@ -130,6 +130,7 @@ import {
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { copyTextWithFallback } from "@/lib/clipboard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -1042,7 +1043,7 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextWithFallback(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
           });
@@ -1388,7 +1389,7 @@ function IssueChatUserMessage({
                 .filter((p): p is { type: "text"; text: string } => p.type === "text")
                 .map((p) => p.text)
                 .join("\n\n");
-              void navigator.clipboard.writeText(text).then(() => {
+              void copyTextWithFallback(text).then(() => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 2000);
               });
@@ -1580,7 +1581,7 @@ function IssueChatAssistantMessage({
                   title="Copy message"
                   aria-label="Copy message"
                   onClick={() => {
-                    void navigator.clipboard.writeText(copyText).then(() => {
+                    void copyTextWithFallback(copyText).then(() => {
                       setCopied(true);
                       setTimeout(() => setCopied(false), 2000);
                     });
@@ -1624,7 +1625,7 @@ function IssueChatAssistantMessage({
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onClick={() => {
-                        void navigator.clipboard.writeText(copyText);
+                        void copyTextWithFallback(copyText);
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
@@ -2281,7 +2282,7 @@ function SystemNoticeCommentRow({
   });
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(bodyText).then(() => {
+    void copyTextWithFallback(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -2290,7 +2291,7 @@ function SystemNoticeCommentRow({
   const handleCopyLink = () => {
     if (!anchorId || typeof window === "undefined") return;
     const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
-    void navigator.clipboard.writeText(url).then(() => {
+    void copyTextWithFallback(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
     });
