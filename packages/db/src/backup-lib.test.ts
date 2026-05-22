@@ -310,6 +310,107 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "preserves composite foreign key column order without duplicate referenced columns",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_composite_fk_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-composite-fk-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE SCHEMA "plugin_composite_fk";
+          CREATE TABLE "plugin_composite_fk"."content_cases" (
+            "id" uuid PRIMARY KEY,
+            "company_id" uuid NOT NULL,
+            "title" text NOT NULL,
+            CONSTRAINT "content_cases_company_case_unique" UNIQUE ("company_id", "id")
+          );
+          CREATE TABLE "plugin_composite_fk"."content_case_signals" (
+            "company_id" uuid NOT NULL,
+            "case_id" uuid NOT NULL,
+            "signal" text NOT NULL,
+            "scopes" text[] NOT NULL,
+            "warnings" jsonb DEFAULT '[]'::jsonb NOT NULL,
+            CONSTRAINT "content_case_signals_company_case"
+              FOREIGN KEY ("company_id", "case_id")
+              REFERENCES "plugin_composite_fk"."content_cases" ("company_id", "id")
+              ON DELETE CASCADE
+          );
+          INSERT INTO "plugin_composite_fk"."content_cases" ("company_id", "id", "title")
+          VALUES (
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222',
+            'case'
+          );
+          INSERT INTO "plugin_composite_fk"."content_case_signals" ("company_id", "case_id", "signal", "scopes", "warnings")
+          VALUES (
+            '11111111-1111-4111-8111-111111111111',
+            '22222222-2222-4222-8222-222222222222',
+            'signal',
+            ARRAY['upstream_import:preview', 'scope with space', 'quoted "scope"', 'NULL', 'null'],
+            jsonb_build_array('json warning', jsonb_build_object('code', 'quoted "value"'))
+          );
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-composite-fk-test",
+          backupEngine: "javascript",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{
+          signal: string;
+          title: string;
+          scopes: string[];
+          warnings: Array<string | { code: string }>;
+        }[]>(`
+          SELECT s."signal", c."title", s."scopes", s."warnings"
+          FROM "plugin_composite_fk"."content_case_signals" s
+          JOIN "plugin_composite_fk"."content_cases" c
+            ON c."company_id" = s."company_id"
+           AND c."id" = s."case_id"
+        `);
+        expect(rows).toEqual([
+          {
+            signal: "signal",
+            title: "case",
+            scopes: ["upstream_import:preview", "scope with space", 'quoted "scope"', "NULL", "null"],
+            warnings: ["json warning", { code: 'quoted "value"' }],
+          },
+        ]);
+
+        await expect(
+          restoreSql.unsafe(`
+            INSERT INTO "plugin_composite_fk"."content_case_signals" ("company_id", "case_id", "signal", "scopes")
+            VALUES (
+              '11111111-1111-4111-8111-111111111111',
+              '33333333-3333-4333-8333-333333333333',
+              'orphan',
+              ARRAY[]::text[]
+            )
+          `),
+        ).rejects.toThrow();
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "restores legacy public-only backups without migration history",
     async () => {
       const restoreConnectionString = await createTempDatabase();

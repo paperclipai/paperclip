@@ -344,12 +344,52 @@ export interface PluginWorkspace {
   name: string;
   /** Absolute filesystem path to the workspace directory. */
   path: string;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Checkout/ref requested for the workspace, when known. */
+  repoRef: string | null;
+  /** Default comparison ref for workspace tooling, when known. */
+  defaultRef: string | null;
   /** Whether this is the project's primary workspace. */
   isPrimary: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Execution workspace metadata (read-only via ctx.executionWorkspaces)
+// ---------------------------------------------------------------------------
+
+/**
+ * Plugin-safe execution workspace metadata provided by the host. This exposes
+ * the local/repository coordinates plugins need for workspace tooling without
+ * giving the SDK a host-owned diff engine.
+ */
+export interface PluginExecutionWorkspaceMetadata {
+  /** UUID primary key. */
+  id: string;
+  /** UUID of the owning company. */
+  companyId: string;
+  /** UUID of the parent project. */
+  projectId: string;
+  /** UUID of the backing project workspace, when present. */
+  projectWorkspaceId: string | null;
+  /** Absolute filesystem path to the workspace when locally realized. */
+  path: string | null;
+  /** Current working directory for local workspace tooling. */
+  cwd: string | null;
+  /** Repository URL, when known. */
+  repoUrl: string | null;
+  /** Base ref configured for the workspace, when known. */
+  baseRef: string | null;
+  /** Branch name configured for the workspace, when known. */
+  branchName: string | null;
+  /** Host provider type for the realized workspace. */
+  providerType: string | null;
+  /** Provider metadata already safe for plugin consumption. */
+  providerMetadata: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +856,19 @@ export interface PluginProjectsClient {
     reconcile(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
     reset(projectKey: string, companyId: string): Promise<PluginManagedProjectResolution>;
   };
+}
+
+/**
+ * `ctx.executionWorkspaces` — read execution workspace metadata.
+ *
+ * Requires `execution.workspaces.read`.
+ */
+export interface PluginExecutionWorkspacesClient {
+  /**
+   * Return plugin-safe metadata for an execution workspace. The host enforces
+   * company access before returning any workspace coordinates.
+   */
+  get(workspaceId: string, companyId: string): Promise<PluginExecutionWorkspaceMetadata | null>;
 }
 
 /**
@@ -1641,6 +1694,9 @@ export interface PluginContext {
 
   /** Read project and workspace metadata. Requires `projects.read` / `project.workspaces.read`. */
   projects: PluginProjectsClient;
+
+  /** Read execution workspace metadata. Requires `execution.workspaces.read`. */
+  executionWorkspaces: PluginExecutionWorkspacesClient;
 
   /** Resolve and reconcile plugin-managed routines. Requires `routines.managed`. */
   routines: PluginRoutinesClient;

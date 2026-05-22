@@ -29,6 +29,7 @@ import {
   type ReactNode,
   type ComponentType,
 } from "react";
+import * as ReactModule from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
   PluginLauncherDeclaration,
@@ -244,24 +245,31 @@ function applyJsxRuntimeKey(
   return { ...(props ?? {}), key };
 }
 
+function createReactShimSource(reactModule: object): string {
+  const exportNames = Object.keys(reactModule)
+    .filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name))
+    .sort();
+  const namedExports = exportNames
+    .map((name) => `        export const ${name} = R.${name};`)
+    .join("\n");
+
+  return `
+        const R = globalThis.__paperclipPluginBridge__?.react;
+        if (!R) {
+          throw new Error("Paperclip plugin React runtime is not initialized.");
+        }
+        export default R;
+${namedExports}
+      `;
+}
+
 function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui"): string {
   if (shimBlobUrls[specifier]) return shimBlobUrls[specifier];
 
   let source: string;
   switch (specifier) {
     case "react":
-      source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
-        export default R;
-        const { useState, useEffect, useCallback, useMemo, useRef, useContext,
-          createContext, createElement, Fragment, Component, forwardRef,
-          memo, lazy, Suspense, StrictMode, cloneElement, Children,
-          isValidElement, createRef } = R;
-        export { useState, useEffect, useCallback, useMemo, useRef, useContext,
-          createContext, createElement, Fragment, Component, forwardRef,
-          memo, lazy, Suspense, StrictMode, cloneElement, Children,
-          isValidElement, createRef };
-      `;
+      source = createReactShimSource(ReactModule);
       break;
     case "react/jsx-runtime":
       source = `
@@ -900,4 +908,5 @@ export function _resetPluginModuleLoader(): void {
 }
 
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
+export const _createReactShimSourceForTests = createReactShimSource;
 export const _rewriteBareSpecifiersForTests = rewriteBareSpecifiers;

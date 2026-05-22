@@ -19,6 +19,8 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockPersistOrder = vi.hoisted(() => vi.fn());
+const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
+const mockPointerState = vi.hoisted(() => ({ fine: true }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -63,7 +65,7 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
-    isMobile: false,
+    isMobile: mockSidebarState.isMobile,
     setSidebarOpen: mockSetSidebarOpen,
   }),
 }));
@@ -192,6 +194,23 @@ describe("SidebarProjects", () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     localStorage.clear();
+    mockSidebarState.isMobile = false;
+    mockPointerState.fine = true;
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes("(hover: hover)") && query.includes("(pointer: fine)")
+          ? mockPointerState.fine
+          : false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
     mockProjectsApi.list.mockResolvedValue([
       makeProject({
         id: "project-a",
@@ -254,6 +273,25 @@ describe("SidebarProjects", () => {
 
     expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
     expect(container.querySelector('[data-testid="project-slot-project-b"]')).toBeTruthy();
+    expect(container.querySelector('[aria-roledescription="sortable"]')).toBeTruthy();
+  });
+
+  it("uses plain project rows for top mode on mobile", async () => {
+    mockSidebarState.isMobile = true;
+
+    await renderSidebarProjects();
+
+    expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
+    expect(container.querySelector('[aria-roledescription="sortable"]')).toBeNull();
+  });
+
+  it("uses plain project rows for top mode on coarse pointer screens", async () => {
+    mockPointerState.fine = false;
+
+    await renderSidebarProjects();
+
+    expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
+    expect(container.querySelector('[aria-roledescription="sortable"]')).toBeNull();
   });
 
   it("uses the heading for section menu and the plus button for project creation", async () => {

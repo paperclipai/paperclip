@@ -187,6 +187,31 @@ export async function startServer(): Promise<StartedServer> {
     return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
   }
 
+  function isPostgresConnectionString(connectionString: string): boolean {
+    try {
+      const parsed = new URL(connectionString);
+      return parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+    } catch {
+      return false;
+    }
+  }
+
+  function assertCloudDatabaseContract(): void {
+    if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
+      return;
+    }
+    if (!config.databaseUrl) {
+      throw new Error(
+        "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
+      );
+    }
+    if (!isPostgresConnectionString(config.databaseUrl)) {
+      throw new Error(
+        "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+      );
+    }
+  }
+
   function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
     if (!rawUrl) return undefined;
     try {
@@ -270,6 +295,7 @@ export async function startServer(): Promise<StartedServer> {
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
+  assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
@@ -877,6 +903,9 @@ export async function startServer(): Promise<StartedServer> {
         telemetryClient.stop();
         await telemetryClient.flush();
       }
+
+      const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
+      appShutdown?.();
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
