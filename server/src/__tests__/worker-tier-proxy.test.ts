@@ -116,6 +116,27 @@ describe("registerWorkerTierProxyRoutes", () => {
     expect(workerHit).toBe(false);
   });
 
+  it("proxies plugin webhooks to the worker tier", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub((req) => {
+      captured = req;
+      return { status: 200, body: JSON.stringify({ status: "success" }) };
+    });
+    const app = buildApp(worker.url);
+
+    const res = await request(app)
+      .post("/api/plugins/paperclip-plugin-linear/webhooks/linear-events")
+      .send({ action: "update" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "success" });
+    expect(captured?.method).toBe("POST");
+    expect(captured?.url).toBe(
+      "/api/plugins/paperclip-plugin-linear/webhooks/linear-events",
+    );
+    expect(JSON.parse(captured?.body ?? "{}")).toEqual({ action: "update" });
+  });
+
   it("forwards auth-bearing headers so the worker tier can re-authorize", async () => {
     let captured: CapturedRequest | undefined;
     worker = await startWorkerStub((req) => {
@@ -241,6 +262,7 @@ describe("registerWorkerTierProxyRoutes", () => {
         "post /plugins/:pluginId/config",
         "post /plugins/:pluginId/config/test",
         "post /plugins/:pluginId/jobs/:jobId/trigger",
+        "post /plugins/:pluginId/webhooks/:endpointKey",
         "post /plugins/:pluginId/bridge/data",
         "post /plugins/:pluginId/bridge/action",
         "post /plugins/:pluginId/data/:key",

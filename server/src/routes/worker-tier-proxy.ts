@@ -47,6 +47,8 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
   { method: "post", path: "/plugins/:pluginId/config/test" },
   // Manual job trigger dispatches into the worker.
   { method: "post", path: "/plugins/:pluginId/jobs/:jobId/trigger" },
+  // Webhook deliveries dispatch into the plugin worker via handleWebhook.
+  { method: "post", path: "/plugins/:pluginId/webhooks/:endpointKey" },
   // UI bridge — getData/performAction RPCs and the SSE push channel.
   { method: "post", path: "/plugins/:pluginId/bridge/data" },
   { method: "post", path: "/plugins/:pluginId/bridge/action" },
