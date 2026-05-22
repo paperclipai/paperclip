@@ -206,6 +206,7 @@ describeEmbeddedPostgres("heartbeat timer assignment", () => {
     };
     expect(adapterInput.context.issueId).toBe(issueId);
     expect(adapterInput.context.taskId).toBe(issueId);
+    expect(adapterInput.context.taskKey).toBe("PAP-9321");
     expect(adapterInput.context.projectId).toBe(projectId);
     expect(adapterInput.context.timerSelectedIssueId).toBe(issueId);
     expect(adapterInput.context.paperclipWorkspace).toEqual(expect.objectContaining({

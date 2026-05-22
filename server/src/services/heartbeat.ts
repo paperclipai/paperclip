@@ -8664,6 +8664,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return await db
       .select({
         id: issues.id,
+        identifier: issues.identifier,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -8736,7 +8737,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId = timerAssignment.id;
         enrichedContextSnapshot.issueId = timerAssignment.id;
         enrichedContextSnapshot.taskId = timerAssignment.id;
-        enrichedContextSnapshot.taskKey = timerAssignment.id;
+        enrichedContextSnapshot.taskKey = timerAssignment.identifier ?? timerAssignment.id;
         enrichedContextSnapshot.projectId = timerAssignment.projectId;
         enrichedContextSnapshot.timerSelectedIssueId = timerAssignment.id;
       }
