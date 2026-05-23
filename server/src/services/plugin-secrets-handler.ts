@@ -45,7 +45,7 @@ import {
 import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+  "Plugin secret references are disabled (set PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true)";
 
 /** Opt-out env flag for operators who need the pre-0.3.2 fail-closed behavior. */
 export function isPluginSecretRefsDisabled(): boolean {
