@@ -67,7 +67,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && chown node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-onboard-from-env.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-onboard-from-env.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -87,5 +88,5 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["docker-onboard-from-env.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
