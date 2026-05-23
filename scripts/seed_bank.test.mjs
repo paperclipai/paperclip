@@ -10,6 +10,7 @@ import {
   deriveSeedQueries,
   extractGbrainPageBody,
   GbrainClient,
+  HindsightClient,
   McpClient,
   planSeedIngest,
   SqliteLedger,
@@ -180,6 +181,33 @@ test("McpClient.callTool surfaces tool-level isError results instead of silently
   }
 });
 
+test("McpClient.callTool initializes streamable HTTP sessions before tool calls", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push({ body, headers: init.headers });
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } }), {
+        status: 200,
+        headers: { "mcp-session-id": "session-1" },
+      });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } }), {
+      status: 200,
+    });
+  };
+  try {
+    const client = new McpClient("http://stub/mcp", "stub-token");
+    assert.deepEqual(await client.callTool("agent_knowledge_list_pages", { bank: "bank-1" }), { ok: true });
+    assert.equal(requests[0].body.method, "initialize");
+    assert.equal(requests[1].body.method, "tools/call");
+    assert.equal(requests[1].headers["mcp-session-id"], "session-1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("GbrainClient.query sends string enums for salience/recency (BLO-6793)", async () => {
   const calls = [];
   const stubMcp = {
@@ -197,6 +225,35 @@ test("GbrainClient.query sends string enums for salience/recency (BLO-6793)", as
   assert.equal(calls[0].args.salience, "on");
   assert.equal(calls[0].args.recency, "on");
   assert.deepEqual(items, [{ source: "default", slug: "blo-2956", title: "Solana RPC" }]);
+});
+
+test("HindsightClient uses deployed bank stats and sync retain tools", async () => {
+  const calls = [];
+  const stubMcp = {
+    callTool: async (name, args) => {
+      calls.push({ name, args });
+      return { ok: true };
+    },
+  };
+  const hindsight = new HindsightClient(stubMcp);
+  await hindsight.assertBankExists("bank-1");
+  await hindsight.ingestPage({ bankId: "bank-1", documentId: "default/fact-1", title: "Pretty Fact", body: "# Fact" });
+
+  assert.deepEqual(calls, [
+    { name: "get_bank_stats", args: { bank_id: "bank-1" } },
+    {
+      name: "sync_retain",
+      args: {
+        bank_id: "bank-1",
+        content: "# Fact",
+        context: "gbrain-seed-bank",
+        document_id: "default/fact-1",
+        metadata: { source: "gbrain", title: "Pretty Fact" },
+        strategy: "exact",
+        tags: ["gbrain-seed-bank"],
+      },
+    },
+  ]);
 });
 
 test("SqliteLedger persists rows by bank, source, and slug", async () => {

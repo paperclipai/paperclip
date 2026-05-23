@@ -31,7 +31,7 @@ gbrain's admin MCP at `http://gbrain-mcp-admin.paperclip.svc.cluster.local:3130/
 Operators run this snippet to mint a 24h bearer for the seed-bank invocation:
 
 ```sh
-GBRAIN_TOKEN=$(node -e "
+export PAPERCLIP_MCP_BEARER_TOKEN=$(node -e "
 const fs=require('fs');
 const me=JSON.parse(fs.readFileSync('/etc/paperclip-plugin-gbrain/clients.json','utf8'))[process.env.PAPERCLIP_AGENT_ID];
 (async()=>{
@@ -43,8 +43,10 @@ const me=JSON.parse(fs.readFileSync('/etc/paperclip-plugin-gbrain/clients.json',
   process.stdout.write((await r.json()).access_token);
 })();
 ")
-pnpm paperclip-seed-bank --mcp-bearer-token \"$GBRAIN_TOKEN\" …
+pnpm paperclip-seed-bank …
 ```
+
+Prefer the `PAPERCLIP_MCP_BEARER_TOKEN` environment variable over `--mcp-bearer-token` in live dogfood runs so package-manager command banners do not echo the bearer in logs.
 
 Hindsight's MCP at `http://hindsight-api.hindsight.svc.cluster.local:8888/mcp` is unauthenticated in-cluster; the same bearer flag is sent there but the server ignores it. The public gbrain MCP (`paperclip.blockcast.net/gbrain/mcp`) is OAuth-protected too and also will not accept `PAPERCLIP_API_KEY`. Use the in-cluster admin URL for operator invocations.
 
@@ -66,7 +68,9 @@ The tool calls gbrain query with salience and recency enabled, dedupes by `(sour
 
 Before ingesting, the tool checks that the target hindsight bank already exists. It does not create banks; bank creation remains owned by the hindsight plugin.
 
-For each candidate page, the tool fetches the full markdown body from gbrain and computes a SHA-256 hash. It ingests changed pages through hindsight `agent_knowledge_ingest` with `title=<gbrain-slug>`, then writes a ledger row only after ingest succeeds. Re-running with the same page body skips unchanged rows.
+For each candidate page, the tool fetches the full markdown body from gbrain and computes a SHA-256 hash. It verifies the target bank with hindsight `get_bank_stats`, ingests changed pages through `sync_retain` with `context=gbrain-seed-bank` and `document_id=<gbrain-slug>`, then writes a ledger row only after ingest succeeds. Re-running with the same page body skips unchanged rows.
+
+`sync_retain` waits for each page to be queryable, so a first live seed can take tens of seconds per page. For manual dogfood, `--max-pages 20` is often a better heartbeat-sized target than 40 while still proving the 20-40 page acceptance range.
 
 ## Refresh Mode
 

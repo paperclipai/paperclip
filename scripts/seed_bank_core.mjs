@@ -199,7 +199,7 @@ export async function planSeedIngest({ bankId, candidates, dryRun, ledger, hinds
       continue;
     }
 
-    await hindsight.ingestPage({ bankId, title: page.title, body });
+    await hindsight.ingestPage({ bankId, documentId: page.slug, title: page.title, body });
     await ledger.upsert({
       bankId,
       gbrainSource: candidate.source,
@@ -304,12 +304,15 @@ export class McpClient {
     this.baseUrl = baseUrl;
     this.bearerToken = bearerToken;
     this.nextId = 1;
+    this.initialized = false;
+    this.sessionId = null;
   }
 
   async callTool(name, args) {
     if (!this.baseUrl) {
       throw new Error(`MCP URL is required before calling ${name}`);
     }
+    await this.#ensureInitialized();
     const response = await this.#post({
       jsonrpc: "2.0",
       id: this.nextId++,
@@ -338,13 +341,41 @@ export class McpClient {
     return unwrapMcpResult(payload.result);
   }
 
-  async #post(body) {
+  async #ensureInitialized() {
+    if (this.initialized) {
+      return;
+    }
+    const response = await this.#post(
+      {
+        jsonrpc: "2.0",
+        id: this.nextId++,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "paperclip-seed-bank", version: "0.1.0" },
+        },
+      },
+      { includeSession: false },
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`MCP initialize failed: ${response.status} ${text}`);
+    }
+    this.sessionId = response.headers.get("mcp-session-id") || null;
+    this.initialized = true;
+  }
+
+  async #post(body, { includeSession = true } = {}) {
     const headers = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
     };
     if (this.bearerToken) {
       headers.Authorization = `Bearer ${this.bearerToken}`;
+    }
+    if (includeSession && this.sessionId) {
+      headers["mcp-session-id"] = this.sessionId;
     }
     return fetch(this.baseUrl, {
       method: "POST",
@@ -394,7 +425,7 @@ export class HindsightClient {
 
   async assertBankExists(bankId) {
     try {
-      await this.mcp.callTool("agent_knowledge_list_pages", { bank: bankId, bankId, limit: 1 });
+      await this.mcp.callTool("get_bank_stats", { bank_id: bankId });
     } catch (error) {
       if (String(error.message).includes("404")) {
         throw new Error(
@@ -405,8 +436,16 @@ export class HindsightClient {
     }
   }
 
-  async ingestPage({ bankId, title, body }) {
-    await this.mcp.callTool("agent_knowledge_ingest", { bank: bankId, bankId, title, body });
+  async ingestPage({ bankId, documentId, title, body }) {
+    await this.mcp.callTool("sync_retain", {
+      bank_id: bankId,
+      content: body,
+      context: "gbrain-seed-bank",
+      document_id: documentId,
+      metadata: { source: "gbrain", title },
+      strategy: "exact",
+      tags: ["gbrain-seed-bank"],
+    });
   }
 }
 
