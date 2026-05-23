@@ -1,5 +1,6 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -56,6 +57,7 @@ function PayloadField({ label, value }: { label: string; value: unknown }) {
 }
 
 function SkillList({ values }: { values: unknown }) {
+  const { t } = useTranslation();
   if (!Array.isArray(values)) return null;
   const items = values
     .filter((value): value is string => typeof value === "string")
@@ -65,7 +67,7 @@ function SkillList({ values }: { values: unknown }) {
 
   return (
     <div className="flex items-start gap-2">
-      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Skills</span>
+      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">{t("approvalPayload.skills", { defaultValue: "Skills" })}</span>
       <div className="flex flex-wrap gap-1.5">
         {items.map((item) => (
           <span
@@ -81,6 +83,7 @@ function SkillList({ values }: { values: unknown }) {
 }
 
 export function HireAgentPayload({ payload }: { payload: Record<string, unknown> }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-3 space-y-1.5 text-sm">
       <div className="flex items-center gap-2">
@@ -92,13 +95,13 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
       <PayloadField label="Icon" value={payload.icon} />
       {!!payload.capabilities && (
         <div className="flex items-start gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Capabilities</span>
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">{t("approvalPayload.capabilities", { defaultValue: "Capabilities" })}</span>
           <span className="text-muted-foreground">{String(payload.capabilities)}</span>
         </div>
       )}
       {!!payload.adapterType && (
         <div className="flex items-center gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Adapter</span>
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">{t("approvalPayload.adapter", { defaultValue: "Adapter" })}</span>
           <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
             {String(payload.adapterType)}
           </span>
@@ -162,6 +165,7 @@ export function BoardApprovalPayload({
 }
 
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
+  const { t } = useTranslation();
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")
@@ -178,33 +182,33 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
     <div className="mt-4 space-y-3.5 text-sm">
       {title && (
         <div className="space-y-1">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Title</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{t("approvalPayload.title", { defaultValue: "Title" })}</p>
           <p className="font-medium leading-6 text-foreground">{title}</p>
         </div>
       )}
       {summary && (
         <div className="space-y-1">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Summary</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{t("approvalPayload.summary", { defaultValue: "Summary" })}</p>
           <p className="leading-6 text-foreground/90">{summary}</p>
         </div>
       )}
       {recommendedAction && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
-            Recommended action
+            {t("approvalPayload.recommendedAction", { defaultValue: "Recommended action" })}
           </p>
           <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">On approval</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{t("approvalPayload.onApproval", { defaultValue: "On approval" })}</p>
           <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
         </div>
       )}
       {risks.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">Risks</p>
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{t("approvalPayload.risks", { defaultValue: "Risks" })}</p>
           <ul className="space-y-1 text-sm text-muted-foreground">
             {risks.map((risk) => (
               <li key={risk} className="flex items-start gap-2">
