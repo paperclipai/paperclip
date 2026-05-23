@@ -26,6 +26,7 @@ type StartupBannerOptions = {
   requestedPort: number;
   listenPort: number;
   uiMode: UiMode;
+  uiDistPath?: string;
   db: ExternalPostgresInfo | EmbeddedPostgresInfo;
   migrationSummary: string;
   heartbeatSchedulerEnabled: boolean;
@@ -43,6 +44,7 @@ const ansi = {
   cyan: "\x1b[36m",
   green: "\x1b[32m",
   yellow: "\x1b[33m",
+  red: "\x1b[31m",
   magenta: "\x1b[35m",
   blue: "\x1b[34m",
 };
@@ -143,6 +145,15 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     color("╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ", "cyan"),
   ];
 
+  const uiDistRow: string | null = opts.uiMode === "static"
+    ? row(
+        "UI Dist",
+        opts.uiDistPath
+          ? color(opts.uiDistPath, "dim")
+          : color("MISSING — run: pnpm --filter @paperclipai/ui build", "red"),
+      )
+    : null;
+
   const lines = [
     "",
     ...art,
@@ -154,6 +165,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
     row("Server", portValue),
     row("API", `${apiUrl} ${color(`(health: ${apiUrl}/health)`, "dim")}`),
     row("UI", uiUrl),
+    uiDistRow,
     row("Database", dbDetails),
     row("Migrations", opts.migrationSummary),
     row(

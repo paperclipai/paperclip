@@ -627,7 +627,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const app = await createApp(db as any, {
+  const { app, uiDistPath } = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
@@ -887,6 +887,7 @@ export async function startServer(): Promise<StartedServer> {
         requestedPort: requestedListenPort,
         listenPort,
         uiMode,
+        uiDistPath,
         db: startupDbInfo,
         migrationSummary,
         heartbeatSchedulerEnabled: config.heartbeatSchedulerEnabled,

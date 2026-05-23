@@ -119,6 +119,33 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+export function resolveStaticUiDist(candidates: string[]): string | undefined {
+  return candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
+}
+
+export function assertStaticUiDist(
+  candidates: string[],
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): string | undefined {
+  const distPath = resolveStaticUiDist(candidates);
+  if (distPath) return distPath;
+  if (nodeEnv === "development") {
+    const bold = "\x1b[1m";
+    const reset = "\x1b[0m";
+    const red = "\x1b[41m\x1b[97m";
+    throw new Error(
+      `\n${red}${bold}  Paperclip: UI dist not found  ${reset}\n\n` +
+      `Searched:\n${candidates.map((c) => `  • ${c}`).join("\n")}\n\n` +
+      `Fix: ${bold}pnpm --filter @paperclipai/ui build${reset}\n` +
+      `Then restart the server.\n`,
+    );
+  }
+  return undefined;
+}
+
+const API_ONLY_BODY =
+  "Paperclip API — UI not served from this process. See https://paperclip.ing/docs/deployment.";
+
 export async function createApp(
   db: Db,
   opts: {
@@ -320,20 +347,21 @@ export async function createApp(
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  let uiDistPath: string | undefined;
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
     const candidates = [
       path.resolve(__dirname, "../ui-dist"),
       path.resolve(__dirname, "../../ui/dist"),
     ];
-    const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
-    if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+    uiDistPath = assertStaticUiDist(candidates);
+    if (uiDistPath) {
+      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDistPath, "index.html"), "utf-8"));
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
         "/assets",
-        express.static(path.join(uiDist, "assets"), {
+        express.static(path.join(uiDistPath, "assets"), {
           maxAge: "1y",
           immutable: true,
         }),
@@ -344,7 +372,7 @@ export async function createApp(
       // served by this middleware for `/` and `/index.html`, and it must
       // never outlive the asset hashes it points at.
       app.use(
-        express.static(uiDist, {
+        express.static(uiDistPath, {
           maxAge: "1h",
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
@@ -371,8 +399,20 @@ export async function createApp(
           .end(indexHtml);
       });
     } else {
+      // Non-dev fallback: dist is missing but server is not in dev mode; run API-only
+      // and serve a helpful plain-text response at / so operators see something actionable
+      // instead of Express's default "Cannot GET /".
       console.warn("[paperclip] UI dist not found; running in API-only mode");
+      app.get("/", (_req, res) => {
+        res.status(200).type("text/plain").send(API_ONLY_BODY);
+      });
     }
+  }
+
+  if (opts.uiMode === "none") {
+    app.get("/", (_req, res) => {
+      res.status(200).type("text/plain").send(API_ONLY_BODY);
+    });
   }
 
   if (opts.uiMode === "vite-dev") {
@@ -489,5 +529,5 @@ export async function createApp(
     void flushPluginLogBuffer();
   });
 
-  return app;
+  return { app, uiDistPath };
 }
