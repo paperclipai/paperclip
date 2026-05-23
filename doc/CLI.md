@@ -244,11 +244,41 @@ pnpm paperclipai goal delete <goal-id> --yes
 ```sh
 pnpm paperclipai agent list --company-id <company-id>
 pnpm paperclipai agent get <agent-id>
+pnpm paperclipai agent create --company-id <company-id> --payload-json '{"name":"Builder","adapterType":"codex_local"}'
+pnpm paperclipai agent update <agent-id> --payload-json '{"title":"Senior Builder"}'
+pnpm paperclipai agent delete <agent-id> --yes
 pnpm paperclipai agent me
 pnpm paperclipai agent inbox
 pnpm paperclipai agent inbox-mine --user-id <board-user-id>
 pnpm paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."] [--payload '{"issueId":"..."}']
+pnpm paperclipai agent pause <agent-id>
+pnpm paperclipai agent resume <agent-id>
+pnpm paperclipai agent approve <agent-id>
+pnpm paperclipai agent terminate <agent-id>
+pnpm paperclipai agent heartbeat:invoke <agent-id>
+pnpm paperclipai agent claude-login <agent-id>
 pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
+```
+
+Agent configuration and runtime endpoints:
+
+```sh
+pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canAssignTasks":true}'
+pnpm paperclipai agent configuration <agent-id>
+pnpm paperclipai agent config-revisions <agent-id>
+pnpm paperclipai agent config-revision:get <agent-id> <revision-id>
+pnpm paperclipai agent config-revision:rollback <agent-id> <revision-id>
+pnpm paperclipai agent runtime-state <agent-id>
+pnpm paperclipai agent runtime-state:reset-session <agent-id> [--task-key <key>]
+pnpm paperclipai agent task-sessions <agent-id>
+pnpm paperclipai agent skills <agent-id>
+pnpm paperclipai agent skills:sync <agent-id> --desired-skills paperclip,github
+pnpm paperclipai agent instructions-path:update <agent-id> --payload-json '{"path":"/path/to/AGENTS.md"}'
+pnpm paperclipai agent instructions-bundle <agent-id>
+pnpm paperclipai agent instructions-bundle:update <agent-id> --payload-json '{"mode":"managed"}'
+pnpm paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
+pnpm paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
+pnpm paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md
 ```
 
 `agent local-cli` is the quickest way to run local Claude/Codex manually as a Paperclip agent:
