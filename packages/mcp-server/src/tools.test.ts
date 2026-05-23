@@ -108,6 +108,7 @@ describe("paperclip MCP tools", () => {
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
+      complexity: "normal",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
     });
