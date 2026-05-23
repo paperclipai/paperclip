@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
@@ -20,6 +21,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverPiModelsCached } from "./models.js";
 import { parsePiJsonl } from "./parse.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -134,6 +136,15 @@ export async function testEnvironment(
       detail: command,
     });
   } else {
+    const installCheck = await maybeRunSandboxInstallCommand({
+      runId,
+      target,
+      adapterKey: "pi",
+      installCommand: SANDBOX_INSTALL_COMMAND,
+    detectCommand: command,
+      env,
+    });
+    if (installCheck) checks.push(installCheck);
     try {
       await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
       checks.push({

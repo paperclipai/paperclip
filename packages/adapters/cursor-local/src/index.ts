@@ -3,6 +3,15 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "cursor";
 export const label = "Cursor CLI (local)";
 
+// Cursor CLI is not distributed as an npm package — the official install
+// path is the upstream installer script at cursor.com/install. Other adapters
+// in this repo prefer `npm install -g <pkg>` which is content-addressed by the
+// registry; cursor must use `curl | bash` until upstream publishes a registry
+// artifact. Pinning a commit/version here would require shipping our own
+// mirror of the installer; revisit if Cursor adds an npm/release-asset
+// equivalent.
+export const SANDBOX_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
+
 export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
@@ -95,5 +104,5 @@ Notes:
 - Sessions are resumed with --resume when stored session cwd matches current cwd.
 - Paperclip auto-injects local skills into "~/.cursor/skills" when missing, so Cursor can discover "$paperclip" and related skills on local runs.
 - Paperclip auto-adds --yolo unless one of --trust/--yolo/-f is already present in extraArgs.
-- Remote sandbox runs prepend "~/.local/bin" to PATH and prefer "~/.local/bin/cursor-agent" when the default Cursor entrypoint is requested, so standard E2B-style installs do not need hardcoded absolute command paths.
+- Remote sandbox runs prepend "~/.cursor/bin" and "~/.local/bin" to PATH and prefer the installed absolute entrypoint from one of those directories when the default Cursor command is requested, so installer-managed sandbox leases do not need hardcoded command paths.
 `;

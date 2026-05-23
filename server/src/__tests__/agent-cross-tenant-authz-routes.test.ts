@@ -60,6 +60,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
@@ -293,6 +294,17 @@ function resetMockDefaults() {
     revokedAt: new Date("2026-04-11T00:05:00.000Z"),
   }));
   mockAccessService.canUser.mockImplementation(async () => currentAccessCanUser);
+  mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+    const allowed = input.actor?.type === "board" && input.actor.source === "local_implicit"
+      ? true
+      : currentAccessCanUser;
+    return {
+      allowed,
+      action: input.action,
+      reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+    };
+  });
   mockAccessService.hasPermission.mockImplementation(async () => false);
   mockAccessService.getMembership.mockImplementation(async () => null);
   mockAccessService.listPrincipalGrants.mockImplementation(async () => []);

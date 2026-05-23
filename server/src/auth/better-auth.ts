@@ -44,6 +44,15 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
   };
 }
 
+export function shouldDisableSecureAuthCookies(config: Config): boolean {
+  const configuredPublicUrl = (
+    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    (config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl?.trim() : "")
+  );
+  if (!configuredPublicUrl) return true;
+  return configuredPublicUrl.startsWith("http://");
+}
+
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
   const headers = new Headers();
   for (const [key, raw] of Object.entries(rawHeaders)) {
@@ -99,8 +108,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const disableSecureCookies = shouldDisableSecureAuthCookies(config);
 
   const authConfig = {
     baseURL: baseUrl,
@@ -120,7 +128,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: isHttpOnly }),
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 
   if (!baseUrl) {

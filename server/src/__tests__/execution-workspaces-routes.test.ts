@@ -25,15 +25,15 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
-function createApp() {
+function createApp(companyIds = ["company-1"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
+      companyIds,
+      source: "session",
       isInstanceAdmin: false,
     };
     next();
@@ -55,6 +55,7 @@ describe.sequential("execution workspace routes", () => {
         projectWorkspaceId: null,
       },
     ]);
+    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -79,4 +80,5 @@ describe.sequential("execution workspace routes", () => {
     });
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
+
 });
