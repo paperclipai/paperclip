@@ -782,6 +782,8 @@ export function authorizationService(db: Db) {
 
     if (
       (input.action === "agents:create" ||
+        input.action === "agents:pause" ||
+        input.action === "agents:terminate" ||
         input.action === "agent_config:read" ||
         input.action === "agent_config:update" ||
         input.action === "tasks:manage_active_checkouts") &&

@@ -2692,11 +2692,22 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:pause",
+      resource: { type: "agent", companyId: existing.companyId, agentId: existing.id },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation);
+    }
+
     const agent = await svc.pause(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -2707,8 +2718,8 @@ export function agentRoutes(
 
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: req.actor.type === "agent" ? "agent" : "user",
+      actorId: req.actor.type === "agent" ? (req.actor.agentId ?? "agent") : (req.actor.userId ?? "board"),
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
@@ -2777,11 +2788,22 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
       return;
     }
+    assertCompanyAccess(req, existing.companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:terminate",
+      resource: { type: "agent", companyId: existing.companyId, agentId: existing.id },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation);
+    }
+
     const agent = await svc.terminate(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -2792,8 +2814,8 @@ export function agentRoutes(
 
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: req.actor.type === "agent" ? "agent" : "user",
+      actorId: req.actor.type === "agent" ? (req.actor.agentId ?? "agent") : (req.actor.userId ?? "board"),
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,

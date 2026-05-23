@@ -397,6 +397,105 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows CEO agent to pause and terminate via legacy authority", async () => {
+    const company = await createCompany(db, "LegacyPauseTerminate");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+
+    for (const action of ["agents:pause", "agents:terminate"] as const) {
+      const decision = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: ceoAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      });
+      expect(decision, action).toMatchObject({
+        allowed: true,
+        reason: "allow_legacy_agent_creator",
+      });
+    }
+  });
+
+  it("denies pause/terminate for an engineer IC agent without explicit grant", async () => {
+    const company = await createCompany(db, "ICDenyPauseTerminate");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    for (const action of ["agents:pause", "agents:terminate"] as const) {
+      const decision = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      });
+      expect(decision.allowed, action).toBe(false);
+      expect(decision.reason, action).toBe("deny_missing_grant");
+    }
+  });
+
+  it("allows pause/terminate via explicit principal grants", async () => {
+    const company = await createCompany(db, "ExplicitPauseTerminate");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(principalPermissionGrants).values([
+      {
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "agents:pause",
+        grantedByUserId: null,
+      },
+      {
+        companyId: company.id,
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "agents:terminate",
+        grantedByUserId: null,
+      },
+    ]);
+
+    for (const action of ["agents:pause", "agents:terminate"] as const) {
+      const decision = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      });
+      expect(decision.allowed, action).toBe(true);
+      expect(decision.reason, action).toBe("allow_explicit_grant");
+      expect(decision.grant?.permissionKey, action).toBe(action);
+    }
+  });
+
+  it("denies pause/terminate across company boundaries even for a CEO agent", async () => {
+    const sourceCompany = await createCompany(db, "CrossPauseSource");
+    const targetCompany = await createCompany(db, "CrossPauseTarget");
+    const ceoAgent = await createAgent(db, sourceCompany.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, targetCompany.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: ceoAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "agents:terminate",
+      resource: { type: "agent", companyId: targetCompany.id, agentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");

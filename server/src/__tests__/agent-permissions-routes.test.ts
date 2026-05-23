@@ -47,6 +47,8 @@ const mockAgentService = vi.hoisted(() => ({
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
+  pause: vi.fn(),
+  terminate: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -73,6 +75,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -302,6 +305,8 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
+    mockAgentService.pause.mockReset();
+    mockAgentService.terminate.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.hasPermission.mockReset();
@@ -316,6 +321,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelActiveForAgent.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -1437,6 +1443,170 @@ describe.sequential("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+    });
+  });
+
+  describe("agents:pause / agents:terminate permission gates", () => {
+    function mockDecideReturning(allowed: boolean, action: string) {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action === action ? allowed : false,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant" : `Missing permission: ${input.action ?? "action"}`,
+      }));
+    }
+
+    function targetAgent() {
+      return { ...baseAgent };
+    }
+
+    it("allows pause when access.decide grants agents:pause for the actor (board user)", async () => {
+      mockAgentService.getById.mockResolvedValue(targetAgent());
+      mockAgentService.pause.mockResolvedValue(targetAgent());
+      mockDecideReturning(true, "agents:pause");
+
+      const app = await createApp({
+        type: "board",
+        userId: "ceo-human",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "agents:pause" }),
+      );
+      expect(mockAgentService.pause).toHaveBeenCalledWith(agentId);
+      expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(agentId);
+    });
+
+    it("allows terminate when access.decide grants agents:terminate for the actor (board user)", async () => {
+      mockAgentService.getById.mockResolvedValue(targetAgent());
+      mockAgentService.terminate.mockResolvedValue(targetAgent());
+      mockDecideReturning(true, "agents:terminate");
+
+      const app = await createApp({
+        type: "board",
+        userId: "head-of-people-human",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/terminate`).send({}),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "agents:terminate" }),
+      );
+    });
+
+    it("allows a CEO-authenticated agent to pause via access.decide allow", async () => {
+      mockAgentService.getById.mockResolvedValue(targetAgent());
+      mockAgentService.pause.mockResolvedValue(targetAgent());
+      mockDecideReturning(true, "agents:pause");
+
+      const app = await createApp({
+        type: "agent",
+        agentId: "ceo-agent-id",
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "agents:pause",
+          actor: expect.objectContaining({ type: "agent", agentId: "ceo-agent-id" }),
+        }),
+      );
+    });
+
+    it("rejects pause for an IC engineer agent without the grant (no access.decide allow)", async () => {
+      mockAgentService.getById.mockResolvedValue(targetAgent());
+      mockDecideReturning(false, "agents:pause");
+
+      const app = await createApp({
+        type: "agent",
+        agentId: "ic-engineer-id",
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+      );
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("agents:pause");
+      expect(mockAgentService.pause).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelActiveForAgent).not.toHaveBeenCalled();
+    });
+
+    it("rejects terminate for an IC engineer agent without the grant", async () => {
+      mockAgentService.getById.mockResolvedValue(targetAgent());
+      mockDecideReturning(false, "agents:terminate");
+
+      const app = await createApp({
+        type: "agent",
+        agentId: "ic-engineer-id",
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/terminate`).send({}),
+      );
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("agents:terminate");
+      expect(mockAgentService.terminate).not.toHaveBeenCalled();
+    });
+
+    it("rejects pause when the target agent belongs to a different company than the actor", async () => {
+      const otherCompany = "44444444-4444-4444-8444-444444444444";
+      mockAgentService.getById.mockResolvedValue({ ...targetAgent(), companyId: otherCompany });
+      mockDecideReturning(true, "agents:pause");
+
+      const app = await createApp({
+        type: "agent",
+        agentId: "ceo-agent-id",
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+      );
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.pause).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the target agent does not exist", async () => {
+      mockAgentService.getById.mockResolvedValue(null);
+
+      const app = await createApp({
+        type: "board",
+        userId: "ceo-human",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+      );
+
+      expect(res.status).toBe(404);
+      expect(mockAccessService.decide).not.toHaveBeenCalled();
     });
   });
 

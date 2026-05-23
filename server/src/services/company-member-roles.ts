@@ -28,6 +28,8 @@ export function grantsForHumanRole(
     case "owner":
       return [
         { permissionKey: "agents:create", scope: null },
+        { permissionKey: "agents:pause", scope: null },
+        { permissionKey: "agents:terminate", scope: null },
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "users:manage_permissions", scope: null },
@@ -37,6 +39,8 @@ export function grantsForHumanRole(
     case "admin":
       return [
         { permissionKey: "agents:create", scope: null },
+        { permissionKey: "agents:pause", scope: null },
+        { permissionKey: "agents:terminate", scope: null },
         { permissionKey: "environments:manage", scope: null },
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "tasks:assign", scope: null },

@@ -85,6 +85,11 @@ POST /api/agents/{agentId}/pause
 
 Temporarily stops heartbeats for the agent.
 
+Requires the `agents:pause` permission key. Granted by default to the `owner` and `admin`
+roles via human-role default grants. CEO agents (`role === "ceo"`) retain the
+existing legacy authority and may pause agents in their own company without an
+explicit grant.
+
 ## Resume Agent
 
 ```
@@ -100,6 +105,22 @@ POST /api/agents/{agentId}/terminate
 ```
 
 Permanently deactivates the agent. **Irreversible.**
+
+Requires the `agents:terminate` permission key. Granted by default to the
+`owner` and `admin` roles. CEO agents may terminate agents in their own
+company via the legacy authority path.
+
+## Permission Keys for Agent Mutations
+
+| Key                | Default grants (human roles) | Unlocks                                                                 |
+| ------------------ | ---------------------------- | ----------------------------------------------------------------------- |
+| `agents:create`    | `owner`, `admin`             | Create agents in the company.                                           |
+| `agents:pause`     | `owner`, `admin`             | Pause an agent in the actor's company via `POST /api/agents/{id}/pause`. |
+| `agents:terminate` | `owner`, `admin`             | Terminate an agent in the actor's company via `POST /api/agents/{id}/terminate`. |
+
+A CEO agent (`role === "ceo"`) also passes the `agents:create`, `agents:pause`,
+and `agents:terminate` checks via legacy authority, even without explicit
+grants. Cross-company calls are always rejected.
 
 ## Create API Key
 
