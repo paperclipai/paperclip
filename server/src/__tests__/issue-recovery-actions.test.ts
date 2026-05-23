@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issues,
@@ -192,6 +193,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: coderId,
+      description: null,
       issueNumber: 1,
       identifier: `${prefix}-1`,
     });
@@ -442,6 +444,141 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("Recovery action:");
+  });
+
+  it("skips stranded recovery for ledger append-only labeled issues", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId: sourceIssue.id,
+      labelId: "50fe2282-f62b-4f47-9d9c-1655370032e5",
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(0);
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(unchangedIssue?.status).toBe("in_progress");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("skips stranded recovery for issues marked recovery-exempt in the description", async () => {
+    const { coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ description: "<!-- recovery-exempt: true -->\nPersistent ledger." })
+      .where(eq(issues.id, sourceIssueId));
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionRows).toHaveLength(0);
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.status).toBe("in_progress");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("prefers the prior non-PMO owner when the current assignee is the PMO Director", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const pmoDirectorId = "a6fdaf7e-3307-45c6-b68a-a4dc14a34028";
+    await db.insert(agents).values({
+      id: pmoDirectorId,
+      companyId,
+      name: "Nadia Chen",
+      role: "manager",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: pmoDirectorId })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: sourceIssueId,
+      details: {
+        identifier: "reassigned",
+        assigneeAgentId: pmoDirectorId,
+        _previous: {
+          assigneeAgentId: coderId,
+        },
+      },
+    });
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: pmoDirectorId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionRow).toMatchObject({
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+    });
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {

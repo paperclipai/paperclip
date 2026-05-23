@@ -20,6 +20,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issueTreeHoldMembers,
@@ -2111,6 +2112,137 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("skips reconciliation for ledger append-only issues", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+    });
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId,
+      labelId: "50fe2282-f62b-4f47-9d9c-1655370032e5",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(0);
+  });
+
+  it("skips reconciliation for recovery-exempt issues by description marker", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    await db
+      .update(issues)
+      .set({ description: "<!-- recovery-exempt: true -->\nPersistent ledger." })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(0);
+  });
+
+  it("prefers the prior non-PMO owner in reconciliation when the current assignee is the PMO Director", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+    });
+    const previousOwnerId = randomUUID();
+    const pmoDirectorId = "a6fdaf7e-3307-45c6-b68a-a4dc14a34028";
+    await db.insert(agents).values([
+      {
+        id: previousOwnerId,
+        companyId,
+        name: "Victor Obi",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pmoDirectorId,
+        companyId,
+        name: "Nadia Chen",
+        role: "manager",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: pmoDirectorId })
+      .where(eq(issues.id, issueId));
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        identifier: "reassigned",
+        assigneeAgentId: pmoDirectorId,
+        _previous: {
+          assigneeAgentId: previousOwnerId,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      previousOwnerAgentId: previousOwnerId,
+      returnOwnerAgentId: previousOwnerId,
+    });
+    const recoveryWakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action"));
+    expect(recoveryWakeups.some((wakeup) => (wakeup.payload as Record<string, unknown> | null)?.recoveryActionId === action?.id)).toBe(true);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).not.toBeNull();
+    expect(issue?.assigneeAgentId).not.toBe(pmoDirectorId);
+    expect(issue?.assigneeAgentId).toBe(previousOwnerId);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runs[0]?.id).toBe(runId);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
