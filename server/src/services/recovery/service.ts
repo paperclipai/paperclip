@@ -82,6 +82,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { isQuotaLimitExhaustionRun } from "./run-error-guards.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -4066,26 +4067,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "todo",
-            latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
+          if (!isQuotaLimitExhaustionRun(latestRun)) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "todo",
+              latestRun,
+              notice: {
+                body:
+                  "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+                  "but it still has no live execution path. " +
+                  "Moving it to `blocked` so it is visible for intervention.",
+                title: "No live execution path",
+                tone: "danger",
+              },
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
           }
-          continue;
+          // Quota exhaustion: do not create a recovery ticket; fall through to re-enqueue
+          // so the issue retries on the next recovery cron cycle once quota is restored.
         }
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
@@ -4197,7 +4202,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
         continue;
       }
-      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+      if (isUnsuccessfulTerminalIssueRun(latestRun) && !isQuotaLimitExhaustionRun(latestRun)) {
         const classification = classifyContinuationFailure(latestRun);
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
@@ -4273,6 +4278,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             }
           }
         }
+        // Quota exhaustion: isQuotaLimitExhaustionRun guard above skips this block entirely;
+        // fall through to re-enqueue so the issue retries once quota is restored.
       }
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
