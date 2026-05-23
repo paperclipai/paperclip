@@ -499,6 +499,58 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("ROC-23: does NOT reopen a closed issue when the comment metadata sets systemGenerated=true", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Auto-revoked 1 push key(s) on close: odedrochman/example.",
+        metadata: { systemGenerated: true, source: "ceo-chat-notifier", kind: "auto_revoke" },
+      });
+
+    expect(res.status).toBe(201);
+    // No implicit reopen: status update should NOT be called with todo.
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    // No reopen wakeup either.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  it("ROC-23: still reopens a closed issue when the comment metadata is present but systemGenerated is absent or false", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "human follow-up question",
+        metadata: { systemGenerated: false, source: "operator" },
+      });
+
+    expect(res.status).toBe(201);
+    // Preserved: human comment with explicit systemGenerated=false still reopens.
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({ reopenedFrom: "done" }),
+      }),
+    ));
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({

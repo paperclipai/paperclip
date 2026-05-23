@@ -610,10 +610,17 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  commentMetadata?: { systemGenerated?: boolean } | null;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  // ROC-23 defense-in-depth: system-marked comments (e.g. ceo-chat's
+  // auto-revoke notifier post on close) must not reopen a closed issue
+  // even when posted under a board/user token. Required after ROC-15
+  // surfaced an auto-revoke -> reopen -> auto-revoke loop driven by the
+  // notifier posting under a user-class API key.
+  if (input.commentMetadata?.systemGenerated === true) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -4498,6 +4505,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        commentMetadata: req.body.metadata ?? null,
       });
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
