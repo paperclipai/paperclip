@@ -81,12 +81,6 @@ function issuePrefixForOrg(orgId: string): string {
   return `PC${hash}`;
 }
 
-function deriveJadeSsoPassword(secret: string, email: string): string {
-  return createHmac("sha256", secret)
-    .update(`pc-jade-sso:v1:${email.trim().toLowerCase()}`)
-    .digest("hex");
-}
-
 function mapRole(role: IncomingMember["role"]): "owner" | "admin" | "member" {
   // Paperclip's membership taxonomy is richer; map Jade roles into the
   // closest paperclip equivalent without inventing privileges Jade
@@ -199,38 +193,53 @@ export function jadeTeamSyncRoutes(db: Db): Router {
             set: { name: payload.orgName, updatedAt },
           });
 
-        const incomingByUserId = new Map(payload.members.map((m) => [m.userId, m]));
+        // Resolve each incoming member to the *paperclip* user id, not
+        // the jade user id. Paperclip may already have an account with
+        // the same email (from the SSO-grant bootstrap, manual signup,
+        // etc.); reusing that row keeps memberships + authored content
+        // linked instead of forking a duplicate user.
+        const resolvedPrincipalIds = new Set<string>();
 
         for (const m of payload.members) {
           const email = m.email.toLowerCase();
-          const password = deriveJadeSsoPassword(secret, email);
-          await tx
-            .insert(authUsers)
-            .values({
-              id: m.userId,
+
+          // 1) Find or create the paperclip auth user by email.
+          const existingByEmail = await tx
+            .select({ id: authUsers.id })
+            .from(authUsers)
+            .where(eq(authUsers.email, email))
+            .then((rows) => rows[0] ?? null);
+
+          let principalId: string;
+          if (existingByEmail) {
+            principalId = existingByEmail.id;
+            await tx
+              .update(authUsers)
+              .set({ name: m.name, emailVerified: true, updatedAt })
+              .where(eq(authUsers.id, principalId));
+          } else {
+            // No paperclip account yet — mint one with jade's user.id so
+            // a future lookup by jade id still resolves.
+            principalId = m.userId;
+            await tx.insert(authUsers).values({
+              id: principalId,
               email,
               name: m.name,
               emailVerified: true,
               image: null,
               createdAt: updatedAt,
               updatedAt,
-            })
-            .onConflictDoUpdate({
-              target: authUsers.id,
-              set: {
-                email,
-                name: m.name,
-                emailVerified: true,
-                updatedAt,
-              },
             });
+          }
+          resolvedPrincipalIds.add(principalId);
 
+          // 2) Upsert membership for the resolved paperclip user id.
           await tx
             .insert(companyMemberships)
             .values({
               companyId,
               principalType: "user",
-              principalId: m.userId,
+              principalId,
               status: "active",
               membershipRole: mapRole(m.role),
               updatedAt,
@@ -248,12 +257,12 @@ export function jadeTeamSyncRoutes(db: Db): Router {
               },
             });
 
-          // First owner in the payload gets instance_admin. Idempotent.
+          // 3) Owners get instance_admin. Idempotent.
           if (m.role === "owner") {
             await tx
               .insert(instanceUserRoles)
               .values({
-                userId: m.userId,
+                userId: principalId,
                 role: "instance_admin",
                 updatedAt,
               })
@@ -261,12 +270,9 @@ export function jadeTeamSyncRoutes(db: Db): Router {
                 target: [instanceUserRoles.userId, instanceUserRoles.role],
               });
           }
-          // Suppress unused warning while keeping the map in scope for
-          // the absent-member sweep below.
-          void password;
         }
 
-        // Suspend (don't delete) members that exist in the company but
+        // Suspend (don't delete) members that exist in this company but
         // are no longer in the payload. Preserves authored content +
         // audit links.
         const existing = await tx
@@ -282,7 +288,7 @@ export function jadeTeamSyncRoutes(db: Db): Router {
             ),
           );
         const toSuspend = existing
-          .filter((r) => !incomingByUserId.has(r.principalId) && r.status === "active")
+          .filter((r) => !resolvedPrincipalIds.has(r.principalId) && r.status === "active")
           .map((r) => r.principalId);
         if (toSuspend.length > 0) {
           await tx
