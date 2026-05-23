@@ -1,5 +1,5 @@
 /**
- * Phase 2 Task 2.1 — video-guild dispatcher env-var pass-through.
+ * Phase 2 Task 2.1 -- video-guild dispatcher env-var pass-through.
  *
  * Verifies that `buildGuildWorkerEnv` extracts the stage + request_id
  * from an issue title of the form `video-<stage>/<request_id>` and
@@ -8,7 +8,7 @@
  *
  * NOTE: the function signature is `{ agent, sandboxDir, issueTitle? }`.
  * The plan's test sketch used `{ issue, guildSlug }` which is the call
- * site's shape, not the function's — this file adapts the test to the
+ * site's shape, not the function's. This file adapts the test to the
  * function's actual signature per the TDD rule "adapt the test, not
  * the function".
  */
@@ -93,6 +93,16 @@ describe("video-guild worker env", () => {
       agent: guildAgent,
       sandboxDir,
       issueTitle: "video-foo/bar-123",
+    });
+    expect(env.VIDEO_AD_REQUEST_ID).toBeUndefined();
+    expect(env.VIDEO_AD_STAGE).toBeUndefined();
+  });
+
+  it("does not set VIDEO_AD_* when request_id segment contains a slash (e.g. video-research/abc/def)", () => {
+    const env = buildGuildWorkerEnv({
+      agent: guildAgent,
+      sandboxDir,
+      issueTitle: "video-research/abc/def",
     });
     expect(env.VIDEO_AD_REQUEST_ID).toBeUndefined();
     expect(env.VIDEO_AD_STAGE).toBeUndefined();

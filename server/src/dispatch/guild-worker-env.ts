@@ -41,7 +41,7 @@ export const GUILD_WORKER_AUTONOMY_FILE = "autonomy.json";
 export const GUILD_MEMORY_PROJECT_PREFIX = "farm";
 
 /**
- * Phase 2 Task 2.1 — video-guild dispatcher env-var pass-through.
+ * Phase 2 Task 2.1 -- video-guild dispatcher env-var pass-through.
  *
  * Issue titles of the form `video-<stage>/<request_id>` are emitted by
  * the video-ad orchestrator for each pipeline stage. When the
@@ -51,9 +51,11 @@ export const GUILD_MEMORY_PROJECT_PREFIX = "farm";
  *
  * Stages are exact: research, strategy, copy, edit. Anything else (e.g.
  * `video-foo/...`) is ignored so a typo never silently activates the
- * video-ad code path.
+ * video-ad code path. The request_id segment must not contain a slash,
+ * so titles like `video-research/campaign-42/v2` fail to match cleanly
+ * rather than silently swallowing the extra path segment.
  */
-const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/(.+)$/;
+const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/([^/]+)$/;
 
 export interface BuildGuildWorkerEnvInput {
   agent: Pick<AgentRow, "id" | "name" | "kind">;
