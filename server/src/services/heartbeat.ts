@@ -52,6 +52,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { isExclusivelySelfAuthoredDeferredCommentWake } from "./heartbeat-self-comment-wake.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
@@ -8467,10 +8468,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+
+        // Look up the actual author of every deferred-wake comment so we can
+        // distinguish self-authored "agent posted its DONE-summary comment"
+        // wakes from real human comments. The `deferred.requestedByActorType`
+        // check below is insufficient on `local_trusted` deployments where the
+        // auth middleware short-circuits agent Bearer-token writes to the
+        // `local-board` user principal (see #3980), making every agent
+        // self-comment look like a human comment to the predicate and causing
+        // an infinite reopen loop on done issues (#3935,
+        // NousResearch/hermes-paperclip-adapter#92). The comment table holds
+        // the authoritative author identity regardless of auth attribution.
+        const deferredCommentAuthors = deferredCommentIds.length > 0
+          ? await tx
+              .select({
+                id: issueComments.id,
+                authorAgentId: issueComments.authorAgentId,
+              })
+              .from(issueComments)
+              .where(inArray(issueComments.id, deferredCommentIds))
+          : [];
+        const deferredWakeIsExclusivelySelfAuthored =
+          isExclusivelySelfAuthoredDeferredCommentWake({
+            deferredCommentIds,
+            assigneeAgentId: issue.assigneeAgentId,
+            deferredCommentAuthors,
+          });
+
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        // Self-authored deferred comment wakes (the agent's own DONE-summary
+        // comment triggering its own follow-up wake) must NOT reopen either —
+        // that creates the loop described in #3980/#3935.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
+          !deferredWakeIsExclusivelySelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
