@@ -51,6 +51,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
   ].join("\n");
 
   beforeAll(async () => {
+    process.env.PAPERCLIP_DISABLE_CLOSURE_GATE = "true";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-multilingual-issues-");
     db = createDb(tempDb.connectionString);
     companyId = randomUUID();
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    delete process.env.PAPERCLIP_DISABLE_CLOSURE_GATE;
   });
 
   function createStorage(): StorageService {

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -107,6 +107,13 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("issue telemetry routes", () => {
+  beforeAll(() => {
+    process.env.PAPERCLIP_DISABLE_CLOSURE_GATE = "true";
+  });
+  afterAll(() => {
+    delete process.env.PAPERCLIP_DISABLE_CLOSURE_GATE;
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
