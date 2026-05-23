@@ -1554,16 +1554,17 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to an agent-scoped file such as ~/.openclaw/agents/<openclaw-agent-id>/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth). Save the claim response token to an agent-scoped private file such as ~/.openclaw/agents/<openclaw-agent-id>/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops.",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw_gateway",
+      recommendedAdapterType: null,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
+        adapterType:
+          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1600,7 +1601,7 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: "runtime-specific Paperclip skill location"
       }
     }
   };
@@ -1651,7 +1652,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Gateway Onboarding
+    # Paperclip Agent Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1675,62 +1676,30 @@ export function buildInviteOnboardingTextDocument(
   appendBlock(`
     ## Step 0
 
-    Get the OpenClaw gateway auth token (THIS MUST BE SENT)
-    Token lives in:
+    Decide which Paperclip adapter type matches your runtime.
 
-    ~/.openclaw/openclaw.json -> gateway.auth.token
-    Extract:
-
-    TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
-    test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
-    test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
-
-    3) IMPORTANT: Don't accidentally drop the token when generating JSON
-    If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
-
-    Safe payload build looks sort of like this (substitute where necessary):
-
-    BODY="$(node -e '
-      const token = process.argv[1];
-      if (!token) process.exit(2);
-      const body = {
-        requestType: "agent",
-        agentName: "OpenClaw",
-        adapterType: "openclaw_gateway",
-        capabilities: "OpenClaw agent adapter",
-        agentDefaultsPayload: {
-          url: "ws://127.0.0.1:18789",
-          paperclipApiUrl: "http://host.docker.internal:3100",
-          headers: { "x-openclaw-token": token },
-          waitTimeoutMs: 120000,
-          sessionKeyStrategy: "issue",
-          role: "operator",
-          scopes: ["operator.admin"]
-        }
-      };
-      process.stdout.write(JSON.stringify(body));
-    ' "$TOKEN")"
+    Use adapterType only when there is a matching Paperclip adapter. Put runtime-specific settings in agentDefaultsPayload.
 
     ## Step 1: Submit agent join request
     ${onboarding.registrationEndpoint.method} ${
     onboarding.registrationEndpoint.url
   }
 
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
-    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
-    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
-    Pairing mode requirement:
-    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
-    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
-    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
-    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
-
     Body (JSON):
+    {
+      "requestType": "agent",
+      "agentName": "My Agent",
+      "adapterType": "adapter_type_for_this_runtime",
+      "capabilities": "Short summary of what this agent can do",
+      "agentDefaultsPayload": {}
+    }
+
+    OpenClaw Gateway payload example:
     {
       "requestType": "agent",
       "agentName": "My OpenClaw Agent",
       "adapterType": "openclaw_gateway",
-      "capabilities": "Optional summary",
+      "capabilities": "OpenClaw gateway agent",
       "agentDefaultsPayload": {
         "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
@@ -1741,6 +1710,8 @@ export function buildInviteOnboardingTextDocument(
         "scopes": ["operator.admin"]
       }
     }
+
+    For OpenClaw Gateway, include agentDefaultsPayload.headers.x-openclaw-token with your gateway token. Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred. Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Expected response includes:
     - request id
@@ -1760,15 +1731,15 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
+    On successful claim, save the full JSON response somewhere private for your runtime. For OpenClaw Gateway agents, prefer an agent-scoped file such as:
 
     - ~/.openclaw/agents/<openclaw-agent-id>/paperclip-claimed-api-key.json
     chmod 600 ~/.openclaw/agents/<openclaw-agent-id>/paperclip-claimed-api-key.json
 
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
+    Set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved claim response for every heartbeat run. OpenClaw agents can provide these through the environment as described here:
     https://docs.openclaw.ai/help/environment
 
-    e.g. 
+    e.g.
 
     {
       env: {
@@ -1777,18 +1748,16 @@ export function buildInviteOnboardingTextDocument(
       },
     }
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
-
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill in OpenClaw
+    ## Step 4: Install Paperclip skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+    Use your runtime's normal skill or instruction installation path.
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}

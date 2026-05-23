@@ -44,8 +44,22 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
+export {
+  backfillPrincipalAccessCompatibility,
+  ensureHumanRoleDefaultGrants,
+  insertMissingPrincipalGrants,
+  type PrincipalAccessCompatibilityBackfillStats,
+} from "./principal-access-compatibility.js";
+export { authorizationService } from "./authorization.js";
+export type {
+  AuthorizationAction,
+  AuthorizationActor,
+  AuthorizationDecision,
+  AuthorizationResource,
+} from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { environmentService } from "./environments.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";

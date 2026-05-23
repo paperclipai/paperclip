@@ -100,7 +100,7 @@ runWorker(plugin, import.meta.url);
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
-**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 
@@ -134,7 +134,7 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 
 **Filter (optional):** Pass a second argument to `on()`: `{ projectId?, companyId?, agentId? }` so the host only delivers matching events.
 
-**Company context:** Events still carry `companyId` for company-scoped data, but plugin installation and activation are instance-wide in the current runtime.
+**Company context:** Events still carry `companyId` for company-scoped data, but plugin installation and activation are instance-wide in the current runtime. Access and authorization host services require an active company-scoped invocation such as an event, API route, tool run, environment call, or UI bridge call; the requested `companyId` must match that active scope.
 
 ## Scheduled (recurring) jobs
 
@@ -321,6 +321,11 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `activity.read` |
 | | `costs.read` |
 | | `issues.orchestration.read` |
+| | `access.members.read` |
+| | `access.invites.read` |
+| | `authorization.grants.read` |
+| | `authorization.policies.read` |
+| | `authorization.audit.read` |
 | | `database.namespace.read` |
 | | `issues.create` |
 | | `issues.update` |
@@ -348,6 +353,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `local.folders` |
 | **Agent** | `agent.tools.register` |
 | | `agents.invoke` |
+| | `access.members.write` |
+| | `access.invites.write` |
+| | `authorization.grants.write` |
+| | `authorization.policies.write` |
 | | `agent.sessions.create` |
 | | `agent.sessions.list` |
 | | `agent.sessions.send` |
