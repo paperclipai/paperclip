@@ -1124,6 +1124,65 @@ export function issueRoutes(
     });
   }
 
+  async function assertAgentProjectIssuePullRequestPreflight(input: {
+    existing: {
+      id: string;
+      status: string;
+      assigneeUserId?: string | null;
+      projectId?: string | null;
+      projectWorkspaceId?: string | null;
+      executionWorkspaceId?: string | null;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+
+    const projectScoped = Boolean(
+      input.existing.projectId ||
+      input.existing.projectWorkspaceId ||
+      input.existing.executionWorkspaceId,
+    );
+    if (!projectScoped) return;
+
+    const workProducts = await workProductsSvc.listForIssue(input.existing.id);
+    const pullRequests = workProducts.filter((product) =>
+      product.type === "pull_request" &&
+      product.status !== "closed" &&
+      product.status !== "archived" &&
+      product.status !== "failed");
+    const primaryPullRequest = pullRequests.find((product) => product.isPrimary) ?? pullRequests[0] ?? null;
+
+    if (!primaryPullRequest) {
+      const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+        ? input.existing.assigneeUserId
+        : input.updateFields.assigneeUserId;
+      if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+
+      throw unprocessable("Agent cannot move a project-scoped issue to review without a linked pull request work product", {
+        code: "missing_pull_request_preflight",
+        required: ["pull_request_work_product"],
+      });
+    }
+
+    const reviewReady = ["ready_for_review", "approved"].includes(primaryPullRequest.status);
+    if (primaryPullRequest.healthStatus !== "healthy" || !reviewReady) {
+      throw unprocessable("Agent cannot move a project-scoped issue to review until the linked pull request is preflight-clean", {
+        code: "pull_request_preflight_failed",
+        pullRequestWorkProductId: primaryPullRequest.id,
+        pullRequestStatus: primaryPullRequest.status,
+        pullRequestHealthStatus: primaryPullRequest.healthStatus,
+        required: {
+          status: ["ready_for_review", "approved"],
+          healthStatus: "healthy",
+        },
+      });
+    }
+  }
+
   async function logExpiredRequestConfirmations(input: {
     issue: { id: string; companyId: string; identifier?: string | null };
     interactions: Array<{ id: string; kind: string; status: string; result?: unknown }>;
@@ -3439,6 +3498,11 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+    await assertAgentProjectIssuePullRequestPreflight({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
@@ -3446,17 +3510,18 @@ export function issueRoutes(
       updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
     const assigneeWillChange =
       nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
-    const isAgentReturningIssueToCreator =
+    const nextStatusForAssignment = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    const isAgentHandingOffIssueToHumanReviewer =
       req.actor.type === "agent" &&
       !!req.actor.agentId &&
       existing.assigneeAgentId === req.actor.agentId &&
       nextAssigneeAgentId === null &&
       typeof nextAssigneeUserId === "string" &&
-      !!existing.createdByUserId &&
-      nextAssigneeUserId === existing.createdByUserId;
+      nextAssigneeUserId.trim().length > 0 &&
+      nextStatusForAssignment === "in_review";
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentHandingOffIssueToHumanReviewer) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }

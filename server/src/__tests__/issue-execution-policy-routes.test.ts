@@ -31,11 +31,14 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
-  listForIssue: vi.fn(async () => []),
-  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  listForIssue: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+  expireRequestConfirmationsSupersededByComment: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
-  listApprovalsForIssue: vi.fn(async () => []),
+  listApprovalsForIssue: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+}));
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
 }));
 
 function registerModuleMocks() {
@@ -93,7 +96,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
@@ -150,6 +153,7 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -195,6 +199,48 @@ describe("issue execution policy routes", () => {
       missing: "review_path",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent to hand off a project-scoped no-PR issue to a human reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Research handoff without PR",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "human-reviewer" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "human-reviewer",
+      }),
+    );
   });
 
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
