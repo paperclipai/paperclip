@@ -17,6 +17,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -450,6 +451,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
+    await db.insert(labels).values({
+      id: "50fe2282-f62b-4f47-9d9c-1655370032e5",
+      companyId,
+      name: "ledger:append-only",
+      color: "#6b7280",
+    });
     await db.insert(issueLabels).values({
       companyId,
       issueId: sourceIssue.id,

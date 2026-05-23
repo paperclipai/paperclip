@@ -27,6 +27,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -2119,6 +2120,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
+    });
+    await db.insert(labels).values({
+      id: "50fe2282-f62b-4f47-9d9c-1655370032e5",
+      companyId,
+      name: "ledger:append-only",
+      color: "#6b7280",
     });
     await db.insert(issueLabels).values({
       companyId,
