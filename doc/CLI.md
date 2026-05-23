@@ -146,6 +146,33 @@ pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-sta
 pnpm paperclipai issue release <issue-id>
 ```
 
+## Project Commands
+
+```sh
+pnpm paperclipai project list --company-id <company-id>
+pnpm paperclipai project get <project-id-or-shortname> [--company-id <company-id>]
+pnpm paperclipai project create --company-id <company-id> --name "Launch Site" [--goal-ids <id1,id2>] [--lead-agent-id <id>]
+pnpm paperclipai project update <project-id-or-shortname> [--status in_progress] [--company-id <company-id>]
+pnpm paperclipai project delete <project-id-or-shortname> --yes [--company-id <company-id>]
+```
+
+Advanced project fields accept JSON:
+
+```sh
+pnpm paperclipai project create --company-id <company-id> --name "Ops" --env-json '{"OPENAI_API_KEY":{"kind":"secret","secretName":"openai-api-key"}}'
+pnpm paperclipai project update <project-id> --execution-workspace-policy-json '{"enabled":true,"defaultMode":"shared_workspace"}'
+```
+
+## Goal Commands
+
+```sh
+pnpm paperclipai goal list --company-id <company-id>
+pnpm paperclipai goal get <goal-id>
+pnpm paperclipai goal create --company-id <company-id> --title "Grow revenue" [--level company] [--status active]
+pnpm paperclipai goal update <goal-id> [--title "..."] [--status achieved]
+pnpm paperclipai goal delete <goal-id> --yes
+```
+
 ## Agent Commands
 
 ```sh
