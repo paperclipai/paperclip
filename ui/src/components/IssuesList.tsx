@@ -585,11 +585,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.subIssues.none", { defaultValue: "No active sub-issues" })}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.subIssues.allDone", { defaultValue: "All sub-issues done" })}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{t("issuesList.subIssues.noneActionable", { defaultValue: "No actionable sub-issues" })}</div>
           )}
         </div>
       </div>
@@ -1357,14 +1357,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("issuesList.view.list", { defaultValue: "List view" })}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("issuesList.view.board", { defaultValue: "Board view" })}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1377,7 +1377,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("issuesList.nestingDisable", { defaultValue: "Disable parent-child nesting" }) : t("issuesList.nestingEnable", { defaultValue: "Enable parent-child nesting" })}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1415,7 +1415,7 @@ export function IssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={t("issuesList.board.cardsPerColumn", { defaultValue: "Cards per column" })}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1435,7 +1435,7 @@ export function IssuesList({
                         )}
                         onClick={() => updateView({ boardColumnPageSize: pageSize })}
                       >
-                        <span>{pageSize} per column</span>
+                        <span>{t("issuesList.board.perColumn", { defaultValue: "{{count}} per column", count: pageSize })}</span>
                         {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
                       </button>
                     ))}
@@ -1453,7 +1453,7 @@ export function IssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={t("issuesList.board.resetDensity", { defaultValue: "Reset board density" })}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1465,7 +1465,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={t("issuesList.columnsTitle", { defaultValue: "Choose which issue columns stay visible" })}
             iconOnly
           />
 
@@ -1487,19 +1487,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issuesList.sort", { defaultValue: "Sort" })}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", t("issuesList.sortField.workflow", { defaultValue: "Workflow" })],
+                    ["status", t("issuesList.sortField.status", { defaultValue: "Status" })],
+                    ["priority", t("issuesList.sortField.priority", { defaultValue: "Priority" })],
+                    ["title", t("issuesList.sortField.title", { defaultValue: "Title" })],
+                    ["created", t("issuesList.sortField.created", { defaultValue: "Created" })],
+                    ["updated", t("issuesList.sortField.updated", { defaultValue: "Updated" })],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -1531,7 +1531,7 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("issuesList.group", { defaultValue: "Group" })}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1823,7 +1823,7 @@ export function IssuesList({
                             />
                           </>
                         )}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
+                        mobileMeta={issueActivityText(issue, t).toLowerCase()}
                         desktopTrailing={(
                           visibleTrailingIssueColumns.length > 0 ? (
                             <InboxIssueTrailingColumns

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, GitBranch, ListChecks, Loader2, MessageSquareQuote, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
   buildSuggestedTaskTree,
@@ -54,46 +56,50 @@ function resolveActorLabel(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  t: TFunction;
 }) {
-  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  const { agentId, userId, agentMap, currentUserId, userLabelMap, t } = args;
   if (agentId) {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
+    return (
+      formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
+      ?? t("issueThreadInteractionCard.actor.board", { defaultValue: "Board" })
+    );
   }
-  return "Unknown";
+  return t("issueThreadInteractionCard.actor.unknown", { defaultValue: "Unknown" });
 }
 
-function statusLabel(status: IssueThreadInteraction["status"]) {
+function statusLabel(status: IssueThreadInteraction["status"], t: TFunction) {
   switch (status) {
     case "pending":
-      return "Pending";
+      return t("issueThreadInteractionCard.status.pending", { defaultValue: "Pending" });
     case "accepted":
-      return "Accepted";
+      return t("issueThreadInteractionCard.status.accepted", { defaultValue: "Accepted" });
     case "rejected":
-      return "Rejected";
+      return t("issueThreadInteractionCard.status.rejected", { defaultValue: "Rejected" });
     case "answered":
-      return "Answered";
+      return t("issueThreadInteractionCard.status.answered", { defaultValue: "Answered" });
     case "cancelled":
-      return "Cancelled";
+      return t("issueThreadInteractionCard.status.cancelled", { defaultValue: "Cancelled" });
     case "expired":
-      return "Expired";
+      return t("issueThreadInteractionCard.status.expired", { defaultValue: "Expired" });
     case "failed":
-      return "Failed";
+      return t("issueThreadInteractionCard.status.failed", { defaultValue: "Failed" });
     default:
       return status;
   }
 }
 
-function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
+function interactionKindLabel(kind: IssueThreadInteraction["kind"], t: TFunction) {
   switch (kind) {
     case "suggest_tasks":
-      return "Suggested tasks";
+      return t("issueThreadInteractionCard.kind.suggestTasks", { defaultValue: "Suggested tasks" });
     case "ask_user_questions":
-      return "Ask user questions";
+      return t("issueThreadInteractionCard.kind.askUserQuestions", { defaultValue: "Ask user questions" });
     case "request_confirmation":
-      return "Confirmation";
+      return t("issueThreadInteractionCard.kind.requestConfirmation", { defaultValue: "Confirmation" });
     default:
       return kind;
   }
@@ -197,6 +203,7 @@ function TaskTreeNode({
   showSelection?: boolean;
   onToggleSelection?: (node: SuggestedTaskTreeNode, checked: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const visibleChildren = node.children.filter((child) => !child.task.hiddenInPreview);
   const hiddenChildCount = node.children
     .filter((child) => child.task.hiddenInPreview)
@@ -210,6 +217,7 @@ function TaskTreeNode({
     agentMap,
     currentUserId,
     userLabelMap,
+    t,
   });
   const hasExplicitAssignee = Boolean(
     node.task.assigneeAgentId || node.task.assigneeUserId,
@@ -236,7 +244,10 @@ function TaskTreeNode({
                 <Checkbox
                   checked={isSelected}
                   onCheckedChange={(checked) => onToggleSelection?.(node, checked === true)}
-                  aria-label={`Include ${node.task.title}`}
+                  aria-label={t("issueThreadInteractionCard.taskTree.includeAria", {
+                    defaultValue: "Include {{title}}",
+                    title: node.task.title,
+                  })}
                   className="mt-0.5"
                 />
               ) : null}
@@ -254,7 +265,7 @@ function TaskTreeNode({
                 </div>
                 {depth > 0 ? (
                   <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                    Child task
+                    {t("issueThreadInteractionCard.taskTree.childTask", { defaultValue: "Child task" })}
                   </div>
                 ) : null}
                 {node.task.description ? (
@@ -276,7 +287,7 @@ function TaskTreeNode({
             </Link>
           ) : isSkipped ? (
             <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-900 dark:text-amber-100">
-              Skipped
+              {t("issueThreadInteractionCard.taskTree.skipped", { defaultValue: "Skipped" })}
             </span>
           ) : null}
         </div>
@@ -284,16 +295,31 @@ function TaskTreeNode({
         {hasMetadata ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {hasExplicitAssignee ? (
-              <TaskField label="Assignee" value={assigneeLabel} />
+              <TaskField
+                label={t("issueThreadInteractionCard.taskTree.fieldAssignee", { defaultValue: "Assignee" })}
+                value={assigneeLabel}
+              />
             ) : null}
             {node.task.billingCode ? (
-              <TaskField label="Billing" value={node.task.billingCode} />
+              <TaskField
+                label={t("issueThreadInteractionCard.taskTree.fieldBilling", { defaultValue: "Billing" })}
+                value={node.task.billingCode}
+              />
             ) : null}
             {node.task.projectId ? (
-              <TaskField label="Project" value={node.task.projectId} tone="subtle" />
+              <TaskField
+                label={t("issueThreadInteractionCard.taskTree.fieldProject", { defaultValue: "Project" })}
+                value={node.task.projectId}
+                tone="subtle"
+              />
             ) : null}
             {labels.map((label) => (
-              <TaskField key={label} label="Label" value={label} tone="subtle" />
+              <TaskField
+                key={label}
+                label={t("issueThreadInteractionCard.taskTree.fieldLabel", { defaultValue: "Label" })}
+                value={label}
+                tone="subtle"
+              />
             ))}
           </div>
         ) : null}
@@ -303,8 +329,13 @@ function TaskTreeNode({
             <GitBranch className="h-3.5 w-3.5 shrink-0" />
             <span>
               {hiddenChildCount === 1
-                ? "1 follow-on task hidden in preview"
-                : `${hiddenChildCount} follow-on tasks hidden in preview`}
+                ? t("issueThreadInteractionCard.taskTree.hiddenOne", {
+                    defaultValue: "1 follow-on task hidden in preview",
+                  })
+                : t("issueThreadInteractionCard.taskTree.hiddenMany", {
+                    defaultValue: "{{count}} follow-on tasks hidden in preview",
+                    count: hiddenChildCount,
+                  })}
             </span>
           </div>
         ) : null}
@@ -354,6 +385,7 @@ function SuggestTasksCard({
     reason?: string,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [rejectReason, setRejectReason] = useState(
@@ -452,9 +484,20 @@ function SuggestTasksCard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
+        <span>
+          {totalTasks === 1
+            ? t("issueThreadInteractionCard.suggestTasks.draftOne", { defaultValue: "1 draft issue" })
+            : t("issueThreadInteractionCard.suggestTasks.draftMany", {
+                defaultValue: "{{count}} draft issues",
+                count: totalTasks,
+              })}
+        </span>
         {interaction.payload.defaultParentId ? (
-          <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
+          <TaskField
+            label={t("issueThreadInteractionCard.suggestTasks.defaultParent", { defaultValue: "Default parent" })}
+            value={interaction.payload.defaultParentId}
+            tone="subtle"
+          />
         ) : null}
       </div>
 
@@ -478,12 +521,30 @@ function SuggestTasksCard({
       {interaction.status === "accepted" ? (
         <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
-            Resolution summary
+            {t("issueThreadInteractionCard.suggestTasks.resolutionSummary", { defaultValue: "Resolution summary" })}
           </div>
           <p className="mt-1 leading-6">
             {skippedCount > 0
-              ? `Created ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"} and skipped ${skippedCount} during review.`
-              : `Created all ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"}.`}
+              ? (createdCount === 1
+                  ? t("issueThreadInteractionCard.suggestTasks.createdWithSkippedOne", {
+                      defaultValue: "Created {{created}} draft issue and skipped {{skipped}} during review.",
+                      created: createdCount,
+                      skipped: skippedCount,
+                    })
+                  : t("issueThreadInteractionCard.suggestTasks.createdWithSkippedMany", {
+                      defaultValue: "Created {{created}} draft issues and skipped {{skipped}} during review.",
+                      created: createdCount,
+                      skipped: skippedCount,
+                    }))
+              : (createdCount === 1
+                  ? t("issueThreadInteractionCard.suggestTasks.createdAllOne", {
+                      defaultValue: "Created all {{created}} draft issue.",
+                      created: createdCount,
+                    })
+                  : t("issueThreadInteractionCard.suggestTasks.createdAllMany", {
+                      defaultValue: "Created all {{created}} draft issues.",
+                      created: createdCount,
+                    }))}
           </p>
         </div>
       ) : null}
@@ -491,13 +552,16 @@ function SuggestTasksCard({
       {interaction.status === "rejected" ? (
         <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
           <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
-            Rejection reason
+            {t("issueThreadInteractionCard.suggestTasks.rejectionReason", { defaultValue: "Rejection reason" })}
           </div>
           <p className={cn(
             "mt-1 leading-6",
             !interaction.result?.rejectionReason && "text-rose-900/75",
           )}>
-            {interaction.result?.rejectionReason || "No reason provided."}
+            {interaction.result?.rejectionReason
+              || t("issueThreadInteractionCard.suggestTasks.noReasonProvided", {
+                defaultValue: "No reason provided.",
+              })}
           </p>
         </div>
       ) : null}
@@ -508,12 +572,33 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
+                  ? (totalTasks === 1
+                      ? t("issueThreadInteractionCard.suggestTasks.allSelectedOne", {
+                          defaultValue: "All {{total}} draft issue selected",
+                          total: totalTasks,
+                        })
+                      : t("issueThreadInteractionCard.suggestTasks.allSelectedMany", {
+                          defaultValue: "All {{total}} draft issues selected",
+                          total: totalTasks,
+                        }))
+                  : (totalTasks === 1
+                      ? t("issueThreadInteractionCard.suggestTasks.someSelectedOne", {
+                          defaultValue: "{{selected}} of {{total}} draft issue selected",
+                          selected: selectedCount,
+                          total: totalTasks,
+                        })
+                      : t("issueThreadInteractionCard.suggestTasks.someSelectedMany", {
+                          defaultValue: "{{selected}} of {{total}} draft issues selected",
+                          selected: selectedCount,
+                          total: totalTasks,
+                        }))}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
-                  {totalTasks - selectedCount} will be skipped if you accept this interaction.
+                  {t("issueThreadInteractionCard.suggestTasks.willSkip", {
+                    defaultValue: "{{count}} will be skipped if you accept this interaction.",
+                    count: totalTasks - selectedCount,
+                  })}
                 </span>
               ) : null}
             </div>
@@ -527,10 +612,14 @@ function SuggestTasksCard({
                 {working === "accept" ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Accepting...
+                    {t("issueThreadInteractionCard.suggestTasks.accepting", { defaultValue: "Accepting..." })}
                   </>
                 ) : (
-                  selectedCount === totalTasks ? "Accept drafts" : "Accept selected drafts"
+                  selectedCount === totalTasks
+                    ? t("issueThreadInteractionCard.suggestTasks.acceptDrafts", { defaultValue: "Accept drafts" })
+                    : t("issueThreadInteractionCard.suggestTasks.acceptSelectedDrafts", {
+                        defaultValue: "Accept selected drafts",
+                      })
                 )}
               </Button>
               <Button
@@ -539,7 +628,7 @@ function SuggestTasksCard({
                 disabled={!onRejectInteraction || working !== null}
                 onClick={() => setRejecting((current) => !current)}
               >
-                Reject
+                {t("issueThreadInteractionCard.suggestTasks.reject", { defaultValue: "Reject" })}
               </Button>
               {selectedCount < totalTasks ? (
                 <Button
@@ -548,7 +637,7 @@ function SuggestTasksCard({
                   disabled={working !== null}
                   onClick={() => setSelectedClientKeys(new Set(interaction.payload.tasks.map((task) => task.clientKey)))}
                 >
-                  Reset selection
+                  {t("issueThreadInteractionCard.suggestTasks.resetSelection", { defaultValue: "Reset selection" })}
                 </Button>
               ) : null}
             </div>
@@ -559,7 +648,9 @@ function SuggestTasksCard({
               <Textarea
                 value={rejectReason}
                 onChange={(event) => setRejectReason(event.target.value)}
-                placeholder="Add a short reason for rejecting this suggestion"
+                placeholder={t("issueThreadInteractionCard.suggestTasks.rejectReasonPlaceholder", {
+                  defaultValue: "Add a short reason for rejecting this suggestion",
+                })}
                 className="min-h-24 bg-background text-sm"
               />
               <div className="flex justify-end">
@@ -572,10 +663,10 @@ function SuggestTasksCard({
                   {working === "reject" ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Saving...
+                      {t("issueThreadInteractionCard.suggestTasks.saving", { defaultValue: "Saving..." })}
                     </>
                   ) : (
-                    "Save rejection"
+                    t("issueThreadInteractionCard.suggestTasks.saveRejection", { defaultValue: "Save rejection" })
                   )}
                 </Button>
               </div>
@@ -654,6 +745,7 @@ function AskUserQuestionsCard({
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(
       (interaction.result?.answers ?? []).map((answer) => [
@@ -726,12 +818,15 @@ function AskUserQuestionsCard({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-foreground/70">
           <MessageSquareQuote className="h-3 w-3" />
-          Ask user questions
+          {t("issueThreadInteractionCard.askUserQuestions.eyebrow", { defaultValue: "Ask user questions" })}
         </span>
         <span>
           {questions.length === 1
-            ? "1 question"
-            : `${questions.length} questions`}
+            ? t("issueThreadInteractionCard.askUserQuestions.questionOne", { defaultValue: "1 question" })
+            : t("issueThreadInteractionCard.askUserQuestions.questionMany", {
+                defaultValue: "{{count}} questions",
+                count: questions.length,
+              })}
         </span>
       </div>
 
@@ -745,7 +840,10 @@ function AskUserQuestionsCard({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                    Question {index + 1}
+                    {t("issueThreadInteractionCard.askUserQuestions.questionIndex", {
+                      defaultValue: "Question {{index}}",
+                      index: index + 1,
+                    })}
                   </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
@@ -760,8 +858,16 @@ function AskUserQuestionsCard({
                   ) : null}
                 </div>
                 <TaskField
-                  label={question.selectionMode === "single" ? "Pick" : "Pick many"}
-                  value={question.required ? "Required" : "Optional"}
+                  label={
+                    question.selectionMode === "single"
+                      ? t("issueThreadInteractionCard.askUserQuestions.pick", { defaultValue: "Pick" })
+                      : t("issueThreadInteractionCard.askUserQuestions.pickMany", { defaultValue: "Pick many" })
+                  }
+                  value={
+                    question.required
+                      ? t("issueThreadInteractionCard.askUserQuestions.required", { defaultValue: "Required" })
+                      : t("issueThreadInteractionCard.askUserQuestions.optional", { defaultValue: "Optional" })
+                  }
                   tone="subtle"
                 />
               </div>
@@ -789,7 +895,9 @@ function AskUserQuestionsCard({
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
             <div className="text-sm text-muted-foreground">
-              Submit once after you finish the full form.
+              {t("issueThreadInteractionCard.askUserQuestions.submitOnce", {
+                defaultValue: "Submit once after you finish the full form.",
+              })}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {onCancelInteraction ? (
@@ -802,10 +910,12 @@ function AskUserQuestionsCard({
                   {cancelling ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Cancelling...
+                      {t("issueThreadInteractionCard.askUserQuestions.cancelling", { defaultValue: "Cancelling..." })}
                     </>
                   ) : (
-                    "Cancel question"
+                    t("issueThreadInteractionCard.askUserQuestions.cancelQuestion", {
+                      defaultValue: "Cancel question",
+                    })
                   )}
                   </Button>
                 ) : null}
@@ -817,10 +927,13 @@ function AskUserQuestionsCard({
                 {working ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Submitting...
+                    {t("issueThreadInteractionCard.askUserQuestions.submitting", { defaultValue: "Submitting..." })}
                   </>
                 ) : (
-                  interaction.payload.submitLabel ?? "Submit answers"
+                  interaction.payload.submitLabel
+                    ?? t("issueThreadInteractionCard.askUserQuestions.submitAnswers", {
+                      defaultValue: "Submit answers",
+                    })
                 )}
               </Button>
             </div>
@@ -828,11 +941,19 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">
+            {t("issueThreadInteractionCard.askUserQuestions.questionCancelled", {
+              defaultValue: "Question cancelled",
+            })}
+          </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
           ) : (
-            <p className="mt-1">No answer was recorded.</p>
+            <p className="mt-1">
+              {t("issueThreadInteractionCard.askUserQuestions.noAnswerRecorded", {
+                defaultValue: "No answer was recorded.",
+              })}
+            </p>
           )}
         </div>
       ) : (
@@ -853,10 +974,18 @@ function AskUserQuestionsCard({
                 <div className="mt-2 flex flex-wrap gap-2">
                   {labels.length > 0 ? (
                     labels.map((label) => (
-                      <TaskField key={label} label="Answer" value={label} />
+                      <TaskField
+                        key={label}
+                        label={t("issueThreadInteractionCard.askUserQuestions.answer", { defaultValue: "Answer" })}
+                        value={label}
+                      />
                     ))
                   ) : (
-                    <span className="text-sm text-muted-foreground">No answer recorded.</span>
+                    <span className="text-sm text-muted-foreground">
+                      {t("issueThreadInteractionCard.askUserQuestions.noAnswerRecordedShort", {
+                        defaultValue: "No answer recorded.",
+                      })}
+                    </span>
                   )}
                 </div>
               </div>
@@ -866,7 +995,9 @@ function AskUserQuestionsCard({
           {interaction.result?.summaryMarkdown ? (
             <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
-                Submitted summary
+                {t("issueThreadInteractionCard.askUserQuestions.submittedSummary", {
+                  defaultValue: "Submitted summary",
+                })}
               </div>
               <MarkdownBody>{interaction.result.summaryMarkdown}</MarkdownBody>
             </div>
@@ -877,11 +1008,14 @@ function AskUserQuestionsCard({
   );
 }
 
-function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
+function requestConfirmationTargetLabel(target: RequestConfirmationTarget, t: TFunction) {
   if (target.label) return target.label;
   const revision = target.revisionNumber ? ` v${target.revisionNumber}` : "";
   if (target.type === "issue_document" && target.key === "plan") {
-    return `Plan${revision}`;
+    return t("issueThreadInteractionCard.target.plan", {
+      defaultValue: "Plan{{revision}}",
+      revision,
+    });
   }
   return `${target.key}${revision}`;
 }
@@ -910,6 +1044,7 @@ function RequestConfirmationTargetChip({
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
+  const { t } = useTranslation();
   if (!target) return null;
 
   const href = requestConfirmationTargetHref({ interaction, target });
@@ -923,7 +1058,7 @@ function RequestConfirmationTargetChip({
   const content = (
     <>
       <GitBranch className="h-3 w-3 shrink-0" />
-      <span className="min-w-0 truncate">{requestConfirmationTargetLabel(target)}</span>
+      <span className="min-w-0 truncate">{requestConfirmationTargetLabel(target, t)}</span>
     </>
   );
 
@@ -947,6 +1082,7 @@ function RequestConfirmationResolution({
 }: {
   interaction: RequestConfirmationInteraction;
 }) {
+  const { t } = useTranslation();
   const outcome = interaction.result?.outcome;
   const target = interaction.payload.target ?? null;
   const staleTarget = interaction.result?.staleTarget ?? null;
@@ -954,7 +1090,9 @@ function RequestConfirmationResolution({
   if (interaction.status === "accepted") {
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-        <span className="font-medium">Confirmed</span>
+        <span className="font-medium">
+          {t("issueThreadInteractionCard.confirmation.confirmed", { defaultValue: "Confirmed" })}
+        </span>
         <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
@@ -964,7 +1102,9 @@ function RequestConfirmationResolution({
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-          <span className="font-medium">Declined</span>
+          <span className="font-medium">
+            {t("issueThreadInteractionCard.confirmation.declined", { defaultValue: "Declined" })}
+          </span>
           <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {interaction.result?.reason ? (
@@ -982,16 +1122,28 @@ function RequestConfirmationResolution({
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {expiredByComment
+            ? t("issueThreadInteractionCard.confirmation.expiredByComment", {
+                defaultValue: "Expired by comment",
+              })
+            : t("issueThreadInteractionCard.confirmation.expiredByTargetChange", {
+                defaultValue: "Expired by target change",
+              })}
         </div>
         <p className="leading-6">
           {expiredByComment
-            ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            ? t("issueThreadInteractionCard.confirmation.expiredByCommentDescription", {
+                defaultValue: "A board comment superseded this confirmation before it was resolved.",
+              })
+            : t("issueThreadInteractionCard.confirmation.expiredByTargetChangeDescription", {
+                defaultValue: "The requested target changed before this confirmation was resolved.",
+              })}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
-            <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
+            <a href={`#comment-${interaction.result.commentId}`}>
+              {t("issueThreadInteractionCard.confirmation.jumpToComment", { defaultValue: "Jump to comment" })}
+            </a>
           </Button>
         ) : null}
         {expiredByTargetChange ? (
@@ -1014,7 +1166,9 @@ function RequestConfirmationResolution({
   if (interaction.status === "failed") {
     return (
       <p className="text-sm leading-6 text-muted-foreground">
-        This request could not be resolved. Try again or create a new request.
+        {t("issueThreadInteractionCard.confirmation.failed", {
+          defaultValue: "This request could not be resolved. Try again or create a new request.",
+        })}
       </p>
     );
   }
@@ -1036,6 +1190,7 @@ function RequestConfirmationCard({
     reason?: string,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
@@ -1049,8 +1204,12 @@ function RequestConfirmationCard({
   const declineReasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
-      ? "Optional: what would you like revised?"
-      : "Optional: tell the agent what you'd change.");
+      ? t("issueThreadInteractionCard.confirmation.declineReasonPlaceholderPlan", {
+          defaultValue: "Optional: what would you like revised?",
+        })
+      : t("issueThreadInteractionCard.confirmation.declineReasonPlaceholderDefault", {
+          defaultValue: "Optional: tell the agent what you'd change.",
+        }));
 
   useEffect(() => {
     setRejectReason(interaction.result?.reason ?? "");
@@ -1069,7 +1228,7 @@ function RequestConfirmationCard({
     try {
       await onAcceptInteraction(interaction);
     } catch {
-      setActionError("Try again");
+      setActionError(t("issueThreadInteractionCard.confirmation.tryAgain", { defaultValue: "Try again" }));
     } finally {
       setWorking(null);
     }
@@ -1084,7 +1243,7 @@ function RequestConfirmationCard({
       await onRejectInteraction(interaction, trimmedRejectReason || undefined);
       setRejecting(false);
     } catch {
-      setActionError("Try again");
+      setActionError(t("issueThreadInteractionCard.confirmation.tryAgain", { defaultValue: "Try again" }));
     } finally {
       setWorking(null);
     }
@@ -1121,10 +1280,11 @@ function RequestConfirmationCard({
               {working === "accept" ? (
                 <>
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Confirming...
+                  {t("issueThreadInteractionCard.confirmation.confirming", { defaultValue: "Confirming..." })}
                 </>
               ) : (
-                interaction.payload.acceptLabel ?? "Confirm"
+                interaction.payload.acceptLabel
+                  ?? t("issueThreadInteractionCard.confirmation.confirm", { defaultValue: "Confirm" })
               )}
             </Button>
             <Button
@@ -1140,7 +1300,8 @@ function RequestConfirmationCard({
                 setRejecting((current) => !current);
               }}
             >
-              {interaction.payload.rejectLabel ?? "Decline"}
+              {interaction.payload.rejectLabel
+                ?? t("issueThreadInteractionCard.confirmation.decline", { defaultValue: "Decline" })}
             </Button>
           </div>
 
@@ -1158,7 +1319,11 @@ function RequestConfirmationCard({
                 )}
               />
               {rejectAttempted && declineReasonInvalid ? (
-                <p className="text-xs text-destructive">A decline reason is required.</p>
+                <p className="text-xs text-destructive">
+                  {t("issueThreadInteractionCard.confirmation.declineReasonRequired", {
+                    defaultValue: "A decline reason is required.",
+                  })}
+                </p>
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
@@ -1170,7 +1335,7 @@ function RequestConfirmationCard({
                     setRejectAttempted(false);
                   }}
                 >
-                  Cancel decline
+                  {t("issueThreadInteractionCard.confirmation.cancelDecline", { defaultValue: "Cancel decline" })}
                 </Button>
                 <Button
                   size="sm"
@@ -1181,10 +1346,11 @@ function RequestConfirmationCard({
                   {working === "reject" ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Saving...
+                      {t("issueThreadInteractionCard.confirmation.saving", { defaultValue: "Saving..." })}
                     </>
                   ) : (
-                    interaction.payload.rejectLabel ?? "Decline"
+                    interaction.payload.rejectLabel
+                      ?? t("issueThreadInteractionCard.confirmation.decline", { defaultValue: "Decline" })
                   )}
                 </Button>
               </div>
@@ -1214,6 +1380,7 @@ export function IssueThreadInteractionCard({
   onSubmitInteractionAnswers,
   onCancelInteraction,
 }: IssueThreadInteractionCardProps) {
+  const { t } = useTranslation();
   const StatusIcon = statusIcon(interaction.status);
   const styles = statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
@@ -1222,6 +1389,7 @@ export function IssueThreadInteractionCard({
     agentMap,
     currentUserId,
     userLabelMap,
+    t,
   });
   const resolvedByLabel =
     interaction.resolvedByAgentId || interaction.resolvedByUserId
@@ -1231,6 +1399,7 @@ export function IssueThreadInteractionCard({
           agentMap,
           currentUserId,
           userLabelMap,
+          t,
         })
       : null;
 
@@ -1241,17 +1410,17 @@ export function IssueThreadInteractionCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
               <StatusIcon className="h-3.5 w-3.5" />
-              {interactionKindLabel(interaction.kind)}
+              {interactionKindLabel(interaction.kind, t)}
               <span className="text-current/60">/</span>
-              {statusLabel(interaction.status)}
+              {statusLabel(interaction.status, t)}
             </span>
             {interaction.continuationPolicy === "wake_assignee"
               || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
               <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
                 <ListChecks className="h-3.5 w-3.5" />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes assignee"}
+                  ? t("issueThreadInteractionCard.wakesOnConfirm", { defaultValue: "Wakes on confirm" })
+                  : t("issueThreadInteractionCard.wakesAssignee", { defaultValue: "Wakes assignee" })}
               </span>
             ) : null}
           </div>
@@ -1259,10 +1428,17 @@ export function IssueThreadInteractionCard({
           <div className="mt-3 text-lg font-bold text-foreground">
             {interaction.title
               ?? (interaction.kind === "suggest_tasks"
-                ? "Suggested task tree"
+                ? t("issueThreadInteractionCard.fallbackTitle.suggestTasks", {
+                    defaultValue: "Suggested task tree",
+                  })
                 : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  ? interaction.payload.title
+                    ?? t("issueThreadInteractionCard.fallbackTitle.askUserQuestions", {
+                      defaultValue: "Questions for the operator",
+                    })
+                  : t("issueThreadInteractionCard.fallbackTitle.requestConfirmation", {
+                      defaultValue: "Confirmation requested",
+                    }))}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1275,11 +1451,19 @@ export function IssueThreadInteractionCard({
           <TooltipTrigger asChild>
             <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
               <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
-              <div>proposed by {createdByLabel}</div>
+              <div>
+                {t("issueThreadInteractionCard.proposedBy", {
+                  defaultValue: "proposed by {{name}}",
+                  name: createdByLabel,
+                })}
+              </div>
             </div>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-xs">
-            Created {formatDateTime(interaction.createdAt)}
+            {t("issueThreadInteractionCard.createdOn", {
+              defaultValue: "Created {{date}}",
+              date: formatDateTime(interaction.createdAt),
+            })}
           </TooltipContent>
         </Tooltip>
       </div>
@@ -1311,8 +1495,14 @@ export function IssueThreadInteractionCard({
 
       {resolvedByLabel ? (
         <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-          Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
-          {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          {t("issueThreadInteractionCard.resolvedBy", { defaultValue: "Resolved by" })}{" "}
+          <span className="font-medium text-foreground">{resolvedByLabel}</span>
+          {interaction.resolvedAt
+            ? " " + t("issueThreadInteractionCard.resolvedOn", {
+                defaultValue: "on {{date}}",
+                date: formatShortDate(interaction.resolvedAt),
+              })
+            : ""}
         </div>
       ) : null}
     </div>

@@ -2024,7 +2024,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("inbox.group", { defaultValue: "Group" })}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2053,7 +2053,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("inbox.chooseColumns", { defaultValue: "Choose which inbox columns stay visible" })}
                 iconOnly
               />
               <Popover>
@@ -2063,7 +2063,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 shrink-0"
-                    title="Sort"
+                    title={t("inbox.sort", { defaultValue: "Sort" })}
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
@@ -2096,7 +2096,7 @@ export function Inbox() {
                 size="icon"
                 className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
-                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+                title={nestingEnabled ? t("inbox.nestingDisable", { defaultValue: "Disable parent-child nesting" }) : t("inbox.nestingEnable", { defaultValue: "Enable parent-child nesting" })}
               >
                 <ListTree className="h-3.5 w-3.5" />
               </Button>
@@ -2121,7 +2121,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("inbox.group", { defaultValue: "Group" })}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2129,11 +2129,11 @@ export function Inbox() {
                 <PopoverContent align="end" className="w-40 p-2">
                   <div className="space-y-0.5">
                     {([
-                      ["none", "None"],
-                      ["type", "Type"],
-                      ["assignee", "Assignee"],
-                      ["project", "Project"],
-                      ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                      ["none", t("inbox.group.none", { defaultValue: "None" })],
+                      ["type", t("inbox.group.type", { defaultValue: "Type" })],
+                      ["assignee", t("inbox.group.assignee", { defaultValue: "Assignee" })],
+                      ["project", t("inbox.group.project", { defaultValue: "Project" })],
+                      ...(isolatedWorkspacesEnabled ? ([["workspace", t("inbox.group.workspace", { defaultValue: "Workspace" })]] as const) : []),
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -2156,7 +2156,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("inbox.chooseColumns", { defaultValue: "Choose which inbox columns stay visible" })}
                 iconOnly
               />
               {canMarkAllRead && (
@@ -2359,7 +2359,7 @@ export function Inbox() {
                           ({childCount} sub-task{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileMeta={issueActivityText(issue, t).toLowerCase()}
                       mobileLeading={
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button

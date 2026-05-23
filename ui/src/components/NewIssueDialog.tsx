@@ -1454,7 +1454,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title="Add reviewer or approver"
+                    title={t("newIssueDialog.addReviewerOrApprover", { defaultValue: "Add reviewer or approver" })}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1589,7 +1589,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">{t("newIssueDialog.subIssueOf", { defaultValue: "Sub-issue of" })}</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1806,7 +1806,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove document"
+                          title={t("newIssueDialog.removeDocument", { defaultValue: "Remove document" })}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1837,7 +1837,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove attachment"
+                          title={t("newIssueDialog.removeAttachment", { defaultValue: "Remove attachment" })}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>

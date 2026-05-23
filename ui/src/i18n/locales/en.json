@@ -2,7 +2,22 @@
   "pathPicker": {
     "choose": "Choose",
     "title": "Specify path manually",
-    "description": "Browser security blocks apps from reading full local paths via a file picker. Copy the absolute path and paste it into the input."
+    "description": "Browser security blocks apps from reading full local paths via a file picker. Copy the absolute path and paste it into the input.",
+    "macHeading": "macOS (Finder)",
+    "macStep1": "Find the folder in Finder.",
+    "macStep2": "Hold Option and right-click the folder.",
+    "macStep3": "Click \"Copy <folder name> as Pathname\".",
+    "macStep4": "Paste the result into the path input.",
+    "winHeading": "Windows (File Explorer)",
+    "winStep1": "Find the folder in File Explorer.",
+    "winStep2": "Hold Shift and right-click the folder.",
+    "winStep3": "Click \"Copy as path\".",
+    "winStep4": "Paste the result into the path input.",
+    "terminalHeading": "Terminal fallback (macOS/Linux)",
+    "terminalStep1": "Run cd /path/to/folder.",
+    "terminalStep2": "Run pwd.",
+    "terminalStep3": "Copy the output and paste it into the path input.",
+    "ok": "OK"
   },
   "approvalPayload": {
     "skills": "Skills",
@@ -473,6 +488,10 @@
     "creating": "Creating...",
     "createSubIssue": "Create Sub-Issue",
     "createIssue": "Create Issue",
+    "addReviewerOrApprover": "Add reviewer or approver",
+    "subIssueOf": "Sub-issue of",
+    "removeDocument": "Remove document",
+    "removeAttachment": "Remove attachment",
     "startDate": "Start date",
     "dueDate": "Due date",
     "status": {
@@ -506,6 +525,24 @@
     "back": "Back",
     "chooseAdapter": "Choose your adapter type for advanced setup.",
     "recommended": "Recommended"
+  },
+  "newAgent": {
+    "ceo": "CEO",
+    "errorCreate": "Failed to create agent",
+    "openCodeModelError": "OpenCode requires an explicit model in provider/model format.",
+    "title": "New Agent",
+    "subtitle": "Advanced agent configuration",
+    "namePlaceholder": "Agent name",
+    "titlePlaceholder": "Title (e.g. VP of Engineering)",
+    "companySkills": "Company skills",
+    "companySkillsHint": "Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.",
+    "noOptionalSkills": "No optional company skills installed yet.",
+    "willBeCeo": "This will be the CEO",
+    "cancel": "Cancel",
+    "testing": "Testing...",
+    "testAgent": "Test Agent",
+    "creating": "Creating…",
+    "createAgent": "Create agent"
   },
   "newGoalDialog": {
     "noCompanyError": "No company selected",
@@ -619,7 +656,19 @@
     "executionWorkspaces": "Execution Workspaces",
     "executionWorkspacesHelp": "Execution workspaces help",
     "enableIsolated": "Enable isolated issue checkouts",
-    "newIssuesIsolated": "New issues default to isolated checkout"
+    "newIssuesIsolated": "New issues default to isolated checkout",
+    "managedFolder": "Paperclip-managed folder.",
+    "changeLocalFolder": "Change local folder",
+    "setLocalFolder": "Set local folder",
+    "hostManagedImpl": "Host-managed implementation:",
+    "gitWorktree": "Git worktree",
+    "environment": "Environment",
+    "noEnvironment": "No environment",
+    "baseRef": "Base ref",
+    "branchTemplate": "Branch template",
+    "worktreeParentDir": "Worktree parent dir",
+    "provisionCommand": "Provision command",
+    "teardownCommand": "Teardown command"
   },
   "agentProperties": {
     "status": "Status",
@@ -658,7 +707,15 @@
     "newLabel": "New label",
     "unassigned": "Unassigned",
     "noProject": "No project",
-    "searchProjects": "Search projects..."
+    "searchProjects": "Search projects...",
+    "noParent": "No parent",
+    "searchIssues": "Search issues...",
+    "searchBlockers": "Search issues to add as blockers",
+    "noBlockers": "No blockers",
+    "searchingIssues": "Searching issues...",
+    "noMatchingIssues": "No matching issues.",
+    "addBlocker": "Add blocker",
+    "clearAdapterOptions": "Clear adapter options"
   },
   "comments": {
     "copied": "Copied",
@@ -705,7 +762,34 @@
     "paused": "Paused",
     "needsNextStep": "Needs next step",
     "needsNextStepTitle": "This issue needs a next step",
-    "searchAssignees": "Search assignees..."
+    "searchAssignees": "Search assignees...",
+    "subIssues": {
+      "none": "No active sub-issues",
+      "allDone": "All sub-issues done",
+      "noneActionable": "No actionable sub-issues"
+    },
+    "view": {
+      "list": "List view",
+      "board": "Board view"
+    },
+    "nestingDisable": "Disable parent-child nesting",
+    "nestingEnable": "Enable parent-child nesting",
+    "board": {
+      "cardsPerColumn": "Cards per column",
+      "perColumn": "{{count}} per column",
+      "resetDensity": "Reset board density"
+    },
+    "columnsTitle": "Choose which issue columns stay visible",
+    "sort": "Sort",
+    "sortField": {
+      "workflow": "Workflow",
+      "status": "Status",
+      "priority": "Priority",
+      "title": "Title",
+      "created": "Created",
+      "updated": "Updated"
+    },
+    "group": "Group"
   },
   "approvalCard": {
     "requestedBy": "Requested by",
@@ -767,9 +851,15 @@
     "then": "then",
     "pressEsc": "Press",
     "toClose": "to close · Shortcuts are disabled in text fields",
-    "inbox": { "title": "Inbox" },
-    "issueDetail": { "title": "Issue detail" },
-    "global": { "title": "Global" }
+    "inbox": {
+      "title": "Inbox"
+    },
+    "issueDetail": {
+      "title": "Issue detail"
+    },
+    "global": {
+      "title": "Global"
+    }
   },
   "mobileNav": {
     "home": "Home",
@@ -825,10 +915,207 @@
     "emptyRuns": "No active or recent agent runs."
   },
   "search": {
-    "title": "Search"
+    "title": "Search",
+    "scope": {
+      "all": "All",
+      "issues": "Issues",
+      "comments": "Comments",
+      "documents": "Documents",
+      "agents": "Agents",
+      "projects": "Projects"
+    },
+    "subgroup": {
+      "issues": "Issues",
+      "comments": "Comments",
+      "documents": "Documents",
+      "agents": "Agents",
+      "projects": "Projects"
+    },
+    "allScopes": "All scopes",
+    "unknownError": "Unknown error",
+    "placeholder": "Search issues, comments, documents, agents, projects…",
+    "queryLabel": "Search query",
+    "clear": "Clear search",
+    "initial": {
+      "heading": "Type to search company memory.",
+      "subheading": "Issues, comments, plan documents, agents, projects — same surface, ranked by relevance."
+    },
+    "recentSearches": "Recent searches",
+    "tip": {
+      "identifierLabel": "Identifier lookup:",
+      "identifierBefore": "type",
+      "identifierAfter": "to jump straight to an issue.",
+      "quotedLabel": "Quoted phrases:",
+      "quotedDesc": "wrap a phrase in quotes to match the exact sequence.",
+      "cmdKLabel": "⌘K:",
+      "cmdKDesc": "reopens the command palette pre-seeded with your current query."
+    },
+    "error": {
+      "title": "Couldn't run that search",
+      "serverReturned": "The server returned {{status}}.",
+      "requestFailed": "The request failed.",
+      "retryHint": "Your input and filters are still here, so you can retry or fall back to the Issues filter."
+    },
+    "retry": "Retry",
+    "openIssuesFilter": "Open Issues filter view",
+    "searchingFor": "Searching for \"{{query}}\"…",
+    "empty": {
+      "title": "No results for \"{{query}}\"",
+      "body": "We couldn't find a match in {{scope}}. Try widening the scope or rephrasing your query.",
+      "hint1": "Try fewer tokens or a single distinctive term.",
+      "hint2Before": "Use an identifier shortcut like",
+      "hint3": "Wrap multi-word phrases in quotes."
+    },
+    "searchAllScopes": "Search all scopes",
+    "createIssueFromQuery": "Create issue from this query",
+    "resultsSummaryOne": "1 result · sorted by relevance",
+    "resultsSummary": "{{count}} results · sorted by relevance",
+    "updating": "Updating…"
   },
   "joinRequestQueue": {
-    "title": "Join Requests"
+    "title": "Join Requests",
+    "heading": "Join Request Queue",
+    "pageDescription": "Review human and agent join requests outside the mixed inbox feed. This queue uses the same approval mutations as the inline inbox cards.",
+    "status": "Status",
+    "pendingApproval": "Pending approval",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "requestType": "Request type",
+    "all": "All",
+    "human": "Human",
+    "agent": "Agent",
+    "noRequests": "No join requests match the current filters.",
+    "unknownHuman": "Unknown human requester",
+    "unknownAgent": "Unknown agent requester",
+    "reject": "Reject",
+    "approve": "Approve",
+    "inviteContext": "Invite context",
+    "inviteSummary": "{{allowedJoinTypes}} join invite{{roleSuffix}}",
+    "defaultRoleSuffix": " • default role {{role}}",
+    "inviteUnavailable": "Invite metadata unavailable",
+    "requestDetails": "Request details",
+    "submittedAt": "Submitted {{when}}",
+    "sourceIp": "Source IP {{ip}}",
+    "requestApproved": "Join request approved",
+    "requestRejected": "Join request rejected",
+    "selectCompany": "Select a company to review join requests.",
+    "loading": "Loading join requests…",
+    "noPermission": "You do not have permission to review join requests for this company.",
+    "errorLoad": "Failed to load join requests."
+  },
+  "instanceExperimentalSettings": {
+    "heading": "Experimental",
+    "pageDescription": "Opt into features that are still being evaluated before they become default behavior.",
+    "enableEnvironments": "Enable Environments",
+    "enableEnvironmentsDesc": "Show environment management in company settings and allow project and agent environment assignment controls.",
+    "toggleEnvironmentsAria": "Toggle environments experimental setting",
+    "enableIsolatedWorkspaces": "Enable Isolated Workspaces",
+    "enableIsolatedWorkspacesDesc": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.",
+    "toggleIsolatedWorkspacesAria": "Toggle isolated workspaces experimental setting",
+    "cloudSync": "Cloud Sync",
+    "cloudSyncDesc": "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces. Saved connections and run history are preserved when this is disabled.",
+    "toggleCloudSyncAria": "Toggle cloud sync experimental setting",
+    "autoRestartDev": "Auto-Restart Dev Server When Idle",
+    "autoRestartDevDesc": "In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale.",
+    "toggleAutoRestartAria": "Toggle guarded dev-server auto-restart",
+    "autoCreateRecovery": "Auto-Create Issue Recovery Tasks",
+    "autoCreateRecoveryDesc": "Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the configured lookback window.",
+    "toggleAutoRecoveryAria": "Toggle issue graph liveness auto-recovery",
+    "lookbackHours": "Lookback hours",
+    "lookbackInvalid": "Lookback hours must be a whole number from 1 to 720.",
+    "saveHours": "Save hours",
+    "preview": "Preview",
+    "runNow": "Run now",
+    "currentWindow": "Current window: last {{count}} {{hourLabel}}.",
+    "hourSingular": "hour",
+    "hourPlural": "hours",
+    "loading": "Loading experimental settings...",
+    "errorLoad": "Failed to load experimental settings.",
+    "errorUpdate": "Failed to update experimental settings.",
+    "errorPreview": "Failed to preview recovery tasks.",
+    "errorRun": "Failed to create recovery tasks.",
+    "confirmAutoRecovery": "Confirm auto-recovery",
+    "recoveryMatchDescription": "{{count}} recovery {{taskLabel}} match the last {{hours}} hours.",
+    "taskSingular": "task",
+    "taskPlural": "tasks",
+    "checkingCandidates": "Checking recovery candidates before enabling.",
+    "noRecoveryTasksNow": "No recovery tasks would be created right now. Auto-recovery can still run for future liveness incidents in this window.",
+    "recoveryTarget": "Recovery target:",
+    "skippedOutsideLookback": "{{count}} current {{verbPhrase}} outside the configured lookback and will not be touched.",
+    "findingIs": "finding is",
+    "findingsAre": "findings are",
+    "enableOnly": "Enable only",
+    "enableAndCreate": "Enable and create {{count}}",
+    "enable": "Enable"
+  },
+  "instanceGeneralSettings": {
+    "heading": "General",
+    "pageDescription": "Configure instance-wide preferences including log display, keyboard shortcuts, backup retention, and data sharing.",
+    "loading": "Loading general settings...",
+    "errorLoad": "Failed to load general settings.",
+    "errorUpdate": "Failed to update general settings.",
+    "deploymentAndAuth": "Deployment and auth",
+    "deploymentLocalTrusted": "Local trusted mode is optimized for a local operator. Browser requests run as local board context and no sign-in is required.",
+    "deploymentPublic": "Authenticated public mode requires sign-in for board access and is intended for public URLs.",
+    "deploymentPrivate": "Authenticated private mode requires sign-in and is intended for LAN, VPN, or other private-network deployments.",
+    "authReadiness": "Auth readiness",
+    "bootstrapStatus": "Bootstrap status",
+    "bootstrapInvite": "Bootstrap invite",
+    "ready": "Ready",
+    "notReady": "Not ready",
+    "setupRequired": "Setup required",
+    "active": "Active",
+    "none": "None",
+    "censorUsername": "Censor username in logs",
+    "censorUsernameDesc": "Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view. This is off by default.",
+    "censorUsernameAria": "Toggle username log censoring",
+    "keyboardShortcuts": "Keyboard shortcuts",
+    "keyboardShortcutsDesc": "Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or toggling panels. This is off by default.",
+    "keyboardShortcutsAria": "Toggle keyboard shortcuts",
+    "backupRetention": "Backup retention",
+    "backupRetentionDesc": "Configure how long automatic database backups are retained. Backups run roughly every hour and are compressed with gzip. Within the daily window all backups are kept; beyond that, one backup per week and one per month are preserved.",
+    "daily": "Daily",
+    "daysLabel": "{{count}} days",
+    "weekly": "Weekly",
+    "weekSingular": "1 week",
+    "weeksLabel": "{{count}} weeks",
+    "monthly": "Monthly",
+    "monthSingular": "1 month",
+    "monthsLabel": "{{count}} months",
+    "aiFeedbackSharing": "AI feedback sharing",
+    "aiFeedbackSharingDesc": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+    "readTos": "Read our terms of service",
+    "retestPromptHintBefore": "To retest the first-use prompt in local dev, remove the",
+    "retestPromptHintMiddle1": "key from the",
+    "retestPromptHintMiddle2": "JSON row for this instance, or set it back to",
+    "retestPromptHintAfter1": "Unset and",
+    "retestPromptHintAfter2": "both mean no default has been chosen yet.",
+    "signOut": "Sign out",
+    "signOutDesc": "Sign out of this Paperclip instance. You will be redirected to the login page.",
+    "signingOut": "Signing out..."
+  },
+  "instanceAccess": {
+    "heading": "Instance Access",
+    "pageDescription": "Search users, manage instance-admin status, and control which companies they can access.",
+    "searchUsers": "Search users",
+    "searchPlaceholder": "Search by name or email",
+    "activeMembershipCount": "{{count}} active company memberships",
+    "selectUser": "Select a user to inspect instance access.",
+    "loadingUsers": "Loading instance users…",
+    "loadingUserAccess": "Loading user access…",
+    "adminRequired": "Instance admin access is required to manage users.",
+    "errorLoadUsers": "Failed to load users.",
+    "errorLoadUserAccess": "Failed to load user access.",
+    "removeAdmin": "Remove instance admin",
+    "promoteAdmin": "Promote to instance admin",
+    "companyAccess": "Company access",
+    "companyAccessDesc": "Toggle company membership for this user. New access defaults to an active operator membership.",
+    "saving": "Saving…",
+    "saveCompanyAccess": "Save company access",
+    "currentMemberships": "Current memberships",
+    "unsetRole": "unset",
+    "companyAccessUpdated": "Company access updated",
+    "instanceRoleUpdated": "Instance role updated"
   },
   "companyEnvironments": {
     "title": "Environments"
@@ -837,10 +1124,147 @@
     "title": "Adapters"
   },
   "pluginManager": {
-    "title": "Plugins"
+    "title": "Plugins",
+    "heading": "Plugin Manager",
+    "loadingPlugins": "Loading plugins...",
+    "loadError": "Failed to load plugins.",
+    "installPlugin": "Install Plugin",
+    "installPluginDescription": "Enter the npm package name of the plugin you wish to install.",
+    "npmPackageName": "npm Package Name",
+    "install": "Install",
+    "installing": "Installing...",
+    "installSuccess": "Plugin installed successfully",
+    "installError": "Failed to install plugin",
+    "uninstallSuccess": "Plugin uninstalled successfully",
+    "uninstallError": "Failed to uninstall plugin",
+    "enableSuccess": "Plugin enabled",
+    "enableError": "Failed to enable plugin",
+    "disableSuccess": "Plugin disabled",
+    "disableError": "Failed to disable plugin",
+    "alphaTitle": "Plugins are alpha.",
+    "alphaDescription": "The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.",
+    "availablePlugins": "Available Plugins",
+    "bundled": "Bundled",
+    "loadingBundled": "Loading bundled plugins...",
+    "bundledLoadError": "Failed to load bundled plugins.",
+    "noBundledFound": "No bundled plugins were found in this checkout.",
+    "firstParty": "First-party",
+    "example": "Example",
+    "notInstalled": "Not installed",
+    "enable": "Enable",
+    "disable": "Disable",
+    "openSettings": "Open Settings",
+    "review": "Review",
+    "installExample": "Install Example",
+    "installedPlugins": "Installed Plugins",
+    "noPluginsInstalled": "No plugins installed",
+    "noPluginsHint": "Install a plugin to extend functionality.",
+    "noDescription": "No description provided.",
+    "pluginError": "Plugin error",
+    "viewFullError": "View full error",
+    "uninstall": "Uninstall",
+    "uninstallPlugin": "Uninstall Plugin",
+    "uninstallConfirmPrefix": "Are you sure you want to uninstall",
+    "uninstallConfirmSuffix": "? This action cannot be undone.",
+    "uninstalling": "Uninstalling...",
+    "configure": "Configure",
+    "errorDetails": "Error Details",
+    "pluginFallback": "Plugin",
+    "hitErrorState": "hit an error state.",
+    "whatErrored": "What errored",
+    "noErrorSummary": "No error summary available.",
+    "fullErrorOutput": "Full error output",
+    "noStoredErrorMessage": "Plugin entered an error state without a stored error message.",
+    "noStoredErrorMessageShort": "No stored error message.",
+    "close": "Close"
   },
   "pluginSettings": {
-    "fallback": "Plugin Details"
+    "fallback": "Plugin Details",
+    "loadingDetails": "Loading plugin details...",
+    "noDescription": "No description provided.",
+    "configuration": "Configuration",
+    "status": "Status",
+    "about": "About",
+    "description": "Description",
+    "author": "Author",
+    "categories": "Categories",
+    "none": "None",
+    "settings": "Settings",
+    "configureFromEnvironments": "Configure this plugin from Company Environments.",
+    "thisPlugin": "This plugin",
+    "registersEnvironmentSettings": "registers environment runtime settings there so credentials stay company-scoped instead of instance-global.",
+    "openCompanyEnvironments": "Open Company Environments",
+    "noSettingsRequired": "This plugin does not require any settings.",
+    "runtimeDashboard": "Runtime Dashboard",
+    "runtimeDashboardDescription": "Worker process, scheduled jobs, and webhook deliveries",
+    "workerProcess": "Worker Process",
+    "pid": "PID",
+    "uptime": "Uptime",
+    "pendingRpcs": "Pending RPCs",
+    "crashes": "Crashes",
+    "crashesCount": "{{consecutive}} consecutive / {{total}} total",
+    "lastCrash": "Last Crash",
+    "noWorkerProcess": "No worker process registered.",
+    "recentJobRuns": "Recent Job Runs",
+    "noJobRuns": "No job runs recorded yet.",
+    "recentWebhookDeliveries": "Recent Webhook Deliveries",
+    "noWebhookDeliveries": "No webhook deliveries recorded yet.",
+    "lastChecked": "Last checked:",
+    "diagnosticsUnavailable": "Runtime diagnostics are unavailable right now.",
+    "recentLogs": "Recent Logs",
+    "lastNLogEntries": "Last {{count}} log entries",
+    "healthStatus": "Health Status",
+    "checkingHealth": "Checking health...",
+    "overall": "Overall",
+    "lifecycle": "Lifecycle",
+    "healthChecksHint": "Health checks run once the plugin is ready.",
+    "details": "Details",
+    "pluginId": "Plugin ID",
+    "pluginKey": "Plugin Key",
+    "npmPackage": "NPM Package",
+    "version": "Version",
+    "permissions": "Permissions",
+    "noPermissions": "No special permissions requested.",
+    "selectCompanyForFolders": "Select a company to configure this plugin's local folders.",
+    "localFolders": "Local folders",
+    "localFolderLoadError": "Failed to load local folder settings.",
+    "loadingLocalFolders": "Loading local folders...",
+    "localFolderSaved": "Local folder saved.",
+    "localFolderSavedNeedsAttention": "Local folder saved, but validation still needs attention.",
+    "localFolderSaveError": "Failed to save local folder.",
+    "localFolderPathRequired": "Local folder path is required.",
+    "localFolderMustBeAbsolute": "Local folder must be a full absolute path.",
+    "healthy": "Healthy",
+    "needsAttention": "Needs attention",
+    "readWrite": "Read/write",
+    "readOnly": "Read only",
+    "configured": "Configured",
+    "readable": "Readable",
+    "writable": "Writable",
+    "yes": "Yes",
+    "no": "No",
+    "notRequested": "Not requested",
+    "configuredPath": "Configured path",
+    "localFolderPath": "Local folder path",
+    "validationProblems": "Validation problems",
+    "requiredDirectories": "Required directories",
+    "missingDirectories": "Missing directories",
+    "requiredFiles": "Required files",
+    "missingFiles": "Missing files",
+    "notInspected": "Not inspected",
+    "countMissing": "{{count}} missing",
+    "present": "Present",
+    "noneDeclared": "None declared.",
+    "rootNotInspected": "Configured root was not inspected.",
+    "configSaved": "Configuration saved.",
+    "configSaveError": "Failed to save configuration.",
+    "configTestPassed": "Configuration test passed.",
+    "configTestFailed": "Configuration test failed.",
+    "loadingConfiguration": "Loading configuration...",
+    "saving": "Saving...",
+    "saveConfiguration": "Save Configuration",
+    "testing": "Testing...",
+    "testConfiguration": "Test Configuration"
   },
   "companyExport": {
     "title": "Export"
@@ -866,16 +1290,93 @@
     "count": "{{count}} workspaces"
   },
   "approvalDetail": {
-    "fallback": "Approval"
+    "fallback": "Approval",
+    "error": {
+      "approve": "Approve failed",
+      "reject": "Reject failed",
+      "revision": "Revision request failed",
+      "resubmit": "Resubmit failed",
+      "comment": "Comment failed",
+      "delete": "Delete failed"
+    },
+    "notFound": "Approval not found.",
+    "reviewLinkedIssues": "Review linked issues",
+    "reviewLinkedIssue": "Review linked issue",
+    "openHiredAgent": "Open hired agent",
+    "backToApprovals": "Back to approvals",
+    "confirmed": "Approval confirmed",
+    "confirmedBody": "Requesting agent was notified to review this approval and linked issues.",
+    "requestedBy": "Requested by",
+    "seeFullRequest": "See full request",
+    "decisionNote": "Decision note: {{note}}",
+    "linkedIssues": "Linked Issues",
+    "linkedIssuesNote": "Linked issues remain open until the requesting agent follows up and closes them.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "budgetStopBefore": "Resolve this budget stop from the budget controls on",
+    "requestRevision": "Request revision",
+    "markResubmitted": "Mark resubmitted",
+    "deleteAgentConfirm": "Delete this disapproved agent? This cannot be undone.",
+    "deleteDisapprovedAgent": "Delete disapproved agent",
+    "commentsCount": "Comments ({{count}})",
+    "board": "Board",
+    "addCommentPlaceholder": "Add a comment...",
+    "posting": "Posting…",
+    "postComment": "Post comment"
   },
   "userProfile": {
-    "users": "Users"
+    "users": "Users",
+    "userFallback": "User",
+    "unknown": "unknown",
+    "member": "member",
+    "joinedOn": "joined {{date}}",
+    "doneSuffix": "{{rate}} done",
+    "touched": "Touched",
+    "completed": "Completed",
+    "comments": "Comments",
+    "actions": "Actions",
+    "tokens": "Tokens",
+    "spend": "Spend",
+    "created": "Created",
+    "open": "Open",
+    "last14Days": "Last 14 days",
+    "tokensTotal": "tokens total",
+    "dayTooltip": "{{date}}: {{tokens}} tokens, {{completed}} completed",
+    "tokensPerDay": "tokens / day",
+    "completions": "completions",
+    "issueLinkedUsage": "Issue-linked usage",
+    "billedThrough": "Billed through {{provider}}",
+    "selectCompany": "Select a company to view user profiles.",
+    "notFound": "User profile not found for this company.",
+    "allTimeTokens": "All-time tokens",
+    "spentHint": "{{amount}} spent",
+    "rateHint": "{{rate}} rate",
+    "openAssigned": "Open assigned",
+    "createdHint": "{{count}} created",
+    "sevenDayActions": "7-day actions",
+    "commentsHint": "{{count}} comments",
+    "recentTasks": "Recent tasks",
+    "noRecentTasks": "No touched tasks yet.",
+    "recentActivity": "Recent activity",
+    "noRecentActivity": "No direct user actions recorded yet.",
+    "agentAttribution": "Agent attribution",
+    "noAgentUsage": "No issue-linked token usage yet.",
+    "providerMix": "Provider mix",
+    "noProviderUsage": "No provider usage attributed yet."
   },
   "goalDetail": {
     "fallback": "Goal"
   },
   "orgChart": {
-    "title": "Org Chart"
+    "title": "Org Chart",
+    "selectCompany": "Select a company to view the org chart.",
+    "empty": "No organizational hierarchy defined.",
+    "importCompany": "Import company",
+    "exportCompany": "Export company",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fitToScreen": "Fit to screen",
+    "fitChartToScreen": "Fit chart to screen"
   },
   "companyAccess": {
     "title": "Access"
@@ -899,7 +1400,192 @@
       "billers": "Billers",
       "finance": "Finance"
     },
-    "financeLedger": "Finance ledger"
+    "financeLedger": "Finance ledger",
+    "allProviders": "All providers",
+    "allBillers": "All billers",
+    "financeLedgerDescription": "Account-level charges that do not map to a single inference request.",
+    "selectCompany": "Select a company to view costs.",
+    "subtitle": "Inference spend, platform fees, credits, and live quota windows.",
+    "dateRangeTo": "to",
+    "selectDateRange": "Select a start and end date to load data.",
+    "inferenceLedger": "Inference ledger",
+    "inferenceLedgerDescription": "Request-scoped inference spend for the selected period.",
+    "budgetAmount": "Budget {{amount}}",
+    "unlimitedBudget": "Unlimited budget",
+    "usageLabel": "usage",
+    "utilizationConsumed": "{{percent}}% of monthly budget consumed in this range.",
+    "byAgent": "By agent",
+    "byAgentDescription": "What each agent consumed in the selected period.",
+    "noCostEvents": "No cost events yet.",
+    "inOutTokens": "in {{in}} · out {{out}}",
+    "apiCount": "{{count}} api",
+    "subscriptionCount": "{{count}} subscription",
+    "tokensAbbreviated": "{{tokens}} tok",
+    "byProject": "By project",
+    "byProjectDescription": "Run costs attributed through project-linked issues.",
+    "noProjectRunCosts": "No project-attributed run costs yet.",
+    "unattributed": "Unattributed",
+    "noFinanceEventsEmpty": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+    "budgetControlPlane": "Budget control plane",
+    "budgetControlPlaneDescription": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+    "activeIncidentsHeading": "Active incidents",
+    "activeIncidentsBody": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+    "companyBudgets": "Company budgets",
+    "agentBudgets": "Agent budgets",
+    "projectBudgets": "Project budgets",
+    "companyBudgetDescription": "Company-wide monthly policy.",
+    "agentBudgetDescription": "Recurring monthly spend policies for individual agents.",
+    "projectBudgetDescription": "Lifetime spend policies for execution-bound projects.",
+    "noBudgetPolicies": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.",
+    "noCostEventsPeriod": "No cost events in this period.",
+    "noBillableEvents": "No billable events in this period.",
+    "byBiller": "By biller",
+    "byBillerDescription": "Account-level financial events grouped by who charged or credited them.",
+    "noFinanceEvents": "No finance events yet.",
+    "metrics": {
+      "debits": "Debits",
+      "debitsSubtitle": "{{count}} total event(s) in range",
+      "credits": "Credits",
+      "creditsSubtitle": "Refunds, offsets, and credit returns",
+      "net": "Net",
+      "netSubtitle": "Debit minus credit for the selected period",
+      "estimated": "Estimated",
+      "estimatedSubtitle": "Estimated debits that are not yet invoice-authoritative",
+      "inferenceSpend": "Inference spend",
+      "inferenceSpendSubtitle": "{{tokens}} tokens across request-scoped events",
+      "budget": "Budget",
+      "budgetOpen": "Open",
+      "budgetPaused": "{{agents}} agents paused · {{projects}} projects paused",
+      "budgetOf": "{{spend}} of {{cap}}",
+      "noMonthlyCap": "No monthly cap configured",
+      "financeNet": "Finance net",
+      "financeNetSubtitle": "{{debits}} debits · {{credits}} credits",
+      "financeEvents": "Finance events",
+      "financeEventsSubtitle": "{{estimated}} estimated in range",
+      "activeIncidents": "Active incidents",
+      "activeIncidentsSubtitle": "Open soft or hard threshold crossings",
+      "pendingApprovals": "Pending approvals",
+      "pendingApprovalsSubtitle": "Budget override approvals awaiting board action",
+      "pausedAgents": "Paused agents",
+      "pausedAgentsSubtitle": "Agent heartbeats blocked by budget",
+      "pausedProjects": "Paused projects",
+      "pausedProjectsSubtitle": "Project execution blocked by budget"
+    }
+  },
+  "routineDetail": {
+    "nextAt": "Next: {{time}}",
+    "webhook": "Webhook",
+    "api": "API",
+    "label": "Label",
+    "schedule": "Schedule",
+    "signingMode": "Signing mode",
+    "replayWindow": "Replay window (seconds)",
+    "lastResult": "Last: {{result}}",
+    "rotateSecret": "Rotate secret",
+    "saveTrigger": "Save trigger",
+    "dirty": {
+      "title": "the title",
+      "description": "the description",
+      "project": "the project",
+      "defaultAgent": "the default agent",
+      "priority": "the priority",
+      "concurrencyPolicy": "the concurrency policy",
+      "catchUpPolicy": "the catch-up policy",
+      "variables": "the variables",
+      "secrets": "the secrets"
+    },
+    "toast": {
+      "copied": "{{label}} copied",
+      "copyFailed": "Failed to copy {{label}}",
+      "clipboardDenied": "Clipboard access was denied.",
+      "routineChanged": "Routine changed",
+      "routineChangedBody": "Someone else updated this routine. Reload to see the latest revision.",
+      "saveFailed": "Failed to save routine",
+      "saveFailedBody": "Paperclip could not save the routine.",
+      "runStarted": "Routine run started",
+      "runFailed": "Routine run failed",
+      "runFailedBody": "Paperclip could not start the routine run.",
+      "routineSaved": "Routine saved",
+      "automationPaused": "Automation paused.",
+      "automationEnabled": "Automation enabled.",
+      "updateFailed": "Failed to update routine",
+      "updateFailedBody": "Paperclip could not update the routine.",
+      "webhookCreated": "Webhook trigger created",
+      "triggerAdded": "Trigger added",
+      "triggerAddedBody": "The routine schedule was saved.",
+      "addTriggerFailed": "Failed to add trigger",
+      "addTriggerFailedBody": "Paperclip could not create the trigger.",
+      "triggerSaved": "Trigger saved",
+      "triggerSavedBody": "The routine cadence update was saved.",
+      "updateTriggerFailed": "Failed to update trigger",
+      "updateTriggerFailedBody": "Paperclip could not update the trigger.",
+      "triggerDeleted": "Trigger deleted",
+      "deleteTriggerFailed": "Failed to delete trigger",
+      "deleteTriggerFailedBody": "Paperclip could not delete the trigger.",
+      "webhookSecretRotated": "Webhook secret rotated",
+      "rotateFailed": "Failed to rotate webhook secret",
+      "rotateFailedBody": "Paperclip could not rotate the webhook secret.",
+      "defaultAgentRequired": "Default agent required",
+      "defaultAgentRequiredBody": "Set a default agent before enabling routine automation.",
+      "webhookRestored": "Webhook trigger restored",
+      "webhooksRestored": "{{count}} webhook triggers restored"
+    },
+    "selectCompany": "Select a company to view routines.",
+    "notFound": "Routine not found",
+    "status": {
+      "archived": "Archived",
+      "draft": "Draft",
+      "active": "Active",
+      "paused": "Paused"
+    },
+    "titlePlaceholder": "Routine title",
+    "managedBy": "Managed by {{plugin}}",
+    "aria": {
+      "pauseAutomation": "Pause automatic triggers",
+      "enableAutomation": "Enable automatic triggers"
+    },
+    "secretSaveWarning": "Save this now. Paperclip will not show the secret value again.",
+    "webhookTriggerOf": "Webhook trigger {{index}} of {{total}}",
+    "webhookUrl": "Webhook URL",
+    "urlButton": "URL",
+    "webhookSecretLabel": "Webhook secret",
+    "secretButton": "Secret",
+    "outOfDate": "Out of date",
+    "outOfDateBody": "This routine changed while you were editing. Reload to merge the latest revision before saving again.",
+    "reloadLatest": "Reload latest",
+    "defaultAgentBanner": "Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.",
+    "for": "For",
+    "assignee": "Assignee",
+    "noAssignee": "No assignee",
+    "searchAssignees": "Search assignees...",
+    "noAssigneesFound": "No assignees found.",
+    "in": "in",
+    "project": "Project",
+    "noProject": "No project",
+    "searchProjects": "Search projects...",
+    "noProjectsFound": "No projects found.",
+    "instructionsPlaceholder": "Add instructions...",
+    "advancedDelivery": "Advanced delivery settings",
+    "concurrency": "Concurrency",
+    "catchUp": "Catch-up",
+    "unsavedChanges": "Unsaved changes",
+    "saveRoutine": "Save routine",
+    "tabs": {
+      "triggers": "Triggers",
+      "runs": "Runs",
+      "activity": "Activity",
+      "secrets": "Secrets",
+      "history": "History"
+    },
+    "addTrigger": "Add trigger",
+    "kind": "Kind",
+    "comingSoon": " — COMING SOON",
+    "adding": "Adding...",
+    "noTriggers": "No triggers configured yet.",
+    "noRuns": "No runs yet.",
+    "noActivity": "No activity yet.",
+    "secretsDescription": "Routine secrets apply to every issue this routine creates. They override matching keys in project and agent env.",
+    "secretsReserved": "variables are reserved."
   },
   "routines": {
     "tabs": {
@@ -913,7 +1599,60 @@
     "assignee": "Assignee",
     "project": "Project",
     "instructionsPlaceholder": "Add instructions...",
-    "advancedDelivery": "Advanced delivery settings"
+    "advancedDelivery": "Advanced delivery settings",
+    "selectCompany": "Select a company to view routines.",
+    "subtitle": "Recurring work definitions that materialize into auditable execution issues.",
+    "createRoutine": "Create routine",
+    "routineCount": "{{count}} routine(s)",
+    "sortBy": {
+      "updated": "Updated",
+      "created": "Created",
+      "lastRun": "Last run",
+      "title": "Title"
+    },
+    "sortDir": {
+      "asc": "Asc",
+      "desc": "Desc"
+    },
+    "groupBy": {
+      "project": "Project",
+      "assignee": "Agent",
+      "none": "None"
+    },
+    "newRoutineSubtitle": "Define the recurring work first. Default project and agent are optional for draft routines.",
+    "for": "For",
+    "in": "in",
+    "noAssignee": "No assignee",
+    "searchAssignees": "Search assignees...",
+    "noAssigneesFound": "No assignees found.",
+    "noProject": "No project",
+    "searchProjects": "Search projects...",
+    "noProjectsFound": "No projects found.",
+    "advancedDeliverySubtitle": "Keep policy controls secondary to the work definition.",
+    "concurrency": "Concurrency",
+    "catchUp": "Catch-up",
+    "afterCreation": "After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.",
+    "creating": "Creating...",
+    "createFailed": "Failed to create routine",
+    "loadFailed": "Failed to load routines",
+    "empty": "No routines yet. Use Create routine to define the first recurring workflow.",
+    "toast": {
+      "defaultAgentRequired": "Default agent required",
+      "defaultAgentRequiredBody": "Set a default agent before enabling routine automation.",
+      "routineCreated": "Routine created",
+      "routineCreatedBody": "Add the first trigger to turn it into a live workflow.",
+      "routineDraftSaved": "Draft saved. Add a default agent before enabling automation.",
+      "updateFailed": "Failed to update routine",
+      "updateFailedBody": "Paperclip could not update the routine.",
+      "runFailed": "Routine run failed",
+      "runFailedBody": "Paperclip could not start the routine run."
+    },
+    "groupLabel": {
+      "noProject": "No project",
+      "unknownProject": "Unknown project",
+      "unassigned": "Unassigned",
+      "unknownAgent": "Unknown agent"
+    }
   },
   "companySettings": {
     "title": "Company Settings",
@@ -1044,6 +1783,11 @@
     "markAllAsRead": "Mark all as read?",
     "dismiss": "Dismiss",
     "dismissFromInbox": "Dismiss from inbox",
+    "group": "Group",
+    "chooseColumns": "Choose which inbox columns stay visible",
+    "sort": "Sort",
+    "nestingDisable": "Disable parent-child nesting",
+    "nestingEnable": "Enable parent-child nesting",
     "tabs": {
       "mine": "Mine",
       "recent": "Recent",
@@ -1063,6 +1807,13 @@
       "all": "All approval statuses",
       "actionable": "Needs action",
       "resolved": "Resolved"
+    },
+    "group": {
+      "none": "None",
+      "type": "Type",
+      "assignee": "Assignee",
+      "project": "Project",
+      "workspace": "Workspace"
     }
   },
   "issueDetail": {
@@ -1082,5 +1833,1209 @@
     "costSummary": "Cost Summary",
     "noCostData": "No cost data yet.",
     "thisIssue": "This issue"
+  },
+  "imageGalleryModal": {
+    "imageFallback": "Image",
+    "attachmentAlt": "attachment",
+    "downloadFallbackName": "image",
+    "download": "Download",
+    "close": "Close",
+    "previous": "Previous",
+    "next": "Next"
+  },
+  "activityCharts": {
+    "noRuns": "No runs yet",
+    "noIssues": "No issues",
+    "runsTooltip": "{{day}}: {{count}} runs",
+    "issuesTooltip": "{{day}}: {{count}} issues",
+    "successRateTooltip": "{{day}}: {{percent}}% ({{succeeded}}/{{total}})",
+    "priority": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "status": {
+      "todo": "To Do",
+      "inProgress": "In Progress",
+      "inReview": "In Review",
+      "done": "Done",
+      "blocked": "Blocked",
+      "cancelled": "Cancelled",
+      "backlog": "Backlog"
+    }
+  },
+  "importFromVault": {
+    "title": "Import from AWS Secrets Manager",
+    "description": "Bring AWS-managed secrets into Paperclip as external references.",
+    "closeAria": "Close import dialog",
+    "status": {
+      "imported": "Imported",
+      "conflict": "Conflict",
+      "ready": "Ready"
+    },
+    "rowResult": {
+      "created": "Created",
+      "skipped": "Skipped",
+      "failed": "Failed"
+    },
+    "relative": {
+      "secondsAgo": "{{n}}s ago",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
+    },
+    "error": {
+      "requestFailed": "Request failed: {{status}}",
+      "unexpected": "Unexpected error",
+      "permissionTitle": "AWS denied list access",
+      "throttlingTitle": "AWS throttled the listing request",
+      "loadFailedTitle": "Could not load remote secrets",
+      "permissionBody": "The AWS principal behind this vault is missing secretsmanager:ListSecrets. Update IAM and try again.",
+      "iamReferenceLink": "IAM reference"
+    },
+    "validation": {
+      "nameRequired": "Name is required.",
+      "nameTooLong": "Name must be 160 characters or fewer.",
+      "keyRequired": "Key is required.",
+      "keyPattern": "Key may only contain lowercase letters, numbers, dot, underscore, or hyphen.",
+      "keyTooLong": "Key must be 120 characters or fewer.",
+      "descriptionTooLong": "Description must be 500 characters or fewer.",
+      "nameInUse": "A Paperclip secret already uses this name.",
+      "keyInUse": "A Paperclip secret already uses this key.",
+      "nameDuplicateInBatch": "Another row in this batch already uses this name.",
+      "keyDuplicateInBatch": "Another row in this batch already uses this key."
+    },
+    "toast": {
+      "importFailedTitle": "Import failed",
+      "noneImportedBody": "No secrets were imported from {{vault}}.",
+      "completedWithErrorsTitle": "Import completed with errors",
+      "completeTitle": "Import complete",
+      "summaryBody": "{{imported}} created · {{skipped}} skipped · {{failed}} failed",
+      "loadMoreFailedTitle": "Could not load more results"
+    },
+    "confirm": {
+      "discardPending": "Discard {{count}} pending import(s)?"
+    },
+    "button": {
+      "cancel": "Cancel",
+      "back": "Back",
+      "continueReview": "Continue → Review",
+      "importing": "Importing…",
+      "importCount": "Import {{count}}",
+      "done": "Done",
+      "retry": "Retry"
+    },
+    "stepper": {
+      "select": "Select",
+      "review": "Review",
+      "result": "Result"
+    },
+    "select": {
+      "noVaultsMessage": "No AWS provider vault configured. Add one to import secrets.",
+      "manageVaults": "Manage vaults",
+      "vaultLabel": "Vault",
+      "vaultAria": "Select AWS vault",
+      "vaultPlaceholder": "Select an AWS vault",
+      "defaultBadge": "default",
+      "warningBadge": "warning",
+      "comingSoonBadge": "coming soon",
+      "searchPlaceholder": "Search by name, ARN, tag",
+      "searchAria": "Search remote secrets",
+      "refreshAria": "Refresh remote secrets",
+      "selectedNotVisible": "{{selected}} selected · {{hidden}} not visible with current search",
+      "showAll": "Show all",
+      "showSelected": "Show selected",
+      "selectAllAria": "Select all loaded ({{count}})",
+      "rowSelectAria": "Select {{name}}",
+      "alreadyImported": "Already imported",
+      "loadedCount": "{{count}} loaded",
+      "selectableCount": "{{count}} selectable",
+      "loading": "Loading…",
+      "loadMore": "Load {{count}} more"
+    },
+    "table": {
+      "remoteName": "Remote name",
+      "reference": "Reference",
+      "lastChanged": "Last changed",
+      "suggestedName": "Suggested name",
+      "state": "State"
+    },
+    "empty": {
+      "noMatch": "No remote secrets match \"{{query}}\".",
+      "noSecrets": "No secrets visible to this vault."
+    },
+    "review": {
+      "emptyMessage": "No secrets selected. Go back to pick remote secrets to import.",
+      "readyHeader": "{{count}} secrets ready to import",
+      "blockedHeader": "{{count}} need attention before import",
+      "paperclipName": "Paperclip name",
+      "key": "Key",
+      "descriptionOptional": "Description (optional)",
+      "removeAria": "Remove {{name}}"
+    },
+    "result": {
+      "failedHeading": "Import failed",
+      "allImportedHeading": "All {{count}} secrets imported",
+      "completeHeading": "Import complete",
+      "createdCount": "{{count}} created",
+      "skippedCount": "{{count}} skipped",
+      "failedCount": "{{count}} failed",
+      "groupCreated": "Created",
+      "groupSkipped": "Skipped",
+      "groupFailed": "Failed"
+    },
+    "footer": {
+      "selectPrompt": "Select remote secrets to import",
+      "selectedCount": "{{count}} selected",
+      "readyCount": "{{count}} ready",
+      "blockedCount": "{{count}} blocked",
+      "createdCount": "{{count}} created",
+      "skippedCount": "{{count}} skipped",
+      "failedCount": "{{count}} failed"
+    }
+  },
+  "routineHistory": {
+    "toast": {
+      "restoredTitle": "Restored revision {{from}} as revision {{to}}",
+      "restoredBodyWithSecrets": "Trigger enabled state was restored from the snapshot. New webhook secrets are available in the banner above.",
+      "restoredBody": "Trigger enabled state was restored from the snapshot.",
+      "restoreFailedTitle": "Failed to restore revision",
+      "restoreFailedBody": "Paperclip could not restore the revision."
+    },
+    "loadError": {
+      "title": "Could not load revisions",
+      "unknown": "Unknown error loading revisions."
+    },
+    "retry": "Retry",
+    "emptyState": {
+      "noEdits": "No edits yet",
+      "description": "Revision 1 is the only history this routine has. Saving an edit creates the first additional revision."
+    },
+    "viewingRevision": "Viewing revision {{n}} (read-only)",
+    "historicalBanner": {
+      "description": "Restoring this revision creates a new revision {{n}} with the same content. History stays append-only."
+    },
+    "returnToCurrent": "Return to current",
+    "restoreAsNewRevision": "Restore as new revision",
+    "theRoutine": "the routine",
+    "unsavedEditsTitle": "Unsaved routine edits",
+    "unsavedEditsBody": "You changed {{fields}} but haven't saved yet. Save or discard before previewing or restoring an older revision.",
+    "discardChanges": "Discard changes",
+    "saveAndContinue": "Save and continue",
+    "revisions": "Revisions",
+    "totalCount": "{{count}} total",
+    "revShort": "rev {{n}}",
+    "currentBadge": "Current",
+    "restoredBadge": "Restored",
+    "showOlder": "Show {{count}} older…",
+    "restoreThisRevision": "Restore this revision",
+    "field": {
+      "title": "Title",
+      "priority": "Priority",
+      "status": "Status",
+      "defaultAgent": "Default agent",
+      "project": "Project",
+      "concurrency": "Concurrency",
+      "catchUp": "Catch-up",
+      "env": "Env",
+      "variables": "Variables"
+    },
+    "savedBy": "Saved {{when}} by {{actor}}",
+    "compareWithCurrent": "Compare with current",
+    "structuredFields": "Structured fields",
+    "differsFromCurrent": "differs from current",
+    "description": "Description",
+    "noDescription": "No description",
+    "triggersHeading": "Triggers ({{count}})",
+    "noTriggers": "No triggers in this revision.",
+    "triggerEnabled": "enabled",
+    "triggerDisabled": "disabled",
+    "webhookSecretsNote": "Webhook secrets are not stored in revisions. If a restored webhook trigger needs re-creation, Paperclip mints fresh secret material at restore time.",
+    "variablesHeading": "Variables ({{count}})",
+    "variableDefault": "default: {{value}}",
+    "restoreDialog": {
+      "title": "Restore revision {{n}}?",
+      "description": "This creates a new revision {{newN}} with the same content as revision {{targetN}}. Revisions {{targetN}}–{{currentN}} stay in history and are not modified.",
+      "fieldsRevert": "Routine field values, variables, and schedule cron will revert.",
+      "secretsRevert": "Routine secrets will revert: {{summary}}.",
+      "runHistoryPreserved": "Previous run history is preserved.",
+      "webhookRecreated": "The webhook trigger {{label}} will be recreated with a new URL and secret. Paperclip will show the secret once after restore — copy it before closing.",
+      "changeSummaryLabel": "Change summary (optional)",
+      "changeSummaryPlaceholder": "Why are you restoring? Visible in history."
+    },
+    "cancel": "Cancel",
+    "restoring": "Restoring…",
+    "restoreAsRevisionN": "Restore as revision {{n}}",
+    "compareDialog": {
+      "title": "Compare routine revisions",
+      "oldLabel": "Old",
+      "newLabel": "New"
+    },
+    "fieldChanges": "Field changes",
+    "noFieldChanges": "No structural field changes.",
+    "tableHeader": {
+      "field": "Field",
+      "oldValue": "Old value",
+      "newValue": "New value"
+    },
+    "descriptionDiff": "Description diff",
+    "close": "Close",
+    "restoreRevAsNew": "Restore rev {{n}} as new revision",
+    "revOption": "rev {{n}} — {{when}}",
+    "diff": {
+      "noDescription": "No description on either revision.",
+      "identical": "Descriptions are identical.",
+      "old": "Old",
+      "new": "New",
+      "content": "Content"
+    },
+    "actor": {
+      "board": "board",
+      "agent": "agent",
+      "system": "system"
+    },
+    "unassigned": "Unassigned",
+    "noProject": "No project",
+    "trigger": {
+      "replay": "replay {{seconds}}s",
+      "api": "API"
+    },
+    "list": {
+      "two": "{{first}} and {{second}}",
+      "many": "{{leading}}, and {{last}}"
+    },
+    "versionLatest": "latest",
+    "env": {
+      "plainSet": "plain (set)",
+      "plainChanged": "plain (changed)",
+      "keysOnly": "{{count}} keys",
+      "keysWithSecrets": "{{count}} keys ({{secrets}} secret refs)",
+      "added": "{{count}} keys added",
+      "removed": "{{count}} keys removed",
+      "changed": "{{count}} keys changed"
+    },
+    "envChange": {
+      "added": "Env added ({{key}})",
+      "removed": "Env removed ({{key}})",
+      "bindingKind": "Env {{key}} binding kind",
+      "secret": "Env {{key}} secret",
+      "version": "Env {{key}} version",
+      "value": "Env {{key}} value"
+    },
+    "triggerChange": {
+      "removed": "Trigger removed ({{label}})",
+      "added": "Trigger added ({{label}})",
+      "label": "Trigger {{label}}"
+    }
+  },
+  "cloudUpstream": {
+    "steps": {
+      "connect": "Connect",
+      "scan": "Scan",
+      "preview": "Preview",
+      "push": "Push",
+      "verify": "Verify",
+      "activate": "Activate"
+    },
+    "activation": {
+      "agents": {
+        "label": "Agents",
+        "singular": "agent",
+        "detail": "Confirm cloud secrets and adapter credentials before unpausing imported agents."
+      },
+      "routines": {
+        "label": "Routines",
+        "singular": "routine",
+        "detail": "Review schedules and trigger settings before enabling imported routines."
+      },
+      "monitors": {
+        "label": "Monitors",
+        "singular": "monitor",
+        "detail": "Activate after the target stack has been smoke tested."
+      },
+      "checklistTitle": "Activation checklist",
+      "noneImported": "0 imported {{plural}} in this run.",
+      "activatedButton": "Activated",
+      "activateButton": "Activate",
+      "keepPausedButton": "Keep paused",
+      "rowDetail": "{{count}} imported {{plural}} are paused by default. {{detail}}",
+      "statusActivated": "{{count}} activated",
+      "statusNoneImported": "0 imported",
+      "statusPaused": "{{count}} paused"
+    },
+    "breadcrumb": {
+      "company": "Company",
+      "settings": "Settings",
+      "cloudUpstream": "Cloud upstream"
+    },
+    "notice": {
+      "connectionApproved": "Cloud upstream connection approved.",
+      "pushSucceeded": "Push run completed. Review activation before unpausing automations.",
+      "pushFailed": "Push run failed. Review the run events and retry after correcting the issue.",
+      "activationUpdated": "Activation checklist updated."
+    },
+    "error": {
+      "finishConnection": "Failed to finish connection.",
+      "noPendingConnection": "No pending cloud upstream connection was found. Start the connection again.",
+      "connectionNotApproved": "Cloud upstream connection was not approved: {{reason}}",
+      "startConnection": "Failed to start connection.",
+      "runPush": "Failed to run push.",
+      "activateEntities": "Failed to activate imported entities.",
+      "previewPush": "Failed to preview push.",
+      "previewTooLarge": "Local company is too large to preview as a single request. Click Push to continue (the Push step uploads in chunks), or see the docs for chunked-preview options."
+    },
+    "empty": {
+      "selectCompany": "Select a company to configure cloud upstream.",
+      "loadingExperimental": "Loading experimental settings..."
+    },
+    "heading": {
+      "title": "Cloud upstream",
+      "description": "Push {{name}} into a Paperclip Cloud stack. Automations stay paused until activation."
+    },
+    "disabled": {
+      "prefix": "Cloud sync is disabled. Enable it in",
+      "instanceSettingsLink": "Instance Settings",
+      "suffix": "to show upstream connection and push tools."
+    },
+    "action": {
+      "openCloud": "Open cloud",
+      "previewPush": "Preview push",
+      "connect": "Connect",
+      "pushToCloud": "Push to cloud",
+      "downloadReport": "Download report",
+      "retry": "Retry",
+      "reRun": "Re-run"
+    },
+    "section": {
+      "connection": "Connection",
+      "preview": "Preview",
+      "progressAndFinish": "Progress and finish",
+      "history": "History"
+    },
+    "connection": {
+      "meta": "{{product}} · {{origin}} · token {{tokenStatus}}",
+      "schema": "Schema {{schemaMajor}}. Max chunk {{chunkSize}}."
+    },
+    "input": {
+      "remoteUrlAria": "Paperclip Cloud stack URL"
+    },
+    "preview": {
+      "buildingShort": "Building manifest...",
+      "buildingMedium": "Building manifest... {{seconds}}s. Large companies can take up to a minute.",
+      "buildingLong": "Still building manifest... {{seconds}}s. PAP-scale companies routinely take ~60s.",
+      "warnings": "Warnings",
+      "conflicts": "Conflicts",
+      "noConflicts": "No target conflicts detected for this preview."
+    },
+    "run": {
+      "metaCompleted": "Run {{id}} · completed {{date}}",
+      "metaInProgress": "Run {{id}} · in progress",
+      "progressPercent": "{{percent}}%",
+      "status": {
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "running": "Running",
+        "previewed": "Previewed"
+      }
+    },
+    "history": {
+      "runLabel": "Run {{id}} · {{status}}"
+    }
+  },
+  "companySettingsPluginPage": {
+    "breadcrumbSettings": "Settings",
+    "selectCompany": "Select a company to view this page.",
+    "loading": "Loading...",
+    "extensionsUnavailable": "Plugin extensions unavailable: {{message}}",
+    "duplicateRoutePrefix": "Multiple plugins declare the company settings route",
+    "duplicateRouteSuffix": ". Disable one plugin or change its route."
+  },
+  "pluginPage": {
+    "breadcrumbPlugins": "Plugins",
+    "selectCompany": "Select a company to view this page.",
+    "loading": "Loading…",
+    "duplicateRoutePrefix": "Multiple plugins declare the route",
+    "duplicateRouteSuffix": ". Use the plugin-id route until the conflict is resolved.",
+    "back": "Back"
+  },
+  "missingPluginTabPlaceholder": {
+    "unavailable": "Workspace plugin tab is not available."
+  },
+  "productivityReviewBadge": {
+    "title": "Productivity review",
+    "trigger": {
+      "noCommentStreak": "No-comment streak",
+      "longActiveDuration": "Long active duration",
+      "highChurn": "High churn"
+    },
+    "status": {
+      "open": "Open",
+      "inProgress": "In progress",
+      "inReview": "In review",
+      "blocked": "Blocked"
+    },
+    "ariaLabel": "Under review · productivity review {{identifier}} ({{label}})",
+    "underReview": "Under review",
+    "open": "Productivity review open",
+    "triggerLabel": "Trigger:",
+    "noCommentStreakLabel": "No-comment streak:",
+    "runs": "{{count}} runs",
+    "reviewLabel": "Review:"
+  },
+  "uiDialog": {
+    "close": "Close"
+  },
+  "uiSheet": {
+    "close": "Close"
+  },
+  "uiCommand": {
+    "title": "Command Palette",
+    "description": "Search for a command to run...",
+    "close": "Close"
+  },
+  "uiBreadcrumb": {
+    "more": "More"
+  },
+  "issueRunLedger": {
+    "liveness": {
+      "completed": {
+        "label": "Completed",
+        "description": "Issue reached a terminal state."
+      },
+      "advanced": {
+        "label": "Advanced",
+        "description": "Run produced concrete evidence of progress."
+      },
+      "planOnly": {
+        "label": "Plan only",
+        "description": "Run described future work without concrete action evidence."
+      },
+      "emptyResponse": {
+        "label": "Empty response",
+        "description": "Run finished without useful output."
+      },
+      "blocked": {
+        "label": "Blocked",
+        "description": "Run or issue declared a blocker."
+      },
+      "failed": {
+        "label": "Failed",
+        "description": "Run ended unsuccessfully."
+      },
+      "needsFollowup": {
+        "label": "Needs follow-up",
+        "description": "Run produced useful output but did not prove concrete progress."
+      },
+      "pending": {
+        "label": "Checks after finish",
+        "description": "Liveness is evaluated after the run finishes."
+      },
+      "retryPending": {
+        "label": "Retry pending",
+        "description": "Paperclip queued an automatic retry that has not started yet."
+      },
+      "missing": {
+        "label": "No liveness data",
+        "description": "This run has no persisted liveness classification."
+      }
+    },
+    "outputSilence": {
+      "suspicious": "Silence watch",
+      "critical": "Stale run",
+      "snoozed": "Silence snoozed"
+    },
+    "modelProfile": {
+      "requested": "Requested: {{value}}",
+      "applied": "Applied: {{value}}",
+      "source": "Source: {{value}}",
+      "fallback": "Fallback: {{value}}",
+      "badgeSame": "Profile: {{requested}}",
+      "badgeApplied": "Profile: {{requested}} → {{applied}}",
+      "badgeUnavailable": "Profile: {{requested}} (unavailable)",
+      "cheapFallback": "Cheap profile fell back to primary",
+      "profileUnavailable": "{{requested}} profile unavailable"
+    },
+    "duration": {
+      "seconds": "{{count}}s",
+      "minutes": "{{count}}m",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s",
+      "hours": "{{count}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m"
+    },
+    "runSummary": {
+      "running": "Running now by {{agent}}",
+      "queued": "Queued for {{agent}}",
+      "scheduledRetry": "Automatic retry scheduled for {{agent}}",
+      "other": "{{status}} by {{agent}}"
+    },
+    "stopReason": {
+      "timeoutSeconds": "{{seconds}}s timeout",
+      "timeoutWith": "timeout ({{detail}})",
+      "timeout": "timeout",
+      "maxTurnsExhausted": "max turns exhausted",
+      "budgetPaused": "budget paused",
+      "cancelled": "cancelled",
+      "pausedByBoard": "paused by board",
+      "processLost": "process lost",
+      "adapterFailed": "adapter failed",
+      "completedWith": "completed ({{detail}})",
+      "completed": "completed"
+    },
+    "stopStatus": {
+      "retryPending": "Retry pending",
+      "waitingToStart": "Waiting to start",
+      "stillRunning": "Still running",
+      "unavailable": "Unavailable",
+      "noStopReason": "No stop reason"
+    },
+    "lastUsefulAction": {
+      "waitingNextAttempt": "Waiting for next attempt",
+      "noneRecordedYet": "No action recorded yet",
+      "noConcreteAction": "No concrete action",
+      "noUsefulOutput": "No useful output",
+      "unavailable": "Unavailable",
+      "noneRecorded": "None recorded"
+    },
+    "continuationLabel": "Continuation attempt {{attempt}}",
+    "silenceAge": {
+      "under1Minute": "under 1 minute",
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} hour",
+      "hours_other": "{{count}} hours",
+      "hoursMinutes": "{{hours}}h {{minutes}}m"
+    },
+    "watchdog": {
+      "errorForbidden": "Only the board or the assigned recovery owner can record watchdog decisions",
+      "errorGeneric": "Paperclip could not record the watchdog decision.",
+      "toastTitle": "Watchdog decision not recorded"
+    },
+    "section": {
+      "ariaLabel": "Issue run ledger"
+    },
+    "heading": "Run ledger",
+    "emptyState": {
+      "inProgress": "Waiting for the first run record.",
+      "noRuns": "No runs linked yet."
+    },
+    "latestRunLink": "Latest run",
+    "childWork": {
+      "label": "Child work",
+      "summaryActive": "{{active}} active, {{done}} done, {{cancelled}} cancelled",
+      "summaryTerminal": "all {{total}} terminal ({{done}} done, {{cancelled}} cancelled)",
+      "moreCount": "+{{count}} more"
+    },
+    "silence": {
+      "criticalTitle": "Stale-run watchdog alert",
+      "warningTitle": "Output silence watchdog warning",
+      "body": "Latest active run has been silent for {{age}}.",
+      "extendedPeriod": "an extended period",
+      "reviewPrefix": "Review",
+      "reviewSuffix": "for recovery context.",
+      "actions": {
+        "continue": "Continue monitoring",
+        "snooze": "Snooze 1h",
+        "falsePositive": "Mark false positive"
+      }
+    },
+    "feedEmpty": {
+      "withActivity": "Runs and activity will appear here once this issue has history.",
+      "runsOnly": "Historical runs without liveness metadata will appear here once linked to this issue."
+    },
+    "runCard": {
+      "run": "Run",
+      "byAgent": "by {{agent}}",
+      "liveBadge": "live",
+      "exhausted": "Exhausted",
+      "elapsed": "Elapsed",
+      "unknown": "unknown",
+      "lastUsefulAction": "Last useful action",
+      "stop": "Stop",
+      "retryOfPrefix": "Retry of",
+      "nextActionLabel": "Next action: "
+    },
+    "olderItems": "{{count}} older items not shown"
+  },
+  "workspaceRuntimeControls": {
+    "statusLabel": {
+      "runOnce": "run once",
+      "stopped": "stopped"
+    },
+    "disabledReason": {
+      "jobMissingCommand": "This job is missing a command.",
+      "runtimeUntracked": "This runtime service no longer matches a configured workspace command."
+    },
+    "actions": {
+      "run": "Run",
+      "start": "Start",
+      "stop": "Stop",
+      "restart": "Restart"
+    },
+    "itemDetails": {
+      "port": "Port {{port}}"
+    },
+    "emptyMessages": {
+      "services": "No services are configured for this workspace.",
+      "jobs": "No one-shot jobs are configured for this workspace."
+    },
+    "header": {
+      "workspaceCommands": "Workspace commands",
+      "servicesRunning": "{{count}} services running",
+      "noServicesRunning": "No services running",
+      "jobsAvailable_one": "{{count}} job available to run on demand.",
+      "jobsAvailable_other": "{{count}} jobs available to run on demand.",
+      "independent": "Each command can be controlled independently."
+    },
+    "section": {
+      "servicesTitle": "Services",
+      "servicesDescription": "Long-running commands that Paperclip can supervise for this workspace.",
+      "jobsTitle": "Jobs",
+      "jobsDescription": "One-shot commands that run now and exit when they finish.",
+      "untrackedTitle": "Untracked services",
+      "untrackedDescription": "Running services that no longer match the current workspace command config."
+    }
+  },
+  "markdownBody": {
+    "issueLinkLabel": "Issue {{identifier}}",
+    "issueLinkLabelWithTitle": "Issue {{identifier}}: {{title}}",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "copyFailed": "Copy failed",
+    "copyCodeAriaLabel": "Copy code",
+    "wrapLines": "Wrap lines",
+    "unwrapLines": "Unwrap lines",
+    "scrollableTableAriaLabel": "Scrollable table",
+    "mermaidRendering": "Rendering Mermaid diagram...",
+    "mermaidRenderFailed": "Failed to render Mermaid diagram.",
+    "mermaidUnableToRender": "Unable to render Mermaid diagram: {{error}}"
+  },
+  "markdownEditor": {
+    "noImageUploadHandler": "No image upload handler",
+    "imageUploadFailed": "Image upload failed",
+    "richEditorLoadFailed": "Rich editor failed to load content",
+    "richEditorUnavailable": "Rich editor unavailable for this markdown. Showing raw source instead.",
+    "retryRichEditor": "Retry rich editor",
+    "dropFileToUpload": "Drop file to upload",
+    "dropImageToUpload": "Drop image to upload",
+    "optionLabel": {
+      "project": "Project",
+      "user": "User",
+      "skill": "Skill",
+      "routine": "Routine"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "references": {
+      "title": "References",
+      "description": "Other tasks this issue currently points at in its title, description, comments, or documents.",
+      "empty": "This issue does not reference any other tasks yet."
+    },
+    "referencedBy": {
+      "title": "Referenced by",
+      "description": "Other tasks that currently point at this issue.",
+      "empty": "No other tasks reference this issue yet."
+    }
+  },
+  "issueColumns": {
+    "columns": "Columns",
+    "desktopIssueRows": "Desktop issue rows",
+    "resetDefaults": "Reset defaults",
+    "resetDefaultsHint": "status, id, updated",
+    "live": "Live",
+    "unassigned": "Unassigned",
+    "noProject": "No project",
+    "subIssue": "Sub-issue",
+    "filterByWorkspace": "Filter by workspace",
+    "userFallback": "User",
+    "activity": {
+      "updated": "Updated {{relative}}"
+    },
+    "label": {
+      "status": "Status",
+      "id": "ID",
+      "assignee": "Assignee",
+      "project": "Project",
+      "workspace": "Workspace",
+      "parent": "Parent issue",
+      "labels": "Tags",
+      "updated": "Last updated"
+    },
+    "description": {
+      "status": "Issue state chip on the left edge.",
+      "id": "Ticket identifier like PAP-1009.",
+      "assignee": "Assigned agent or board user.",
+      "project": "Linked project pill with its color.",
+      "workspace": "Execution or project workspace used for the issue.",
+      "parent": "Parent issue identifier and title.",
+      "labels": "Issue labels and tags.",
+      "updated": "Latest visible activity time."
+    }
+  },
+  "issueLinkQuicklook": {
+    "unableToLoad": "Unable to load issue preview.",
+    "status": {
+      "backlog": "backlog",
+      "todo": "todo",
+      "in_progress": "in progress",
+      "in_review": "in review",
+      "done": "done",
+      "blocked": "blocked",
+      "cancelled": "cancelled"
+    }
+  },
+  "issueWorkspaceCard": {
+    "copy": "Copy",
+    "copied": "Copied!",
+    "cancel": "Cancel",
+    "save": "Save",
+    "edit": "Edit",
+    "repoLabel": "Repo:",
+    "environmentLabel": "Environment:",
+    "reusedWorkspaceSuffix": "reused workspace",
+    "projectDefaultSuffix": "project default",
+    "willCreateIsolated": "A fresh isolated workspace will be created when this issue runs.",
+    "willReuseExisting": "This issue will reuse an existing workspace when it runs.",
+    "willUseProjectDefault": "This issue will use the project default workspace configuration when it runs.",
+    "reusingLabel": "Reusing:",
+    "viewWorkspaceDetails": "View workspace details →",
+    "chooseExistingWorkspace": "Choose an existing workspace",
+    "noEnvironmentOnReused": "No environment on reused workspace",
+    "selectWorkspaceForEnvironment": "Select an existing workspace to inspect its environment",
+    "projectDefaultEnvironment": "Project default environment",
+    "noEnvironment": "No environment",
+    "environmentLockedReuse": "Environment selection is locked while reusing an existing workspace. The next run will use that workspace's persisted environment config.",
+    "environmentLockedChooseFirst": "Choose an existing workspace first. Its persisted environment config will determine the next run.",
+    "currentLabel": "Current:",
+    "mode": {
+      "isolatedWorkspace": "Isolated workspace",
+      "operatorBranch": "Operator branch",
+      "cloudSandbox": "Cloud sandbox",
+      "adapterManaged": "Adapter managed",
+      "workspace": "Workspace"
+    },
+    "selection": {
+      "newIsolated": "New isolated workspace",
+      "existingIsolated": "Existing isolated workspace",
+      "reuseExisting": "Reuse existing workspace",
+      "projectDefault": "Project default"
+    },
+    "option": {
+      "projectDefault": "Project default",
+      "newIsolated": "New isolated workspace",
+      "reuseExisting": "Reuse existing workspace"
+    },
+    "status": {
+      "active": "active",
+      "idle": "idle",
+      "in_review": "in review",
+      "archived": "archived"
+    }
+  },
+  "scheduleEditor": {
+    "chooseFrequency": "Choose frequency...",
+    "fiveFieldsHelp": "Five fields: minute hour day-of-month month day-of-week",
+    "at": "at",
+    "atMinute": "at minute",
+    "on": "on",
+    "onDay": "on day",
+    "preset": {
+      "everyMinute": "Every minute",
+      "everyHour": "Every hour",
+      "everyDay": "Every day",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "custom": "Custom (cron)"
+    },
+    "hour": {
+      "midnight": "12 AM",
+      "noon": "12 PM",
+      "am": "{{hour}} AM",
+      "pm": "{{hour}} PM"
+    },
+    "day": {
+      "mon": "Mon",
+      "tue": "Tue",
+      "wed": "Wed",
+      "thu": "Thu",
+      "fri": "Fri",
+      "sat": "Sat",
+      "sun": "Sun"
+    },
+    "describe": {
+      "everyMinute": "Every minute",
+      "everyHour": "Every hour at :{{minute}}",
+      "everyDay": "Every day at {{time}}",
+      "weekdays": "Weekdays at {{time}}",
+      "weekly": "Every {{day}} at {{time}}",
+      "monthly": "Monthly on the {{day}}{{suffix}} at {{time}}",
+      "noSchedule": "No schedule set"
+    }
+  },
+  "sourceResolvedFold": {
+    "ariaLabel": "Source-resolved watchdog fold",
+    "headerTitle": "SOURCE-RESOLVED FOLD",
+    "systemAudit": "system audit",
+    "description": "This run was folded as a source-resolved false positive.",
+    "evidenceAt": "at {{at}}",
+    "silenceStarted": "(silence started {{at}})",
+    "unknown": "unknown",
+    "row": {
+      "sourceIssue": "Source issue",
+      "sameRunEvidence": "Same-run evidence",
+      "silenceAge": "Silence age before fold",
+      "processCleanup": "Process cleanup",
+      "evaluationIssue": "Evaluation issue"
+    },
+    "badgeTitle": "System folded this run as a source-resolved false positive.",
+    "badgeLabel": "Source-resolved"
+  },
+  "projectWorkspaceDetail": {
+    "tab": {
+      "configuration": "Configuration"
+    },
+    "sourceType": {
+      "localPath": {
+        "label": "Local git checkout",
+        "description": "A local path Paperclip can use directly."
+      },
+      "nonGitPath": {
+        "label": "Local non-git path",
+        "description": "A local folder without git semantics."
+      },
+      "gitRepo": {
+        "label": "Remote git repo",
+        "description": "A repo URL with optional refs and local checkout."
+      },
+      "remoteManaged": {
+        "label": "Remote-managed workspace",
+        "description": "A hosted workspace tracked by external reference."
+      }
+    },
+    "visibility": {
+      "default": "Default",
+      "advanced": "Advanced"
+    },
+    "error": {
+      "runtimeConfigMustBeObject": "Workspace commands JSON must be a JSON object.",
+      "invalidJson": "Invalid JSON.",
+      "remoteManagedRequiresRef": "Remote-managed workspaces require a remote workspace ref or repo URL.",
+      "requiresPathOrRepo": "Workspace requires at least one local path or repo URL.",
+      "localPathMustBeAbsolute": "Local workspace path must be absolute.",
+      "repoUrlInvalid": "Repo URL must be a valid URL.",
+      "saveFailed": "Failed to save workspace.",
+      "updateFailed": "Failed to update workspace.",
+      "runtimeControlFailed": "Failed to control workspace commands.",
+      "loadFailed": "Failed to load workspace"
+    },
+    "breadcrumb": {
+      "projects": "Projects",
+      "workspaces": "Workspaces"
+    },
+    "runtime": {
+      "jobCompleted": "Workspace job completed.",
+      "serviceStopped": "Workspace service stopped. Issue execution is not paused.",
+      "serviceRestarted": "Workspace service restarted. Issue execution is not paused.",
+      "serviceStarted": "Workspace service started."
+    },
+    "loading": "Loading workspace…",
+    "notFound": "Workspace not found for this project.",
+    "backToWorkspaces": "Back to workspaces",
+    "heading": {
+      "eyebrow": "Project workspace"
+    },
+    "makePrimary": "Make primary",
+    "primaryNotice": "This is the project’s primary codebase workspace.",
+    "intro": "Configure the concrete workspace Paperclip attaches to this project. These values drive per-workspace checkout behavior, default runtime services for child execution workspaces, and let you override setup or cleanup commands when one workspace needs special handling.",
+    "field": {
+      "workspaceName": "Workspace name",
+      "visibility": "Visibility",
+      "sourceType": "Source type",
+      "localPath": "Local path",
+      "repoUrl": "Repo URL",
+      "repoRef": "Repo ref",
+      "defaultRef": "Default ref",
+      "sharedWorkspaceKey": "Shared workspace key",
+      "remoteProvider": "Remote provider",
+      "remoteWorkspaceRef": "Remote workspace ref",
+      "setupCommand": "Setup command",
+      "cleanupCommand": "Cleanup command",
+      "workspaceCommandsJson": "Workspace commands JSON"
+    },
+    "placeholder": {
+      "workspaceName": "Workspace name"
+    },
+    "hint": {
+      "setupCommand": "Runs when this workspace needs custom bootstrap",
+      "cleanupCommand": "Runs before project-level execution workspace teardown",
+      "workspaceCommandsJson": "Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs."
+    },
+    "advancedRuntime": {
+      "title": "Advanced runtime JSON",
+      "description": "Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings."
+    },
+    "action": {
+      "saveChanges": "Save changes",
+      "reset": "Reset"
+    },
+    "noUnsavedChanges": "No unsaved changes.",
+    "facts": {
+      "eyebrow": "Workspace facts",
+      "title": "Current state",
+      "project": "Project",
+      "workspaceId": "Workspace ID",
+      "localPath": "Local path",
+      "repo": "Repo",
+      "defaultRef": "Default ref",
+      "updated": "Updated"
+    },
+    "value": {
+      "none": "None"
+    },
+    "commands": {
+      "eyebrow": "Workspace commands",
+      "title": "Services and jobs",
+      "description": "Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.",
+      "noServicesStarted": "No services have been started for this workspace yet.",
+      "noConfig": "No workspace command config is defined for this workspace yet.",
+      "noJobs": "No one-shot jobs are configured for this workspace yet.",
+      "disabledHint": "Project workspaces need a working directory before local commands can run, and services also need runtime config."
+    },
+    "plugin": {
+      "loading": "Loading workspace plugin...",
+      "backToConfiguration": "Back to configuration"
+    }
+  },
+  "issueThreadInteractionCard": {
+    "actor": {
+      "board": "Board",
+      "unknown": "Unknown"
+    },
+    "status": {
+      "pending": "Pending",
+      "accepted": "Accepted",
+      "rejected": "Rejected",
+      "answered": "Answered",
+      "cancelled": "Cancelled",
+      "expired": "Expired",
+      "failed": "Failed"
+    },
+    "kind": {
+      "suggestTasks": "Suggested tasks",
+      "askUserQuestions": "Ask user questions",
+      "requestConfirmation": "Confirmation"
+    },
+    "target": {
+      "plan": "Plan{{revision}}"
+    },
+    "taskTree": {
+      "includeAria": "Include {{title}}",
+      "childTask": "Child task",
+      "skipped": "Skipped",
+      "fieldAssignee": "Assignee",
+      "fieldBilling": "Billing",
+      "fieldProject": "Project",
+      "fieldLabel": "Label",
+      "hiddenOne": "1 follow-on task hidden in preview",
+      "hiddenMany": "{{count}} follow-on tasks hidden in preview"
+    },
+    "suggestTasks": {
+      "draftOne": "1 draft issue",
+      "draftMany": "{{count}} draft issues",
+      "defaultParent": "Default parent",
+      "resolutionSummary": "Resolution summary",
+      "createdWithSkippedOne": "Created {{created}} draft issue and skipped {{skipped}} during review.",
+      "createdWithSkippedMany": "Created {{created}} draft issues and skipped {{skipped}} during review.",
+      "createdAllOne": "Created all {{created}} draft issue.",
+      "createdAllMany": "Created all {{created}} draft issues.",
+      "rejectionReason": "Rejection reason",
+      "noReasonProvided": "No reason provided.",
+      "allSelectedOne": "All {{total}} draft issue selected",
+      "allSelectedMany": "All {{total}} draft issues selected",
+      "someSelectedOne": "{{selected}} of {{total}} draft issue selected",
+      "someSelectedMany": "{{selected}} of {{total}} draft issues selected",
+      "willSkip": "{{count}} will be skipped if you accept this interaction.",
+      "accepting": "Accepting...",
+      "acceptDrafts": "Accept drafts",
+      "acceptSelectedDrafts": "Accept selected drafts",
+      "reject": "Reject",
+      "resetSelection": "Reset selection",
+      "rejectReasonPlaceholder": "Add a short reason for rejecting this suggestion",
+      "saving": "Saving...",
+      "saveRejection": "Save rejection"
+    },
+    "askUserQuestions": {
+      "eyebrow": "Ask user questions",
+      "questionOne": "1 question",
+      "questionMany": "{{count}} questions",
+      "questionIndex": "Question {{index}}",
+      "pick": "Pick",
+      "pickMany": "Pick many",
+      "required": "Required",
+      "optional": "Optional",
+      "submitOnce": "Submit once after you finish the full form.",
+      "cancelling": "Cancelling...",
+      "cancelQuestion": "Cancel question",
+      "submitting": "Submitting...",
+      "submitAnswers": "Submit answers",
+      "questionCancelled": "Question cancelled",
+      "noAnswerRecorded": "No answer was recorded.",
+      "answer": "Answer",
+      "noAnswerRecordedShort": "No answer recorded.",
+      "submittedSummary": "Submitted summary"
+    },
+    "confirmation": {
+      "confirmed": "Confirmed",
+      "declined": "Declined",
+      "expiredByComment": "Expired by comment",
+      "expiredByTargetChange": "Expired by target change",
+      "expiredByCommentDescription": "A board comment superseded this confirmation before it was resolved.",
+      "expiredByTargetChangeDescription": "The requested target changed before this confirmation was resolved.",
+      "jumpToComment": "Jump to comment",
+      "failed": "This request could not be resolved. Try again or create a new request.",
+      "declineReasonPlaceholderPlan": "Optional: what would you like revised?",
+      "declineReasonPlaceholderDefault": "Optional: tell the agent what you'd change.",
+      "tryAgain": "Try again",
+      "confirming": "Confirming...",
+      "confirm": "Confirm",
+      "decline": "Decline",
+      "declineReasonRequired": "A decline reason is required.",
+      "cancelDecline": "Cancel decline",
+      "saving": "Saving..."
+    },
+    "wakesOnConfirm": "Wakes on confirm",
+    "wakesAssignee": "Wakes assignee",
+    "fallbackTitle": {
+      "suggestTasks": "Suggested task tree",
+      "askUserQuestions": "Questions for the operator",
+      "requestConfirmation": "Confirmation requested"
+    },
+    "proposedBy": "proposed by {{name}}",
+    "createdOn": "Created {{date}}",
+    "resolvedBy": "Resolved by",
+    "resolvedOn": "on {{date}}"
+  },
+  "runTranscriptView": {
+    "user": "User",
+    "streaming": "Streaming",
+    "empty": "No transcript yet.",
+    "status": {
+      "running": "Running",
+      "errored": "Errored",
+      "completed": "Completed"
+    },
+    "eventLabel": {
+      "init": "init",
+      "result": "result"
+    },
+    "event": {
+      "runFailed": "Run failed",
+      "init": "model {{model}}",
+      "initWithSession": "model {{model}} • session {{sessionId}}"
+    },
+    "tool": {
+      "input": "Input",
+      "result": "Result",
+      "emptyPayload": "&lt;empty&gt;",
+      "waitingForResult": "Waiting for result",
+      "waitingForResultEllipsis": "Waiting for result...",
+      "failed": "Tool failed",
+      "failedShort": "Failed",
+      "failedWithExitCode": "Failed with exit code {{code}}",
+      "executingCommand": "Executing command",
+      "inspectInput": "Inspect {{name}} input",
+      "noInput": "No {{name}} input",
+      "singleKeyPayload": "{{key}} payload",
+      "multiFields": "{{count}} fields: {{keys}}",
+      "pathsStartingWith": "{{count}} paths, starting with {{first}}",
+      "collapseDetails": "Collapse tool details",
+      "expandDetails": "Expand tool details",
+      "fallbackName": "tool"
+    },
+    "command": {
+      "executedOne": "Executed command",
+      "executedMany": "Executed {{count}} commands",
+      "failed": "Command failed",
+      "collapseDetails": "Collapse command details",
+      "expandDetails": "Expand command details"
+    },
+    "toolGroup": {
+      "toolCount": "{{count}} tools",
+      "using": "Using {{label}}",
+      "usedOne": "Used {{label}}",
+      "usedMany": "Used {{label}} ({{count}} calls)"
+    },
+    "stderr": {
+      "oneLine": "{{count}} log line",
+      "manyLines": "{{count}} log lines"
+    },
+    "system": {
+      "oneMessage": "{{count}} system message",
+      "manyMessages": "{{count}} system messages"
+    },
+    "stdout": {
+      "label": "stdout",
+      "collapse": "Collapse stdout",
+      "expand": "Expand stdout"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "kind": {
+      "executionWorkspace": "Execution workspace",
+      "projectWorkspace": "Project workspace"
+    },
+    "updated": "Updated {{time}}",
+    "servicesCount": "{{running}}/{{total}} services",
+    "stopServices": "Stop services",
+    "startServices": "Start services",
+    "retryClose": "Retry close",
+    "closeWorkspace": "Close workspace",
+    "branch": "Branch",
+    "branchCopied": "Branch copied",
+    "copyBranch": "Copy branch",
+    "path": "Path",
+    "pathCopied": "Path copied",
+    "copyPath": "Copy path",
+    "service": "Service",
+    "linkedIssues": "Linked issues",
+    "moreIssues": "+{{count}} more"
+  },
+  "jsonSchemaForm": {
+    "noOptions": "No configuration options available.",
+    "selectAnOption": "Select an option",
+    "secret": {
+      "sensitiveHidden": "Sensitive — {{count}} characters hidden. Click the eye to reveal.",
+      "hide": "Hide secret",
+      "show": "Show secret",
+      "description": "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save).",
+      "pickerPlaceholder": "Select an existing secret",
+      "emptyHint": "No active secrets yet. Create one or paste a raw value below.",
+      "hideRawInput": "Hide raw value input",
+      "orPasteRaw": "Or paste a raw value"
+    },
+    "array": {
+      "addItem": "Add item",
+      "add": "Add",
+      "itemLabel": "Item {{number}}",
+      "removeItem": "Remove item",
+      "empty": "No items added yet."
+    },
+    "validation": {
+      "required": "This field is required",
+      "minLength": "Must be at least {{count}} characters",
+      "maxLength": "Must be at most {{count}} characters",
+      "pattern": "Must match pattern: {{pattern}}",
+      "notANumber": "Must be a valid number",
+      "minimum": "Must be at least {{value}}",
+      "maximum": "Must be at most {{value}}",
+      "exclusiveMinimum": "Must be greater than {{value}}",
+      "exclusiveMaximum": "Must be less than {{value}}",
+      "integer": "Must be a whole number",
+      "multipleOf": "Must be a multiple of {{value}}",
+      "minItems": "Must have at least {{count}} items",
+      "maxItems": "Must have at most {{count}} items"
+    }
   }
 }

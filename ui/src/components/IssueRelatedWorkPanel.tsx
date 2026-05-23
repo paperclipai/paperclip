@@ -1,4 +1,5 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {
@@ -35,6 +36,7 @@ function Section({
   items: IssueRelatedWorkItem[];
   emptyLabel: string;
 }) {
+  useTranslation();
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
@@ -88,22 +90,32 @@ export function IssueRelatedWorkPanel({
 }: {
   relatedWork?: IssueRelatedWorkSummary | null;
 }) {
+  const { t } = useTranslation();
   const outbound = relatedWork?.outbound ?? [];
   const inbound = relatedWork?.inbound ?? [];
 
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this issue currently points at in its title, description, comments, or documents."
+        title={t("issueRelatedWorkPanel.references.title", { defaultValue: "References" })}
+        description={t("issueRelatedWorkPanel.references.description", {
+          defaultValue:
+            "Other tasks this issue currently points at in its title, description, comments, or documents.",
+        })}
         items={outbound}
-        emptyLabel="This issue does not reference any other tasks yet."
+        emptyLabel={t("issueRelatedWorkPanel.references.empty", {
+          defaultValue: "This issue does not reference any other tasks yet.",
+        })}
       />
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this issue."
+        title={t("issueRelatedWorkPanel.referencedBy.title", { defaultValue: "Referenced by" })}
+        description={t("issueRelatedWorkPanel.referencedBy.description", {
+          defaultValue: "Other tasks that currently point at this issue.",
+        })}
         items={inbound}
-        emptyLabel="No other tasks reference this issue yet."
+        emptyLabel={t("issueRelatedWorkPanel.referencedBy.empty", {
+          defaultValue: "No other tasks reference this issue yet.",
+        })}
       />
     </div>
   );

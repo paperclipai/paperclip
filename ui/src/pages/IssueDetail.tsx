@@ -438,6 +438,7 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
+  const { t } = useTranslation();
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
@@ -456,7 +457,7 @@ function IssueDetailLoadingState({
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
                   <Repeat className="h-3 w-3" />
-                  Routine
+                  {t("issueDetail.routine", { defaultValue: "Routine" })}
                 </span>
               ) : null}
               {headerSeed.projectId ? (
@@ -469,7 +470,7 @@ function IssueDetailLoadingState({
               ) : (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
                   <Hexagon className="h-3 w-3 shrink-0" />
-                  No project
+                  {t("issueDetail.noProject", { defaultValue: "No project" })}
                 </span>
               )}
             </>
@@ -584,14 +585,14 @@ function InboxMobileToolbar({
               onClick={() => { onCopy(); setMenuOpen(false); }}
             >
               <Copy className="h-3 w-3" />
-              Copy as markdown
+              {t("issueDetail.copyAsMarkdown", { defaultValue: "Copy as markdown" })}
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
               onClick={() => { onProperties(); setMenuOpen(false); }}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Properties
+              {t("issueDetail.properties", { defaultValue: "Properties" })}
             </button>
             {issueIdProp && (
               <button
@@ -599,7 +600,7 @@ function InboxMobileToolbar({
                 onClick={() => { onHide(); setMenuOpen(false); }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this issue
+                {t("issueDetail.hideThisIssue", { defaultValue: "Hide this issue" })}
               </button>
             )}
           </PopoverContent>
@@ -740,6 +741,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
 }: IssueDetailChatTabProps) {
+  const { t } = useTranslation();
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -886,7 +888,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             disabled={commentsLoadingOlder}
             onClick={onLoadOlderComments}
           >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+            {commentsLoadingOlder ? t("issueDetail.loadingEarlier", { defaultValue: "Loading earlier comments..." }) : t("issueDetail.loadEarlier", { defaultValue: "Load earlier comments" })}
           </Button>
         </div>
       ) : null}
@@ -934,8 +936,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         interruptingQueuedRunId={interruptingQueuedRunId}
         stoppingRunId={pausingWorkRunId}
         onStopRun={onPauseWorkRun}
-        stopRunLabel="Pause work"
-        stoppingRunLabel="Pausing..."
+        stopRunLabel={t("issueDetail.pauseWork", { defaultValue: "Pause work" })}
+        stoppingRunLabel={t("issueDetail.pausing", { defaultValue: "Pausing..." })}
         stopRunVariant="pause"
         onAcceptInteraction={onAcceptInteraction}
         onRejectInteraction={onRejectInteraction}
@@ -1120,7 +1122,7 @@ function IssueDetailActivityTab({
                 ) : null}
                 {issueCostSummary.hasTokens ? (
                   <span>
-                    Tokens {formatTokens(issueCostSummary.totalTokens)}
+                    {t("issueDetail.tokens", { defaultValue: "Tokens" })} {formatTokens(issueCostSummary.totalTokens)}
                     {issueCostSummary.cached > 0
                       ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
                       : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
@@ -1128,18 +1130,18 @@ function IssueDetailActivityTab({
                 ) : null}
                 {issueCostSummary.hasRuntime ? (
                   <span>
-                    Runtime {formatDurationMs(issueCostSummary.runtimeMs)}
+                    {t("issueDetail.runtime", { defaultValue: "Runtime" })} {formatDurationMs(issueCostSummary.runtimeMs)}
                     {` (${issueCostSummary.runCount} run${issueCostSummary.runCount === 1 ? "" : "s"})`}
                   </span>
                 ) : null}
                 {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !issueCostSummary.hasRuntime ? (
-                  <span>No direct cost data.</span>
+                  <span>{t("issueDetail.noDirectCost", { defaultValue: "No direct cost data." })}</span>
                 ) : null}
               </div>
               {hasIssueTreeCost && issueTreeCostSummary ? (
                 <div className="flex flex-wrap gap-3">
                   <span className="font-medium text-foreground">
-                    Including sub-issues {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
+                    {t("issueDetail.includingSubIssues", { defaultValue: "Including sub-issues" })} {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
                       style: "currency",
                       currency: "USD",
                       minimumFractionDigits: 4,
@@ -1147,14 +1149,14 @@ function IssueDetailActivityTab({
                     })}
                   </span>
                   <span>
-                    Tokens {formatTokens(issueTreeCostTokens)}
+                    {t("issueDetail.tokens", { defaultValue: "Tokens" })} {formatTokens(issueTreeCostTokens)}
                     {issueTreeCostSummary.cachedInputTokens > 0
                       ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
                       : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
                   </span>
                   {issueTreeCostSummary.runCount > 0 ? (
                     <span>
-                      Runtime {formatDurationMs(issueTreeCostSummary.runtimeMs)}
+                      {t("issueDetail.runtime", { defaultValue: "Runtime" })} {formatDurationMs(issueTreeCostSummary.runtimeMs)}
                       {` (${issueTreeCostSummary.runCount} run${issueTreeCostSummary.runCount === 1 ? "" : "s"})`}
                     </span>
                   ) : null}
@@ -1367,7 +1369,7 @@ export function IssueDetail() {
     }
   }, [hasLiveRuns, locallyQueuedCommentRunIds.size]);
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: t("issueDetail.breadcrumbIssues", { defaultValue: "Issues" }), href: "/issues" },
     [issueId, location.state, location.search],
   );
 
@@ -1586,7 +1588,7 @@ export function IssueDetail() {
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("issueDetail.me", { defaultValue: "Me" }) });
     }
     return options;
   }, [agents, companyMembers?.users, currentUserId]);
@@ -1610,7 +1612,7 @@ export function IssueDetail() {
     () => mergeIssueComments(comments ?? [], optimisticComments),
     [comments, optimisticComments],
   );
-  const breadcrumbTitle = issue?.title ?? issueId ?? "Issue";
+  const breadcrumbTitle = issue?.title ?? issueId ?? t("issueDetail.issue", { defaultValue: "Issue" });
   const issueCacheRefs = useMemo(() => {
     const refs = new Set<string>();
     if (issueId) refs.add(issueId);
@@ -1762,8 +1764,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save issue changes",
+        title: t("issueDetail.issueUpdateFailed", { defaultValue: "Issue update failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToSaveIssue", { defaultValue: "Unable to save issue changes" }),
         tone: "error",
       });
     },
@@ -1790,8 +1792,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Recovery resolution failed",
-        body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        title: t("issueDetail.recoveryResolutionFailed", { defaultValue: "Recovery resolution failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToResolveRecovery", { defaultValue: "Unable to resolve recovery action" }),
         tone: "error",
       });
     },
@@ -1807,7 +1809,7 @@ export function IssueDetail() {
       if (treeControlMode === "resume") {
         const pauseHoldId = treeControlState?.activePauseHold?.holdId;
         if (!pauseHoldId) {
-          throw new Error("No active subtree pause hold is available to resume.");
+          throw new Error(t("issueDetail.noActivePauseHold", { defaultValue: "No active subtree pause hold is available to resume." }));
         }
         const releasedHold = await issuesApi.releaseTreeHold(issueId!, pauseHoldId, {
           reason: treeControlReason.trim() || null,
@@ -1835,19 +1837,19 @@ export function IssueDetail() {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
         title: result.kind === "release"
-          ? treeControlScope === "leaf" ? "Work resumed" : "Subtree resumed"
+          ? treeControlScope === "leaf" ? t("issueDetail.workResumed", { defaultValue: "Work resumed" }) : t("issueDetail.subtreeResumed", { defaultValue: "Subtree resumed" })
           : result.hold.mode === "pause"
-            ? treeControlScope === "leaf" ? "Work paused" : "Subtree paused"
-            : `${modeLabel} applied`,
+            ? treeControlScope === "leaf" ? t("issueDetail.workPaused", { defaultValue: "Work paused" }) : t("issueDetail.subtreePaused", { defaultValue: "Subtree paused" })
+            : t("issueDetail.modeApplied", { defaultValue: `${modeLabel} applied`, mode: modeLabel }),
         body: result.kind === "release"
-          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? "Active issue pause released." : "Active subtree pause released."))
+          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? t("issueDetail.activePauseReleased", { defaultValue: "Active issue pause released." }) : t("issueDetail.activeSubtreePauseReleased", { defaultValue: "Active subtree pause released." })))
           : result.hold.mode === "pause"
             ? treeControlScope === "leaf"
-              ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-              : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+              ? t("issueDetail.workPausedWithCount", { defaultValue: `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`, count: cancelCount })
+              : t("issueDetail.subtreePausedWithCount", { defaultValue: `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`, count: cancelCount })
             : result.hold.reason?.trim()
               ? result.hold.reason
-              : "Subtree control applied.",
+              : t("issueDetail.subtreeControlApplied", { defaultValue: "Subtree control applied." }),
       });
       setTreeControlOpen(false);
       setTreeControlReason("");
@@ -1877,8 +1879,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to apply subtree control",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issueDetail.unableToApplySubtreeControl", { defaultValue: "Unable to apply subtree control" }),
+        body: err instanceof Error ? err.message : t("issueDetail.pleaseTryAgain", { defaultValue: "Please try again." }),
         tone: "error",
       });
     },
@@ -1887,7 +1889,7 @@ export function IssueDetail() {
     mutationFn: async ({ runId, scope }: { runId: string; scope: "leaf" | "subtree" }) => {
       const created = await issuesApi.createTreeHold(issueId!, {
         mode: "pause",
-        reason: "Paused from active run controls.",
+        reason: t("issueDetail.pausedFromActiveRunControls", { defaultValue: "Paused from active run controls." }),
         releasePolicy: { strategy: "manual", note: scope === "leaf" ? "leaf_pause" : "full_pause" },
         metadata: { source: "issue_active_run_control", runId },
       });
@@ -1896,10 +1898,10 @@ export function IssueDetail() {
     onSuccess: async (result) => {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
-        title: "Work paused",
+        title: t("issueDetail.workPaused", { defaultValue: "Work paused" }),
         body: cancelCount > 0
-          ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-          : "Work paused. This issue is held until resume.",
+          ? t("issueDetail.workPausedWithCount", { defaultValue: `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`, count: cancelCount })
+          : t("issueDetail.workPausedHeld", { defaultValue: "Work paused. This issue is held until resume." }),
         tone: "success",
       });
       await Promise.all([
@@ -1916,8 +1918,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to pause work",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issueDetail.unableToPauseWork", { defaultValue: "Unable to pause work" }),
+        body: err instanceof Error ? err.message : t("issueDetail.pleaseTryAgain", { defaultValue: "Please try again." }),
         tone: "error",
       });
     },
@@ -1936,8 +1938,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Issue update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-issue changes",
+        title: t("issueDetail.issueUpdateFailed", { defaultValue: "Issue update failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToSaveSubIssue", { defaultValue: "Unable to save sub-issue changes" }),
         tone: "error",
       });
     },
@@ -1953,14 +1955,14 @@ export function IssueDetail() {
       invalidateIssueRunState();
       invalidateIssueCollections();
       pushToast({
-        title: "Monitor check queued",
+        title: t("issueDetail.monitorQueued", { defaultValue: "Monitor check queued" }),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Monitor check failed",
-        body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        title: t("issueDetail.monitorFailed", { defaultValue: "Monitor check failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToTriggerMonitor", { defaultValue: "Unable to trigger the monitor right now" }),
         tone: "error",
       });
     },
@@ -1985,14 +1987,14 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
       }
       pushToast({
-        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        title: variables.action === "approve" ? t("issueDetail.approvalApproved", { defaultValue: "Approval approved" }) : t("issueDetail.approvalRejected", { defaultValue: "Approval rejected" }),
         tone: "success",
       });
     },
     onError: (err, variables) => {
       pushToast({
-        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        title: variables.action === "approve" ? t("issueDetail.approvalFailed", { defaultValue: "Approval failed" }) : t("issueDetail.rejectionFailed", { defaultValue: "Rejection failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToUpdateApproval", { defaultValue: "Unable to update approval" }),
         tone: "error",
       });
     },
@@ -2053,8 +2055,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.cancelFailed", { defaultValue: "Cancel failed" }),
+            body: err instanceof Error ? err.message : t("issueDetail.unableToCancelQueued", { defaultValue: "Unable to cancel the queued comment" }),
             tone: "error",
           });
         }
@@ -2087,8 +2089,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.commentFailed", { defaultValue: "Comment failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToPostComment", { defaultValue: "Unable to post comment" }),
         tone: "error",
       });
     },
@@ -2125,17 +2127,17 @@ export function IssueDetail() {
         : 0;
       pushToast({
         title: interaction.kind === "request_confirmation"
-          ? "Request confirmed"
+          ? t("issueDetail.requestConfirmed", { defaultValue: "Request confirmed" })
           : skippedCount > 0
-          ? `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`
-          : "Suggested tasks accepted",
+          ? t("issueDetail.acceptedAndSkipped", { defaultValue: `Accepted ${createdCount} draft${createdCount === 1 ? "" : "s"} and skipped ${skippedCount}`, created: createdCount, skipped: skippedCount })
+          : t("issueDetail.suggestedTasksAccepted", { defaultValue: "Suggested tasks accepted" }),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Accept failed",
-        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        title: t("issueDetail.acceptFailed", { defaultValue: "Accept failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToAcceptSuggested", { defaultValue: "Unable to accept the suggested tasks" }),
         tone: "error",
       });
     },
@@ -2148,14 +2150,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: interaction.kind === "request_confirmation" ? "Request declined" : "Suggestion rejected",
+        title: interaction.kind === "request_confirmation" ? t("issueDetail.requestDeclined", { defaultValue: "Request declined" }) : t("issueDetail.suggestionRejected", { defaultValue: "Suggestion rejected" }),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Reject failed",
-        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        title: t("issueDetail.rejectFailed", { defaultValue: "Reject failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToRejectSuggested", { defaultValue: "Unable to reject the suggested tasks" }),
         tone: "error",
       });
     },
@@ -2278,8 +2280,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.cancelFailed", { defaultValue: "Cancel failed" }),
+            body: err instanceof Error ? err.message : t("issueDetail.unableToCancelQueued", { defaultValue: "Unable to cancel the queued comment" }),
             tone: "error",
           });
         }
@@ -2314,8 +2316,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.commentFailed", { defaultValue: "Comment failed" }),
+        body: err instanceof Error ? err.message : t("issueDetail.unableToPostComment", { defaultValue: "Unable to post comment" }),
         tone: "error",
       });
     },

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
+import { useTranslation } from "@/i18n";
 import { cn, formatTokens } from "../../lib/utils";
 import {
   Check,
@@ -205,7 +207,7 @@ function summarizeRecord(record: Record<string, unknown>, keys: string[]): strin
   return null;
 }
 
-function summarizeToolInput(name: string, input: unknown, density: TranscriptDensity): string {
+function summarizeToolInput(name: string, input: unknown, density: TranscriptDensity, t: TFunction): string {
   const compactMax = density === "compact" ? 72 : 120;
   if (typeof input === "string") {
     const normalized = isCommandTool(name, input) ? stripWrappedShell(input) : compactWhitespace(input);
@@ -214,7 +216,9 @@ function summarizeToolInput(name: string, input: unknown, density: TranscriptDen
   const record = asRecord(input);
   if (!record) {
     const serialized = compactWhitespace(formatUnknown(input));
-    return serialized ? truncate(serialized, compactMax) : `Inspect ${name} input`;
+    return serialized
+      ? truncate(serialized, compactMax)
+      : t("runTranscriptView.tool.inspectInput", { defaultValue: "Inspect {{name}} input", name });
   }
 
   const command = typeof record.command === "string"
@@ -235,14 +239,38 @@ function summarizeToolInput(name: string, input: unknown, density: TranscriptDen
   if (Array.isArray(record.paths) && record.paths.length > 0) {
     const first = record.paths.find((value): value is string => typeof value === "string" && value.trim().length > 0);
     if (first) {
-      return truncate(`${record.paths.length} paths, starting with ${first}`, compactMax);
+      return truncate(
+        t("runTranscriptView.tool.pathsStartingWith", {
+          defaultValue: "{{count}} paths, starting with {{first}}",
+          count: record.paths.length,
+          first,
+        }),
+        compactMax,
+      );
     }
   }
 
   const keys = Object.keys(record);
-  if (keys.length === 0) return `No ${name} input`;
-  if (keys.length === 1) return truncate(`${keys[0]} payload`, compactMax);
-  return truncate(`${keys.length} fields: ${keys.slice(0, 3).join(", ")}`, compactMax);
+  if (keys.length === 0) {
+    return t("runTranscriptView.tool.noInput", { defaultValue: "No {{name}} input", name });
+  }
+  if (keys.length === 1) {
+    return truncate(
+      t("runTranscriptView.tool.singleKeyPayload", {
+        defaultValue: "{{key}} payload",
+        key: keys[0],
+      }),
+      compactMax,
+    );
+  }
+  return truncate(
+    t("runTranscriptView.tool.multiFields", {
+      defaultValue: "{{count}} fields: {{keys}}",
+      count: keys.length,
+      keys: keys.slice(0, 3).join(", "),
+    }),
+    compactMax,
+  );
 }
 
 function parseStructuredToolResult(result: string | undefined) {
@@ -283,21 +311,39 @@ function isCommandTool(name: string, input: unknown): boolean {
   return Boolean(record && (typeof record.command === "string" || typeof record.cmd === "string"));
 }
 
-function displayToolName(name: string, input: unknown): string {
-  if (isCommandTool(name, input)) return "Executing command";
+function displayToolName(name: string, input: unknown, t: TFunction): string {
+  if (isCommandTool(name, input)) {
+    return t("runTranscriptView.tool.executingCommand", { defaultValue: "Executing command" });
+  }
   return humanizeLabel(name);
 }
 
-function summarizeToolResult(result: string | undefined, isError: boolean | undefined, density: TranscriptDensity): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result";
+function summarizeToolResult(
+  result: string | undefined,
+  isError: boolean | undefined,
+  density: TranscriptDensity,
+  t: TFunction,
+): string {
+  if (!result) {
+    return isError
+      ? t("runTranscriptView.tool.failed", { defaultValue: "Tool failed" })
+      : t("runTranscriptView.tool.waitingForResult", { defaultValue: "Waiting for result" });
+  }
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {
       return truncate(structured.body.split("\n")[0] ?? structured.body, density === "compact" ? 84 : 140);
     }
-    if (structured.status === "completed") return "Completed";
+    if (structured.status === "completed") {
+      return t("runTranscriptView.status.completed", { defaultValue: "Completed" });
+    }
     if (structured.status === "failed" || structured.status === "error") {
-      return structured.exitCode ? `Failed with exit code ${structured.exitCode}` : "Failed";
+      return structured.exitCode
+        ? t("runTranscriptView.tool.failedWithExitCode", {
+            defaultValue: "Failed with exit code {{code}}",
+            code: structured.exitCode,
+          })
+        : t("runTranscriptView.tool.failedShort", { defaultValue: "Failed" });
     }
   }
   const lines = result
@@ -409,7 +455,13 @@ function groupToolBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
   return grouped;
 }
 
-export function normalizeTranscript(entries: TranscriptEntry[], streaming: boolean): TranscriptBlock[] {
+export function normalizeTranscript(
+  entries: TranscriptEntry[],
+  streaming: boolean,
+  t?: TFunction,
+): TranscriptBlock[] {
+  const translate: TFunction = t ?? ((key: string, options?: { defaultValue?: string }) =>
+    (options?.defaultValue ?? key) as unknown as ReturnType<TFunction>) as unknown as TFunction;
   const blocks: TranscriptBlock[] = [];
   const pendingToolBlocks = new Map<string, Extract<TranscriptBlock, { type: "tool" }>>();
   const pendingActivityBlocks = new Map<string, Extract<TranscriptBlock, { type: "activity" }>>();
@@ -456,7 +508,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       const toolBlock: Extract<TranscriptBlock, { type: "tool" }> = {
         type: "tool",
         ts: entry.ts,
-        name: displayToolName(entry.name, entry.input),
+        name: displayToolName(entry.name, entry.input, translate),
         toolUseId: entry.toolUseId ?? extractToolUseId(entry.input),
         input: entry.input,
         status: "running",
@@ -484,7 +536,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
           type: "tool",
           ts: entry.ts,
           endTs: entry.ts,
-          name: entry.toolName ?? "tool",
+          name: entry.toolName ?? translate("runTranscriptView.tool.fallbackName", { defaultValue: "tool" }),
           toolUseId: entry.toolUseId,
           input: null,
           result: entry.content,
@@ -501,7 +553,16 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         ts: entry.ts,
         label: "init",
         tone: "info",
-        text: `model ${entry.model}${entry.sessionId ? ` • session ${entry.sessionId}` : ""}`,
+        text: entry.sessionId
+          ? translate("runTranscriptView.event.initWithSession", {
+              defaultValue: "model {{model}} • session {{sessionId}}",
+              model: entry.model,
+              sessionId: entry.sessionId,
+            })
+          : translate("runTranscriptView.event.init", {
+              defaultValue: "model {{model}}",
+              model: entry.model,
+            }),
       });
       continue;
     }
@@ -512,7 +573,12 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
         ts: entry.ts,
         label: "result",
         tone: entry.isError ? "error" : "info",
-        text: entry.text.trim() || entry.errors[0] || (entry.isError ? "Run failed" : "Completed"),
+        text:
+          entry.text.trim()
+          || entry.errors[0]
+          || (entry.isError
+            ? translate("runTranscriptView.event.runFailed", { defaultValue: "Run failed" })
+            : translate("runTranscriptView.status.completed", { defaultValue: "Completed" })),
         detail:
           !entry.isError && entry.text.trim().length > 0
             ? `${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
@@ -640,6 +706,7 @@ function TranscriptMessageBlock({
   block: Extract<TranscriptBlock, { type: "message" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
 
@@ -648,7 +715,7 @@ function TranscriptMessageBlock({
       {!isAssistant && (
         <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           <User className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-          <span>User</span>
+          <span>{t("runTranscriptView.user", { defaultValue: "User" })}</span>
         </div>
       )}
       <MarkdownBody
@@ -665,7 +732,7 @@ function TranscriptMessageBlock({
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
           </span>
-          Streaming
+          {t("runTranscriptView.streaming", { defaultValue: "Streaming" })}
         </div>
       )}
     </div>
@@ -701,15 +768,16 @@ function TranscriptToolCard({
   block: Extract<TranscriptBlock, { type: "tool" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(block.status === "error");
   const compact = density === "compact";
   const parsedResult = parseStructuredToolResult(block.result);
   const statusLabel =
     block.status === "running"
-      ? "Running"
+      ? t("runTranscriptView.status.running", { defaultValue: "Running" })
       : block.status === "error"
-        ? "Errored"
-        : "Completed";
+        ? t("runTranscriptView.status.errored", { defaultValue: "Errored" })
+        : t("runTranscriptView.status.completed", { defaultValue: "Completed" });
   const statusTone =
     block.status === "running"
       ? "text-cyan-700 dark:text-cyan-300"
@@ -729,10 +797,10 @@ function TranscriptToolCard({
         : "text-cyan-600 dark:text-cyan-300",
   );
   const summary = block.status === "running"
-    ? summarizeToolInput(block.name, block.input, density)
+    ? summarizeToolInput(block.name, block.input, density, t)
     : block.status === "completed" && parsedResult?.body
       ? truncate(parsedResult.body.split("\n")[0] ?? parsedResult.body, compact ? 84 : 140)
-      : summarizeToolResult(block.result, block.isError, density);
+      : summarizeToolResult(block.result, block.isError, density, t);
 
   return (
     <div className={cn(block.status === "error" && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
@@ -761,7 +829,11 @@ function TranscriptToolCard({
           type="button"
           className="mt-0.5 inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse tool details" : "Expand tool details"}
+          aria-label={
+            open
+              ? t("runTranscriptView.tool.collapseDetails", { defaultValue: "Collapse tool details" })
+              : t("runTranscriptView.tool.expandDetails", { defaultValue: "Expand tool details" })
+          }
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -772,21 +844,23 @@ function TranscriptToolCard({
             <div className={cn("grid gap-3", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Input
+                  {t("runTranscriptView.tool.input", { defaultValue: "Input" })}
                 </div>
                 <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
-                  {formatToolPayload(block.input) || "<empty>"}
+                  {formatToolPayload(block.input) || t("runTranscriptView.tool.emptyPayload", { defaultValue: "<empty>" })}
                 </pre>
               </div>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Result
+                  {t("runTranscriptView.tool.result", { defaultValue: "Result" })}
                 </div>
                 <pre className={cn(
                   "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
                   block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
                 )}>
-                  {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
+                  {block.result
+                    ? formatToolPayload(block.result)
+                    : t("runTranscriptView.tool.waitingForResultEllipsis", { defaultValue: "Waiting for result..." })}
                 </pre>
               </div>
             </div>
@@ -809,6 +883,7 @@ function TranscriptCommandGroup({
   block: Extract<TranscriptBlock, { type: "command_group" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
   const runningItem = [...block.items].reverse().find((item) => item.status === "running");
@@ -817,12 +892,15 @@ function TranscriptCommandGroup({
   const isRunning = Boolean(runningItem);
   const showExpandedErrorState = open && hasError;
   const title = isRunning
-    ? "Executing command"
+    ? t("runTranscriptView.tool.executingCommand", { defaultValue: "Executing command" })
     : block.items.length === 1
-      ? "Executed command"
-      : `Executed ${block.items.length} commands`;
+      ? t("runTranscriptView.command.executedOne", { defaultValue: "Executed command" })
+      : t("runTranscriptView.command.executedMany", {
+          defaultValue: "Executed {{count}} commands",
+          count: block.items.length,
+        });
   const subtitle = runningItem
-    ? summarizeToolInput("command_execution", runningItem.input, density)
+    ? summarizeToolInput("command_execution", runningItem.input, density, t)
     : null;
   const statusTone = isRunning
       ? "text-cyan-700 dark:text-cyan-300"
@@ -873,7 +951,7 @@ function TranscriptCommandGroup({
           )}
           {!subtitle && latestItem?.status === "error" && open && (
             <div className={cn("mt-1", compact ? "text-xs" : "text-sm", statusTone)}>
-              Command failed
+              {t("runTranscriptView.command.failed", { defaultValue: "Command failed" })}
             </div>
           )}
         </div>
@@ -887,7 +965,11 @@ function TranscriptCommandGroup({
             event.stopPropagation();
             setOpen((value) => !value);
           }}
-          aria-label={open ? "Collapse command details" : "Expand command details"}
+          aria-label={
+            open
+              ? t("runTranscriptView.command.collapseDetails", { defaultValue: "Collapse command details" })
+              : t("runTranscriptView.command.expandDetails", { defaultValue: "Expand command details" })
+          }
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -908,7 +990,7 @@ function TranscriptCommandGroup({
                   <TerminalSquare className="h-3 w-3" />
                 </span>
                 <span className={cn("font-mono break-all", compact ? "text-[11px]" : "text-xs")}>
-                  {summarizeToolInput("command_execution", item.input, density)}
+                  {summarizeToolInput("command_execution", item.input, density, t)}
                 </span>
               </div>
               {item.result && (
@@ -934,6 +1016,7 @@ function TranscriptToolGroup({
   block: Extract<TranscriptBlock, { type: "tool_group" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
   const runningItem = [...block.items].reverse().find((item) => item.status === "running");
@@ -943,14 +1026,27 @@ function TranscriptToolGroup({
   const toolLabel =
     uniqueNames.length === 1
       ? humanizeLabel(uniqueNames[0])
-      : `${uniqueNames.length} tools`;
+      : t("runTranscriptView.toolGroup.toolCount", {
+          defaultValue: "{{count}} tools",
+          count: uniqueNames.length,
+        });
   const title = isRunning
-    ? `Using ${toolLabel}`
+    ? t("runTranscriptView.toolGroup.using", {
+        defaultValue: "Using {{label}}",
+        label: toolLabel,
+      })
     : block.items.length === 1
-      ? `Used ${toolLabel}`
-      : `Used ${toolLabel} (${block.items.length} calls)`;
+      ? t("runTranscriptView.toolGroup.usedOne", {
+          defaultValue: "Used {{label}}",
+          label: toolLabel,
+        })
+      : t("runTranscriptView.toolGroup.usedMany", {
+          defaultValue: "Used {{label}} ({{count}} calls)",
+          label: toolLabel,
+          count: block.items.length,
+        });
   const subtitle = runningItem
-    ? summarizeToolInput(runningItem.name, runningItem.input, density)
+    ? summarizeToolInput(runningItem.name, runningItem.input, density, t)
     : null;
   const statusTone = isRunning
     ? "text-cyan-700 dark:text-cyan-300"
@@ -1002,7 +1098,11 @@ function TranscriptToolGroup({
           type="button"
           className={cn("inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground", subtitle && "mt-0.5")}
           onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
-          aria-label={open ? "Collapse tool details" : "Expand tool details"}
+          aria-label={
+            open
+              ? t("runTranscriptView.tool.collapseDetails", { defaultValue: "Collapse tool details" })
+              : t("runTranscriptView.tool.expandDetails", { defaultValue: "Expand tool details" })
+          }
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -1030,19 +1130,27 @@ function TranscriptToolGroup({
                   : item.status === "error" ? "text-red-700 dark:text-red-300"
                   : "text-emerald-700 dark:text-emerald-300"
                 )}>
-                  {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
+                  {item.status === "running"
+                    ? t("runTranscriptView.status.running", { defaultValue: "Running" })
+                    : item.status === "error"
+                      ? t("runTranscriptView.status.errored", { defaultValue: "Errored" })
+                      : t("runTranscriptView.status.completed", { defaultValue: "Completed" })}
                 </span>
               </div>
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
-                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Input</div>
+                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    {t("runTranscriptView.tool.input", { defaultValue: "Input" })}
+                  </div>
                   <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
-                    {formatToolPayload(item.input) || "<empty>"}
+                    {formatToolPayload(item.input) || t("runTranscriptView.tool.emptyPayload", { defaultValue: "<empty>" })}
                   </pre>
                 </div>
                 {item.result && (
                   <div>
-                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Result</div>
+                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      {t("runTranscriptView.tool.result", { defaultValue: "Result" })}
+                    </div>
                     <pre className={cn(
                       "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
                       item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
@@ -1094,7 +1202,14 @@ function TranscriptEventRow({
   block: Extract<TranscriptBlock, { type: "event" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const compact = density === "compact";
+  const labelText =
+    block.label === "init"
+      ? t("runTranscriptView.eventLabel.init", { defaultValue: "init" })
+      : block.label === "result"
+        ? t("runTranscriptView.eventLabel.result", { defaultValue: "result" })
+        : block.label;
   const toneClasses =
     block.tone === "error"
       ? "rounded-xl border border-red-500/20 bg-red-500/[0.06] p-3 text-red-700 dark:text-red-300"
@@ -1127,7 +1242,7 @@ function TranscriptEventRow({
           ) : (
             <div className={cn("whitespace-pre-wrap break-words", compact ? "text-[11px]" : "text-xs")}>
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
-                {block.label}
+                {labelText}
               </span>
               {block.text ? <span className="ml-2">{block.text}</span> : null}
             </div>
@@ -1247,6 +1362,7 @@ function TranscriptStderrGroup({
   block: Extract<TranscriptBlock, { type: "stderr_group" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const compact = density === "compact";
   return (
@@ -1259,7 +1375,15 @@ function TranscriptStderrGroup({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
       >
         <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]")}>
-          {block.lines.length} log {block.lines.length === 1 ? "line" : "lines"}
+          {block.lines.length === 1
+            ? t("runTranscriptView.stderr.oneLine", {
+                defaultValue: "{{count}} log line",
+                count: block.lines.length,
+              })
+            : t("runTranscriptView.stderr.manyLines", {
+                defaultValue: "{{count}} log lines",
+                count: block.lines.length,
+              })}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
@@ -1284,6 +1408,7 @@ function TranscriptSystemGroup({
   block: Extract<TranscriptBlock, { type: "system_group" }>;
   density: TranscriptDensity;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <div className="rounded-xl border border-blue-500/20 bg-blue-500/[0.04] p-2 text-blue-700 dark:text-blue-300">
@@ -1296,7 +1421,15 @@ function TranscriptSystemGroup({
       >
         <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
-          {block.lines.length} system {block.lines.length === 1 ? "message" : "messages"}
+          {block.lines.length === 1
+            ? t("runTranscriptView.system.oneMessage", {
+                defaultValue: "{{count}} system message",
+                count: block.lines.length,
+              })
+            : t("runTranscriptView.system.manyMessages", {
+                defaultValue: "{{count}} system messages",
+                count: block.lines.length,
+              })}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
@@ -1323,19 +1456,24 @@ function TranscriptStdoutRow({
   density: TranscriptDensity;
   collapseByDefault: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(!collapseByDefault);
 
   return (
     <div>
       <div className="flex items-center gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          stdout
+          {t("runTranscriptView.stdout.label", { defaultValue: "stdout" })}
         </span>
         <button
           type="button"
           className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse stdout" : "Expand stdout"}
+          aria-label={
+            open
+              ? t("runTranscriptView.stdout.collapse", { defaultValue: "Collapse stdout" })
+              : t("runTranscriptView.stdout.expand", { defaultValue: "Expand stdout" })
+          }
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -1470,13 +1608,14 @@ export function RunTranscriptView({
   limit,
   streaming = false,
   collapseStdout = false,
-  emptyMessage = "No transcript yet.",
+  emptyMessage,
   className,
   thinkingClassName,
 }: RunTranscriptViewProps) {
+  const { t } = useTranslation();
   const blocks = useMemo(
-    () => (mode === "raw" ? [] : normalizeTranscript(entries, streaming)),
-    [entries, mode, streaming],
+    () => (mode === "raw" ? [] : normalizeTranscript(entries, streaming, t)),
+    [entries, mode, streaming, t],
   );
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
@@ -1484,7 +1623,7 @@ export function RunTranscriptView({
   if (entries.length === 0) {
     return (
       <div className={cn("rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground", className)}>
-        {emptyMessage}
+        {emptyMessage ?? t("runTranscriptView.empty", { defaultValue: "No transcript yet." })}
       </div>
     );
   }

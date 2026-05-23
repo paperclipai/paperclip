@@ -1350,6 +1350,7 @@ function AdapterTypeDropdown({
   onChange: (type: string) => void;
   disabledTypes: Set<string>;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(
@@ -1451,6 +1452,7 @@ function ModelDropdown({
   emptyDetectHint?: string;
   defaultLabel?: string;
 }) {
+  const { t } = useTranslation();
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
@@ -1754,6 +1756,7 @@ function CheapModelSection({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const placeholderHint = adapterDefaultModel
     ? `Adapter default · ${adapterDefaultModel}`
     : "No adapter default — choose a cheaper model";

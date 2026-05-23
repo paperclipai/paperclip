@@ -431,7 +431,7 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("orgChart.selectCompany", { defaultValue: "Select a company to view the org chart." })} />;
   }
 
   if (isLoading) {
@@ -439,7 +439,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("orgChart.empty", { defaultValue: "No organizational hierarchy defined." })} />;
   }
 
   return (
@@ -448,13 +448,13 @@ export function OrgChart() {
         <Link to="/company/import">
           <Button variant="outline" size="sm">
             <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
+            {t("orgChart.importCompany", { defaultValue: "Import company" })}
           </Button>
         </Link>
         <Link to="/company/export">
           <Button variant="outline" size="sm">
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
+            {t("orgChart.exportCompany", { defaultValue: "Export company" })}
           </Button>
         </Link>
       </div>
@@ -490,8 +490,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("orgChart.zoomIn", { defaultValue: "Zoom in" })}
+            aria-label={t("orgChart.zoomIn", { defaultValue: "Zoom in" })}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -506,16 +506,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("orgChart.zoomOut", { defaultValue: "Zoom out" })}
+            aria-label={t("orgChart.zoomOut", { defaultValue: "Zoom out" })}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={t("orgChart.fitToScreen", { defaultValue: "Fit to screen" })}
+            aria-label={t("orgChart.fitChartToScreen", { defaultValue: "Fit chart to screen" })}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

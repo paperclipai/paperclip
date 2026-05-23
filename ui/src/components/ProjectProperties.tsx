@@ -744,7 +744,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     {codebase.effectiveLocalFolder}
                   </div>
                   {codebase.origin === "managed_checkout" && (
-                    <div className="text-[11px] text-muted-foreground">Paperclip-managed folder.</div>
+                    <div className="text-[11px] text-muted-foreground">{t("projectProperties.managedFolder", { defaultValue: "Paperclip-managed folder." })}</div>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
@@ -758,7 +758,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       setWorkspaceError(null);
                     }}
                   >
-                    {codebase.localFolder ? "Change local folder" : "Set local folder"}
+                    {codebase.localFolder ? t("projectProperties.changeLocalFolder", { defaultValue: "Change local folder" }) : t("projectProperties.setLocalFolder", { defaultValue: "Set local folder" })}
                   </Button>
                   {codebase.localFolder ? (
                     <Button
@@ -1000,13 +1000,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     {executionWorkspaceAdvancedOpen ? (
                       <div className="space-y-3">
                         <div className="text-xs text-muted-foreground">
-                          Host-managed implementation: <span className="text-foreground">Git worktree</span>
+                          {t("projectProperties.hostManagedImpl", { defaultValue: "Host-managed implementation:" })} <span className="text-foreground">{t("projectProperties.gitWorktree", { defaultValue: "Git worktree" })}</span>
                         </div>
                         {environmentsEnabled ? (
                           <div>
                             <div className="mb-1 flex items-center gap-1.5">
                               <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <span>Environment</span>
+                                <span>{t("projectProperties.environment", { defaultValue: "Environment" })}</span>
                                 <SaveIndicator state={fieldState("execution_workspace_environment")} />
                               </label>
                             </div>
@@ -1021,7 +1021,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                                   })!,
                                 )}
                             >
-                              <option value="">No environment</option>
+                              <option value="">{t("projectProperties.noEnvironment", { defaultValue: "No environment" })}</option>
                               {runSelectableEnvironments.map((environment) => (
                                 <option key={environment.id} value={environment.id}>
                                   {environment.name} · {environment.driver}
@@ -1033,7 +1033,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>Base ref</span>
+                              <span>{t("projectProperties.baseRef", { defaultValue: "Base ref" })}</span>
                               <SaveIndicator state={fieldState("execution_workspace_base_ref")} />
                             </label>
                           </div>
@@ -1057,7 +1057,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>Branch template</span>
+                              <span>{t("projectProperties.branchTemplate", { defaultValue: "Branch template" })}</span>
                               <SaveIndicator state={fieldState("execution_workspace_branch_template")} />
                             </label>
                           </div>
@@ -1081,7 +1081,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>Worktree parent dir</span>
+                              <span>{t("projectProperties.worktreeParentDir", { defaultValue: "Worktree parent dir" })}</span>
                               <SaveIndicator state={fieldState("execution_workspace_worktree_parent_dir")} />
                             </label>
                           </div>
@@ -1105,7 +1105,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>Provision command</span>
+                              <span>{t("projectProperties.provisionCommand", { defaultValue: "Provision command" })}</span>
                               <SaveIndicator state={fieldState("execution_workspace_provision_command")} />
                             </label>
                           </div>
@@ -1129,7 +1129,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>Teardown command</span>
+                              <span>{t("projectProperties.teardownCommand", { defaultValue: "Teardown command" })}</span>
                               <SaveIndicator state={fieldState("execution_workspace_teardown_command")} />
                             </label>
                           </div>

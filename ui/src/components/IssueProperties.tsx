@@ -240,6 +240,7 @@ function RemovableIssueReferencePill({
   issue: NonNullable<Issue["blockedBy"]>[number];
   onRemove: (issueId: string) => void;
 }) {
+  const { t } = useTranslation();
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const issueLabel = issue.identifier ?? issue.title;
   const confirmLabel = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
@@ -1592,7 +1593,7 @@ export function IssueProperties({
       {parentTitle}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">{t("issueProperties.noParent", { defaultValue: "No parent" })}</span>
   );
   const parentLink = issue.parentId ? (
     <Link
@@ -1623,7 +1624,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={t("issueProperties.searchIssues", { defaultValue: "Search issues..." })}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1639,7 +1640,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
+          {t("issueProperties.noParent", { defaultValue: "No parent" })}
         </button>
         {parentOptions.map((candidate) => (
           <button
@@ -1695,11 +1696,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={t("issueProperties.searchIssues", { defaultValue: "Search issues..." })}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search issues to add as blockers"
+        aria-label={t("issueProperties.searchBlockers", { defaultValue: "Search issues to add as blockers" })}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1713,7 +1714,7 @@ export function IssueProperties({
             setBlockedBySearch("");
           }}
         >
-          No blockers
+          {t("issueProperties.noBlockers", { defaultValue: "No blockers" })}
         </button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
@@ -1736,9 +1737,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("issueProperties.searchingIssues", { defaultValue: "Searching issues..." })}</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{t("issueProperties.noMatchingIssues", { defaultValue: "No matching issues." })}</div>
         ) : null}
       </div>
     </>
@@ -1750,7 +1751,7 @@ export function IssueProperties({
       onClick={onClick}
     >
       <Plus className="h-3 w-3" />
-      Add blocker
+      {t("issueProperties.addBlocker", { defaultValue: "Add blocker" })}
     </button>
   );
 
@@ -1821,8 +1822,8 @@ export function IssueProperties({
                 type="button"
                 className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
                 onClick={() => updateAssigneeAdapterOverrides(null)}
-                aria-label="Clear adapter options"
-                title="Clear adapter options"
+                aria-label={t("issueProperties.clearAdapterOptions", { defaultValue: "Clear adapter options" })}
+                title={t("issueProperties.clearAdapterOptions", { defaultValue: "Clear adapter options" })}
               >
                 <X className="h-3 w-3" />
               </button>

@@ -75,7 +75,10 @@ export function IssueRow({
         "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
         selected ? "border-muted-foreground text-muted-foreground" : null,
       )}
-      title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
+      title={t("issueRow.productivityReviewTitle", {
+        defaultValue: "Productivity review: {{label}}",
+        label: productivityReviewTriggerLabel(t, productivityReview.trigger),
+      })}
       aria-label={t("issueRow.productivityReviewOpen", { defaultValue: "Productivity review open" })}
     >
       <Eye className="h-2.5 w-2.5" aria-hidden />
