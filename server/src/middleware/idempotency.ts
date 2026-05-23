@@ -206,6 +206,14 @@ export function idempotency(options: IdempotencyOptions): RequestHandler {
     };
     options.store.set(storeKey, pending);
 
+    // We capture the response body by wrapping `res.json`. This is what
+    // lets a replayed request return the same payload byte-for-byte. The
+    // tradeoff: routes that bypass `res.json` and write the body via
+    // `res.send(stringOrBuffer)`, `res.write(...)` / streams, or
+    // `res.end(...)` will leave `capturedBodySet = false` and the slot
+    // will fall through to `settleFailure` even if the wire response was
+    // a 2xx. If you wire this middleware onto a new route, make sure the
+    // happy path goes through `res.json(...)`. See docs/api/agents.md.
     let capturedBody: unknown;
     let capturedBodySet = false;
     const originalJson = res.json.bind(res);

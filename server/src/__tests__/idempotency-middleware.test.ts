@@ -6,18 +6,27 @@ import {
   idempotency,
   IDEMPOTENCY_HEADER,
   IDEMPOTENCY_REPLAY_HEADER,
+  type IdempotencyStore,
 } from "../middleware/idempotency.js";
 
 interface AppHarness {
   agent: ReturnType<typeof request>;
   callCount: () => number;
   app: express.Express;
+  store: IdempotencyStore;
 }
 
 interface CreateAppOptions {
   ttlMs?: number;
   now?: () => number;
   failNext?: number;
+  /**
+   * Returns a promise that the handler awaits before responding.
+   * Lets a test hold the leader in the "pending" state long enough
+   * for follower requests to queue against it.
+   */
+  handlerGate?: () => Promise<void>;
+  pendingWaitTimeoutMs?: number;
 }
 
 function createApp(opts: CreateAppOptions = {}): AppHarness {
@@ -39,15 +48,20 @@ function createApp(opts: CreateAppOptions = {}): AppHarness {
       namespace: (req) => `agent-hires:${req.params.companyId}:test`,
       ttlMs: opts.ttlMs,
       now: opts.now,
+      pendingWaitTimeoutMs: opts.pendingWaitTimeoutMs,
     }),
-    (req, res) => {
+    async (req, res) => {
       calls += 1;
+      const callIndex = calls;
+      if (opts.handlerGate) {
+        await opts.handlerGate();
+      }
       if (failCountdown > 0) {
         failCountdown -= 1;
         res.status(500).json({ error: "boom" });
         return;
       }
-      res.status(201).json({ agentId: `agent-${calls}`, body: req.body });
+      res.status(201).json({ agentId: `agent-${callIndex}`, body: req.body });
     },
   );
 
@@ -55,7 +69,37 @@ function createApp(opts: CreateAppOptions = {}): AppHarness {
     agent: request(app),
     callCount: () => calls,
     app,
+    store,
   };
+}
+
+interface PendingProbe {
+  status: "pending";
+  waiters: unknown[];
+}
+
+function readPendingEntry(store: IdempotencyStore, storeKey: string): PendingProbe | null {
+  const entry = store.get(storeKey) as PendingProbe | { status: "completed" } | undefined;
+  if (entry && entry.status === "pending") return entry;
+  return null;
+}
+
+async function waitForPendingWaiter(
+  store: IdempotencyStore,
+  storeKey: string,
+  expectedWaiters: number,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pending = readPendingEntry(store, storeKey);
+    if (pending && pending.waiters.length >= expectedWaiters) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error(
+    `Timed out waiting for ${expectedWaiters} pending waiter(s) on ${storeKey}; ` +
+      `current store entry: ${JSON.stringify(store.get(storeKey))}`,
+  );
 }
 
 describe("idempotency middleware", () => {
@@ -216,5 +260,125 @@ describe("idempotency middleware", () => {
       (r) => r.headers[IDEMPOTENCY_REPLAY_HEADER.toLowerCase()] === "true",
     ).length;
     expect(replayCount).toBe(4);
+  });
+
+  // The earlier BizOps-incident test uses a synchronous handler, so each
+  // follower arrives at the middleware *after* the leader has already
+  // populated a `completed` entry. That means the pending-waiter queue
+  // is exercised zero times. The next three tests hold the leader inside
+  // an awaited gate so a follower can queue against the real `pending`
+  // entry, and `waitForPendingWaiter` blocks until the store actually
+  // shows the follower on the waiter list — otherwise the test could
+  // accidentally race against a completed entry and still pass.
+  it("concurrent same-key follower waits on the in-flight leader", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { agent, callCount, store } = createApp({
+      handlerGate: () => gate,
+    });
+
+    // Wrap in async IIFEs so the supertest request actually fires now
+    // (supertest is thenable-lazy and won't send until awaited).
+    const leader = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-key")
+        .send({ name: "race" }))();
+    const follower = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-key")
+        .send({ name: "race" }))();
+
+    await waitForPendingWaiter(store, "agent-hires:c1:test:race-key", 1);
+
+    release!();
+
+    const [leaderRes, followerRes] = await Promise.all([leader, follower]);
+
+    expect(leaderRes.status).toBe(201);
+    expect(followerRes.status).toBe(201);
+    expect(followerRes.body).toEqual(leaderRes.body);
+    expect(followerRes.headers[IDEMPOTENCY_REPLAY_HEADER.toLowerCase()]).toBe("true");
+    expect(callCount()).toBe(1);
+  });
+
+  // When the in-flight leader fails (non-2xx), the middleware should not
+  // cache the failure and concurrent followers should receive a 409 so
+  // they can safely retry with the same key.
+  it("concurrent follower receives 409 when the in-flight leader fails", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { agent, callCount, store } = createApp({
+      handlerGate: () => gate,
+      failNext: 1,
+    });
+
+    const leader = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-fail")
+        .send({ name: "race" }))();
+    const follower = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-fail")
+        .send({ name: "race" }))();
+
+    await waitForPendingWaiter(store, "agent-hires:c1:test:race-fail", 1);
+
+    release!();
+
+    const [leaderRes, followerRes] = await Promise.all([leader, follower]);
+    expect(leaderRes.status).toBe(500);
+    expect(followerRes.status).toBe(409);
+    expect(followerRes.body.error).toMatch(/failed/i);
+    // The leader's failed slot is evicted, so a fresh retry with the same
+    // key after the dust settles runs the handler again.
+    const retry = await agent
+      .post("/companies/c1/agent-hires")
+      .set(IDEMPOTENCY_HEADER, "race-fail")
+      .send({ name: "race" });
+    expect(retry.status).toBe(201);
+    expect(callCount()).toBe(2);
+  });
+
+  // If the leader genuinely hangs longer than the configured pending-wait
+  // timeout, the follower bails out with 409 instead of holding the
+  // connection forever.
+  it("concurrent follower times out with 409 when the leader hangs", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { agent, store } = createApp({
+      handlerGate: () => gate,
+      pendingWaitTimeoutMs: 25,
+    });
+
+    const leader = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-slow")
+        .send({ name: "race" }))();
+    const followerPromise = (async () =>
+      agent
+        .post("/companies/c1/agent-hires")
+        .set(IDEMPOTENCY_HEADER, "race-slow")
+        .send({ name: "race" }))();
+
+    await waitForPendingWaiter(store, "agent-hires:c1:test:race-slow", 1);
+
+    const followerRes = await followerPromise;
+
+    expect(followerRes.status).toBe(409);
+    expect(followerRes.body.error).toMatch(/in flight/i);
+
+    release!();
+    await leader;
   });
 });

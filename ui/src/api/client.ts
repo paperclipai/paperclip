@@ -19,10 +19,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
+  // NOTE: spread `init` first so the auto-augmented `headers` wins. Earlier
+  // versions had this reversed, which let `init.headers` (a plain record)
+  // clobber the merged `Headers` and drop `Content-Type: application/json`,
+  // breaking every JSON request that carried an extra header (e.g. an
+  // Idempotency-Key on agent-hires).
   const res = await fetch(`${BASE}${path}`, {
-    headers,
-    credentials: "include",
     ...init,
+    credentials: "include",
+    headers,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);

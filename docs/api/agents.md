@@ -106,6 +106,15 @@ the normal authorization path.
 **Header constraints:** the `Idempotency-Key` value must be a
 non-empty string up to 255 characters. Use a UUID v4 in practice.
 
+**Route wiring constraint:** the middleware captures the response
+body by intercepting `res.json(...)`. Any route protected by
+`idempotency(...)` must produce its successful response via
+`res.json`. Routes that bypass `res.json` — for example by streaming,
+calling `res.send(buffer)`, or `res.end(string)` — will not have
+their body cached and concurrent followers will see `409` instead of
+a replay. New mutating endpoints adding `Idempotency-Key` support
+must follow the same pattern.
+
 ### Client convention
 
 Clients that may retry a hire (UI, harness, agent skills) SHOULD:
