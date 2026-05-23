@@ -31,6 +31,7 @@ import { registerClientAuthCommands } from "./commands/client/auth.js";
 import { registerConnectCommand } from "./commands/client/connect.js";
 import { registerTokenCommands } from "./commands/client/token.js";
 import { registerPromptCommands } from "./commands/client/prompt.js";
+import { registerRunCommands } from "./commands/client/run.js";
 import { cliVersion } from "./version.js";
 
 const program = new Command();
@@ -111,7 +112,7 @@ program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .action(addAllowedHostname);
 
-program
+const run = program
   .command("run")
   .description("Bootstrap local setup (onboard + doctor) and run Paperclip")
   .option("-c, --config <path>", "Path to config file")
@@ -121,6 +122,8 @@ program
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
   .action(runCommand);
+
+registerRunCommands(run);
 
 const heartbeat = program.command("heartbeat").description("Heartbeat utilities");
 

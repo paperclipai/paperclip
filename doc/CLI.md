@@ -142,6 +142,9 @@ pnpm paperclipai issue get <issue-id-or-identifier>
 pnpm paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
+pnpm paperclipai issue runs <issue-id-or-identifier>
+pnpm paperclipai issue live-runs <issue-id-or-identifier>
+pnpm paperclipai issue active-run <issue-id-or-identifier>
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-statuses todo,backlog,blocked]
 pnpm paperclipai issue release <issue-id>
 ```
@@ -181,6 +184,7 @@ pnpm paperclipai agent get <agent-id>
 pnpm paperclipai agent me
 pnpm paperclipai agent inbox
 pnpm paperclipai agent inbox-mine --user-id <board-user-id>
+pnpm paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."] [--payload '{"issueId":"..."}']
 pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
@@ -214,6 +218,23 @@ pnpm paperclipai token board create --company-id <company-id> --name external-ad
 pnpm paperclipai token board create --name short-lived --ttl-days 7
 pnpm paperclipai token board list
 pnpm paperclipai token board revoke <key-id>
+```
+
+## Run Commands
+
+`paperclipai run` without a subcommand still bootstraps and starts a local Paperclip instance. The subcommands below inspect and control API heartbeat runs.
+
+```sh
+pnpm paperclipai run list --company-id <company-id> [--agent-id <agent-id>] [--limit 50]
+pnpm paperclipai run live --company-id <company-id> [--limit 50] [--min-count 0]
+pnpm paperclipai run get <run-id>
+pnpm paperclipai run events <run-id> [--after-seq 0] [--limit 200]
+pnpm paperclipai run log <run-id> [--offset 0] [--limit-bytes 16384] [--text]
+pnpm paperclipai run cancel <run-id>
+pnpm paperclipai run issues <run-id>
+pnpm paperclipai run workspace-operations <run-id>
+pnpm paperclipai run workspace-log <operation-id> [--offset 0] [--limit-bytes 16384] [--text]
+pnpm paperclipai run watchdog-decision <run-id> --decision continue [--reason "..."]
 ```
 
 ## Prompt Handoff

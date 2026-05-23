@@ -5,6 +5,7 @@ import {
   checkoutIssueSchema,
   createIssueSchema,
   type FeedbackTrace,
+  type HeartbeatRun,
   updateIssueSchema,
   type Issue,
   type IssueComment,
@@ -292,6 +293,54 @@ export function registerIssueCommands(program: Command): void {
             })),
             { json: false },
           );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("runs")
+      .description("List heartbeat runs associated with an issue")
+      .argument("<issueId>", "Issue ID or identifier")
+      .action(async (issueId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<unknown[]>(`/api/issues/${issueId}/runs`)) ?? [];
+          printOutput(rows, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("live-runs")
+      .description("List queued and running heartbeat runs associated with an issue")
+      .argument("<issueId>", "Issue ID or identifier")
+      .action(async (issueId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<HeartbeatRun[]>(`/api/issues/${issueId}/live-runs`)) ?? [];
+          printOutput(rows, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issue
+      .command("active-run")
+      .description("Show the active heartbeat run associated with an issue")
+      .argument("<issueId>", "Issue ID or identifier")
+      .action(async (issueId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const run = await ctx.api.get<HeartbeatRun | null>(`/api/issues/${issueId}/active-run`);
+          printOutput(run, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }

@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import type { Agent, Issue } from "@paperclipai/shared";
+import { wakeAgentSchema, type Agent, type AgentWakeupResponse, type Issue } from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
@@ -30,6 +30,16 @@ interface AgentLocalCliOptions extends BaseClientOptions {
 interface AgentInboxMineOptions extends BaseClientOptions {
   userId: string;
   status?: string;
+}
+
+interface AgentWakeOptions extends BaseClientOptions {
+  companyId?: string;
+  source?: string;
+  trigger?: string;
+  reason?: string;
+  payload?: string;
+  idempotencyKey?: string;
+  forceFreshSession?: boolean;
 }
 
 interface CreatedAgentKey {
@@ -285,6 +295,43 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("wake")
+      .description("Request a heartbeat wakeup for an agent")
+      .argument("<agentRef>", "Agent ID or shortname/url-key")
+      .option("-C, --company-id <id>", "Company ID for shortname/url-key lookup")
+      .option("--source <source>", "Invocation source (timer, assignment, on_demand, automation)", "on_demand")
+      .option("--trigger <trigger>", "Trigger detail (manual, ping, callback, system)", "manual")
+      .option("--reason <text>", "Wakeup reason")
+      .option("--payload <json>", "JSON object payload")
+      .option("--idempotency-key <key>", "Wakeup idempotency key")
+      .option("--force-fresh-session", "Request a fresh adapter session")
+      .action(async (agentRef: string, opts: AgentWakeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = opts.companyId ? `?${new URLSearchParams({ companyId: opts.companyId }).toString()}` : "";
+          const agentRow = await ctx.api.get<Agent>(`/api/agents/${encodeURIComponent(agentRef)}${query}`);
+          if (!agentRow) {
+            throw new Error(`Agent not found: ${agentRef}`);
+          }
+          const payload = wakeAgentSchema.parse({
+            source: opts.source,
+            triggerDetail: opts.trigger,
+            reason: opts.reason,
+            payload: parseJsonObject(opts.payload),
+            idempotencyKey: opts.idempotencyKey,
+            forceFreshSession: Boolean(opts.forceFreshSession),
+          });
+          const result = await ctx.api.post<AgentWakeupResponse>(`/api/agents/${agentRow.id}/wakeup`, payload);
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
       .command("local-cli")
       .description(
         "Create an agent API key, install local Paperclip skills for Codex/Claude, and print shell exports",
@@ -380,4 +427,13 @@ export function registerAgentCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+}
+
+function parseJsonObject(value: string | undefined): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("--payload must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
 }
