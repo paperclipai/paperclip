@@ -37,6 +37,8 @@ import {
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { jadeSsoRoutes } from "./routes/jade-sso.js";
+import { jadeTeamSyncRoutes } from "./routes/jade-team-sync.js";
+import { jadeGateGuard } from "./middleware/jade-gate.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -182,6 +184,11 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Jade gate enforcement: when JADE_GATE_SECRET is set (every
+  // jade.computer-managed workspace), only requests with a matching
+  // X-Jade-Gate-Secret header are allowed past this point. Local/dev
+  // and BYOC paperclips leave the env unset and this is a no-op.
+  app.use(jadeGateGuard());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -218,6 +225,12 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+
+  // Internal jade.computer team-sync receiver. Auth is the gate
+  // header (enforced globally) plus a body HMAC — it deliberately
+  // bypasses boardMutationGuard / actorMiddleware because the caller is
+  // jade's control plane, not a browser session.
+  app.use("/api", jadeTeamSyncRoutes(db));
 
   // Mount API routes
   const api = Router();
