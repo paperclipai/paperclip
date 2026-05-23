@@ -202,6 +202,22 @@ Open decision:
 
 Priority is based on external API usefulness, not raw endpoint count.
 
+OpenAPI source audit:
+
+- Source branch: `feature/openapi-spec`
+- Source file: `server/src/openapi.ts`
+- Extracted operations: 307
+- Validation context: that branch includes `server/src/__tests__/openapi-spec.test.ts`, which asserts the OpenAPI document covers mounted server routes exactly.
+
+Additional gaps made explicit by the OpenAPI branch:
+
+- Public/bootstrap surfaces need CLI decisions, not just board UI paths: `GET /api/openapi.json`, board-claim get/claim, invite onboarding docs, skill docs, join key claim, and CLI auth challenge status/approve/cancel.
+- User/profile and admin surfaces were under-specified in the first PRD: auth session/profile, company user profile lookup, admin user list/promote/demote/company access.
+- Legacy compatibility routes still exist and need an explicit stance: `/api/companies/:companyId/export`, `/api/companies/import/preview`, `/api/companies/import`, `/api/companies/issues`, and bare `GET /api/issues`.
+- Agent operations need several extra CLI items: skills list/sync, `claude-login`, scheduler heartbeat visibility, org SVG/PNG export, adapter UI parser, and agent approval.
+- Cost/budget coverage must reconcile the OpenAPI branch and current main. The OpenAPI branch lists `GET /api/companies/:companyId/cost-events`; current main exposes `POST /api/companies/:companyId/cost-events` plus additional summary and finance read endpoints. Treat this as a spec/code drift item before implementation.
+- The current main branch includes secrets provider-config and remote-import routes beyond the OpenAPI branch list. Keep them in scope for CLI parity even though they are absent from that branch's generated spec.
+
 ### P0: Connection, Tokens, and Identity
 
 Missing or incomplete CLI surfaces:
@@ -217,6 +233,14 @@ Missing or incomplete CLI surfaces:
   - Missing generic CLI for `GET/POST/DELETE /api/agents/:id/keys`.
 - Connect wizard:
   - No CLI command combines company selection, persona selection, token minting, profile saving, and verification.
+- Public/bootstrap auth helpers:
+  - `GET /api/board-claim/:token`
+  - `POST /api/board-claim/:token/claim`
+  - `POST /api/cli-auth/challenges`
+  - `GET /api/cli-auth/challenges/:id`
+  - `POST /api/cli-auth/challenges/:id/approve`
+  - `POST /api/cli-auth/challenges/:id/cancel`
+  - `POST /api/join-requests/:requestId/claim-api-key`
 
 ### P0: Prompt, Wake, and Run Control
 
@@ -232,6 +256,11 @@ Missing CLI surfaces:
 - `GET /api/heartbeat-runs/:runId/log`
 - `GET /api/issues/:issueId/live-runs`
 - `GET /api/issues/:issueId/active-run`
+- `GET /api/issues/:id/runs`
+- `GET /api/heartbeat-runs/:runId/issues`
+- `POST /api/heartbeat-runs/:runId/watchdog-decisions`
+- `GET /api/heartbeat-runs/:runId/workspace-operations`
+- `GET /api/workspace-operations/:operationId/log`
 
 CLI commands to add:
 
@@ -271,8 +300,10 @@ paperclipai goal list|get|create|update|delete
 Missing CLI surfaces:
 
 - Issue counts/search/labels:
+  - `GET /api/issues`
   - `GET /api/companies/:companyId/search`
   - `GET /api/companies/:companyId/issues/count`
+  - `GET /api/companies/issues`
   - `GET/POST /api/companies/:companyId/labels`
   - `DELETE /api/labels/:labelId`
 - Child issues:
@@ -297,6 +328,9 @@ Missing CLI surfaces:
   - `POST /api/companies/:companyId/issues/:issueId/attachments`
   - `GET /api/attachments/:attachmentId/content`
   - `DELETE /api/attachments/:attachmentId`
+- Comment-specific access:
+  - `GET /api/issues/:id/comments/:commentId`
+  - `DELETE /api/issues/:id/comments/:commentId`
 - Recovery/tree control:
   - `GET /api/issues/:id/recovery-actions`
   - `POST /api/issues/:id/recovery-actions/resolve`
@@ -329,6 +363,8 @@ Missing CLI surfaces:
   - `DELETE /api/agents/:id`
 - Org and config:
   - `GET /api/companies/:companyId/org`
+  - `GET /api/companies/:companyId/org.svg`
+  - `GET /api/companies/:companyId/org.png`
   - `GET /api/companies/:companyId/agent-configurations`
   - `GET /api/agents/:id/configuration`
   - config revision list/get/rollback
@@ -337,6 +373,12 @@ Missing CLI surfaces:
   - instructions bundle, path, and file endpoints
 - Adapter support:
   - models, model profiles, detect model, test environment
+- Skills and local-auth helpers:
+  - `GET /api/agents/:id/skills`
+  - `POST /api/agents/:id/skills/sync`
+  - `POST /api/agents/:id/claude-login`
+- Scheduler visibility:
+  - `GET /api/instance/scheduler-heartbeats`
 
 Commands:
 
@@ -353,6 +395,7 @@ paperclipai adapter list|models|profiles|detect|test|install|enable|disable|relo
 Missing CLI surfaces:
 
 - `POST /api/companies/:companyId/cost-events`
+- `GET /api/companies/:companyId/cost-events` from the OpenAPI branch needs reconciliation with main before implementation.
 - `POST /api/companies/:companyId/finance-events`
 - cost summaries by agent/model/provider/biller/project
 - finance summaries by biller/kind and finance events
@@ -382,6 +425,11 @@ Missing CLI surfaces:
 - Admin users and company access management
 - Board claim endpoints
 - Skills index/invite onboarding docs
+- Auth/profile endpoints:
+  - `GET /api/auth/get-session`
+  - `GET /api/auth/profile`
+  - `PATCH /api/auth/profile`
+  - `GET /api/companies/:companyId/users/:userSlug/profile`
 
 Commands:
 
@@ -422,12 +470,22 @@ Missing CLI surfaces:
 - Asset image/logo upload and asset content download
 - User profile read/update and company user profile lookup
 - LLM prompt docs endpoints
+- Public API documentation endpoint:
+  - `GET /api/openapi.json`
 - Plugin deeper surfaces:
   - tools list/execute
   - UI contributions
   - plugin config/test
   - plugin health/logs/jobs/webhooks/local folders/dashboard
 - Company create/update/archive/branding/stats are missing or partial in CLI.
+- Company portability compatibility routes:
+  - `POST /api/companies/:companyId/export`
+  - `POST /api/companies/import/preview`
+  - `POST /api/companies/import`
+  - `POST /api/companies/:companyId/exports`
+  - `POST /api/companies/:companyId/exports/preview`
+  - `POST /api/companies/:companyId/imports/preview`
+  - `POST /api/companies/:companyId/imports/apply`
 
 ## Command Taxonomy
 
@@ -521,3 +579,316 @@ paperclipai agent-prompt AgentName "$AGENT_API_KEY" "Prompt here"
 - Agent name selectors can be ambiguous; require exact UUID/urlKey or fail on duplicate names.
 - CLI parity can sprawl. Ship by user workflow, not by endpoint count alone.
 
+## Appendix: OpenAPI Endpoint Checklist
+
+This list was extracted from `server/src/openapi.ts` on `feature/openapi-spec` on 2026-05-23. Use it as the route-level CLI parity checklist. Paths use OpenAPI `{param}` syntax.
+
+```text
+GET /api/health
+GET /api/openapi.json
+GET /api/companies
+POST /api/companies
+GET /api/companies/stats
+GET /api/companies/{companyId}
+PATCH /api/companies/{companyId}
+PATCH /api/companies/{companyId}/branding
+POST /api/companies/{companyId}/archive
+DELETE /api/companies/{companyId}
+GET /api/companies/{companyId}/feedback-traces
+POST /api/companies/{companyId}/exports
+POST /api/companies/{companyId}/exports/preview
+POST /api/companies/{companyId}/imports/preview
+POST /api/companies/{companyId}/imports/apply
+GET /api/companies/{companyId}/agents
+POST /api/companies/{companyId}/agents
+POST /api/companies/{companyId}/agent-hires
+GET /api/companies/{companyId}/agent-configurations
+GET /api/companies/{companyId}/org
+GET /api/agents/me
+GET /api/agents/me/inbox-lite
+GET /api/agents/me/inbox/mine
+GET /api/agents/{id}
+PATCH /api/agents/{id}
+DELETE /api/agents/{id}
+PATCH /api/agents/{id}/permissions
+PATCH /api/agents/{id}/instructions-path
+GET /api/agents/{id}/instructions-bundle
+PATCH /api/agents/{id}/instructions-bundle
+GET /api/agents/{id}/instructions-bundle/file
+PUT /api/agents/{id}/instructions-bundle/file
+DELETE /api/agents/{id}/instructions-bundle/file
+GET /api/agents/{id}/configuration
+GET /api/agents/{id}/config-revisions
+GET /api/agents/{id}/config-revisions/{revisionId}
+POST /api/agents/{id}/config-revisions/{revisionId}/rollback
+GET /api/agents/{id}/runtime-state
+POST /api/agents/{id}/runtime-state/reset-session
+GET /api/agents/{id}/task-sessions
+GET /api/agents/{id}/skills
+POST /api/agents/{id}/skills/sync
+GET /api/agents/{id}/keys
+POST /api/agents/{id}/keys
+DELETE /api/agents/{id}/keys/{keyId}
+POST /api/agents/{id}/wakeup
+POST /api/agents/{id}/pause
+POST /api/agents/{id}/resume
+POST /api/agents/{id}/terminate
+GET /api/instance/scheduler-heartbeats
+GET /api/companies/{companyId}/adapters/{type}/models
+GET /api/companies/{companyId}/adapters/{type}/detect-model
+POST /api/companies/{companyId}/adapters/{type}/test-environment
+GET /api/companies/{companyId}/issues
+POST /api/companies/{companyId}/issues
+GET /api/issues/{id}
+PATCH /api/issues/{id}
+DELETE /api/issues/{id}
+GET /api/issues/{id}/heartbeat-context
+GET /api/issues/{id}/work-products
+POST /api/issues/{id}/work-products
+PATCH /api/work-products/{id}
+DELETE /api/work-products/{id}
+GET /api/issues/{id}/documents
+GET /api/issues/{id}/documents/{key}
+PUT /api/issues/{id}/documents/{key}
+DELETE /api/issues/{id}/documents/{key}
+GET /api/issues/{id}/documents/{key}/revisions
+POST /api/issues/{id}/documents/{key}/revisions/{revisionId}/restore
+GET /api/issues/{id}/comments
+POST /api/issues/{id}/comments
+DELETE /api/issues/{id}/comments/{commentId}
+GET /api/issues/{id}/approvals
+POST /api/issues/{id}/approvals
+DELETE /api/issues/{id}/approvals/{approvalId}
+POST /api/issues/{id}/checkout
+POST /api/issues/{id}/release
+POST /api/issues/{id}/read
+DELETE /api/issues/{id}/read
+POST /api/issues/{id}/inbox-archive
+DELETE /api/issues/{id}/inbox-archive
+GET /api/issues/{id}/feedback-votes
+POST /api/issues/{id}/feedback-votes
+GET /api/issues/{id}/feedback-traces
+GET /api/feedback-traces/{traceId}
+GET /api/feedback-traces/{traceId}/bundle
+GET /api/issues/{id}/attachments
+GET /api/companies/{companyId}/labels
+POST /api/companies/{companyId}/labels
+DELETE /api/labels/{labelId}
+GET /api/companies/{companyId}/projects
+POST /api/companies/{companyId}/projects
+GET /api/projects/{id}
+PATCH /api/projects/{id}
+DELETE /api/projects/{id}
+GET /api/projects/{id}/workspaces
+POST /api/projects/{id}/workspaces
+PATCH /api/projects/{id}/workspaces/{workspaceId}
+DELETE /api/projects/{id}/workspaces/{workspaceId}
+GET /api/companies/{companyId}/routines
+POST /api/companies/{companyId}/routines
+GET /api/routines/{id}
+PATCH /api/routines/{id}
+GET /api/routines/{id}/runs
+POST /api/routines/{id}/run
+POST /api/routines/{id}/triggers
+PATCH /api/routine-triggers/{id}
+DELETE /api/routine-triggers/{id}
+POST /api/routine-triggers/{id}/rotate-secret
+POST /api/routine-triggers/public/{publicId}/fire
+GET /api/companies/{companyId}/goals
+POST /api/companies/{companyId}/goals
+GET /api/goals/{id}
+PATCH /api/goals/{id}
+DELETE /api/goals/{id}
+GET /api/companies/{companyId}/secret-providers
+GET /api/companies/{companyId}/secrets
+POST /api/companies/{companyId}/secrets
+PATCH /api/secrets/{id}
+POST /api/secrets/{id}/rotate
+DELETE /api/secrets/{id}
+GET /api/companies/{companyId}/approvals
+POST /api/companies/{companyId}/approvals
+GET /api/approvals/{id}
+GET /api/approvals/{id}/issues
+POST /api/approvals/{id}/approve
+POST /api/approvals/{id}/reject
+POST /api/approvals/{id}/request-revision
+POST /api/approvals/{id}/resubmit
+GET /api/approvals/{id}/comments
+POST /api/approvals/{id}/comments
+GET /api/companies/{companyId}/cost-events
+POST /api/companies/{companyId}/finance-events
+POST /api/companies/{companyId}/budgets/policies
+POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve
+GET /api/companies/{companyId}/budgets/overview
+PATCH /api/companies/{companyId}/budgets
+PATCH /api/agents/{agentId}/budgets
+GET /api/companies/{companyId}/activity
+POST /api/companies/{companyId}/activity
+GET /api/issues/{id}/activity
+GET /api/issues/{id}/runs
+GET /api/heartbeat-runs/{runId}/issues
+GET /api/companies/{companyId}/dashboard
+GET /api/companies/{companyId}/sidebar-badges
+GET /api/sidebar-preferences/me
+PUT /api/sidebar-preferences/me
+GET /api/companies/{companyId}/sidebar-preferences/me
+PUT /api/companies/{companyId}/sidebar-preferences/me
+GET /api/companies/{companyId}/inbox-dismissals
+POST /api/companies/{companyId}/inbox-dismissals
+GET /api/instance/settings/general
+PATCH /api/instance/settings/general
+GET /api/instance/settings/experimental
+PATCH /api/instance/settings/experimental
+GET /api/companies/{companyId}/invites
+POST /api/companies/{companyId}/invites
+GET /api/companies/{companyId}/join-requests
+POST /api/companies/{companyId}/join-requests/{requestId}/approve
+POST /api/companies/{companyId}/join-requests/{requestId}/reject
+POST /api/invites/{inviteId}/revoke
+GET /api/invites/{token}
+POST /api/invites/{token}/accept
+GET /api/companies/{companyId}/members
+PATCH /api/companies/{companyId}/members/{memberId}
+PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants
+POST /api/companies/{companyId}/members/{memberId}/archive
+PATCH /api/companies/{companyId}/members/{memberId}/permissions
+GET /api/companies/{companyId}/user-directory
+GET /api/cli-auth/me
+POST /api/companies/{companyId}/openclaw/invite-prompt
+POST /api/cli-auth/challenges
+POST /api/cli-auth/challenges/{id}/approve
+POST /api/cli-auth/challenges/{id}/cancel
+POST /api/cli-auth/revoke-current
+GET /api/skills/available
+GET /api/skills/index
+GET /api/skills/{skillName}
+POST /api/join-requests/{requestId}/claim-api-key
+GET /api/admin/users
+GET /api/auth/get-session
+GET /api/auth/profile
+PATCH /api/auth/profile
+GET /api/companies/{companyId}/users/{userSlug}/profile
+GET /api/companies/{companyId}/heartbeat-runs
+GET /api/companies/{companyId}/live-runs
+GET /api/issues/{issueId}/live-runs
+GET /api/issues/{issueId}/active-run
+GET /api/heartbeat-runs/{runId}
+POST /api/heartbeat-runs/{runId}/cancel
+POST /api/heartbeat-runs/{runId}/watchdog-decisions
+GET /api/heartbeat-runs/{runId}/events
+GET /api/heartbeat-runs/{runId}/log
+GET /api/heartbeat-runs/{runId}/workspace-operations
+GET /api/workspace-operations/{operationId}/log
+POST /api/agents/{id}/approve
+POST /api/agents/{id}/heartbeat/invoke
+POST /api/agents/{id}/claude-login
+GET /api/issues/{id}/interactions
+POST /api/issues/{id}/interactions
+POST /api/issues/{id}/interactions/{interactionId}/accept
+POST /api/issues/{id}/interactions/{interactionId}/reject
+POST /api/issues/{id}/interactions/{interactionId}/respond
+POST /api/issues/{id}/children
+POST /api/issues/{id}/admin/force-release
+GET /api/issues/{id}/tree-control/state
+POST /api/issues/{id}/tree-control/preview
+GET /api/issues/{id}/tree-holds
+POST /api/issues/{id}/tree-holds
+GET /api/issues/{id}/tree-holds/{holdId}
+POST /api/issues/{id}/tree-holds/{holdId}/release
+POST /api/companies/{companyId}/issues/{issueId}/attachments
+GET /api/attachments/{attachmentId}/content
+DELETE /api/attachments/{attachmentId}
+POST /api/companies/{companyId}/assets/images
+POST /api/companies/{companyId}/logo
+GET /api/assets/{assetId}/content
+GET /api/companies/{companyId}/skills
+GET /api/companies/{companyId}/skills/{skillId}
+GET /api/companies/{companyId}/skills/{skillId}/update-status
+GET /api/companies/{companyId}/skills/{skillId}/files
+POST /api/companies/{companyId}/skills
+PATCH /api/companies/{companyId}/skills/{skillId}/files
+POST /api/companies/{companyId}/skills/import
+POST /api/companies/{companyId}/skills/scan-projects
+POST /api/companies/{companyId}/skills/{skillId}/install-update
+DELETE /api/companies/{companyId}/skills/{skillId}
+GET /api/companies/{companyId}/execution-workspaces
+GET /api/execution-workspaces/{id}
+GET /api/execution-workspaces/{id}/close-readiness
+GET /api/execution-workspaces/{id}/workspace-operations
+PATCH /api/execution-workspaces/{id}
+POST /api/execution-workspaces/{id}/runtime-services/{action}
+POST /api/execution-workspaces/{id}/runtime-commands/{action}
+GET /api/companies/{companyId}/environments
+GET /api/companies/{companyId}/environments/capabilities
+POST /api/companies/{companyId}/environments
+GET /api/environments/{id}
+GET /api/environments/{id}/leases
+GET /api/environment-leases/{leaseId}
+PATCH /api/environments/{id}
+DELETE /api/environments/{id}
+POST /api/environments/{id}/probe
+POST /api/companies/{companyId}/environments/probe-config
+GET /api/adapters
+POST /api/adapters/install
+PATCH /api/adapters/{type}
+PATCH /api/adapters/{type}/override
+DELETE /api/adapters/{type}
+POST /api/adapters/{type}/reload
+POST /api/adapters/{type}/reinstall
+GET /api/adapters/{type}/config-schema
+GET /api/plugins
+GET /api/plugins/examples
+GET /api/plugins/ui-contributions
+GET /api/plugins/tools
+POST /api/plugins/tools/execute
+POST /api/plugins/install
+GET /api/plugins/{pluginId}
+DELETE /api/plugins/{pluginId}
+POST /api/plugins/{pluginId}/enable
+POST /api/plugins/{pluginId}/disable
+GET /api/plugins/{pluginId}/health
+GET /api/plugins/{pluginId}/logs
+POST /api/plugins/{pluginId}/upgrade
+GET /api/plugins/{pluginId}/config
+POST /api/plugins/{pluginId}/config
+POST /api/plugins/{pluginId}/config/test
+GET /api/plugins/{pluginId}/jobs
+GET /api/plugins/{pluginId}/jobs/{jobId}/runs
+POST /api/plugins/{pluginId}/jobs/{jobId}/trigger
+POST /api/plugins/{pluginId}/webhooks/{endpointKey}
+GET /api/plugins/{pluginId}/dashboard
+POST /api/plugins/{pluginId}/bridge/data
+POST /api/plugins/{pluginId}/bridge/action
+POST /api/plugins/{pluginId}/data/{key}
+POST /api/plugins/{pluginId}/actions/{key}
+POST /api/instance/database-backups
+GET /api/llms/agent-configuration.txt
+GET /api/llms/agent-configuration/{adapterType}.txt
+GET /api/llms/agent-icons.txt
+GET /api/issues
+GET /api/issues/{id}/comments/{commentId}
+GET /api/companies/{companyId}/org.svg
+GET /api/companies/{companyId}/org.png
+GET /api/companies/issues
+POST /api/companies/{companyId}/export
+POST /api/companies/import/preview
+POST /api/companies/import
+GET /api/board-claim/{token}
+POST /api/board-claim/{token}/claim
+GET /api/cli-auth/challenges/{id}
+GET /api/invites/{token}/logo
+GET /api/invites/{token}/onboarding
+GET /api/invites/{token}/onboarding.txt
+GET /api/invites/{token}/skills/index
+GET /api/invites/{token}/skills/{skillName}
+GET /api/invites/{token}/test-resolution
+GET /api/admin/users/{userId}/company-access
+PUT /api/admin/users/{userId}/company-access
+POST /api/admin/users/{userId}/promote-instance-admin
+POST /api/admin/users/{userId}/demote-instance-admin
+POST /api/projects/{id}/workspaces/{workspaceId}/runtime-services/{action}
+POST /api/projects/{id}/workspaces/{workspaceId}/runtime-commands/{action}
+GET /api/plugins/{pluginId}/bridge/stream/{channel}
+GET /api/_plugins/{pluginId}/ui/{filePath}
+GET /api/adapters/{type}/ui-parser.js
+```
