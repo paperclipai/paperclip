@@ -159,6 +159,7 @@ export async function handleFiring(
         annotations: alert.annotations,
         paperclipIssueId: existing.paperclipIssueId,
         assigneeUserId: existing.assigneeUserId,
+        assigneeAgentId: existing.assigneeAgentId ?? null,
         reFired: true,
       },
     );
@@ -178,13 +179,16 @@ export async function handleFiring(
     return;
   }
 
-  const { assigneeUserId, resolution } = await resolveAssigneeUserId(
-    ctx,
-    alert,
-    config.ownerMap,
-  );
+  const { assigneeUserId, assigneeAgentId, resolution } =
+    await resolveAssigneeUserId(ctx, alert, config.ownerMap);
+  const resolvedTarget =
+    resolution.agentId
+      ? `agent:${resolution.agentId}`
+      : resolution.email ?? "(none)";
+  const resolvedAssignee =
+    assigneeAgentId ?? assigneeUserId ?? "(no assignee)";
   ctx.logger.debug(
-    `Owner resolution for ${alertname}: ${resolution.source} → ${resolution.email ?? "(none)"} → ${assigneeUserId ?? "(no paperclip user)"}`,
+    `Owner resolution for ${alertname}: ${resolution.source} → ${resolvedTarget} → ${resolvedAssignee}`,
   );
 
   const title = buildIssueTitle(alert);
@@ -201,6 +205,7 @@ export async function handleFiring(
     originKind: ORIGIN_KIND,
     originId: alert.fingerprint,
     ...(assigneeUserId ? { assigneeUserId } : {}),
+    ...(assigneeAgentId ? { assigneeAgentId } : {}),
     ...(billingCode ? { billingCode } : {}),
   });
 
@@ -208,6 +213,7 @@ export async function handleFiring(
     paperclipIssueId: issue.id,
     paperclipCompanyId: companyId,
     assigneeUserId: assigneeUserId ?? null,
+    assigneeAgentId: assigneeAgentId ?? null,
     alertname,
     severity,
     firstSeenAt: alert.startsAt || nowIso,
@@ -224,6 +230,7 @@ export async function handleFiring(
     annotations: alert.annotations,
     paperclipIssueId: issue.id,
     assigneeUserId: assigneeUserId ?? null,
+    assigneeAgentId: assigneeAgentId ?? null,
     reFired: false,
   });
 
