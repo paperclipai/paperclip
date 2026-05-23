@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Issue } from "@paperclipai/shared";
 import {
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipSkillsDir,
@@ -25,6 +25,11 @@ interface AgentLocalCliOptions extends BaseClientOptions {
   companyId?: string;
   keyName?: string;
   installSkills?: boolean;
+}
+
+interface AgentInboxMineOptions extends BaseClientOptions {
+  userId: string;
+  status?: string;
 }
 
 interface CreatedAgentKey {
@@ -158,6 +163,69 @@ function buildAgentEnvExports(input: {
 
 export function registerAgentCommands(program: Command): void {
   const agent = program.command("agent").description("Agent operations");
+
+  addCommonClientOptions(
+    agent
+      .command("me")
+      .description("Show the current agent identity")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const me = await ctx.api.get<Agent>("/api/agents/me");
+          printOutput(me, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("inbox")
+      .description("List current agent assigned inbox items")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<Issue[]>("/api/agents/me/inbox-lite")) ?? [];
+          if (ctx.json) {
+            printOutput(rows, { json: true });
+            return;
+          }
+          for (const row of rows) {
+            console.log(formatInlineRecord({
+              identifier: row.identifier,
+              id: row.id,
+              status: row.status,
+              priority: row.priority,
+              title: row.title,
+              projectId: row.projectId,
+            }));
+          }
+          if (rows.length === 0) printOutput([], { json: false });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("inbox-mine")
+      .description("List current agent inbox items touched or archived by a board user")
+      .requiredOption("--user-id <id>", "Board user ID")
+      .option("--status <csv>", "Comma-separated issue statuses")
+      .action(async (opts: AgentInboxMineOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const params = new URLSearchParams({ userId: opts.userId });
+          if (opts.status) params.set("status", opts.status);
+          const rows = (await ctx.api.get<Issue[]>(`/api/agents/me/inbox/mine?${params.toString()}`)) ?? [];
+          printOutput(rows, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   addCommonClientOptions(
     agent

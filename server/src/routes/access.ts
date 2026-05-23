@@ -32,6 +32,7 @@ import {
   acceptInviteSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
+  createBoardApiKeySchema,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   listCompanyInvitesQuerySchema,
@@ -2582,6 +2583,90 @@ export function accessRoutes(
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });
+  });
+
+  router.get("/board-api-keys", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const keys = await boardAuth.listBoardApiKeys(req.actor.userId);
+    res.json(keys);
+  });
+
+  router.post(
+    "/board-api-keys",
+    validate(createBoardApiKeySchema),
+    async (req, res) => {
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        throw unauthorized("Board authentication required");
+      }
+
+      if (req.body.requestedCompanyId) {
+        assertCompanyAccess(req, req.body.requestedCompanyId);
+      }
+
+      const key = await boardAuth.createNamedBoardApiKey({
+        userId: req.actor.userId,
+        name: req.body.name,
+        expiresAt: req.body.expiresAt === undefined ? undefined : req.body.expiresAt,
+      });
+      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        userId: req.actor.userId,
+        requestedCompanyId: req.body.requestedCompanyId ?? null,
+        boardApiKeyId: key.id,
+      });
+      for (const companyId of companyIds) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId,
+          action: "board_api_key.created",
+          entityType: "user",
+          entityId: req.actor.userId,
+          details: {
+            boardApiKeyId: key.id,
+            name: key.name,
+            requestedCompanyId: req.body.requestedCompanyId ?? null,
+            expiresAt: key.expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+
+      res.status(201).json(key);
+    },
+  );
+
+  router.delete("/board-api-keys/:keyId", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    const keyId = (req.params.keyId as string).trim();
+    const key = await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId);
+    if (!key) throw notFound("Board API key not found");
+    const revoked = await boardAuth.revokeBoardApiKey(key.id);
+    if (!revoked) throw notFound("Board API key not found");
+
+    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+      userId: req.actor.userId,
+      boardApiKeyId: key.id,
+    });
+    for (const companyId of companyIds) {
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId,
+        action: "board_api_key.revoked",
+        entityType: "user",
+        entityId: req.actor.userId,
+        details: {
+          boardApiKeyId: key.id,
+          name: key.name,
+          revokedVia: "board_api_key_lifecycle",
+        },
+      });
+    }
+
+    res.json({ ok: true, keyId: key.id });
   });
 
   router.post("/cli-auth/revoke-current", async (req, res) => {

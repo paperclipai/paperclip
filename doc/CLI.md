@@ -65,6 +65,29 @@ All client commands support:
 
 Company-scoped commands also support `--company-id <id>`.
 
+API base resolution order:
+
+1. `--api-base <url>`
+2. `PAPERCLIP_API_URL`
+3. selected context profile `apiBase`
+4. local Paperclip config server port
+5. `http://localhost:3100`
+
+Connection failures include the attempted URL and a `GET /api/health` check hint.
+
+## Connect Wizard
+
+```sh
+pnpm paperclipai connect
+```
+
+`connect` confirms the resolved API base, verifies `GET /api/health`, authenticates board access when needed, and saves a persona-aware profile:
+
+- `persona=board` for board operator profiles
+- `persona=agent` with `agentId` and `agentName` for agent profiles
+
+Profiles store token env-var names, not plaintext tokens. The wizard prints shell exports for the newly created token.
+
 Use `--data-dir` on any CLI command to isolate all default local state (config/context/db/logs/storage/secrets) away from `~/.paperclip`:
 
 ```sh
@@ -78,6 +101,7 @@ Store local defaults in `~/.paperclip/context.json`:
 
 ```sh
 pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+pnpm paperclipai context set --persona agent --agent-id <agent-id> --api-key-env-var-name PAPERCLIP_API_KEY
 pnpm paperclipai context show
 pnpm paperclipai context list
 pnpm paperclipai context use default
@@ -127,6 +151,9 @@ pnpm paperclipai issue release <issue-id>
 ```sh
 pnpm paperclipai agent list --company-id <company-id>
 pnpm paperclipai agent get <agent-id>
+pnpm paperclipai agent me
+pnpm paperclipai agent inbox
+pnpm paperclipai agent inbox-mine --user-id <board-user-id>
 pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
@@ -142,6 +169,38 @@ Example for shortname-based local setup:
 pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
 pnpm paperclipai agent local-cli claudecoder --company-id <company-id>
 ```
+
+## Token Commands
+
+Agent API keys are scoped to one company and one agent. Plaintext tokens are printed once at creation.
+
+```sh
+pnpm paperclipai token agent create --company-id <company-id> --agent <agent-id-or-name> --name external-worker
+pnpm paperclipai token agent list --company-id <company-id> --agent <agent-id-or-name>
+pnpm paperclipai token agent revoke --company-id <company-id> --agent <agent-id-or-name> <key-id>
+```
+
+Named board API keys use the board authorization model, support revocation and expiration metadata, and are audited server-side.
+
+```sh
+pnpm paperclipai token board create --company-id <company-id> --name external-admin
+pnpm paperclipai token board create --name short-lived --ttl-days 7
+pnpm paperclipai token board list
+pnpm paperclipai token board revoke <key-id>
+```
+
+## Prompt Handoff
+
+Prompt handoff creates Paperclip work. It does not create a chat session.
+
+```sh
+pnpm paperclipai agent-prompt <agent-name-or-id> <agent-api-key> "Prompt here"
+pnpm paperclipai agent prompt --agent <agent-name-or-id> --api-key-env PAPERCLIP_API_KEY "Prompt here"
+pnpm paperclipai agent prompt --profile my-agent "Prompt here"
+pnpm paperclipai board prompt --company-id <company-id> --agent <agent-name-or-id> "Prompt here"
+```
+
+By default the command creates a `todo` issue assigned to the target agent and wakes the agent. Use `--issue <issue-id>` to add a comment to existing work, and `--no-wake` to skip the wakeup.
 
 ## Secrets Commands
 

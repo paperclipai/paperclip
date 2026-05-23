@@ -160,6 +160,65 @@ export function boardAuthService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function createNamedBoardApiKey(input: {
+    userId: string;
+    name: string;
+    expiresAt?: Date | null;
+  }) {
+    const token = createBoardApiToken();
+    const created = await db
+      .insert(boardApiKeys)
+      .values({
+        userId: input.userId,
+        name: input.name.trim(),
+        keyHash: hashBearerToken(token),
+        expiresAt: input.expiresAt === undefined ? boardApiKeyExpiresAt() : input.expiresAt,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    return {
+      id: created.id,
+      name: created.name,
+      token,
+      createdAt: created.createdAt,
+      lastUsedAt: created.lastUsedAt,
+      revokedAt: created.revokedAt,
+      expiresAt: created.expiresAt,
+    };
+  }
+
+  async function listBoardApiKeys(userId: string) {
+    return db
+      .select({
+        id: boardApiKeys.id,
+        name: boardApiKeys.name,
+        createdAt: boardApiKeys.createdAt,
+        lastUsedAt: boardApiKeys.lastUsedAt,
+        revokedAt: boardApiKeys.revokedAt,
+        expiresAt: boardApiKeys.expiresAt,
+      })
+      .from(boardApiKeys)
+      .where(eq(boardApiKeys.userId, userId))
+      .orderBy(sql`${boardApiKeys.createdAt} desc`);
+  }
+
+  async function getBoardApiKeyForUser(keyId: string, userId: string) {
+    return db
+      .select({
+        id: boardApiKeys.id,
+        userId: boardApiKeys.userId,
+        name: boardApiKeys.name,
+        createdAt: boardApiKeys.createdAt,
+        lastUsedAt: boardApiKeys.lastUsedAt,
+        revokedAt: boardApiKeys.revokedAt,
+        expiresAt: boardApiKeys.expiresAt,
+      })
+      .from(boardApiKeys)
+      .where(and(eq(boardApiKeys.id, keyId), eq(boardApiKeys.userId, userId)))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function createCliAuthChallenge(input: {
     command: string;
     clientName?: string | null;
@@ -348,6 +407,9 @@ export function boardAuthService(db: Db) {
     findBoardApiKeyByToken,
     touchBoardApiKey,
     revokeBoardApiKey,
+    createNamedBoardApiKey,
+    listBoardApiKeys,
+    getBoardApiKeyForUser,
     createCliAuthChallenge,
     getCliAuthChallengeBySecret,
     describeCliAuthChallenge,
