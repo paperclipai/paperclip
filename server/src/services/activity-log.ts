@@ -63,29 +63,22 @@ export interface LogActivityInput {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
-  const currentUserRedactionOptions = {
-    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
-  };
-  const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  const redactedDetails = sanitizedDetails
-    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
-    : null;
-  await db.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: input.actorType,
-    actorId: input.actorId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
-    details: redactedDetails,
-  });
-
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
+  // Activity log writes are post-side-effect observability. They must never
+  // fail the calling request: by the time we reach here the work has already
+  // been committed, and a thrown error here would surface as a 500 to the
+  // client after the change has persisted (see PLA-9: FK violation on
+  // activity_log.run_id produced 500s on successful agent-hires, which
+  // triggered client retries and duplicate agent rows).
+  try {
+    const currentUserRedactionOptions = {
+      enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+    };
+    const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
+    const redactedDetails = sanitizedDetails
+      ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
+      : null;
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
       actorType: input.actorType,
       actorId: input.actorId,
       action: input.action,
@@ -94,26 +87,53 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
       details: redactedDetails,
-    },
-  });
+    });
 
-  const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
-    const event: PluginEvent = {
-      eventId: randomUUID(),
-      eventType: pluginEventType,
-      occurredAt: new Date().toISOString(),
-      actorId: input.actorId,
-      actorType: input.actorType,
-      entityId: input.entityId,
-      entityType: input.entityType,
+    publishLiveEvent({
       companyId: input.companyId,
+      type: "activity.logged",
       payload: {
-        ...redactedDetails,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        details: redactedDetails,
       },
-    };
-    publishPluginDomainEvent(event);
+    });
+
+    const pluginEventType = eventTypeForActivityAction(input.action);
+    if (pluginEventType) {
+      const event: PluginEvent = {
+        eventId: randomUUID(),
+        eventType: pluginEventType,
+        occurredAt: new Date().toISOString(),
+        actorId: input.actorId,
+        actorType: input.actorType,
+        entityId: input.entityId,
+        entityType: input.entityType,
+        companyId: input.companyId,
+        payload: {
+          ...redactedDetails,
+          agentId: input.agentId ?? null,
+          runId: input.runId ?? null,
+        },
+      };
+      publishPluginDomainEvent(event);
+    }
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        companyId: input.companyId,
+        runId: input.runId ?? null,
+      },
+      "logActivity failed; suppressing to keep post-commit response path stable",
+    );
   }
 }
