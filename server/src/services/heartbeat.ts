@@ -6181,7 +6181,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      const isMentionWake = wakeReason === "issue_comment_mentioned";
+      if (!resumeIntent && !isMentionWake) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
@@ -8365,16 +8366,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        const hasExplicitResumeIntent =
+          deferredContextSeed.resumeIntent === true ||
+          deferredContextSeed.followUpRequested === true ||
+          deferredPayload.resumeIntent === true ||
+          deferredPayload.followUpRequested === true;
+        // Only explicit follow-up intent should revive completed issues.
+        // Generic deferred comment wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
+          hasExplicitResumeIntent;
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
