@@ -7076,13 +7076,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const isSilent = !lastSignalRef || now.getTime() - lastSignalRef >= EXTERNAL_LIFECYCLE_STALE_MS;
 
         if (liveJobRunIds !== null) {
-          // kube API path. If Job is gone, reap immediately (existing
-          // behavior — helm restart / manual cleanup case). If Job is
-          // alive but output is silent past the threshold, fall through
-          // and mark the Job for cascade-deletion.
+          // kube API path. Two sub-cases:
+          //   - Job IS in our snapshot: if output is fresh, skip; if silent
+          //     past the threshold, fall through AND cascade-delete the Job
+          //     so the dispatch lock unwedges.
+          //   - Job is NOT in our snapshot: previously we reaped
+          //     immediately, but the snapshot can be a false negative
+          //     (kube API list timeout returning a partial set, eventual
+          //     consistency, in-flight Job not yet visible). RCA
+          //     2026-05-23: this produced ~6.5/hr fleet-wide false
+          //     `process_lost` events on live agents that were still
+          //     streaming output. We now require the same silence floor
+          //     in this branch — genuine "Job deleted by helm/operator"
+          //     cases still get reaped after EXTERNAL_LIFECYCLE_STALE_MS
+          //     of silence, but a healthy long-running agent whose Job
+          //     just didn't make this snapshot is no longer killed.
           if (liveJobRunIds.has(run.id)) {
             if (!isSilent) continue;
             cascadeDeleteLiveJob = true;
+          } else {
+            if (!isSilent) continue;
           }
         } else {
           // Fallback: kube API unavailable (local dev or transient
