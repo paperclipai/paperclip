@@ -53,19 +53,7 @@ output: Array of agents in Paperclip native schema
 
 For each converted agent, follow the standard hire request flow (Steps 5-9 below).
 
-#### 5. Label for Hermes Execution (if needed)
-
-If the agent needs to execute code (not just plan), label the issue for Hermes:
-```sh
-curl -sS -X PATCH "https://api.github.com/repos/<owner>/<repo>/issues/<issue-number>" \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"labels": ["hermes-execution"]}'
-```
-
-Hermes will pick up the issue, execute the fix, and report back.
-
-#### 6. Report Results
+#### 5. Report Results
 
 ```markdown
 ## Import Results
