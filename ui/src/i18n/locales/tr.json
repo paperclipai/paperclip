@@ -515,11 +515,14 @@
     "title": "Yeni ajan ekle",
     "ceoIssueTitle": "Yeni bir ajan oluştur",
     "ceoIssueDescription": "(ne tür bir ajan istediğinizi buraya yazın)",
-    "recommendCEO": "Ajan kurulumunu CEO'nuza bırakmanızı öneririz — organizasyon yapısını bilir ve raporlama, izinler ve adaptörleri yapılandırabilir.",
+    "recommendCEO": "Bir yöneticiden işe alımı önermesini isteyin, bir çalışma zamanını kendiniz yapılandırın veya harici bir ajana onboarding istemi gönderin.",
     "askCEO": "CEO'dan yeni bir ajan oluşturmasını isteyin",
     "advancedLink": "Gelişmiş yapılandırmayı kendim yapmak istiyorum",
+    "configureRuntimeManually": "Çalışma zamanını manuel yapılandır",
+    "inviteExternalAgent": "Harici bir ajan davet et",
+    "inviteExternalAgentHelp": "(OpenClaw, Hermes veya davet API'sini çağırabilen herhangi bir ajan.)",
     "back": "Geri",
-    "chooseAdapter": "Gelişmiş kurulum için adaptör türünü seçin.",
+    "chooseAdapter": "Paperclip'in doğrudan başlatması veya devam ettirmesi gereken çalışma zamanını seçin.",
     "recommended": "Önerilen"
   },
   "newGoalDialog": {

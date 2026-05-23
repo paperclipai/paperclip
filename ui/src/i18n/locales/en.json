@@ -519,11 +519,14 @@
     "title": "Add a new agent",
     "ceoIssueTitle": "Create a new agent",
     "ceoIssueDescription": "(type in what kind of agent you want here)",
-    "recommendCEO": "We recommend letting your CEO handle agent setup — they know the org structure and can configure reporting, permissions, and adapters.",
+    "recommendCEO": "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent.",
     "askCEO": "Ask the CEO to create a new agent",
     "advancedLink": "I want advanced configuration myself",
+    "configureRuntimeManually": "Configure a runtime manually",
+    "inviteExternalAgent": "Invite an external agent",
+    "inviteExternalAgentHelp": "(OpenClaw, Hermes, or any agent that can call the invite API.)",
     "back": "Back",
-    "chooseAdapter": "Choose your adapter type for advanced setup.",
+    "chooseAdapter": "Choose the runtime Paperclip should start or resume directly.",
     "recommended": "Recommended"
   },
   "newAgent": {

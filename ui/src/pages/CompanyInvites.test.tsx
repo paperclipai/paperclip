@@ -93,12 +93,15 @@ describe("CompanyInvites", () => {
       return Promise.resolve({ invites, nextOffset });
     });
 
-    createCompanyInviteMock.mockResolvedValue({
-      inviteUrl: "https://paperclip.local/invite/new-token",
-      onboardingTextUrl: null,
-      onboardingTextPath: null,
-      humanRole: "viewer",
-      allowedJoinTypes: "human",
+    createCompanyInviteMock.mockImplementation(() => {
+      return Promise.resolve({
+        token: "new-token",
+        inviteUrl: "https://paperclip.local/invite/new-token",
+        onboardingTextUrl: null,
+        onboardingTextPath: null,
+        humanRole: "viewer",
+        allowedJoinTypes: "human",
+      });
     });
 
     revokeInviteMock.mockResolvedValue(undefined);
@@ -134,7 +137,9 @@ describe("CompanyInvites", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company Invites");
-    expect(container.textContent).toContain("Create invite");
+    expect(container.textContent).toContain("Invite a person");
+    expect(container.textContent).not.toContain("Invite an agent");
+    expect(container.textContent).not.toContain("Generate agent onboarding prompt");
     expect(container.textContent).toContain("Invite history");
     expect(container.textContent).toContain("Board User 25");
     expect(container.textContent).toContain("Board User 21");
