@@ -1130,3 +1130,4 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+export type { SessionResume, WorkSession, SessionSnapshot, Task, FileChange } from "./session-resume.js";
