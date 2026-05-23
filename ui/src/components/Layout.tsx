@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
@@ -24,6 +24,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { accessApi } from "../api/access";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
   DEFAULT_INSTANCE_SETTINGS_PATH,
@@ -47,6 +48,7 @@ function readRememberedInstanceSettingsPath(): string {
 }
 
 export function Layout() {
+  const queryClient = useQueryClient();
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
@@ -86,14 +88,50 @@ export function Layout() {
     refetchIntervalInBackground: true,
   });
 
+  const { data: launchContext, isLoading: launchContextLoading } = useQuery({
+    queryKey: queryKeys.agenthosting.launchContext,
+    queryFn: () => accessApi.getAgentHostingLaunchContext(),
+    retry: false,
+    staleTime: Infinity, // Only fetched once on load
+  });
+
+  const autoOnboardMutation = useMutation({
+    mutationFn: () => accessApi.autoOnboardFromAgentHosting(),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      navigate(result.redirectUrl, { replace: true });
+    },
+  });
+
+  // Open onboarding on initial load (no companies or launched from AgentHosting with pre-filled context)
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    if (health?.deploymentMode === "authenticated") return;
+    
+    // Skip if already set up (has companies) - regular authenticated users go to their dashboard
+    // But allow auto-onboard to run for AgentHosting sidecars (no companies yet)
+    if (health?.deploymentMode === "authenticated" && companies.length > 0) return;
+    
+    if (launchContextLoading) return;
+
     if (companies.length === 0) {
       onboardingTriggered.current = true;
+
+      if (launchContext?.available) {
+        autoOnboardMutation.mutate();
+        return;
+      }
+
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [
+    companies,
+    companiesLoading,
+    openOnboarding,
+    health?.deploymentMode,
+    launchContext,
+    launchContextLoading,
+    autoOnboardMutation,
+  ]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;

@@ -189,6 +189,24 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // Pre-fill onboarding from AgentHosting launch context
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) return;
+    const ctx = effectiveOnboardingOptions.agenthostingContext;
+    if (!ctx) return;
+
+    // Pre-fill agent name if provided
+    if (ctx.agentName) {
+      setAgentName(ctx.agentName);
+    }
+
+    // Pre-fill gateway URL and set adapter type to openclaw_gateway
+    if (ctx.openclawGatewayUrl) {
+      setAdapterType("openclaw_gateway");
+      setUrl(ctx.openclawGatewayUrl);
+    }
+  }, [effectiveOnboardingOpen, effectiveOnboardingOptions]);
+
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
     if (step === 3) autoResizeTextarea();

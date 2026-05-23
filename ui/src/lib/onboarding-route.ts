@@ -3,6 +3,8 @@ type OnboardingRouteCompany = {
   issuePrefix: string;
 };
 
+import type { OnboardingOptions } from "../context/DialogContext";
+
 export function isOnboardingPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
 
@@ -21,7 +23,7 @@ export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
-}): { initialStep: 1 | 2; companyId?: string } | null {
+}): { initialStep: 1 | 2; companyId?: string; agenthostingContext?: OnboardingOptions['agenthostingContext'] } | null {
   const { pathname, companyPrefix, companies } = params;
 
   if (!isOnboardingPath(pathname)) return null;

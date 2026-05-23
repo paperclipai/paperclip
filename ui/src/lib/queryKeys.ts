@@ -23,10 +23,13 @@ export const queryKeys = {
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
     configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
+    adapters: (companyId: string, adapterType: string) =>
+      ["agents", companyId, "adapter-models", adapterType] as const,
     adapterModels: (companyId: string, adapterType: string) =>
       ["agents", companyId, "adapter-models", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+    connectors: (agentId: string) => ["agents", "connectors", agentId] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -138,5 +141,8 @@ export const queryKeys = {
     config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
     logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
+  },
+  agenthosting: {
+    launchContext: ["agenthosting", "launch-context"] as const,
   },
 };

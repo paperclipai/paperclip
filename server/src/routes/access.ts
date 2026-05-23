@@ -15,7 +15,9 @@ import {
   agentApiKeys,
   authUsers,
   invites,
-  joinRequests
+  joinRequests,
+  companies,
+  agents as agentsTable,
 } from "@paperclipai/db";
 import {
   acceptInviteSchema,
@@ -45,7 +47,8 @@ import {
   boardAuthService,
   deduplicateAgentName,
   logActivity,
-  notifyHireApproved
+  notifyHireApproved,
+  secretService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
@@ -2882,6 +2885,112 @@ export function accessRoutes(
       res.json(memberships);
     }
   );
+
+  // Endpoint to retrieve AgentHosting launch context (injected via headers during proxy)
+  router.get("/agenthosting/launch-context", async (req, res) => {
+    const contextHeader = req.header("x-agenthosting-launch-context");
+    if (!contextHeader) {
+      res.json({ available: false });
+      return;
+    }
+    try {
+      const decoded = Buffer.from(contextHeader, "base64").toString("utf8");
+      const parsed = JSON.parse(decoded);
+      // Return only safe, non-sensitive fields
+      res.json({
+        available: true,
+        agentId: parsed.agentId ?? null,
+        agentName: parsed.agentName ?? null,
+        openclawGatewayUrl: parsed.openclawGatewayUrl ?? null,
+        // Never expose tokens to the browser -- UI fetches them server-side
+      });
+    } catch {
+      res.json({ available: false });
+    }
+  });
+
+  // Auto-create company + agent from AgentHosting context and return redirect URL
+  router.post("/agenthosting/auto-onboard", async (req, res) => {
+    const contextHeader = req.header("x-agenthosting-launch-context");
+    if (!contextHeader) {
+      res.status(400).json({ error: "No launch context provided" });
+      return;
+    }
+
+    try {
+      const decoded = Buffer.from(contextHeader, "base64").toString("utf8");
+      const parsed = JSON.parse(decoded);
+      const agentName = parsed.agentName ?? "AgentHosting Agent";
+      const gatewayUrl = parsed.openclawGatewayUrl;
+      const gatewayToken = parsed.openclawGatewayToken;
+
+      // Create a default company named after the agent
+      const companyName = agentName.replace(/[^a-zA-Z0-9]/g, "") || "AgentHosting";
+
+      // Check if company already exists (simple name match)
+      const existingCompanies = await db.select().from(companies);
+      let company = existingCompanies.find((c: { name: string }) => c.name.toLowerCase() === companyName.toLowerCase());
+
+      if (!company) {
+        const [created] = await db.insert(companies).values({
+          name: companyName,
+          issuePrefix: companyName.substring(0, 3).toUpperCase(),
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).returning();
+        company = created;
+      }
+
+      // Build agent data based on adapter type
+      let adapterConfig: Record<string, unknown> = {};
+      let adapterType = "claude_local";
+
+      if (gatewayUrl) {
+        adapterType = "openclaw_gateway";
+        adapterConfig = {
+          url: gatewayUrl,
+          timeoutSec: 120,
+          waitTimeoutMs: 120000,
+          autoPairOnFirstConnect: true,
+        };
+
+        if (gatewayToken) {
+          adapterConfig.authToken = gatewayToken;
+        }
+      } else {
+        adapterConfig = {
+          model: "claude-sonnet-4-20250514",
+          thinkingEffort: "medium",
+          chrome: false,
+        };
+      }
+
+      const [createdAgent] = await db.insert(agentsTable).values({
+        name: agentName,
+        role: "ceo",
+        companyId: company.id,
+        adapterType,
+        adapterConfig,
+        status: "idle",
+        spentMonthlyCents: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).returning();
+
+      res.json({
+        success: true,
+        redirectUrl: `/${company.issuePrefix}`,
+        companyId: company.id,
+        companyPrefix: company.issuePrefix,
+        agentId: createdAgent.id,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: msg }, "Failed to auto-onboard from AgentHosting");
+      res.status(500).json({ error: "Auto-onboarding failed", details: msg });
+    }
+  });
 
   return router;
 }

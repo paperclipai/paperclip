@@ -14,9 +14,15 @@ interface NewGoalDefaults {
   parentId?: string;
 }
 
-interface OnboardingOptions {
+export interface OnboardingOptions {
   initialStep?: 1 | 2 | 3 | 4;
   companyId?: string;
+  /** Context passed when launched from AgentHosting */
+  agenthostingContext?: {
+    agentId: string | null;
+    agentName: string | null;
+    openclawGatewayUrl: string | null;
+  };
 }
 
 interface DialogContextValue {
