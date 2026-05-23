@@ -480,6 +480,48 @@ export async function runSweepWakePreflight(input: {
     const frame = parseSweepWakeFramePage(page);
     const decision = compareSweepWakeFrame({ frame, issue, recentComments: comments, expectedIdentity });
     if (!decision.skip) {
+      // BLO-6660: when the gate encounters an issue with no usable frame (no
+      // existing page, schema mismatch, or identity mismatch) we seed an
+      // initial frame from the server-observed issue state. The first
+      // encounter still wakes the agent — we have no historical signal to
+      // skip on — but the seed gives the NEXT sweep a comparison baseline.
+      // Without this, the gate forever falls through on issues whose agents
+      // don't honor the Path 1/2 LLM-side WAKE-PREFLIGHT.md protocol (the
+      // entire BLO-6151 silence class), leaving Path 3 unable to produce
+      // `skip` verdicts and zero cost reduction on the BLO-6388 rollout.
+      if (decision.verdict === "missing_or_invalid_frame") {
+        const seedFrame: SweepWakeFrame = {
+          schemaVersion: 1,
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          agentName: input.agent.name,
+          issueIdentifier: issue.identifier,
+          issueId: issue.id,
+          issueLastActivityAt: issue.lastActivityAt.toISOString(),
+          updatedAt: new Date().toISOString(),
+          status: issue.status,
+          blockedByIssueIds: [...new Set(issue.blockedByIssueIds ?? [])].sort(),
+          disposition: "Auto-seeded by server-side gate; agent has not yet written a Path 1/2 frame.",
+          nextRefreshTriggers: [],
+          consecutiveSkips: 0,
+          body: "",
+        };
+        try {
+          await input.gbrain.call("put_page", { slug, content: composeSweepWakeFramePage(seedFrame) });
+          log.info(
+            { verdict: decision.verdict, seedWritten: true, issueId: issue.id, agentId: input.agent.id },
+            "sweep_wake_preflight.decision",
+          );
+        } catch (seedErr) {
+          // Seed-write failure shouldn't change the wake decision; log and
+          // proceed. The next sweep will retry seeding on its own.
+          log.warn(
+            { err: seedErr, verdict: decision.verdict, seedWritten: false, issueId: issue.id, agentId: input.agent.id },
+            "sweep_wake_preflight.decision",
+          );
+        }
+        return decision;
+      }
       log.info({ verdict: decision.verdict, issueId: issue.id, agentId: input.agent.id }, "sweep_wake_preflight.decision");
       return decision;
     }
