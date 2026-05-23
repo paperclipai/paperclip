@@ -831,9 +831,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not cascade-delete the Job when the run is reaped because the Job was already gone", async () => {
-    // Job-deleted path (helm restart, manual cleanup). The Job is already
-    // gone, so we have nothing to cascade-delete. Asserts we don't make
-    // a redundant delete call.
+    // Job-deleted path (helm restart, manual cleanup) with silence past
+    // the staleness window. The Job is already gone, so we have nothing
+    // to cascade-delete. Asserts we don't make a redundant delete call.
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("reaps external-lifecycle runs whose kube-API Job is gone AND output is silent past the staleness window", async () => {
+    // The genuine "Job got deleted while agent was hung" case. The kube
+    // list returns a snapshot without this run's Job AND the run has been
+    // silent for >EXTERNAL_LIFECYCLE_STALE_MS, so we have high confidence
+    // the agent is genuinely lost.
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
+  it("does NOT reap external-lifecycle runs whose Job is missing from the kube snapshot when output is still fresh (BLO-6843 false-positive guard)", async () => {
+    // RCA 2026-05-23: the kube-API list snapshot can transiently omit
+    // healthy Jobs (list timeout returning partial results, eventual
+    // consistency, in-flight Jobs not yet visible). Previously we treated
+    // any "missing from snapshot" as proof of process loss and reaped
+    // immediately, producing ~6.5 false `process_lost`/hr fleet-wide
+    // against agents that were still streaming output. The reaper now
+    // requires the same silence floor as the live-but-silent path before
+    // reaping a missing-Job run.
     const fresh = new Date(Date.now() - 30 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({
       adapterType: "claude_k8s",
@@ -846,30 +895,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
 
     const result = await heartbeat.reapOrphanedRuns();
-    expect(result.reaped).toBe(1);
-    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
-  });
-
-  it("reaps external-lifecycle runs whose kube-API Job is gone (no staleness wait)", async () => {
-    // Recent output — the staleness window would NOT reap this. The kube
-    // probe returning an empty set is what makes the reaper act.
-    const recent = new Date(Date.now() - 30 * 1000);
-    const { companyId, agentId, runId } = await seedRunFixture({
-      adapterType: "claude_k8s",
-      processPid: null,
-      processGroupId: null,
-      includeIssue: false,
-      lastOutputAt: recent,
-    });
-    await seedAdapterInvokeEvent({ companyId, agentId, runId });
-    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
-
-    const result = await heartbeat.reapOrphanedRuns();
-    expect(result.reaped).toBe(1);
-    expect(result.runIds).toEqual([runId]);
+    expect(result.reaped).toBe(0);
     const run = await heartbeat.getRun(runId);
-    expect(run?.status).toBe("failed");
-    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).not.toBe("process_lost");
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
   it("reaps external-lifecycle runs whose Job has gone silent past the staleness window", async () => {
