@@ -3403,6 +3403,9 @@ export function accessRoutes(
               }
             )
           : null;
+      const humanRoleToGrant = extractInviteHumanRole(invite);
+      const isAutoApprove = requestType === "human" && humanRoleToGrant !== null;
+
       const created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
@@ -3416,6 +3419,21 @@ export function accessRoutes(
                     isNull(invites.revokedAt)
                   )
                 );
+              
+              if (isAutoApprove && existingHumanJoinRequest.status === "pending_approval") {
+                const updated = await tx
+                  .update(joinRequests)
+                  .set({
+                    status: "approved",
+                    approvedByUserId: invite.invitedByUserId ?? "local-board",
+                    approvedAt: new Date(),
+                    updatedAt: new Date()
+                  })
+                  .where(eq(joinRequests.id, existingHumanJoinRequest.id))
+                  .returning()
+                  .then((rows) => rows[0]);
+                return updated ?? existingHumanJoinRequest;
+              }
               return existingHumanJoinRequest;
             })
           : await db.transaction(async (tx) => {
@@ -3436,7 +3454,7 @@ export function accessRoutes(
                   inviteId: invite.id,
                   companyId,
                   requestType,
-                  status: "pending_approval",
+                  status: isAutoApprove ? "approved" : "pending_approval",
                   requestIp: requestIp(req),
                   requestingUserId:
                     requestType === "human"
@@ -3454,7 +3472,9 @@ export function accessRoutes(
                   agentDefaultsPayload:
                     requestType === "agent" ? joinDefaults.normalized : null,
                   claimSecretHash,
-                  claimSecretExpiresAt
+                  claimSecretExpiresAt,
+                  approvedByUserId: isAutoApprove ? (invite.invitedByUserId ?? "local-board") : null,
+                  approvedAt: isAutoApprove ? new Date() : null
                 })
                 .returning()
                 .then((rows) => rows[0]);
@@ -3487,6 +3507,32 @@ export function accessRoutes(
 
       if (!created) {
         throw conflict("Join request not found");
+      }
+
+      if (
+        requestType === "human" &&
+        created.status === "approved" &&
+        created.requestingUserId &&
+        humanRoleToGrant
+      ) {
+        await access.ensureMembership(
+          companyId,
+          "user",
+          created.requestingUserId,
+          humanRoleToGrant,
+          "active"
+        );
+        const grants = humanJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          humanRoleToGrant
+        );
+        await access.setPrincipalGrants(
+          companyId,
+          "user",
+          created.requestingUserId,
+          grants,
+          invite.invitedByUserId ?? null
+        );
       }
 
       if (
