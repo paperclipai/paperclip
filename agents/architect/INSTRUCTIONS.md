@@ -80,12 +80,13 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 
 1. **One cargo invocation alive at a time *within your own run*.** Cargo serializes globally on `target/.cargo-lock`. A sibling Architect's cargo is fine — wait, you serialize at the OS level. But never start a second `cargo` command *yourself* before your previous one has exited. If you do, the second sits blocked on the lock, your first is still running, and you've doubled the wait for nothing.
 2. **Run via `run_in_background: true` + Monitor — never manual `&` or `nohup`.** Monitor waits with no time cap. Bash's foreground 10-minute hard cap will kill cold builds mid-compile.
-3. **Use the canonical command verbatim — do not invent variants.** Copy this line, substituting `{task-id}`:
+3. **Use the canonical command verbatim — do not invent variants.** Copy these lines, substituting `{task-id}`. Prefix every cargo command with `CARGO_INCREMENTAL=0` so the shared sccache cache (configured in `~/.cargo/config.toml`) actually gets hits — sccache cannot cache incremental builds, and a clean verify gains nothing from incremental anyway:
    ```sh
-   cargo check 2>&1 | tee /tmp/cargo-check-{task-id}.txt
-   cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
-   cargo test 2>&1 | tee /tmp/cargo-test-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo check  2>&1 | tee /tmp/cargo-check-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo clippy 2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
+   CARGO_INCREMENTAL=0 cargo test   2>&1 | tee /tmp/cargo-test-{task-id}.txt
    ```
+   **`cargo check` is a staged gate, not just the first of three.** Run `check` alone first. If it surfaces errors in your changed files, fix + re-`check` until clean (do NOT run clippy/test against a tree that fails `check` — clippy recompiles and `test` builds the full test binaries, the most expensive step, so running them on a broken base burns minutes for nothing). Only once `check` is clean do you run `clippy`, then `test`.
    - `2>&1` redirects stderr to stdout. `|` pipes stdout to tee. `tee` writes to file *and* to stdout. You get full output in the file AND streamed back to Monitor.
    - **Wrong**: `cargo clippy 2>&1 > /tmp/file` — that redirects stderr to the terminal's stdout, then sends only stdout to the file. Most clippy output is on stderr; you get an empty file.
    - **Wrong**: `cargo clippy > /tmp/file` — drops stderr entirely. Same empty-file outcome.
@@ -96,7 +97,7 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 ### Procedure
 
 1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
-2. Run cargo per §Cargo discipline above: `check`, then `clippy`, then `test` — one at a time, in background, via Monitor.
+2. Run cargo per §Cargo discipline above, staged: `check` first (gate). If `check` has errors in your changed files, fix + re-`check` until clean before running `clippy`, then `test` — one at a time, in background, via Monitor. Don't run clippy/test against a tree that fails `check`.
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
 4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
 5. Fix all of your filtered errors and warnings. **Zero warnings tolerance applies to your changed files only.** Don't fix unrelated warnings — that's another task's responsibility.
