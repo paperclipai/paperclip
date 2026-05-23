@@ -27,9 +27,59 @@ const sharedOpts = {
   singleLine: true,
 };
 
+// Anything that authenticates a request (gate JWT in the cookie,
+// per-workspace gate secret, team-sync HMAC, raw Authorization) gets
+// replaced with `[Redacted]` before pino writes to disk. The same paths
+// are also stripped from the response set-cookie so a fresh issued
+// session token doesn't end up on disk either.
+const REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.cookie",
+  'req.headers["set-cookie"]',
+  'req.headers["x-jade-gate-secret"]',
+  'req.headers["x-jade-team-sync-signature"]',
+  'req.headers["x-paperclip-cloud-tenant-token"]',
+  "res.headers.authorization",
+  'res.headers["set-cookie"]',
+  // Same fields show up under `reqBody` when error context dumps the
+  // body to logs. Customizer below assigns this; we still belt-and-
+  // suspenders these paths so an accidental new dump site is covered.
+  "reqBody.password",
+  "reqBody.newPassword",
+  "reqBody.token",
+  "reqBody.apiKey",
+  "errorContext.password",
+];
+
+const SENSITIVE_BODY_KEYS = new Set([
+  "password",
+  "newPassword",
+  "currentPassword",
+  "token",
+  "apiKey",
+  "api_key",
+  "secret",
+]);
+
+function scrubBody(body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  if (Array.isArray(body)) return body.map(scrubBody);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+    if (SENSITIVE_BODY_KEYS.has(k.toLowerCase())) {
+      out[k] = "[Redacted]";
+    } else if (v && typeof v === "object") {
+      out[k] = scrubBody(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: { paths: REDACT_PATHS, censor: "[Redacted]" },
 }, pino.transport({
   targets: [
     {
@@ -69,21 +119,21 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: scrubBody(ctx.reqBody),
           reqParams: ctx.reqParams,
-          reqQuery: ctx.reqQuery,
+          reqQuery: scrubBody(ctx.reqQuery),
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = scrubBody(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
       }
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
+        props.reqQuery = scrubBody(query);
       }
       if ((req as any).route?.path) {
         props.routePath = (req as any).route.path;
