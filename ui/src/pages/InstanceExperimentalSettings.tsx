@@ -205,6 +205,7 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -294,6 +295,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle isolated workspaces experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Cloud Sync</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.
+              Saved connections and run history are preserved when this is disabled.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableCloudSync}
+            onCheckedChange={() => toggleMutation.mutate({ enableCloudSync: !enableCloudSync })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle cloud sync experimental setting"
           />
         </div>
       </section>

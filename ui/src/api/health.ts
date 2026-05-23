@@ -38,4 +38,15 @@ export const healthApi = {
     }
     return res.json();
   },
+  requestDevServerRestart: async (): Promise<void> => {
+    const res = await fetch("/api/health/dev-server/restart", {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => null) as { error?: string } | null;
+      throw new Error(payload?.error ?? `Failed to request restart (${res.status})`);
+    }
+  },
 };

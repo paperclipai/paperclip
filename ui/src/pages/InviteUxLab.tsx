@@ -23,8 +23,8 @@ const inviteRoleOptions = [
   {
     value: "viewer",
     label: "Viewer",
-    description: "Can view company work and follow along without operational permissions.",
-    gets: "No built-in grants.",
+    description: "Can view company work and follow along.",
+    gets: "View-only company membership.",
   },
   {
     value: "operator",
@@ -41,8 +41,8 @@ const inviteRoleOptions = [
   {
     value: "owner",
     label: "Owner",
-    description: "Full company access, including membership and permission management.",
-    gets: "Everything in Admin, plus managing members and permission grants.",
+    description: "Full company access, including membership management.",
+    gets: "Everything in Admin, plus managing members.",
   },
 ] as const;
 
@@ -423,8 +423,8 @@ function InviteResultPreview({
           <>
             <div className="border border-zinc-800 p-3">
               <p className="mb-1 text-xs text-zinc-500">Approval page</p>
-              <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/access">
-                Company Settings → Access
+              <a className="text-sm text-zinc-200 underline underline-offset-2" href="/company/settings/members">
+                Company Settings → Members
               </a>
             </div>
             <p className="text-xs text-zinc-500">
@@ -897,7 +897,7 @@ export function InviteUxLab() {
           />
           <InviteResultPreview
             title="Request to join Acme Robotics"
-            description="Ask them to visit Company Settings → Access to approve your request."
+            description="Ask them to visit Company Settings → Members to approve your request."
           />
         </div>
       </LabSection>

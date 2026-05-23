@@ -34,7 +34,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Company model | Company is first-order; all business entities are company-scoped |
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
-| Visibility | Full visibility to board and all agents in same company |
+| Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
@@ -487,6 +487,59 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Report cost | yes | yes |
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
+| Set work-object visibility (issue/project) | no | no (pro gate) |
+
+## 9.4 Permission Terminology and Default Visibility Rule
+
+Paperclip V1 keeps a company-scoped visibility model as the default because centralized authorization and scoped work-object controls are not yet a core V1 control surface.
+
+The approved term set is:
+
+- **Agent profile visibility**: identity-level facts needed for delegation and governance (name, role, capabilities, reporting lines).
+- **Agent config visibility**: adapter/runtime config metadata and secret-access policy.
+- **Assignment/invocation permission**: who may modify or execute a task.
+- **Work-object visibility**: who can read/write issues, comments, projects, and attachments.
+- **Tool/secret policy**: what tools and secret-backed credentials an agent can use and what appears in logs.
+- **Escalation authority**: where refusal/blocked decisions route (manager, then board).
+
+## 9.5 Core V1 Rule: what “private” means
+
+- A **private marker** on an agent profile (where represented) does **not** make company-visible work private.
+- Company-visible work objects (issues, comments, work products, costs, activity, project/task state) remain visible to the board and in-company agents by default.
+- Project/issue-level privacy, scoped assignment-only object visibility, and organization-wide custom ACLs are deferred to Pro/Enterprise controls.
+
+## 9.6 V1 vs Pro/Enterprise Controls (recommended target split)
+
+| Permission area | Free / V1 default | Pro / Enterprise |
+|---|---|---|
+| Company boundary | Hard boundary only (`company_id`) | Multi-company policy overlays (`membership`, `project`, and `task` scopes) |
+| Simple roles | Board + agent roles with existing approval/budget gates | Additional role aliases + scoped approver roles |
+| Profile visibility | Full profile visibility for coordination and audit | Optional profile redaction / selective sharing for external surfaces |
+| Config visibility | Board full read with redacted secret fields; agent config read/write constrained by own agent identity | Scoped config visibility controls and central policy enforcement |
+| Assignment/invocation | Assignment creates execution authority; board can reassign or force release | Delegation policies and scoped invokers with deny-listed tool classes |
+| Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
+| Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
+| Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
+
+## 9.7 Recommended first-slice implementation order
+
+1. Lock route-level checks for existing company boundaries, actor extraction, and approval/budget gates.
+2. Treat profile privacy as external-facing signal only; do not use it to hide company-visible work objects.
+3. Enforce assignment/invocation coupling (`assignee`/`agent` checks, checkout semantics, invocation checks).
+4. Standardize read-path redaction for secrets and secret references, including logs and activity.
+5. Standardize escalation paths (`blocked` and refusal) so non-board agents hand off by manager/board with immutable audit.
+
+## 9.8 Scoped Task Assignment Grants
+
+`tasks:assign` remains the broad assignment permission. Existing unscoped grants preserve compatibility and allow the principal to assign any visible company task within normal company-boundary checks.
+
+`tasks:assign_scope` is the constrained assignment permission. Its `principal_permission_grants.scope` JSON must include at least one recognized constraint:
+
+- Project scope: `projectId`, `projectIds`, or `allow: ["project:<projectId>"]`.
+- Target-agent allowlist: `agentId`, `agentIds`, `assigneeAgentId`, `assigneeAgentIds`, `targetAgentId`, `targetAgentIds`, or `allow: ["agent:<agentId>"]`.
+- Managed-subtree scope: `managerAgentId`, `managerAgentIds`, `managedSubtreeAgentId`, `managedSubtreeAgentIds`, `subtreeAgentId`, `subtreeAgentIds`, `subtreeRootAgentId`, `subtreeRootAgentIds`, or `allow: ["subtree:<agentId>"]`.
+
+When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
 
 ## 10. API Contract (REST)
 
@@ -679,7 +732,13 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
-## 11.5 Scheduler Rules
+## 11.5 Recovery Model Profiles
+
+The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
+
+Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
+
+## 11.6 Scheduler Rules
 
 Per-agent schedule fields in `adapter_config`:
 

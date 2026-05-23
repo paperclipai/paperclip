@@ -85,14 +85,6 @@ export function IssueRow({
       {checklistStepNumber}.
     </span>
   ) : null;
-  const planningModeIndicator = issue.workMode === "planning" ? (
-    <span
-      className="ml-1.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="This issue is in planning mode."
-    >
-      Planning
-    </span>
-  ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
   const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
@@ -156,7 +148,6 @@ export function IssueRow({
               {recoveryIndicator}
             </>
           )}
-          {planningModeIndicator}
           {mobileMeta ? (
             <>
               <span className="text-xs text-muted-foreground sm:hidden" aria-hidden="true">
@@ -180,6 +171,7 @@ export function IssueRow({
           {showUnreadDot ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -209,6 +201,7 @@ export function IssueRow({
           ) : onArchive ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

@@ -70,6 +70,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-workspace-diff",
+    "name": "@paperclipai/plugin-workspace-diff",
+    "publishFromCi": false
+  },
+  {
     "dir": "server",
     "name": "@paperclipai/server",
     "publishFromCi": true
@@ -107,6 +112,11 @@
   {
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@paperclipai/plugin-e2b",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/modal",
+    "name": "@paperclipai/plugin-modal",
     "publishFromCi": true
   },
   {

@@ -183,7 +183,18 @@
     min-height: 44px;
   }
 
-  [data-slot="toggle"] {
+  /* Small inline widgets keep their design size on touch devices —
+     forcing 44px here stretches checkboxes, chip menus, and icon buttons
+     that live inside dense rows (sidebar headers, issue rows, filter
+     popovers). The surrounding row provides the touch area. */
+  [data-slot="toggle"],
+  [data-slot="checkbox"],
+  [data-slot="icon-button"],
+  [data-size="xs"],
+  [data-size="icon-xs"],
+  [data-size="icon-sm"],
+  input[type="checkbox"],
+  input[type="radio"] {
     min-height: 0;
   }
 }
@@ -706,15 +717,23 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: none;
 }
 
-/* Copy-to-clipboard button on fenced code blocks */
+/* Actions for fenced and indented preformatted markdown blocks */
 .paperclip-markdown-codeblock {
   position: relative;
 }
 
-.paperclip-markdown-codeblock-copy {
+.paperclip-markdown-codeblock-actions {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.paperclip-markdown-codeblock-action {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -726,30 +745,30 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.7rem;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-copy,
-.paperclip-markdown-codeblock-copy:focus-visible,
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-actions,
+.paperclip-markdown-codeblock-actions:focus-within,
+.paperclip-markdown-codeblock-actions[data-active] {
   opacity: 1;
 }
 
-.paperclip-markdown-codeblock-copy:hover {
+.paperclip-markdown-codeblock-action:hover {
   background-color: var(--accent);
   color: var(--accent-foreground);
 }
 
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock-action[data-active],
+.paperclip-markdown-codeblock-action[data-copied] {
   color: var(--primary);
 }
 
-.paperclip-markdown-codeblock-copy[data-failed] {
+.paperclip-markdown-codeblock-action[data-failed] {
   color: var(--destructive);
 }
 
-.paperclip-markdown-codeblock-copy-label {
+.paperclip-markdown-codeblock-action-label {
   font-weight: 500;
 }
 
