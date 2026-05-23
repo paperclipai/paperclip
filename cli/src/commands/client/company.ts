@@ -31,6 +31,10 @@ import {
 } from "./feedback.js";
 
 interface CompanyCommandOptions extends BaseClientOptions {}
+interface CompanyJsonOptions extends BaseClientOptions {
+  companyId?: string;
+  payloadJson?: string;
+}
 type CompanyDeleteSelectorMode = "auto" | "id" | "prefix";
 type CompanyImportTargetMode = "new" | "existing";
 type CompanyCollisionMode = "rename" | "skip" | "replace";
@@ -1126,6 +1130,87 @@ export function registerCompanyCommands(program: Command): void {
 
   addCommonClientOptions(
     company
+      .command("stats")
+      .description("Get company stats")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get("/api/companies/stats"), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("create")
+      .description("Create a company")
+      .requiredOption("--payload-json <json>", "CreateCompany JSON payload")
+      .action(async (opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/companies", parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("update")
+      .description("Update a company")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompany JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(`/api/companies/${companyId}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("branding:update")
+      .description("Update company branding")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompanyBranding JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(`/api/companies/${companyId}/branding`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("archive")
+      .description("Archive a company")
+      .argument("<companyId>", "Company ID")
+      .action(async (companyId: string, opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(`/api/companies/${companyId}/archive`, {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCompanyJsonPost(company, "export:preview", "Preview a portable company export", "exports/preview");
+  addCompanyJsonPost(company, "export:api", "Export a company through the raw API route", "exports");
+  addCompanyJsonPost(company, "import:preview", "Preview a safe company import through the raw API route", "imports/preview");
+  addCompanyJsonPost(company, "import:apply", "Apply a safe company import through the raw API route", "imports/apply");
+
+  addCommonClientOptions(
+    company
       .command("feedback:list")
       .description("List feedback traces for a company")
       .requiredOption("-C, --company-id <id>", "Company ID")
@@ -1575,4 +1660,26 @@ export function registerCompanyCommands(program: Command): void {
         }
       }),
   );
+}
+
+function addCompanyJsonPost(parent: Command, name: string, description: string, pathSuffix: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(`/api/companies/${companyId}/${pathSuffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
 }

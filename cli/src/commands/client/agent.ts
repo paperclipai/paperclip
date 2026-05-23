@@ -355,6 +355,24 @@ export function registerAgentCommands(program: Command): void {
 
   addCommonClientOptions(
     agent
+      .command("hire")
+      .description("Create an agent hire request")
+      .option("-C, --company-id <id>", "Company ID")
+      .requiredOption("--payload-json <json>", "CreateAgentHire JSON payload")
+      .action(async (opts: AgentJsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const result = await ctx.api.post(`/api/companies/${ctx.companyId}/agent-hires`, parseJson(opts.payloadJson));
+          printOutput(result, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
       .command("update")
       .description("Update an agent from a JSON payload")
       .argument("<agentId>", "Agent ID")

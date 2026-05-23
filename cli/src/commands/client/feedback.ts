@@ -167,6 +167,36 @@ export function registerFeedbackCommands(program: Command): void {
       }),
     { includeCompany: false },
   );
+
+  addCommonClientOptions(
+    feedback
+      .command("trace")
+      .description("Get a feedback trace")
+      .argument("<traceId>", "Feedback trace ID")
+      .action(async (traceId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get(`/api/feedback-traces/${traceId}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    feedback
+      .command("bundle")
+      .description("Get a feedback trace bundle")
+      .argument("<traceId>", "Feedback trace ID")
+      .action(async (traceId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get(`/api/feedback-traces/${traceId}/bundle`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 }
 
 export async function resolveFeedbackCompanyId(

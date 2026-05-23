@@ -69,6 +69,10 @@ interface PluginJsonOptions extends BaseClientOptions {
   payloadJson?: string;
 }
 
+interface PluginStreamOptions extends BaseClientOptions {
+  durationMs?: string;
+}
+
 interface PluginInitResult {
   outputDir: string;
   nextCommands: string[];
@@ -552,6 +556,22 @@ export function registerPluginCommands(program: Command): void {
   addPluginSubGet(plugin, "dashboard", "Get plugin dashboard data", "dashboard");
   addPluginSubPost(plugin, "bridge:data", "Send plugin bridge data", "bridge/data");
   addPluginSubPost(plugin, "bridge:action", "Send plugin bridge action", "bridge/action");
+  addCommonClientOptions(
+    plugin
+      .command("bridge:stream")
+      .description("Stream a plugin bridge channel")
+      .argument("<pluginId>", "Plugin ID or key")
+      .argument("<channel>", "Stream channel")
+      .option("--duration-ms <ms>", "Stop streaming after this many milliseconds")
+      .action(async (pluginId: string, channel: string, opts: PluginStreamOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          await streamPluginBridge(ctx.api.apiBase, ctx.api.apiKey, pluginId, channel, parseOptionalInt(opts.durationMs));
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
   addPluginKeyPost(plugin, "data", "Get plugin URL-keyed data", "data");
   addPluginKeyPost(plugin, "action", "Invoke plugin URL-keyed action", "actions");
 }
@@ -635,4 +655,58 @@ function addPluginKeyPost(parent: Command, name: string, description: string, su
 
 function parseJson(value: string): unknown {
   return JSON.parse(value) as unknown;
+}
+
+function parseOptionalInt(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid integer value: ${value}`);
+  }
+  return parsed;
+}
+
+async function streamPluginBridge(
+  apiBase: string,
+  apiKey: string | undefined,
+  pluginId: string,
+  channel: string,
+  durationMs: number | undefined,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = durationMs === undefined ? null : setTimeout(() => controller.abort(), durationMs);
+  try {
+    const response = await fetch(buildApiUrl(
+      apiBase,
+      `/api/plugins/${encodeURIComponent(pluginId)}/bridge/stream/${encodeURIComponent(channel)}`,
+    ), {
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text.trim() || `Request failed with status ${response.status}`);
+    }
+    if (!response.body) return;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) process.stdout.write(decoder.decode(value, { stream: true }));
+    }
+    const trailing = decoder.decode();
+    if (trailing) process.stdout.write(trailing);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return;
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function buildApiUrl(apiBase: string, path: string): string {
+  const url = new URL(apiBase);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  return url.toString();
 }

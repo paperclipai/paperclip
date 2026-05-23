@@ -119,6 +119,17 @@ export PAPERCLIP_API_KEY=...
 ```sh
 pnpm paperclipai company list
 pnpm paperclipai company get <company-id>
+pnpm paperclipai company stats
+pnpm paperclipai company create --payload-json '{...}'
+pnpm paperclipai company update <company-id> --payload-json '{...}'
+pnpm paperclipai company branding:update <company-id> --payload-json '{...}'
+pnpm paperclipai company archive <company-id>
+pnpm paperclipai company export <company-id> --out ./company --include company,agents,projects,issues,skills
+pnpm paperclipai company export:preview <company-id> --payload-json '{...}'
+pnpm paperclipai company export:api <company-id> --payload-json '{...}'
+pnpm paperclipai company import ./company --target new --new-company-name "Imported Company"
+pnpm paperclipai company import:preview <company-id> --payload-json '{...}'
+pnpm paperclipai company import:apply <company-id> --payload-json '{...}'
 pnpm paperclipai company delete <company-id-or-prefix> --yes --confirm <same-id-or-prefix>
 ```
 
@@ -245,6 +256,7 @@ pnpm paperclipai goal delete <goal-id> --yes
 pnpm paperclipai agent list --company-id <company-id>
 pnpm paperclipai agent get <agent-id>
 pnpm paperclipai agent create --company-id <company-id> --payload-json '{"name":"Builder","adapterType":"codex_local"}'
+pnpm paperclipai agent hire --company-id <company-id> --payload-json '{...}'
 pnpm paperclipai agent update <agent-id> --payload-json '{"title":"Senior Builder"}'
 pnpm paperclipai agent delete <agent-id> --yes
 pnpm paperclipai agent me
@@ -406,6 +418,8 @@ pnpm paperclipai approval comment <approval-id> --body "..."
 
 ```sh
 pnpm paperclipai activity list --company-id <company-id> [--agent-id <agent-id>] [--entity-type issue] [--entity-id <id>]
+pnpm paperclipai activity create --company-id <company-id> --payload-json '{...}'
+pnpm paperclipai activity issue <issue-id>
 ```
 
 ## Dashboard Commands
@@ -454,6 +468,16 @@ pnpm paperclipai admin user company-access <user-id>
 pnpm paperclipai admin user company-access:update <user-id> --payload-json '{...}'
 ```
 
+CLI auth challenge endpoints are also exposed for tooling that needs the raw challenge lifecycle:
+
+```sh
+pnpm paperclipai auth challenge create --payload-json '{...}'
+pnpm paperclipai auth challenge get <challenge-id> --token <challenge-secret>
+pnpm paperclipai auth challenge approve <challenge-id> --token <challenge-secret>
+pnpm paperclipai auth challenge cancel <challenge-id> --token <challenge-secret>
+pnpm paperclipai auth revoke-current
+```
+
 ```sh
 pnpm paperclipai instance scheduler-heartbeats
 pnpm paperclipai instance settings:general
@@ -463,10 +487,58 @@ pnpm paperclipai instance settings:experimental:update --payload-json '{...}'
 pnpm paperclipai instance database-backup
 pnpm paperclipai sidebar preferences
 pnpm paperclipai sidebar preferences:update --payload-json '{...}'
+pnpm paperclipai sidebar project-preferences --company-id <company-id>
+pnpm paperclipai sidebar project-preferences:update --company-id <company-id> --payload-json '{...}'
 pnpm paperclipai sidebar badges --company-id <company-id>
+pnpm paperclipai inbox dismissals --company-id <company-id>
+pnpm paperclipai inbox dismiss --company-id <company-id> --payload-json '{"itemKey":"run:<run-id>"}'
+pnpm paperclipai board-claim show <token>
+pnpm paperclipai board-claim claim <token> [--payload-json '{...}']
+pnpm paperclipai openclaw invite-prompt --company-id <company-id> --payload-json '{...}'
+pnpm paperclipai available-skill list
+pnpm paperclipai available-skill index
+pnpm paperclipai available-skill get <skill-name>
 pnpm paperclipai llm agent-configuration
 pnpm paperclipai llm agent-configuration:adapter <adapter-type>
 pnpm paperclipai llm agent-icons
+```
+
+## Adapter, Asset, And Skill Commands
+
+```sh
+pnpm paperclipai adapter list
+pnpm paperclipai adapter install --payload-json '{"packageName":"@scope/adapter","version":"1.2.3"}'
+pnpm paperclipai adapter get <adapter-type>
+pnpm paperclipai adapter update <adapter-type> --payload-json '{"disabled":true}'
+pnpm paperclipai adapter override <adapter-type> --payload-json '{"paused":true}'
+pnpm paperclipai adapter reload <adapter-type>
+pnpm paperclipai adapter reinstall <adapter-type>
+pnpm paperclipai adapter delete <adapter-type>
+pnpm paperclipai adapter config-schema <adapter-type>
+pnpm paperclipai adapter ui-parser <adapter-type>
+pnpm paperclipai adapter models <adapter-type> --company-id <company-id> [--refresh] [--environment-id <id>]
+pnpm paperclipai adapter model-profiles <adapter-type> --company-id <company-id>
+pnpm paperclipai adapter detect-model <adapter-type> --company-id <company-id>
+pnpm paperclipai adapter test-environment <adapter-type> --company-id <company-id> --payload-json '{...}'
+```
+
+```sh
+pnpm paperclipai asset image:upload --company-id <company-id> --file ./image.png [--namespace docs] [--alt "..."]
+pnpm paperclipai asset logo:upload --company-id <company-id> --file ./logo.svg
+pnpm paperclipai asset content <asset-id> --out ./asset.bin
+```
+
+```sh
+pnpm paperclipai skill list --company-id <company-id>
+pnpm paperclipai skill get <skill-id> --company-id <company-id>
+pnpm paperclipai skill file <skill-id> --company-id <company-id> [--path SKILL.md]
+pnpm paperclipai skill create --company-id <company-id> --payload-json '{...}'
+pnpm paperclipai skill file:update <skill-id> --company-id <company-id> --payload-json '{...}'
+pnpm paperclipai skill import --company-id <company-id> --payload-json '{"source":"github:owner/repo/path"}'
+pnpm paperclipai skill scan-projects --company-id <company-id> --payload-json '{...}'
+pnpm paperclipai skill update-status <skill-id> --company-id <company-id>
+pnpm paperclipai skill install-update <skill-id> --company-id <company-id>
+pnpm paperclipai skill delete <skill-id> --company-id <company-id>
 ```
 
 ## Cost, Finance, And Budget Commands
@@ -552,8 +624,16 @@ pnpm paperclipai plugin webhook <plugin-id> <endpoint-key> [--payload-json '{...
 pnpm paperclipai plugin dashboard <plugin-id>
 pnpm paperclipai plugin bridge:data <plugin-id> --payload-json '{...}'
 pnpm paperclipai plugin bridge:action <plugin-id> --payload-json '{...}'
+pnpm paperclipai plugin bridge:stream <plugin-id> <channel> [--duration-ms 10000]
 pnpm paperclipai plugin data <plugin-id> <key> --payload-json '{...}'
 pnpm paperclipai plugin action <plugin-id> <key> --payload-json '{...}'
+```
+
+Feedback traces can be fetched directly by ID when automating export workflows:
+
+```sh
+pnpm paperclipai feedback trace <trace-id>
+pnpm paperclipai feedback bundle <trace-id>
 ```
 
 ## Heartbeat Command

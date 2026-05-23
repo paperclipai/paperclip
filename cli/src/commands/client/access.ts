@@ -262,8 +262,66 @@ export function registerAccessCommands(program: Command): void {
 
   const sidebar = program.command("sidebar").description("Sidebar preference and badge operations");
   addSimpleGet(sidebar, "preferences", "Get current sidebar preferences", "/api/sidebar-preferences/me");
-  addJsonPatch(sidebar, "preferences:update", "Update current sidebar preferences", "/api/sidebar-preferences/me");
+  addJsonPut(sidebar, "preferences:update", "Update current sidebar preferences", "/api/sidebar-preferences/me");
+  addCompanyList(sidebar, "project-preferences", "Get current project sidebar preferences", "sidebar-preferences/me");
+  addCompanyPut(sidebar, "project-preferences:update", "Update current project sidebar preferences", "sidebar-preferences/me");
   addCompanyList(sidebar, "badges", "Get sidebar badges", "sidebar-badges");
+
+  const inbox = program.command("inbox").description("Board inbox operations");
+  addCompanyList(inbox, "dismissals", "List dismissed inbox items", "inbox-dismissals");
+  addCompanyPost(inbox, "dismiss", "Dismiss an inbox item", "inbox-dismissals");
+
+  const boardClaim = program.command("board-claim").description("Board claim token operations");
+  addCommonClientOptions(
+    boardClaim
+      .command("show")
+      .description("Inspect a board claim token")
+      .argument("<token>", "Claim token")
+      .action(async (token: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get(`/api/board-claim/${token}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  addCommonClientOptions(
+    boardClaim
+      .command("claim")
+      .description("Claim a board claim token")
+      .argument("<token>", "Claim token")
+      .option("--payload-json <json>", "Claim JSON payload", "{}")
+      .action(async (token: string, opts: JsonPayloadOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(`/api/board-claim/${token}/claim`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  const openclaw = program.command("openclaw").description("OpenClaw integration helpers");
+  addCompanyPost(openclaw, "invite-prompt", "Create an OpenClaw invite prompt", "openclaw/invite-prompt");
+
+  const publicSkills = program.command("available-skill").description("Public skill catalog operations");
+  addSimpleGet(publicSkills, "list", "List available skills", "/api/skills/available");
+  addSimpleGet(publicSkills, "index", "Get available skill index", "/api/skills/index");
+  addCommonClientOptions(
+    publicSkills
+      .command("get")
+      .description("Get available skill markdown")
+      .argument("<skillName>", "Skill name")
+      .action(async (skillName: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get(`/api/skills/${skillName}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   const llm = program.command("llm").description("LLM prompt documentation");
   addSimpleGet(llm, "agent-configuration", "Get agent configuration prompt docs", "/api/llms/agent-configuration.txt");
@@ -306,12 +364,37 @@ function addJsonPatch(parent: Command, name: string, description: string, path: 
   }));
 }
 
+function addJsonPut(parent: Command, name: string, description: string, path: string): void {
+  addCommonClientOptions(parent.command(name).description(description).requiredOption("--payload-json <json>", "JSON payload").action(async (opts: JsonPayloadOptions) => {
+    try {
+      const ctx = resolveCommandContext(opts);
+      printOutput(await ctx.api.put(path, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+    } catch (err) {
+      handleCommandError(err);
+    }
+  }));
+}
+
 function addCompanyList(parent: Command, name: string, description: string, path: string): void {
   addCommonClientOptions(
     parent.command(name).description(description).option("-C, --company-id <id>", "Company ID").action(async (opts: CompanyOptions) => {
       try {
         const ctx = resolveCommandContext(opts, { requireCompany: true });
         printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/${path}`), { json: ctx.json });
+      } catch (err) {
+        handleCommandError(err);
+      }
+    }),
+    { includeCompany: false },
+  );
+}
+
+function addCompanyPut(parent: Command, name: string, description: string, path: string): void {
+  addCommonClientOptions(
+    parent.command(name).description(description).option("-C, --company-id <id>", "Company ID").requiredOption("--payload-json <json>", "JSON payload").action(async (opts: JsonPayloadOptions) => {
+      try {
+        const ctx = resolveCommandContext(opts, { requireCompany: true });
+        printOutput(await ctx.api.put(`/api/companies/${ctx.companyId}/${path}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
       } catch (err) {
         handleCommandError(err);
       }

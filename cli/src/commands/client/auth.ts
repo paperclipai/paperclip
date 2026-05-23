@@ -19,6 +19,10 @@ interface AuthLoginOptions extends BaseClientOptions {
 
 interface AuthLogoutOptions extends BaseClientOptions {}
 interface AuthWhoamiOptions extends BaseClientOptions {}
+interface AuthChallengeOptions extends BaseClientOptions {
+  payloadJson?: string;
+  token?: string;
+}
 
 export function registerClientAuthCommands(auth: Command): void {
   addCommonClientOptions(
@@ -91,6 +95,20 @@ export function registerClientAuthCommands(auth: Command): void {
 
   addCommonClientOptions(
     auth
+      .command("revoke-current")
+      .description("Revoke the current board API token")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/cli-auth/revoke-current", {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    auth
       .command("whoami")
       .description("Show the current board-user identity for this API base")
       .action(async (opts: AuthWhoamiOptions) => {
@@ -110,4 +128,57 @@ export function registerClientAuthCommands(auth: Command): void {
         }
       }),
   );
+
+  const challenge = auth.command("challenge").description("CLI auth challenge operations");
+  addCommonClientOptions(
+    challenge
+      .command("create")
+      .description("Create a CLI auth challenge")
+      .requiredOption("--payload-json <json>", "CreateCliAuthChallenge JSON payload")
+      .action(async (opts: AuthChallengeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post("/api/cli-auth/challenges", parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  addCommonClientOptions(
+    challenge
+      .command("get")
+      .description("Get a CLI auth challenge")
+      .argument("<id>", "Challenge ID")
+      .requiredOption("--token <token>", "Challenge secret")
+      .action(async (id: string, opts: AuthChallengeOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const query = new URLSearchParams({ token: opts.token ?? "" });
+          printOutput(await ctx.api.get(`/api/cli-auth/challenges/${id}?${query.toString()}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  for (const action of ["approve", "cancel"] as const) {
+    addCommonClientOptions(
+      challenge
+        .command(action)
+        .description(`${action} a CLI auth challenge`)
+        .argument("<id>", "Challenge ID")
+        .requiredOption("--token <token>", "Challenge secret")
+        .action(async (id: string, opts: AuthChallengeOptions) => {
+          try {
+            const ctx = resolveCommandContext(opts);
+            printOutput(await ctx.api.post(`/api/cli-auth/challenges/${id}/${action}`, { token: opts.token }), { json: ctx.json });
+          } catch (err) {
+            handleCommandError(err);
+          }
+        }),
+    );
+  }
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
 }

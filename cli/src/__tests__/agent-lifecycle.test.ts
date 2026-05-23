@@ -46,6 +46,7 @@ describe("agent lifecycle commands", () => {
       "--company-id", COMPANY_ID,
       "--payload-json", JSON.stringify({ name: "Builder", adapterType: "codex_local" }),
     ]);
+    await run(["agent", "hire", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["agent", "update", AGENT_ID, "--payload-json", JSON.stringify({ title: "Senior Builder" })]);
     await run(["agent", "pause", AGENT_ID]);
     await run(["agent", "resume", AGENT_ID]);
@@ -57,6 +58,7 @@ describe("agent lifecycle commands", () => {
 
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/agents`],
+      ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/agent-hires`],
       ["PATCH", `http://localhost:3100/api/agents/${AGENT_ID}`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/pause`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/resume`],

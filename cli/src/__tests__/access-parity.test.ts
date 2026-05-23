@@ -90,7 +90,17 @@ describe("access parity commands", () => {
     await run(["instance", "database-backup"]);
     await run(["sidebar", "preferences"]);
     await run(["sidebar", "preferences:update", "--payload-json", "{}"]);
+    await run(["sidebar", "project-preferences", "--company-id", COMPANY_ID]);
+    await run(["sidebar", "project-preferences:update", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["sidebar", "badges", "--company-id", COMPANY_ID]);
+    await run(["inbox", "dismissals", "--company-id", COMPANY_ID]);
+    await run(["inbox", "dismiss", "--company-id", COMPANY_ID, "--payload-json", "{\"itemKey\":\"run:1\"}"]);
+    await run(["board-claim", "show", "claim-token"]);
+    await run(["board-claim", "claim", "claim-token", "--payload-json", "{}"]);
+    await run(["openclaw", "invite-prompt", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
+    await run(["available-skill", "list"]);
+    await run(["available-skill", "index"]);
+    await run(["available-skill", "get", "paperclip"]);
     await run(["llm", "agent-configuration"]);
     await run(["llm", "agent-configuration:adapter", "codex_local"]);
 
@@ -101,8 +111,18 @@ describe("access parity commands", () => {
       ["PATCH", "http://localhost:3100/api/instance/settings/general"],
       ["POST", "http://localhost:3100/api/instance/database-backups"],
       ["GET", "http://localhost:3100/api/sidebar-preferences/me"],
-      ["PATCH", "http://localhost:3100/api/sidebar-preferences/me"],
+      ["PUT", "http://localhost:3100/api/sidebar-preferences/me"],
+      ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/sidebar-preferences/me`],
+      ["PUT", `http://localhost:3100/api/companies/${COMPANY_ID}/sidebar-preferences/me`],
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/sidebar-badges`],
+      ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/inbox-dismissals`],
+      ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/inbox-dismissals`],
+      ["GET", "http://localhost:3100/api/board-claim/claim-token"],
+      ["POST", "http://localhost:3100/api/board-claim/claim-token/claim"],
+      ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/openclaw/invite-prompt`],
+      ["GET", "http://localhost:3100/api/skills/available"],
+      ["GET", "http://localhost:3100/api/skills/index"],
+      ["GET", "http://localhost:3100/api/skills/paperclip"],
       ["GET", "http://localhost:3100/api/llms/agent-configuration.txt"],
       ["GET", "http://localhost:3100/api/llms/agent-configuration/codex_local.txt"],
     ]);

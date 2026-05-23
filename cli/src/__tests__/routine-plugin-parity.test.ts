@@ -27,6 +27,7 @@ describe("routine and plugin parity commands", () => {
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_API_URL;
     vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   });
 
   afterEach(() => {
@@ -77,13 +78,18 @@ describe("routine and plugin parity commands", () => {
     await run(["plugin", "tool:execute", "--payload-json", "{}"]);
     await run(["plugin", "health", "plug"]);
     await run(["plugin", "logs", "plug"]);
+    await run(["plugin", "upgrade", "plug"]);
+    await run(["plugin", "config", "plug"]);
     await run(["plugin", "config:set", "plug", "--payload-json", "{}"]);
+    await run(["plugin", "config:test", "plug", "--payload-json", "{}"]);
     await run(["plugin", "jobs", "plug"]);
     await run(["plugin", "job:runs", "plug", "job1"]);
     await run(["plugin", "job:trigger", "plug", "job1"]);
     await run(["plugin", "webhook", "plug", "endpoint", "--payload-json", "{}"]);
     await run(["plugin", "dashboard", "plug"]);
     await run(["plugin", "bridge:data", "plug", "--payload-json", "{}"]);
+    await run(["plugin", "bridge:action", "plug", "--payload-json", "{}"]);
+    await run(["plugin", "bridge:stream", "plug", "events", "--duration-ms", "1"]);
     await run(["plugin", "data", "plug", "key", "--payload-json", "{}"]);
     await run(["plugin", "action", "plug", "key", "--payload-json", "{}"]);
 
@@ -93,13 +99,18 @@ describe("routine and plugin parity commands", () => {
       ["POST", "http://localhost:3100/api/plugins/tools/execute"],
       ["GET", "http://localhost:3100/api/plugins/plug/health"],
       ["GET", "http://localhost:3100/api/plugins/plug/logs"],
+      ["POST", "http://localhost:3100/api/plugins/plug/upgrade"],
+      ["GET", "http://localhost:3100/api/plugins/plug/config"],
       ["POST", "http://localhost:3100/api/plugins/plug/config"],
+      ["POST", "http://localhost:3100/api/plugins/plug/config/test"],
       ["GET", "http://localhost:3100/api/plugins/plug/jobs"],
       ["GET", "http://localhost:3100/api/plugins/plug/jobs/job1/runs"],
       ["POST", "http://localhost:3100/api/plugins/plug/jobs/job1/trigger"],
       ["POST", "http://localhost:3100/api/plugins/plug/webhooks/endpoint"],
       ["GET", "http://localhost:3100/api/plugins/plug/dashboard"],
       ["POST", "http://localhost:3100/api/plugins/plug/bridge/data"],
+      ["POST", "http://localhost:3100/api/plugins/plug/bridge/action"],
+      ["GET", "http://localhost:3100/api/plugins/plug/bridge/stream/events"],
       ["POST", "http://localhost:3100/api/plugins/plug/data/key"],
       ["POST", "http://localhost:3100/api/plugins/plug/actions/key"],
     ]);
