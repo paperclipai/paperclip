@@ -8479,13 +8479,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // an infinite reopen loop on done issues (#3935,
         // NousResearch/hermes-paperclip-adapter#92). The comment table holds
         // the authoritative author identity regardless of auth attribution.
+        //
+        // We use TWO signals to recognize a self-authored comment, because the
+        // agent has two write paths on local_trusted (each lossy in a different
+        // way):
+        //   1. `issue_comments.author_agent_id` — set by MCP-routed writes;
+        //      NULL on shell-routed (`curl`) writes that round-trip through
+        //      the `local-board` user principal.
+        //   2. `heartbeat_runs.agent_id` joined via
+        //      `issue_comments.created_by_run_id` — set by the run-level
+        //      comment plumbing on BOTH paths, so it survives even when the
+        //      auth middleware loses the agent identity on the shell path.
+        // The helper treats EITHER signal matching the assignee as
+        // "self-authored". See `heartbeat-self-comment-wake.ts` for the
+        // full mechanism writeup.
         const deferredCommentAuthors = deferredCommentIds.length > 0
           ? await tx
               .select({
                 id: issueComments.id,
                 authorAgentId: issueComments.authorAgentId,
+                createdByRunAgentId: heartbeatRuns.agentId,
               })
               .from(issueComments)
+              .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
               .where(inArray(issueComments.id, deferredCommentIds))
           : [];
         const deferredWakeIsExclusivelySelfAuthored =
