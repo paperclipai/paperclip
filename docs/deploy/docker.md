@@ -27,6 +27,18 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 **Note:** `PAPERCLIP_DATA_DIR` is resolved relative to the compose file (`docker/`), so `../data/pc` maps to `data/pc` in the project root.
 
+The quickstart compose path now ships a committed seccomp artifact for Firefox/WebKit user-namespace startup:
+
+- Artifact: `docker/seccomp/paperclip-server-firefox-userns.json`
+- Compose wiring: `docker/docker-compose.quickstart.yml` uses `security_opt: ["seccomp=./seccomp/paperclip-server-firefox-userns.json"]`
+- Path resolution: the seccomp path is relative to the compose file directory (`docker/`)
+
+Rollback:
+
+1. Remove the `security_opt` seccomp line from the compose file to fall back to Docker's builtin default profile.
+2. Recreate the Paperclip container with `docker compose -f docker/docker-compose.quickstart.yml up -d --force-recreate`.
+3. Do not replace the committed profile with `seccomp=unconfined` as steady-state config; reserve that for break-glass debugging only.
+
 ## Manual Docker Build
 
 ```sh
