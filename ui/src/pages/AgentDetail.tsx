@@ -1716,7 +1716,9 @@ function ConfigurationTab({
           ? "Enabled via explicit company permission grant."
           : taskAssignSource === "simple_default"
             ? "Enabled by simple company-wide task assignment defaults."
-            : "Disabled unless explicitly granted.";
+            : taskAssignSource === "manager_chain"
+              ? "Enabled for direct and indirect reports (function subtree) plus self-assignment."
+              : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">

@@ -544,4 +544,98 @@ describeEmbeddedPostgres("authorization service", () => {
       grant: { permissionKey: "tasks:assign" },
     });
   });
+
+  it("allows a Head-of agent to assign within their function subtree without an explicit grant", async () => {
+    const company = await createCompany(db, "HeadOfSubtree");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const headOfAgent = await createAgent(db, company.id, {
+      role: "general",
+      reportsTo: ceoAgent.id,
+    });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: headOfAgent.id,
+    });
+
+    const selfAssign = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: headOfAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: headOfAgent.id },
+      scope: { assigneeAgentId: headOfAgent.id },
+    });
+    const reportAssign = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: headOfAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: reportAgent.id },
+      scope: { assigneeAgentId: reportAgent.id },
+    });
+
+    expect(selfAssign.allowed).toBe(true);
+    expect(reportAssign.allowed).toBe(true);
+  });
+
+  it("allows a Head-of self-assignment even when target agent has a restrictive assignment policy", async () => {
+    const company = await createCompany(db, "HeadOfRestricted");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const headOfAgent = await createAgent(db, company.id, {
+      role: "general",
+      reportsTo: ceoAgent.id,
+      permissions: {
+        authorizationPolicy: {
+          agentVisibility: {
+            mode: "private",
+            hiddenFromDefaultDirectory: true,
+          },
+          assignmentPolicy: { mode: "company_default" },
+          protectedAgent: { requiresApproval: false },
+          managedBy: "permissions-extension",
+        },
+      },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: headOfAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: headOfAgent.id },
+      scope: { assigneeAgentId: headOfAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_manager_chain",
+    });
+  });
+
+  it("denies a Head-of from assigning to an agent outside their function subtree when policy is restricted", async () => {
+    const company = await createCompany(db, "HeadOfCrossFunction");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const bizopsHead = await createAgent(db, company.id, {
+      role: "general",
+      reportsTo: ceoAgent.id,
+    });
+    const engineeringHead = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: ceoAgent.id,
+      permissions: {
+        authorizationPolicy: {
+          agentVisibility: { mode: "private", hiddenFromDefaultDirectory: true },
+          assignmentPolicy: { mode: "company_default" },
+          protectedAgent: { requiresApproval: false },
+          managedBy: "permissions-extension",
+        },
+      },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: bizopsHead.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: engineeringHead.id },
+      scope: { assigneeAgentId: engineeringHead.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
+  });
 });

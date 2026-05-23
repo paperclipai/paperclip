@@ -46,6 +46,7 @@ const mockAgentService = vi.hoisted(() => ({
   update: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
+  hasDirectReports: vi.fn(),
   resolveByReference: vi.fn(),
 }));
 
@@ -301,6 +302,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
+    mockAgentService.hasDirectReports.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
@@ -335,6 +337,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(false);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
     mockAgentService.activatePendingApproval.mockResolvedValue({
@@ -1368,6 +1371,26 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("simple_default");
+  }, 15_000);
+
+  it("reports manager_chain task assignment for agents with direct reports but no grant or membership", async () => {
+    mockAccessService.getMembership.mockResolvedValue(null);
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+    mockAgentService.hasDirectReports.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("manager_chain");
   }, 15_000);
 
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {

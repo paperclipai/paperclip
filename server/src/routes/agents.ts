@@ -510,6 +510,15 @@ export function agentRoutes(
       };
     }
 
+    if (await svc.hasDirectReports(agent.companyId, agent.id)) {
+      return {
+        canAssignTasks: true,
+        taskAssignSource: "manager_chain" as const,
+        membership,
+        grants,
+      };
+    }
+
     return {
       canAssignTasks: false,
       taskAssignSource: "none" as const,

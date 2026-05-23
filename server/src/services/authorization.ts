@@ -724,12 +724,26 @@ export function authorizationService(db: Db) {
           explanation: "Task assignment target agent is not active in the target company.",
         });
       }
+      const targetAgentId =
+        input.resource.type === "issue" ? input.resource.assigneeAgentId ?? null : null;
+      const isStructuralManagerChain = targetAgentId
+        ? targetAgentId === actorAgentId ||
+          (await isManagerOf(companyId, actorAgentId, targetAgentId))
+        : false;
       const policyEffect = await assignmentPolicyEffect(input.resource);
       const policyDeny = await denyForAssignmentPolicyIfNeeded(policyEffect);
       if (policyDeny) return policyDeny;
       if (policyEffect.kind === "restricted") {
         const grantDecision = await decideWithTaskAssignmentGrants("agent", actorAgentId);
         if (grantDecision.allowed) return grantDecision;
+        if (isStructuralManagerChain) {
+          return allow({
+            action: input.action,
+            reason: "allow_manager_chain",
+            explanation:
+              "Allowed because the target agent is the actor or reports up to the actor's function.",
+          });
+        }
         return denyRestrictedAssignmentPolicy(policyEffect);
       }
       return allow({
