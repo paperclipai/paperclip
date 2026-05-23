@@ -18,6 +18,7 @@ import type { IssueTimelineEvent } from "./issue-timeline-events";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
+import { t } from "@/i18n";
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
@@ -569,18 +570,39 @@ export function formatDurationWords(ms: number | null) {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return null;
   const totalSeconds = Math.max(1, Math.round(ms / 1000));
   if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds === 1 ? "" : "s"}`;
+    return t("duration.seconds", {
+      defaultValue: totalSeconds === 1 ? "{{count}} second" : "{{count}} seconds",
+      count: totalSeconds,
+    });
   }
   const totalMinutes = Math.round(totalSeconds / 60);
   if (totalMinutes < 60) {
-    return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+    return t("duration.minutes", {
+      defaultValue: totalMinutes === 1 ? "{{count}} minute" : "{{count}} minutes",
+      count: totalMinutes,
+    });
   }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (minutes === 0) {
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return t("duration.hours", {
+      defaultValue: hours === 1 ? "{{count}} hour" : "{{count}} hours",
+      count: hours,
+    });
   }
-  return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hoursText = t("duration.hours", {
+    defaultValue: hours === 1 ? "{{count}} hour" : "{{count}} hours",
+    count: hours,
+  });
+  const minutesText = t("duration.minutes", {
+    defaultValue: minutes === 1 ? "{{count}} minute" : "{{count}} minutes",
+    count: minutes,
+  });
+  return t("duration.hoursAndMinutes", {
+    defaultValue: "{{hours}} {{minutes}}",
+    hours: hoursText,
+    minutes: minutesText,
+  });
 }
 
 function runDurationLabel(run: {
@@ -597,21 +619,31 @@ function runDurationLabel(run: {
   const stopReason = typeof run.resultJson?.stopReason === "string" ? run.resultJson.stopReason : null;
   switch (run.status) {
     case "succeeded":
-      return durationText ? `Worked for ${durationText}` : "Finished work";
+      return durationText
+        ? t("runStatus.workedFor", { defaultValue: "Worked for {{duration}}", duration: durationText })
+        : t("runStatus.finishedWork", { defaultValue: "Finished work" });
     case "failed":
     case "error":
-      return durationText ? `Failed after ${durationText}` : "Run failed";
+      return durationText
+        ? t("runStatus.failedAfter", { defaultValue: "Failed after {{duration}}", duration: durationText })
+        : t("runStatus.runFailed", { defaultValue: "Run failed" });
     case "timed_out":
-      return durationText ? `Timed out after ${durationText}` : "Run timed out";
+      return durationText
+        ? t("runStatus.timedOutAfter", { defaultValue: "Timed out after {{duration}}", duration: durationText })
+        : t("runStatus.runTimedOut", { defaultValue: "Run timed out" });
     case "cancelled":
       if (stopReason === "paused") {
-        return durationText ? `Paused by board after ${durationText}` : "Paused by board";
+        return durationText
+          ? t("runStatus.pausedByBoardAfter", { defaultValue: "Paused by board after {{duration}}", duration: durationText })
+          : t("runStatus.pausedByBoard", { defaultValue: "Paused by board" });
       }
-      return durationText ? `Cancelled after ${durationText}` : "Run cancelled";
+      return durationText
+        ? t("runStatus.cancelledAfter", { defaultValue: "Cancelled after {{duration}}", duration: durationText })
+        : t("runStatus.runCancelled", { defaultValue: "Run cancelled" });
     case "queued":
-      return "Queued";
+      return t("runStatus.queued", { defaultValue: "Queued" });
     case "running":
-      return "Working...";
+      return t("runStatus.working", { defaultValue: "Working..." });
     default:
       return formatStatusLabel(run.status);
   }
@@ -648,7 +680,7 @@ function createHistoricalTranscriptMessage(args: {
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
   const compactedTranscript = compactIssueChatTranscript(transcript);
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
-  const waitingText = hasOutput ? "" : "Run finished";
+  const waitingText = hasOutput ? "" : t("runStatus.runFinished", { defaultValue: "Run finished" });
   const content = parts.length > 0
     ? parts
     : waitingText
@@ -845,10 +877,10 @@ function createLiveRunMessage(args: {
   const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
   const waitingText =
     run.status === "queued"
-      ? "Queued..."
+      ? t("runStatus.queuedEllipsis", { defaultValue: "Queued..." })
       : parts.length > 0
         ? ""
-        : "Working...";
+        : t("runStatus.working", { defaultValue: "Working..." });
 
   const content = parts;
 

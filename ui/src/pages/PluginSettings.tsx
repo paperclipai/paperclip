@@ -8,7 +8,7 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { useTranslation } from "@/i18n";
+import { useTranslation, t as tStatic } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ChoosePathButton } from "@/components/PathInstructionsModal";
@@ -1154,15 +1154,15 @@ function formatRelativeTime(isoString: string): string {
   const then = new Date(isoString).getTime();
   const diffMs = now - then;
 
-  if (diffMs < 0) return "just now";
+  if (diffMs < 0) return tStatic("time.justNow", { defaultValue: "just now" });
   const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) return tStatic("time.secondsAgo", { defaultValue: "{{count}}s ago", count: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return tStatic("time.minutesAgo", { defaultValue: "{{count}}m ago", count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return tStatic("time.hoursAgo", { defaultValue: "{{count}}h ago", count: hours });
   const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+  return tStatic("time.daysAgo", { defaultValue: "{{count}}d ago", count: days });
 }
 
 /**

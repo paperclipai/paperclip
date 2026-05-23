@@ -641,7 +641,7 @@ export function InviteLandingPage() {
                   disabled={acceptMutation.isPending || agentName.trim().length === 0}
                   onClick={() => acceptMutation.mutate()}
                 >
-                  {acceptMutation.isPending ? "Working..." : joinButtonLabel}
+                  {acceptMutation.isPending ? t("inviteLanding.working", { defaultValue: "Working..." }) : joinButtonLabel}
                 </Button>
               </div>
             ) : requiresHumanAccount ? (
@@ -764,10 +764,10 @@ export function InviteLandingPage() {
                     aria-disabled={!authCanSubmit || authMutation.isPending}
                   >
                     {authMutation.isPending
-                      ? "Working..."
+                      ? t("inviteLanding.working", { defaultValue: "Working..." })
                       : authMode === "sign_in"
-                        ? "Sign in and continue"
-                        : "Create account and continue"}
+                        ? t("inviteLanding.signInAndContinue", { defaultValue: "Sign in and continue" })
+                        : t("inviteLanding.createAccountAndContinue", { defaultValue: "Create account and continue" })}
                   </Button>
                 </form>
 
@@ -808,7 +808,7 @@ export function InviteLandingPage() {
                     disabled={acceptMutation.isPending || isCurrentMember}
                     onClick={() => acceptMutation.mutate()}
                   >
-                    {acceptMutation.isPending ? "Working..." : joinButtonLabel}
+                    {acceptMutation.isPending ? t("inviteLanding.working", { defaultValue: "Working..." }) : joinButtonLabel}
                   </Button>
                 )}
               </div>

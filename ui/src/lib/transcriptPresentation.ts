@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+
 type TranscriptDensity = "comfortable" | "compact";
 
 type TranscriptActivity = {
@@ -118,7 +120,7 @@ export function isCommandTool(name: string, input: unknown): boolean {
 }
 
 export function displayToolName(name: string, input: unknown): string {
-  if (isCommandTool(name, input)) return "Executing command";
+  if (isCommandTool(name, input)) return t("runStatus.executingCommand", { defaultValue: "Executing command" });
   return humanizeLabel(name);
 }
 

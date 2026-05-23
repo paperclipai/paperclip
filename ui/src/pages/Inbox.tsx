@@ -333,7 +333,7 @@ export function FailedRunInboxRow({
                   {issue.title}
                 </>
               ) : (
-                <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
+                <>{t("inbox.failedRun", { defaultValue: "Failed run" })}{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -354,7 +354,9 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Retrying…" : "Retry"}
+            {isRetrying
+              ? t("inbox.retrying", { defaultValue: "Retrying…" })
+              : t("inbox.retry", { defaultValue: "Retry" })}
           </Button>
           {!showUnreadSlot && (
             <button
@@ -486,8 +488,8 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              {requesterName ? <span>{t("inbox.requestedBy", { defaultValue: "requested by {{name}}", name: requesterName })}</span> : null}
+              <span>{t("inbox.updatedWhen", { defaultValue: "updated {{when}}", when: timeAgo(approval.updatedAt) })}</span>
             </span>
           </span>
         </Link>
@@ -499,7 +501,7 @@ function ApprovalInboxRow({
               onClick={onApprove}
               disabled={isPending}
             >
-              Approve
+              {t("inbox.approve", { defaultValue: "Approve" })}
             </Button>
             <Button
               variant="destructive"
@@ -508,7 +510,7 @@ function ApprovalInboxRow({
               onClick={onReject}
               disabled={isPending}
             >
-              Reject
+              {t("inbox.reject", { defaultValue: "Reject" })}
             </Button>
           </div>
         ) : null}
@@ -521,7 +523,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("inbox.approve", { defaultValue: "Approve" })}
           </Button>
           <Button
             variant="destructive"
@@ -530,7 +532,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("inbox.reject", { defaultValue: "Reject" })}
           </Button>
         </div>
       ) : null}
@@ -616,8 +618,8 @@ function JoinRequestInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
-              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+              <span>{t("inbox.requestedFromIp", { defaultValue: "requested {{when}} from IP {{ip}}", when: timeAgo(joinRequest.createdAt), ip: joinRequest.requestIp })}</span>
+              {joinRequest.adapterType && <span>{t("inbox.adapterLabel", { defaultValue: "adapter: {{name}}", name: joinRequest.adapterType })}</span>}
             </span>
           </span>
         </div>
@@ -628,7 +630,7 @@ function JoinRequestInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("inbox.approve", { defaultValue: "Approve" })}
           </Button>
           <Button
             variant="destructive"
@@ -637,7 +639,7 @@ function JoinRequestInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("inbox.reject", { defaultValue: "Reject" })}
           </Button>
         </div>
       </div>
@@ -648,7 +650,7 @@ function JoinRequestInboxRow({
           onClick={onApprove}
           disabled={isPending}
         >
-          Approve
+          {t("inbox.approve", { defaultValue: "Approve" })}
         </Button>
         <Button
           variant="destructive"
@@ -657,7 +659,7 @@ function JoinRequestInboxRow({
           onClick={onReject}
           disabled={isPending}
         >
-          Reject
+          {t("inbox.reject", { defaultValue: "Reject" })}
         </Button>
       </div>
     </div>

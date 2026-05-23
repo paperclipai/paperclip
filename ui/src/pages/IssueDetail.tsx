@@ -3265,18 +3265,23 @@ export function IssueDetail() {
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">
-                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
+                  {childIssues.length === 0
+                    ? t("issueDetail.pausedByBoardSentence", { defaultValue: "Paused by board." })
+                    : t("issueDetail.subtreePauseActive", { defaultValue: "Subtree pause is active." })}
                 </span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
                   {childIssues.length === 0
-                    ? "Issue execution is held until resume. Human comments can still wake the assignee for triage."
-                    : "Root and descendant execution is held until resume. Human comments can still wake assignees for triage."}
+                    ? t("issueDetail.pauseLeafExplanation", { defaultValue: "Issue execution is held until resume. Human comments can still wake the assignee for triage." })
+                    : t("issueDetail.pauseSubtreeExplanation", { defaultValue: "Root and descendant execution is held until resume. Human comments can still wake assignees for triage." })}
                 </span>
               </div>
               <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
                 {childIssues.length === 0
-                  ? "1 issue held"
-                  : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
+                  ? t("issueDetail.oneIssueHeld", { defaultValue: "1 issue held" })
+                  : t("issueDetail.descendantsHeld", {
+                      defaultValue: heldDescendantCount === 1 ? "{{count}} descendant held" : "{{count}} descendants held",
+                      count: heldDescendantCount,
+                    })}
                 {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
               </div>
               {canShowSubtreeControls || canResumeLeafWork ? (

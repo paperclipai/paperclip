@@ -4,7 +4,8 @@ import { assertValidLocaleMessages, validateLocaleMessages } from "./locale-vali
 
 export const DEFAULT_LOCALE = "en" as const;
 // Locales that we hand-translate and validate strictly against en.json.
-// Other locales are kept as-is and may have missing keys (i18next falls back to en).
+// en and tr maintain full parity; missing keys here fail the build/runtime
+// validation so translation gaps are caught early.
 const STRICT_LOCALES = new Set(["en", "tr"]);
 
 const localeModules = import.meta.glob("./locales/*.json", {

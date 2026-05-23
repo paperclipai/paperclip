@@ -15,6 +15,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockHealthApi = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
   NavLink: ({ to, children, className, ...props }: {
     to: string;
@@ -60,6 +64,10 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/health", () => ({
+  healthApi: mockHealthApi,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -125,6 +133,7 @@ describe("Sidebar", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockHealthApi.get.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
   });
 
   afterEach(() => {

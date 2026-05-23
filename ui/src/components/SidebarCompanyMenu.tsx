@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Company } from "@paperclipai/shared";
+import type { Company, DeploymentMode } from "@paperclipai/shared";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
+import { useOptionalToastActions } from "@/context/ToastContext";
 import { useTranslation } from "@/i18n";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
@@ -44,6 +45,7 @@ import { CompanyPatternIcon } from "./CompanyPatternIcon";
 interface SidebarCompanyMenuProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  deploymentMode?: DeploymentMode;
 }
 
 function WorkspaceIcon({ company }: { company: Company }) {
@@ -130,13 +132,18 @@ function SortableCompanyItem({
   );
 }
 
-export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+export function SidebarCompanyMenu({
+  open: controlledOpen,
+  onOpenChange,
+  deploymentMode,
+}: SidebarCompanyMenuProps = {}) {
   const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const toastActions = useOptionalToastActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -171,6 +178,13 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (error) => {
+      toastActions?.pushToast({
+        title: t("companyMenu.signOutFailedTitle", { defaultValue: "Sign out failed" }),
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     },
   });
 
@@ -329,7 +343,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             <span>{t("companyMenu.companySettings", { defaultValue: "Company settings" })}</span>
           </Link>
         </DropdownMenuItem>
-        {session?.session ? (
+        {deploymentMode === "authenticated" && session?.session ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem

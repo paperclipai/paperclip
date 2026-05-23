@@ -20,7 +20,7 @@ import {
   deriveRecoveryDisplayState,
   type RecoveryDisplayState,
 } from "@/lib/recovery-display";
-import { useTranslation } from "@/i18n";
+import { useTranslation, t as tStatic } from "@/i18n";
 
 export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
@@ -186,7 +186,9 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0
+        ? tStatic("time.inMinutes", { defaultValue: "in {{count}}m", count: absMin })
+        : tStatic("time.minutesAgo", { defaultValue: "{{count}}m ago", count: absMin });
     }
     return date.toLocaleString(undefined, {
       month: "short",

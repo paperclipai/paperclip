@@ -1,9 +1,0 @@
-{
-  "app": {
-    "noCompanies": {
-      "title": "Hozza létre első vállalatát",
-      "description": "Kezdje egy vállalat létrehozásával.",
-      "newCompany": "Új vállalat"
-    }
-  }
-}

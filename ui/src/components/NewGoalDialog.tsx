@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -42,6 +43,7 @@ export function NewGoalDialog() {
   const levelLabels = useLevelLabels();
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const toastActions = useOptionalToastActions();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -49,6 +51,7 @@ export function NewGoalDialog() {
   const [level, setLevel] = useState("task");
   const [parentId, setParentId] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [levelOpen, setLevelOpen] = useState(false);
@@ -72,6 +75,15 @@ export function NewGoalDialog() {
       reset();
       closeNewGoal();
     },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setSubmitError(message);
+      toastActions?.pushToast({
+        title: t("newGoalDialog.createFailedTitle", { defaultValue: "Could not create goal" }),
+        body: message,
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
@@ -88,10 +100,19 @@ export function NewGoalDialog() {
     setLevel("task");
     setParentId("");
     setExpanded(false);
+    setSubmitError(null);
   }
 
   function handleSubmit() {
-    if (!selectedCompanyId || !title.trim()) return;
+    if (!selectedCompanyId) {
+      setSubmitError(t("newGoalDialog.noCompanyError", { defaultValue: "No company selected" }));
+      return;
+    }
+    if (!title.trim()) {
+      setSubmitError(t("newGoalDialog.titleRequired", { defaultValue: "Goal title is required." }));
+      return;
+    }
+    setSubmitError(null);
     createGoal.mutate({
       title: title.trim(),
       description: description.trim() || undefined,
@@ -275,7 +296,16 @@ export function NewGoalDialog() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-border">
+          <p
+            className={cn(
+              "text-xs text-destructive truncate",
+              submitError ? "opacity-100" : "opacity-0",
+            )}
+            role={submitError ? "alert" : undefined}
+          >
+            {submitError ?? ""}
+          </p>
           <Button
             size="sm"
             disabled={!title.trim() || createGoal.isPending}

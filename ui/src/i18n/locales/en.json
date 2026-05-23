@@ -718,7 +718,26 @@
     "searchingIssues": "Searching issues...",
     "noMatchingIssues": "No matching issues.",
     "addBlocker": "Add blocker",
-    "clearAdapterOptions": "Clear adapter options"
+    "clearAdapterOptions": "Clear adapter options",
+    "createdBy": "Created by",
+    "user": "User",
+    "started": "Started",
+    "completed": "Completed",
+    "created": "Created",
+    "updated": "Updated",
+    "service": "Service",
+    "workspace": "Workspace",
+    "viewWorkspace": "View workspace",
+    "branch": "Branch",
+    "folder": "Folder",
+    "monitor": "Monitor",
+    "depth": "Depth",
+    "execution": "Execution",
+    "scheduledRetry": "Scheduled retry",
+    "nextCheck": "Next check {{when}}",
+    "cleared": "Cleared",
+    "lastTriggered": "Last triggered {{when}}",
+    "notScheduled": "Not scheduled"
   },
   "comments": {
     "copied": "Copied",
@@ -1786,7 +1805,13 @@
     "markAllAsRead": "Mark all as read?",
     "dismiss": "Dismiss",
     "dismissFromInbox": "Dismiss from inbox",
-    "group": "Group",
+    "group": {
+      "none": "None",
+      "type": "Type",
+      "assignee": "Assignee",
+      "project": "Project",
+      "workspace": "Workspace"
+    },
     "chooseColumns": "Choose which inbox columns stay visible",
     "sort": "Sort",
     "nestingDisable": "Disable parent-child nesting",
@@ -1811,13 +1836,15 @@
       "actionable": "Needs action",
       "resolved": "Resolved"
     },
-    "group": {
-      "none": "None",
-      "type": "Type",
-      "assignee": "Assignee",
-      "project": "Project",
-      "workspace": "Workspace"
-    }
+    "approve": "Approve",
+    "reject": "Reject",
+    "retry": "Retry",
+    "retrying": "Retrying…",
+    "failedRun": "Failed run",
+    "requestedBy": "requested by {{name}}",
+    "updatedWhen": "updated {{when}}",
+    "requestedFromIp": "requested {{when}} from IP {{ip}}",
+    "adapterLabel": "adapter: {{name}}"
   },
   "issueDetail": {
     "backToInbox": "Back to inbox",
@@ -1835,7 +1862,15 @@
     "previewUnavailable": "Preview unavailable.",
     "costSummary": "Cost Summary",
     "noCostData": "No cost data yet.",
-    "thisIssue": "This issue"
+    "thisIssue": "This issue",
+    "pausedByBoardSentence": "Paused by board.",
+    "subtreePauseActive": "Subtree pause is active.",
+    "pauseLeafExplanation": "Issue execution is held until resume. Human comments can still wake the assignee for triage.",
+    "pauseSubtreeExplanation": "Root and descendant execution is held until resume. Human comments can still wake assignees for triage.",
+    "oneIssueHeld": "1 issue held",
+    "descendantsHeld_one": "{{count}} descendant held",
+    "descendantsHeld_other": "{{count}} descendants held",
+    "descendantsHeld": "{{count}} descendants held"
   },
   "imageGalleryModal": {
     "imageFallback": "Image",
@@ -3040,5 +3075,73 @@
       "minItems": "Must have at least {{count}} items",
       "maxItems": "Must have at most {{count}} items"
     }
+  },
+  "time": {
+    "justNow": "just now",
+    "now": "now",
+    "secondsAgo": "{{count}}s ago",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "daysAgo": "{{count}}d ago",
+    "weeksAgo": "{{count}}w ago",
+    "monthsAgo": "{{count}}mo ago",
+    "inMinutes": "in {{count}}m",
+    "inHours": "in {{count}}h",
+    "inDays": "in {{count}}d"
+  },
+  "duration": {
+    "seconds_one": "{{count}} second",
+    "seconds_other": "{{count}} seconds",
+    "minutes_one": "{{count}} minute",
+    "minutes_other": "{{count}} minutes",
+    "hours_one": "{{count}} hour",
+    "hours_other": "{{count}} hours",
+    "seconds": "{{count}} seconds",
+    "minutes": "{{count}} minutes",
+    "hours": "{{count}} hours",
+    "hoursAndMinutes": "{{hours}} {{minutes}}"
+  },
+  "runStatus": {
+    "running": "Running",
+    "queued": "Queued",
+    "queuedEllipsis": "Queued...",
+    "working": "Working...",
+    "workedFor": "Worked for {{duration}}",
+    "workingFor": "Working for {{duration}}",
+    "finishedWork": "Finished work",
+    "runFailed": "Run failed",
+    "failedAfter": "Failed after {{duration}}",
+    "runTimedOut": "Run timed out",
+    "timedOutAfter": "Timed out after {{duration}}",
+    "pausedByBoard": "Paused by board",
+    "pausedByBoardAfter": "Paused by board after {{duration}}",
+    "runCancelled": "Run cancelled",
+    "cancelledAfter": "Cancelled after {{duration}}",
+    "runFinished": "Run finished",
+    "headerWorking": "Working",
+    "headerWorked": "Worked",
+    "forDuration": "for {{duration}}",
+    "ranCommands_one": "ran {{count}} command",
+    "ranCommands_other": "ran {{count}} commands",
+    "calledTools_one": "called {{count}} tool",
+    "calledTools_other": "called {{count}} tools",
+    "ranCommands": "ran {{count}} commands",
+    "calledTools": "called {{count}} tools",
+    "executingCommand": "Executing command"
+  },
+  "issueChat": {
+    "updatedThisTask": "updated this task",
+    "requestedFollowUp": "requested follow-up",
+    "hideConfirmation": "Hide confirmation",
+    "expiredConfirmation": "Expired confirmation",
+    "followUp": "Follow-up",
+    "fieldStatus": "Status",
+    "fieldAssignee": "Assignee",
+    "fieldWorkspace": "Workspace"
+  },
+  "inviteLanding": {
+    "working": "Working...",
+    "signInAndContinue": "Sign in and continue",
+    "createAccountAndContinue": "Create account and continue"
   }
 }

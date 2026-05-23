@@ -11,11 +11,13 @@ describe("locale validation", () => {
     expect(t("app.missing")).toBe("app.missing");
   });
 
-  it("accepts registered locale files", () => {
+  it("accepts the default English locale file", () => {
     expect(Object.keys(localeMessages)).toContain("en");
-    for (const [locale, messages] of Object.entries(localeMessages)) {
-      expect(validateLocaleMessages(messages), locale).toEqual([]);
-    }
+    expect(validateLocaleMessages(localeMessages.en), "en").toEqual([]);
+  });
+
+  it("registers Turkish as the only secondary locale", () => {
+    expect(Object.keys(localeMessages).sort()).toEqual(["en", "tr"]);
   });
 
   it("rejects missing and extra nested keys", () => {

@@ -465,9 +465,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
     !hasExplicitClaudeConfigDir;
-  const claudeConfigSeedDir = useManagedRemoteClaudeConfig
-    ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
-    : null;
+  // SECURITY: For local execution, the spawned `claude` CLI would otherwise
+  // resolve CLAUDE_CONFIG_DIR to the operator's real ~/.claude and read their
+  // personal skills, projects/* memories, plans, commands, sessions, history,
+  // plugins, etc. — which can leak into Paperclip agent prompts/output. We
+  // always isolate by pointing CLAUDE_CONFIG_DIR at a Paperclip-managed seed
+  // that contains ONLY the operator's auth + global settings (see
+  // prepareClaudeConfigSeed / SEEDED_SHARED_FILES). Operators can opt out by
+  // setting CLAUDE_CONFIG_DIR explicitly in the adapter config env.
+  const useIsolatedLocalClaudeConfig =
+    !executionTargetIsRemote && !hasExplicitClaudeConfigDir;
+  const claudeConfigSeedDir =
+    useManagedRemoteClaudeConfig || useIsolatedLocalClaudeConfig
+      ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
+      : null;
+  if (useIsolatedLocalClaudeConfig && claudeConfigSeedDir) {
+    env.CLAUDE_CONFIG_DIR = claudeConfigSeedDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = claudeConfigSeedDir;
+    await onLog(
+      "stdout",
+      `[paperclip] Isolating Claude config to ${claudeConfigSeedDir} (operator skills/projects/memories are intentionally not visible to this agent).\n`,
+    );
+  }
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
