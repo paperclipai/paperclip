@@ -26,6 +26,14 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
   pluginLifecycleManager: () => mockLifecycle,
 }));
 
+vi.mock("../services/plugin-secrets-handler.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/plugin-secrets-handler.js")>();
+  return {
+    ...actual,
+    assertSecretRefsBelongToCompany: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
 }));
@@ -296,6 +304,7 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/config`)
       .send({
+        companyId: companyA,
         configJson: {
           apiKeyRef: "77777777-7777-4777-8777-777777777777",
         },
@@ -305,6 +314,30 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, {
       configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" },
     });
+  }, 20_000);
+
+  it("requires companyId when saving plugin config with secret refs", async () => {
+    readyPlugin();
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/companyId.*required/i);
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
   it("rejects plugin config saves that contain secret refs when opt-out flag is set", async () => {

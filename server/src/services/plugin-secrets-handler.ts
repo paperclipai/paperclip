@@ -33,7 +33,7 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecrets } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -122,6 +122,46 @@ export function extractSecretRefPathsFromConfig(
   return refs;
 }
 
+/**
+ * Ensure every secret ref UUID belongs to the given company and is active.
+ * Used before persisting instance config that contains secret-ref fields.
+ */
+export async function assertSecretRefsBelongToCompany(
+  db: Db,
+  companyId: string,
+  secretRefsByPath: Map<string, Set<string>>,
+): Promise<void> {
+  if (secretRefsByPath.size === 0) return;
+
+  const trimmedCompanyId = companyId.trim();
+  if (!trimmedCompanyId) {
+    throw invalidSecretRef("<missing-company>");
+  }
+
+  const secretIds = [...secretRefsByPath.keys()];
+  const rows = await db
+    .select({
+      id: companySecrets.id,
+      companyId: companySecrets.companyId,
+      status: companySecrets.status,
+    })
+    .from(companySecrets)
+    .where(
+      and(
+        inArray(companySecrets.id, secretIds),
+        eq(companySecrets.companyId, trimmedCompanyId),
+      ),
+    );
+
+  const found = new Map(rows.map((row) => [row.id, row]));
+  for (const secretId of secretIds) {
+    const secret = found.get(secretId);
+    if (!secret || secret.status !== "active") {
+      throw notFound("Secret not found");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
@@ -134,7 +174,14 @@ export function extractSecretRefPathsFromConfig(
 export interface PluginSecretsResolveParams {
   /** The secret reference string (a secret UUID). */
   secretRef: string;
+  /** Company scope for the active plugin execution context. */
+  companyId: string;
+  /** Optional config path when resolving a bound instance-config secret ref. */
+  configPath?: string;
 }
+
+export const PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE =
+  "Plugin secret resolution requires companyId in the active execution context";
 
 /**
  * Options for creating the plugin secrets handler.
@@ -215,7 +262,7 @@ export function createPluginSecretsHandler(
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
-      const { secretRef } = params;
+      const { secretRef, companyId, configPath } = params;
 
       // ---------------------------------------------------------------
       // 0. Rate limiting — prevent brute-force UUID enumeration
@@ -243,6 +290,12 @@ export function createPluginSecretsHandler(
         throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
       }
 
+      const trimmedCompanyId =
+        typeof companyId === "string" ? companyId.trim() : "";
+      if (!trimmedCompanyId) {
+        throw new Error(PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE);
+      }
+
       const rows = await db
         .select({
           id: companySecrets.id,
@@ -250,7 +303,12 @@ export function createPluginSecretsHandler(
           status: companySecrets.status,
         })
         .from(companySecrets)
-        .where(eq(companySecrets.id, trimmedRef))
+        .where(
+          and(
+            eq(companySecrets.id, trimmedRef),
+            eq(companySecrets.companyId, trimmedCompanyId),
+          ),
+        )
         .limit(1);
 
       const secret = rows[0];
@@ -263,7 +321,17 @@ export function createPluginSecretsHandler(
       }
 
       const secrets = secretService(db);
-      return secrets.resolveSecretValue(secret.companyId, trimmedRef, "latest");
+      const consumerContext = configPath
+        ? {
+            consumerType: "plugin" as const,
+            consumerId: pluginId,
+            configPath,
+            actorType: "plugin" as const,
+            actorId: pluginId,
+            pluginId,
+          }
+        : undefined;
+      return secrets.resolveSecretValue(trimmedCompanyId, trimmedRef, "latest", consumerContext);
     },
   };
 }

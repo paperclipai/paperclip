@@ -3,6 +3,7 @@ import { HttpError } from "../errors.js";
 import {
   createPluginSecretsHandler,
   isPluginSecretRefsDisabled,
+  PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 
@@ -54,34 +55,63 @@ describe("createPluginSecretsHandler", () => {
       pluginId: PLUGIN_ID,
     });
 
-    await expect(handler.resolve({ secretRef: SECRET_ID })).rejects.toThrow(
-      PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toThrow(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("requires companyId in the active execution context", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(handler.resolve({ secretRef: SECRET_ID, companyId: "" })).rejects.toThrow(
+      PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE,
     );
     expect(mockResolveSecretValue).not.toHaveBeenCalled();
   });
 
-  it("resolves active secrets by UUID via secretService", async () => {
+  it("resolves active secrets scoped to the requesting company", async () => {
     mockResolveSecretValue.mockResolvedValue("resolved-secret-value");
     const handler = createPluginSecretsHandler({
       db: createMockDb({ id: SECRET_ID, companyId: COMPANY_ID, status: "active" }),
       pluginId: PLUGIN_ID,
     });
 
-    await expect(handler.resolve({ secretRef: SECRET_ID })).resolves.toBe(
-      "resolved-secret-value",
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).resolves.toBe("resolved-secret-value");
+    expect(mockResolveSecretValue).toHaveBeenCalledWith(
+      COMPANY_ID,
+      SECRET_ID,
+      "latest",
+      undefined,
     );
-    expect(mockResolveSecretValue).toHaveBeenCalledWith(COMPANY_ID, SECRET_ID, "latest");
   });
 
-  it("returns not found when the secret UUID does not exist", async () => {
+  it("returns not found when the secret UUID does not exist for the company", async () => {
     const handler = createPluginSecretsHandler({
       db: createMockDb(),
       pluginId: PLUGIN_ID,
     });
 
-    await expect(handler.resolve({ secretRef: SECRET_ID })).rejects.toSatisfy(
-      (err: unknown) => err instanceof HttpError && err.status === 404,
-    );
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toSatisfy((err: unknown) => err instanceof HttpError && err.status === 404);
+  });
+
+  it("rejects cross-tenant secret refs before resolution", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toSatisfy((err: unknown) => err instanceof HttpError && err.status === 404);
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
   });
 
   it("rejects inactive secrets", async () => {
@@ -90,9 +120,9 @@ describe("createPluginSecretsHandler", () => {
       pluginId: PLUGIN_ID,
     });
 
-    await expect(handler.resolve({ secretRef: SECRET_ID })).rejects.toThrow(
-      /invalid secret reference/i,
-    );
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toThrow(/invalid secret reference/i);
   });
 
   it("still rejects malformed secret refs before resolution", async () => {
@@ -101,9 +131,34 @@ describe("createPluginSecretsHandler", () => {
       pluginId: PLUGIN_ID,
     });
 
-    await expect(handler.resolve({ secretRef: "not-a-uuid" })).rejects.toThrow(
-      /invalid secret reference/i,
-    );
+    await expect(
+      handler.resolve({ secretRef: "not-a-uuid", companyId: COMPANY_ID }),
+    ).rejects.toThrow(/invalid secret reference/i);
     expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("passes binding context when configPath is provided", async () => {
+    mockResolveSecretValue.mockResolvedValue("resolved-secret-value");
+    const handler = createPluginSecretsHandler({
+      db: createMockDb({ id: SECRET_ID, companyId: COMPANY_ID, status: "active" }),
+      pluginId: PLUGIN_ID,
+    });
+
+    await handler.resolve({
+      secretRef: SECRET_ID,
+      companyId: COMPANY_ID,
+      configPath: "apiKeyRef",
+    });
+
+    expect(mockResolveSecretValue).toHaveBeenCalledWith(
+      COMPANY_ID,
+      SECRET_ID,
+      "latest",
+      expect.objectContaining({
+        consumerType: "plugin",
+        consumerId: PLUGIN_ID,
+        configPath: "apiKeyRef",
+      }),
+    );
   });
 });
