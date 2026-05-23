@@ -22,11 +22,12 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
-elif [ "$(stat -c '%u:%g' /paperclip)" != "$PUID:$PGID" ]; then
-    chown node:node /paperclip
-fi
+# Recursively normalize ownership on every boot, not just when we
+# remapped the node uid. New image deploys can drop fresh
+# root-owned subdirs into /paperclip (image build artifacts, schema
+# fixtures, etc); without a recursive chown, paperclip-as-node hits
+# EACCES the first time it tries to write into one of them.
+chown -R node:node /paperclip || true
 
 # Seed a default config.json on a fresh volume so first-run admin bootstrap
 # (paperclipai auth bootstrap-ceo) works without manual setup. Sources values
