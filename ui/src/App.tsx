@@ -165,7 +165,6 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
-      <Route path="connectors" element={<Connectors />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -311,6 +310,7 @@ export function App() {
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
+          <Route path="connectors" element={<Connectors />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
           <Route path="instance/settings" element={<Layout />}>
