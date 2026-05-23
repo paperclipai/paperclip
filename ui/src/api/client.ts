@@ -36,15 +36,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface ApiRequestOptions {
+  headers?: Record<string, string>;
+}
+
+function withOptions(method: string, body: BodyInit | undefined, options?: ApiRequestOptions): RequestInit {
+  const init: RequestInit = { method };
+  if (body !== undefined) init.body = body;
+  if (options?.headers) init.headers = options.headers;
+  return init;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body) }),
-  postForm: <T>(path: string, body: FormData) =>
-    request<T>(path, { method: "POST", body }),
-  put: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body) }),
-  patch: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
+  post: <T>(path: string, body: unknown, options?: ApiRequestOptions) =>
+    request<T>(path, withOptions("POST", JSON.stringify(body), options)),
+  postForm: <T>(path: string, body: FormData, options?: ApiRequestOptions) =>
+    request<T>(path, withOptions("POST", body, options)),
+  put: <T>(path: string, body: unknown, options?: ApiRequestOptions) =>
+    request<T>(path, withOptions("PUT", JSON.stringify(body), options)),
+  patch: <T>(path: string, body: unknown, options?: ApiRequestOptions) =>
+    request<T>(path, withOptions("PATCH", JSON.stringify(body), options)),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
