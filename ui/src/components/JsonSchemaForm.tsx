@@ -76,6 +76,19 @@ export interface JsonSchemaNode {
   readOnly?: boolean;
   writeOnly?: boolean;
 
+  // Paperclip extensions
+  /**
+   * When true, the field is hidden behind an "Advanced options" disclosure
+   * in the top-level `JsonSchemaForm`. Defaults to false (essential).
+   */
+  "x-paperclip-advanced"?: boolean;
+  /**
+   * Optional sub-section name used to group advanced fields under headings
+   * inside the disclosure (e.g. "SSH access", "VM resources"). Ignored when
+   * `x-paperclip-advanced` is not true.
+   */
+  "x-paperclip-group"?: string;
+
   // Allow extra keys
   [key: string]: unknown;
 }
@@ -1138,6 +1151,64 @@ export function JsonSchemaForm({
     [onChange, values],
   );
 
+  const { essentials, advancedGroups, advancedKeys } = useMemo(() => {
+    const essentials: Array<[string, JsonSchemaNode]> = [];
+    // Preserve original key order while bucketing into groups.
+    const groupOrder: string[] = [];
+    const groups = new Map<string, Array<[string, JsonSchemaNode]>>();
+    const advancedKeys = new Set<string>();
+    const DEFAULT_GROUP = "More options";
+
+    for (const entry of Object.entries(properties)) {
+      const [key, propSchema] = entry;
+      if (propSchema["x-paperclip-advanced"] === true) {
+        advancedKeys.add(key);
+        const rawGroup = propSchema["x-paperclip-group"];
+        const group = typeof rawGroup === "string" && rawGroup.length > 0
+          ? rawGroup
+          : DEFAULT_GROUP;
+        if (!groups.has(group)) {
+          groups.set(group, []);
+          groupOrder.push(group);
+        }
+        groups.get(group)!.push(entry);
+      } else {
+        essentials.push(entry);
+      }
+    }
+
+    return {
+      essentials,
+      advancedGroups: groupOrder.map((group) => ({
+        group,
+        fields: groups.get(group)!,
+      })),
+      advancedKeys,
+    };
+  }, [properties]);
+
+  const hasAdvanced = advancedGroups.length > 0;
+
+  const hasAdvancedError = useMemo(() => {
+    if (!hasAdvanced) return false;
+    for (const errorKey of Object.keys(errors)) {
+      // Top-level errors arrive as "/<key>" or "/<key>/<...>".
+      const stripped = errorKey.startsWith("/") ? errorKey.slice(1) : errorKey;
+      const topKey = stripped.split("/")[0];
+      if (advancedKeys.has(topKey)) return true;
+    }
+    return false;
+  }, [errors, advancedKeys, hasAdvanced]);
+
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+
+  // Force the disclosure open when a validation error lands on a hidden field
+  // so the user can see and fix it. Never auto-close — once open, the user
+  // controls collapse.
+  useEffect(() => {
+    if (hasAdvancedError) setIsAdvancedOpen(true);
+  }, [hasAdvancedError]);
+
   if (Object.keys(properties).length === 0) {
     return (
       <div
@@ -1151,30 +1222,65 @@ export function JsonSchemaForm({
     );
   }
 
+  const renderField = ([key, propSchema]: [string, JsonSchemaNode]) => {
+    const value = values[key];
+    const isRequired = requiredFields.has(key);
+    const error = errors[`/${key}`];
+    const label = labelFromKey(key, propSchema);
+    const path = `/${key}`;
+
+    return (
+      <FormField
+        key={key}
+        propSchema={propSchema}
+        value={value}
+        onChange={(val) => handleFieldChange(key, val)}
+        error={error}
+        disabled={disabled}
+        label={label}
+        isRequired={isRequired}
+        errors={errors}
+        path={path}
+      />
+    );
+  };
+
   return (
     <div className={cn("space-y-6", className)}>
-      {Object.entries(properties).map(([key, propSchema]) => {
-        const value = values[key];
-        const isRequired = requiredFields.has(key);
-        const error = errors[`/${key}`];
-        const label = labelFromKey(key, propSchema);
-        const path = `/${key}`;
+      {essentials.map(renderField)}
 
-        return (
-          <FormField
-            key={key}
-            propSchema={propSchema}
-            value={value}
-            onChange={(val) => handleFieldChange(key, val)}
-            error={error}
-            disabled={disabled}
-            label={label}
-            isRequired={isRequired}
-            errors={errors}
-            path={path}
-          />
-        );
-      })}
+      {hasAdvanced && (
+        <div className="space-y-3 rounded-lg border border-dashed">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-4 py-3 text-left"
+            onClick={() => setIsAdvancedOpen((open) => !open)}
+            aria-expanded={isAdvancedOpen}
+          >
+            <span className="text-sm font-medium">Advanced options</span>
+            {isAdvancedOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {isAdvancedOpen && (
+            <div className="space-y-6 px-4 pb-4">
+              {advancedGroups.map(({ group, fields }) => (
+                <div key={group} className="space-y-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {group}
+                  </div>
+                  <div className="space-y-6">
+                    {fields.map(renderField)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

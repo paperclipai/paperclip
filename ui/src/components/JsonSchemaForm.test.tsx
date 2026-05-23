@@ -204,6 +204,152 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     });
   });
 
+  it("renders no Advanced disclosure when no field opts in", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            properties: {
+              apiKey: { type: "string", format: "secret-ref" },
+              region: { type: "string" },
+            },
+          }}
+          values={{ apiKey: "", region: "" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    // No disclosure button should be present in the passthrough case.
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const advancedButton = buttons.find((b) =>
+      b.textContent?.includes("Advanced options"),
+    );
+    expect(advancedButton).toBeUndefined();
+
+    // Both fields render in the flat layout: the secret picker (rendered as
+    // a <select> stub) for apiKey and a text input for region.
+    expect(
+      container.querySelector('[data-testid="secret-binding-picker"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('input[type="text"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides advanced fields behind a collapsed disclosure with group headings", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            properties: {
+              apiKey: { type: "string", format: "secret-ref" },
+              sshPort: {
+                type: "number",
+                "x-paperclip-advanced": true,
+                "x-paperclip-group": "SSH access",
+              },
+              namePrefix: {
+                type: "string",
+                "x-paperclip-advanced": true,
+              },
+            },
+          }}
+          values={{ apiKey: "", sshPort: 22, namePrefix: "paperclip" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const advancedButton = buttons.find((b) =>
+      b.textContent?.includes("Advanced options"),
+    );
+    expect(advancedButton).toBeDefined();
+    expect(advancedButton!.getAttribute("aria-expanded")).toBe("false");
+
+    // Collapsed: number/text inputs from advanced fields aren't rendered.
+    expect(container.querySelector('input[type="number"]')).toBeNull();
+    // Group headings aren't visible while collapsed.
+    expect(container.textContent).not.toContain("SSH access");
+    expect(container.textContent).not.toContain("More options");
+
+    // Expand and verify both groups + the default bucket appear.
+    await act(async () => {
+      advancedButton!.click();
+    });
+
+    expect(advancedButton!.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('input[type="number"]')).not.toBeNull();
+    expect(container.textContent).toContain("SSH access");
+    expect(container.textContent).toContain("More options");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("force-opens the disclosure when an error lands on a hidden advanced field", async () => {
+    const root = createRoot(container);
+
+    const schema = {
+      type: "object" as const,
+      properties: {
+        apiKey: { type: "string" as const, format: "secret-ref" as const },
+        sshPort: {
+          type: "number" as const,
+          "x-paperclip-advanced": true,
+        },
+      },
+    };
+
+    // No errors -> collapsed
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ apiKey: "", sshPort: 22 }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    let advancedButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Advanced options"),
+    );
+    expect(advancedButton!.getAttribute("aria-expanded")).toBe("false");
+
+    // Submit validation error on the hidden advanced field -> forced open
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ apiKey: "", sshPort: 22 }}
+          onChange={() => {}}
+          errors={{ "/sshPort": "Must be at least 1" }}
+        />,
+      );
+    });
+
+    advancedButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Advanced options"),
+    );
+    expect(advancedButton!.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("Must be at least 1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps the password fallback for short raw values", async () => {
     const root = createRoot(container);
 
