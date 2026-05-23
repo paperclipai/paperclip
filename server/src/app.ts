@@ -41,6 +41,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { metricsRoutes } from "./routes/metrics.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -178,6 +179,9 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  // Intentionally before actor middleware so Prometheus can scrape without a Paperclip identity.
+  // Operators should restrict exposure at the same host/network boundary used for health checks.
+  app.use(metricsRoutes());
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
