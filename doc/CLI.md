@@ -481,11 +481,13 @@ CLI auth challenge endpoints are also exposed for tooling that needs the raw cha
 
 ```sh
 pnpm paperclipai auth challenge create --payload-json '{...}'
-pnpm paperclipai auth challenge get <challenge-id> --token <challenge-secret>
-pnpm paperclipai auth challenge approve <challenge-id> --token <challenge-secret>
-pnpm paperclipai auth challenge cancel <challenge-id> --token <challenge-secret>
+PAPERCLIP_CHALLENGE_SECRET=<challenge-secret> pnpm paperclipai auth challenge get <challenge-id> --token-env PAPERCLIP_CHALLENGE_SECRET
+PAPERCLIP_CHALLENGE_SECRET=<challenge-secret> pnpm paperclipai auth challenge approve <challenge-id> --token-env PAPERCLIP_CHALLENGE_SECRET
+PAPERCLIP_CHALLENGE_SECRET=<challenge-secret> pnpm paperclipai auth challenge cancel <challenge-id> --token-env PAPERCLIP_CHALLENGE_SECRET
 pnpm paperclipai auth revoke-current
 ```
+
+`--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
 ```sh
 pnpm paperclipai instance scheduler-heartbeats

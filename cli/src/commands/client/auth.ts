@@ -7,6 +7,7 @@ import {
 } from "../../client/board-auth.js";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -22,6 +23,7 @@ interface AuthWhoamiOptions extends BaseClientOptions {}
 interface AuthChallengeOptions extends BaseClientOptions {
   payloadJson?: string;
   token?: string;
+  tokenEnv?: string;
 }
 
 export function registerClientAuthCommands(auth: Command): void {
@@ -149,12 +151,13 @@ export function registerClientAuthCommands(auth: Command): void {
       .command("get")
       .description("Get a CLI auth challenge")
       .argument("<id>", "Challenge ID")
-      .requiredOption("--token <token>", "Challenge secret")
+      .option("--token <token>", "Challenge secret")
+      .option("--token-env <name>", "Read the challenge secret from an environment variable")
       .action(async (id: string, opts: AuthChallengeOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const query = new URLSearchParams({ token: opts.token ?? "" });
-          printOutput(await ctx.api.get(`/api/cli-auth/challenges/${id}?${query.toString()}`), { json: ctx.json });
+          const query = new URLSearchParams({ token: resolveChallengeToken(opts) });
+          printOutput(await ctx.api.get(`${apiPath`/api/cli-auth/challenges/${id}`}?${query.toString()}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -166,11 +169,12 @@ export function registerClientAuthCommands(auth: Command): void {
         .command(action)
         .description(`${action} a CLI auth challenge`)
         .argument("<id>", "Challenge ID")
-        .requiredOption("--token <token>", "Challenge secret")
+        .option("--token <token>", "Challenge secret")
+        .option("--token-env <name>", "Read the challenge secret from an environment variable")
         .action(async (id: string, opts: AuthChallengeOptions) => {
           try {
             const ctx = resolveCommandContext(opts);
-            printOutput(await ctx.api.post(`/api/cli-auth/challenges/${id}/${action}`, { token: opts.token }), { json: ctx.json });
+            printOutput(await ctx.api.post(`${apiPath`/api/cli-auth/challenges/${id}`}/${action}`, { token: resolveChallengeToken(opts) }), { json: ctx.json });
           } catch (err) {
             handleCommandError(err);
           }
@@ -181,4 +185,16 @@ export function registerClientAuthCommands(auth: Command): void {
 
 function parseJson(value: string): unknown {
   return JSON.parse(value) as unknown;
+}
+
+function resolveChallengeToken(opts: AuthChallengeOptions): string {
+  const token = opts.token?.trim();
+  if (token) return token;
+  const envName = opts.tokenEnv?.trim();
+  if (envName) {
+    const envValue = process.env[envName]?.trim();
+    if (envValue) return envValue;
+    throw new Error(`Environment variable ${envName} is empty or not set.`);
+  }
+  throw new Error("Challenge secret is required. Pass --token or --token-env.");
 }

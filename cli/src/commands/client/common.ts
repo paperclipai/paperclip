@@ -112,6 +112,35 @@ export function normalizeApiBase(apiBase: string): string {
   return apiBase.trim().replace(/\/+$/, "");
 }
 
+export function apiPath(strings: TemplateStringsArray, ...values: Array<string | number | boolean | null | undefined>): string {
+  let path = strings[0] ?? "";
+  values.forEach((value, index) => {
+    if (value === null || value === undefined || String(value).trim() === "") {
+      throw new Error("Cannot build API path with an empty path segment.");
+    }
+    path += `${encodeURIComponent(String(value))}${strings[index + 1] ?? ""}`;
+  });
+  return path;
+}
+
+export function inferContentTypeFromPath(filePath: string): string | undefined {
+  const ext = filePath.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  return {
+    avif: "image/avif",
+    gif: "image/gif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    json: "application/json",
+    md: "text/markdown; charset=utf-8",
+    pdf: "application/pdf",
+    png: "image/png",
+    svg: "image/svg+xml",
+    txt: "text/plain; charset=utf-8",
+    webp: "image/webp",
+  }[ext];
+}
+
 function resolveApiKey(
   options: Pick<BaseClientOptions, "apiKey">,
   profile: ClientContextProfile,

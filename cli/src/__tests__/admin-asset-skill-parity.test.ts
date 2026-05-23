@@ -5,7 +5,7 @@ import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAdapterCommands } from "../commands/client/adapter.js";
 import { registerAssetCommands } from "../commands/client/asset.js";
-import { registerCompanyCommands } from "../commands/client/company.js";
+import { registerCompanyCommands, resolveExportOutputPath } from "../commands/client/company.js";
 import { registerSkillCommands } from "../commands/client/skill.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
@@ -82,6 +82,7 @@ describe("admin, asset, and skill parity commands", () => {
     await run(["adapter", "list"]);
     await run(["adapter", "install", "--payload-json", "{\"packageName\":\"adapter\"}"]);
     await run(["adapter", "get", "codex_local"]);
+    await run(["adapter", "get", "codex/local"]);
     await run(["adapter", "update", "codex_local", "--payload-json", "{\"disabled\":true}"]);
     await run(["adapter", "override", "codex_local", "--payload-json", "{\"paused\":true}"]);
     await run(["adapter", "reload", "codex_local"]);
@@ -98,6 +99,7 @@ describe("admin, asset, and skill parity commands", () => {
       ["GET", "http://localhost:3100/api/adapters"],
       ["POST", "http://localhost:3100/api/adapters/install"],
       ["GET", "http://localhost:3100/api/adapters/codex_local"],
+      ["GET", "http://localhost:3100/api/adapters/codex%2Flocal"],
       ["PATCH", "http://localhost:3100/api/adapters/codex_local"],
       ["PATCH", "http://localhost:3100/api/adapters/codex_local/override"],
       ["POST", "http://localhost:3100/api/adapters/codex_local/reload"],
@@ -132,6 +134,12 @@ describe("admin, asset, and skill parity commands", () => {
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/logo`],
       ["GET", `http://localhost:3100/api/assets/${ASSET_ID}/content`],
     ]);
+    const firstUpload = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+    expect((firstUpload.get("file") as File).type).toBe("image/png");
+  });
+
+  it("rejects portable export paths outside the output directory", async () => {
+    expect(() => resolveExportOutputPath(tempDir, "../outside.md")).toThrow("outside output directory");
   });
 
   it("wraps company skill endpoints", async () => {

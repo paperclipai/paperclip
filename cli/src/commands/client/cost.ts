@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -43,7 +44,7 @@ export function registerCostCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.get(`/api/issues/${issueId}/cost-summary`);
+          const result = await ctx.api.get(apiPath`/api/issues/${issueId}/cost-summary`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -73,7 +74,7 @@ export function registerCostCommands(program: Command): void {
       .action(async (opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.patch(`/api/companies/${ctx.companyId}/budgets`, parseJson(opts.payloadJson));
+          const result = await ctx.api.patch(apiPath`/api/companies/${ctx.companyId}/budgets`, parseJson(opts.payloadJson));
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -91,7 +92,7 @@ export function registerCostCommands(program: Command): void {
       .action(async (agentId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.patch(`/api/agents/${agentId}/budgets`, parseJson(opts.payloadJson));
+          const result = await ctx.api.patch(apiPath`/api/agents/${agentId}/budgets`, parseJson(opts.payloadJson));
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -110,7 +111,7 @@ export function registerCostCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const result = await ctx.api.post(
-            `/api/companies/${ctx.companyId}/budget-incidents/${incidentId}/resolve`,
+            apiPath`/api/companies/${ctx.companyId}/budget-incidents/${incidentId}/resolve`,
             parseJson(opts.payloadJson ?? "{}"),
           );
           printOutput(result, { json: ctx.json });
@@ -131,7 +132,7 @@ function addCompanyGet(parent: Command, name: string, description: string, path:
       .action(async (opts: CompanyOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.get(`/api/companies/${ctx.companyId}/${path}`);
+          const result = await ctx.api.get(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -151,7 +152,7 @@ function addCompanyPostJson(parent: Command, name: string, description: string, 
       .action(async (opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.post(`/api/companies/${ctx.companyId}/${path}`, parseJson(opts.payloadJson));
+          const result = await ctx.api.post(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`, parseJson(opts.payloadJson));
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

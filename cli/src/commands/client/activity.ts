@@ -2,6 +2,7 @@ import { Command } from "commander";
 import type { ActivityEvent } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
   printOutput,
@@ -37,7 +38,7 @@ export function registerActivityCommands(program: Command): void {
           if (opts.entityId) params.set("entityId", opts.entityId);
 
           const query = params.toString();
-          const path = `/api/companies/${ctx.companyId}/activity${query ? `?${query}` : ""}`;
+          const path = `${apiPath`/api/companies/${ctx.companyId}/activity`}${query ? `?${query}` : ""}`;
           const rows = (await ctx.api.get<ActivityEvent[]>(path)) ?? [];
 
           if (ctx.json) {
@@ -79,7 +80,7 @@ export function registerActivityCommands(program: Command): void {
       .action(async (opts: ActivityListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.post(`/api/companies/${ctx.companyId}/activity`, parseJson(opts.payloadJson ?? "{}"));
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/activity`, parseJson(opts.payloadJson ?? "{}"));
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -96,7 +97,7 @@ export function registerActivityCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.get(`/api/issues/${issueId}/activity`), { json: ctx.json });
+          printOutput(await ctx.api.get(apiPath`/api/issues/${issueId}/activity`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }

@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -41,7 +42,7 @@ export function registerAdapterCommands(program: Command): void {
       .action(async (type: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.get(`/api/adapters/${type}`), { json: ctx.json });
+          printOutput(await ctx.api.get(apiPath`/api/adapters/${type}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -61,7 +62,7 @@ export function registerAdapterCommands(program: Command): void {
       .action(async (type: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.delete(`/api/adapters/${type}`), { json: ctx.json });
+          printOutput(await ctx.api.delete(apiPath`/api/adapters/${type}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -76,7 +77,7 @@ export function registerAdapterCommands(program: Command): void {
       .action(async (type: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.get(`/api/adapters/${type}/config-schema`), { json: ctx.json });
+          printOutput(await ctx.api.get(apiPath`/api/adapters/${type}/config-schema`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -91,7 +92,7 @@ export function registerAdapterCommands(program: Command): void {
       .action(async (type: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.get(`/api/adapters/${type}/ui-parser.js`), { json: ctx.json });
+          printOutput(await ctx.api.get(apiPath`/api/adapters/${type}/ui-parser.js`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -113,7 +114,7 @@ export function registerAdapterCommands(program: Command): void {
           if (opts.refresh) query.set("refresh", "true");
           if (opts.environmentId?.trim()) query.set("environmentId", opts.environmentId.trim());
           const suffix = query.size > 0 ? `?${query.toString()}` : "";
-          printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/adapters/${type}/models${suffix}`), { json: ctx.json });
+          printOutput(await ctx.api.get(`${apiPath`/api/companies/${ctx.companyId}/adapters/${type}/models`}${suffix}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -149,7 +150,7 @@ function addAdapterPatch(parent: Command, name: string, description: string, suf
       .action(async (type: string, opts: AdapterOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.patch(`/api/adapters/${type}${suffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+          printOutput(await ctx.api.patch(`${apiPath`/api/adapters/${type}`}${suffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -167,7 +168,7 @@ function addAdapterPost(parent: Command, name: string, description: string, suff
       .action(async (type: string, opts: AdapterOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.post(`/api/adapters/${type}${suffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+          printOutput(await ctx.api.post(`${apiPath`/api/adapters/${type}`}${suffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -185,7 +186,7 @@ function addCompanyAdapterGet(parent: Command, name: string, description: string
       .action(async (type: string, opts: AdapterOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/adapters/${type}/${suffix}`), { json: ctx.json });
+          printOutput(await ctx.api.get(`${apiPath`/api/companies/${ctx.companyId}/adapters/${type}`}/${suffix}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -206,7 +207,7 @@ function addCompanyAdapterPost(parent: Command, name: string, description: strin
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           printOutput(
-            await ctx.api.post(`/api/companies/${ctx.companyId}/adapters/${type}/${suffix}`, parseJson(opts.payloadJson ?? "{}")),
+            await ctx.api.post(`${apiPath`/api/companies/${ctx.companyId}/adapters/${type}`}/${suffix}`, parseJson(opts.payloadJson ?? "{}")),
             { json: ctx.json },
           );
         } catch (err) {

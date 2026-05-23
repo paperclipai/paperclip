@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -27,7 +28,7 @@ export function registerSkillCommands(program: Command): void {
       .action(async (skillId: string, opts: SkillOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/skills/${skillId}`), { json: ctx.json });
+          printOutput(await ctx.api.get(apiPath`/api/companies/${ctx.companyId}/skills/${skillId}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -46,7 +47,7 @@ export function registerSkillCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const query = new URLSearchParams({ path: opts.path ?? "SKILL.md" });
-          printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/skills/${skillId}/files?${query.toString()}`), { json: ctx.json });
+          printOutput(await ctx.api.get(`${apiPath`/api/companies/${ctx.companyId}/skills/${skillId}/files`}?${query.toString()}`), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
@@ -69,7 +70,7 @@ export function registerSkillCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           printOutput(
-            await ctx.api.patch(`/api/companies/${ctx.companyId}/skills/${skillId}/files`, parseJson(opts.payloadJson ?? "{}")),
+            await ctx.api.patch(apiPath`/api/companies/${ctx.companyId}/skills/${skillId}/files`, parseJson(opts.payloadJson ?? "{}")),
             { json: ctx.json },
           );
         } catch (err) {
@@ -89,7 +90,7 @@ function addCompanyGet(parent: Command, name: string, description: string, path:
     parent.command(name).description(description).option("-C, --company-id <id>", "Company ID").action(async (opts: SkillOptions) => {
       try {
         const ctx = resolveCommandContext(opts, { requireCompany: true });
-        printOutput(await ctx.api.get(`/api/companies/${ctx.companyId}/${path}`), { json: ctx.json });
+        printOutput(await ctx.api.get(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`), { json: ctx.json });
       } catch (err) {
         handleCommandError(err);
       }
@@ -109,7 +110,7 @@ function addCompanyPost(parent: Command, name: string, description: string, path
     command.action(async (opts: SkillOptions) => {
       try {
         const ctx = resolveCommandContext(opts, { requireCompany: true });
-        printOutput(await ctx.api.post(`/api/companies/${ctx.companyId}/${path}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        printOutput(await ctx.api.post(`${apiPath`/api/companies/${ctx.companyId}`}/${path}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
       } catch (err) {
         handleCommandError(err);
       }
@@ -128,7 +129,7 @@ function addSkillAction(parent: Command, name: string, description: string, suff
       .action(async (skillId: string, opts: SkillOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const path = `/api/companies/${ctx.companyId}/skills/${skillId}${suffix ? `/${suffix}` : ""}`;
+          const path = `${apiPath`/api/companies/${ctx.companyId}/skills/${skillId}`}${suffix ? `/${suffix}` : ""}`;
           const result =
             method === "GET"
               ? await ctx.api.get(path)

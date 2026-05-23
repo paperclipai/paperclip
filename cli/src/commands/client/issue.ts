@@ -29,8 +29,10 @@ import {
 } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
+  inferContentTypeFromPath,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -185,7 +187,7 @@ export function registerIssueCommands(program: Command): void {
           if (opts.projectId) params.set("projectId", opts.projectId);
 
           const query = params.toString();
-          const path = `/api/companies/${ctx.companyId}/issues${query ? `?${query}` : ""}`;
+          const path = `${apiPath`/api/companies/${ctx.companyId}/issues`}${query ? `?${query}` : ""}`;
           const rows = (await ctx.api.get<Issue[]>(path)) ?? [];
 
           const filtered = filterIssueRows(rows, opts.match);
@@ -227,7 +229,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (idOrIdentifier: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Issue>(`/api/issues/${idOrIdentifier}`);
+          const row = await ctx.api.get<Issue>(apiPath`/api/issues/`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -245,7 +247,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           if (!opts.yes) throw new Error("Refusing to delete without --yes");
           const ctx = resolveCommandContext(opts);
-          const deleted = await ctx.api.delete<Issue>(`/api/issues/${issueId}`);
+          const deleted = await ctx.api.delete<Issue>(apiPath`/api/issues/`);
           printOutput(deleted, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -261,7 +263,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const context = await ctx.api.get(`/api/issues/${issueId}/heartbeat-context`);
+          const context = await ctx.api.get(apiPath`/api/issues/${issueId}/heartbeat-context`);
           printOutput(context, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -300,7 +302,7 @@ export function registerIssueCommands(program: Command): void {
             billingCode: opts.billingCode,
           });
 
-          const created = await ctx.api.post<Issue>(`/api/companies/${ctx.companyId}/issues`, payload);
+          const created = await ctx.api.post<Issue>(apiPath`/api/companies/${ctx.companyId}/issues`, payload);
           printOutput(created, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -344,7 +346,7 @@ export function registerIssueCommands(program: Command): void {
             hiddenAt: parseHiddenAt(opts.hiddenAt),
           });
 
-          const updated = await ctx.api.patch<Issue & { comment?: IssueComment | null }>(`/api/issues/${issueId}`, payload);
+          const updated = await ctx.api.patch<Issue & { comment?: IssueComment | null }>(apiPath`/api/issues/`, payload);
           printOutput(updated, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -368,7 +370,7 @@ export function registerIssueCommands(program: Command): void {
             reopen: opts.reopen,
             resume: opts.resume,
           });
-          const comment = await ctx.api.post<IssueComment>(`/api/issues/${issueId}/comments`, payload);
+          const comment = await ctx.api.post<IssueComment>(apiPath`/api/issues/${issueId}/comments`, payload);
           printOutput(comment, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -393,7 +395,7 @@ export function registerIssueCommands(program: Command): void {
           if (opts.limit) params.set("limit", opts.limit);
           const query = params.toString();
           const comments = (await ctx.api.get<IssueComment[]>(
-            `/api/issues/${issueId}/comments${query ? `?${query}` : ""}`,
+            `${apiPath`/api/issues/${issueId}/comments`}${query ? `?${query}` : ""}`,
           )) ?? [];
           printOutput(comments, { json: ctx.json });
         } catch (err) {
@@ -411,7 +413,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, commentId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const comment = await ctx.api.get<IssueComment>(`/api/issues/${issueId}/comments/${commentId}`);
+          const comment = await ctx.api.get<IssueComment>(apiPath`/api/issues/${issueId}/comments/${commentId}`);
           printOutput(comment, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -428,7 +430,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, commentId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const deleted = await ctx.api.delete<IssueComment>(`/api/issues/${issueId}/comments/${commentId}`);
+          const deleted = await ctx.api.delete<IssueComment>(apiPath`/api/issues/${issueId}/comments/${commentId}`);
           printOutput(deleted, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -444,7 +446,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const approvals = await ctx.api.get(`/api/issues/${issueId}/approvals`);
+          const approvals = await ctx.api.get(apiPath`/api/issues/${issueId}/approvals`);
           printOutput(approvals, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -462,7 +464,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = linkIssueApprovalSchema.parse({ approvalId });
-          const approvals = await ctx.api.post(`/api/issues/${issueId}/approvals`, payload);
+          const approvals = await ctx.api.post(apiPath`/api/issues/${issueId}/approvals`, payload);
           printOutput(approvals, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -479,7 +481,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, approvalId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.delete(`/api/issues/${issueId}/approvals/${approvalId}`);
+          const result = await ctx.api.delete(apiPath`/api/issues/${issueId}/approvals/${approvalId}`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -500,7 +502,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.get(`/api/issues/${issueId}/recovery-actions`);
+          const result = await ctx.api.get(apiPath`/api/issues/${issueId}/recovery-actions`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -526,7 +528,7 @@ export function registerIssueCommands(program: Command): void {
             sourceIssueStatus: opts.sourceIssueStatus,
             resolutionNote: opts.resolutionNote,
           });
-          const result = await ctx.api.post(`/api/issues/${issueId}/recovery-actions/resolve`, payload);
+          const result = await ctx.api.post(apiPath`/api/issues/${issueId}/recovery-actions/resolve`, payload);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -544,7 +546,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = createChildIssueSchema.parse(parseJson(opts.payloadJson));
-          const child = await ctx.api.post<Issue>(`/api/issues/${issueId}/children`, payload);
+          const child = await ctx.api.post<Issue>(apiPath`/api/issues/${issueId}/children`, payload);
           printOutput(child, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -560,7 +562,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.post(`/api/issues/${issueId}/admin/force-release`, {});
+          const result = await ctx.api.post(apiPath`/api/issues/${issueId}/admin/force-release`, {});
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -576,7 +578,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = await ctx.api.get(`/api/issues/${issueId}/work-products`);
+          const rows = await ctx.api.get(apiPath`/api/issues/${issueId}/work-products`);
           printOutput(rows, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -594,7 +596,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = createIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
-          const product = await ctx.api.post(`/api/issues/${issueId}/work-products`, payload);
+          const product = await ctx.api.post(apiPath`/api/issues/${issueId}/work-products`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -612,7 +614,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = updateIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
-          const product = await ctx.api.patch(`/api/work-products/${workProductId}`, payload);
+          const product = await ctx.api.patch(apiPath`/api/work-products/${workProductId}`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -628,7 +630,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (workProductId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const product = await ctx.api.delete(`/api/work-products/${workProductId}`);
+          const product = await ctx.api.delete(apiPath`/api/work-products/${workProductId}`);
           printOutput(product, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -646,7 +648,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const query = opts.includeSystem ? "?includeSystem=true" : "";
-          const docs = await ctx.api.get(`/api/issues/${issueId}/documents${query}`);
+          const docs = await ctx.api.get(`${apiPath`/api/issues/${issueId}/documents`}${query}`);
           printOutput(docs, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -663,7 +665,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, key: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const doc = await ctx.api.get(`/api/issues/${issueId}/documents/${encodeURIComponent(key)}`);
+          const doc = await ctx.api.get(apiPath`/api/issues/${issueId}/documents/${key}`);
           printOutput(doc, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -694,7 +696,7 @@ export function registerIssueCommands(program: Command): void {
             changeSummary: opts.changeSummary,
             baseRevisionId: opts.baseRevisionId,
           });
-          const doc = await ctx.api.put(`/api/issues/${issueId}/documents/${encodeURIComponent(key)}`, payload);
+          const doc = await ctx.api.put(apiPath`/api/issues/${issueId}/documents/${key}`, payload);
           printOutput(doc, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -710,7 +712,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const interactions = await ctx.api.get(`/api/issues/${issueId}/interactions`);
+          const interactions = await ctx.api.get(apiPath`/api/issues/${issueId}/interactions`);
           printOutput(interactions, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -728,7 +730,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = createIssueThreadInteractionSchema.parse(parseJson(opts.payloadJson));
-          const interaction = await ctx.api.post(`/api/issues/${issueId}/interactions`, payload);
+          const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions`, payload);
           printOutput(interaction, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -749,7 +751,7 @@ export function registerIssueCommands(program: Command): void {
           const payload = acceptIssueThreadInteractionSchema.parse({
             selectedClientKeys: parseCsv(opts.selectedClientKeys),
           });
-          const interaction = await ctx.api.post(`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
+          const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
           printOutput(interaction, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -772,7 +774,7 @@ export function registerIssueCommands(program: Command): void {
           try {
             const ctx = resolveCommandContext(opts);
             const payload = schema.parse({ reason: opts.reason });
-            const interaction = await ctx.api.post(`/api/issues/${issueId}/interactions/${interactionId}/${action}`, payload);
+            const interaction = await ctx.api.post(`${apiPath`/api/issues/${issueId}/interactions/${interactionId}`}/${action}`, payload);
             printOutput(interaction, { json: ctx.json });
           } catch (err) {
             handleCommandError(err);
@@ -796,7 +798,7 @@ export function registerIssueCommands(program: Command): void {
             answers: parseJson(opts.answersJson),
             summaryMarkdown: opts.summaryMarkdown,
           });
-          const interaction = await ctx.api.post(`/api/issues/${issueId}/interactions/${interactionId}/respond`, payload);
+          const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/respond`, payload);
           printOutput(interaction, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -812,7 +814,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const state = await ctx.api.get(`/api/issues/${issueId}/tree-control/state`);
+          const state = await ctx.api.get(apiPath`/api/issues/${issueId}/tree-control/state`);
           printOutput(state, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -830,7 +832,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = previewIssueTreeControlSchema.parse(parseJson(opts.payloadJson));
-          const preview = await ctx.api.post(`/api/issues/${issueId}/tree-control/preview`, payload);
+          const preview = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-control/preview`, payload);
           printOutput(preview, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -854,7 +856,7 @@ export function registerIssueCommands(program: Command): void {
           if (opts.mode) params.set("mode", opts.mode);
           if (opts.includeMembers) params.set("includeMembers", "true");
           const query = params.toString();
-          const holds = await ctx.api.get(`/api/issues/${issueId}/tree-holds${query ? `?${query}` : ""}`);
+          const holds = await ctx.api.get(`${apiPath`/api/issues/${issueId}/tree-holds`}${query ? `?${query}` : ""}`);
           printOutput(holds, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -872,7 +874,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = createIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
-          const hold = await ctx.api.post(`/api/issues/${issueId}/tree-holds`, payload);
+          const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -889,7 +891,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, holdId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const hold = await ctx.api.get(`/api/issues/${issueId}/tree-holds/${holdId}`);
+          const hold = await ctx.api.get(apiPath`/api/issues/${issueId}/tree-holds/${holdId}`);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -908,7 +910,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = releaseIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
-          const hold = await ctx.api.post(`/api/issues/${issueId}/tree-holds/${holdId}/release`, payload);
+          const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds/${holdId}/release`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -924,7 +926,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const attachments = await ctx.api.get(`/api/issues/${issueId}/attachments`);
+          const attachments = await ctx.api.get(apiPath`/api/issues/${issueId}/attachments`);
           printOutput(attachments, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -988,7 +990,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (attachmentId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.delete(`/api/attachments/${attachmentId}`);
+          const result = await ctx.api.delete(apiPath`/api/attachments/${attachmentId}`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1004,7 +1006,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const labels = await ctx.api.get(`/api/companies/${ctx.companyId}/labels`);
+          const labels = await ctx.api.get(apiPath`/api/companies/${ctx.companyId}/labels`);
           printOutput(labels, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1024,7 +1026,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const payload = createIssueLabelSchema.parse({ name: opts.name, color: opts.color });
-          const label = await ctx.api.post(`/api/companies/${ctx.companyId}/labels`, payload);
+          const label = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/labels`, payload);
           printOutput(label, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1041,7 +1043,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (labelId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const result = await ctx.api.delete(`/api/labels/${labelId}`);
+          const result = await ctx.api.delete(apiPath`/api/labels/${labelId}`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1057,7 +1059,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const votes = await ctx.api.get(`/api/issues/${issueId}/feedback-votes`);
+          const votes = await ctx.api.get(apiPath`/api/issues/${issueId}/feedback-votes`);
           printOutput(votes, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1075,7 +1077,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = upsertIssueFeedbackVoteSchema.parse(parseJson(opts.payloadJson));
-          const vote = await ctx.api.post(`/api/issues/${issueId}/feedback-votes`, payload);
+          const vote = await ctx.api.post(apiPath`/api/issues/${issueId}/feedback-votes`, payload);
           printOutput(vote, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1097,7 +1099,7 @@ export function registerIssueCommands(program: Command): void {
         .action(async (issueId: string, key: string, opts: BaseClientOptions) => {
           try {
             const ctx = resolveCommandContext(opts);
-            const path = `/api/issues/${issueId}/documents/${encodeURIComponent(key)}${pathSuffix}`;
+            const path = `${apiPath`/api/issues/${issueId}/documents/${key}`}${pathSuffix}`;
             const result = name === "document:delete" ? await ctx.api.delete(path) : await ctx.api.post(path, {});
             printOutput(result, { json: ctx.json });
           } catch (err) {
@@ -1116,7 +1118,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, key: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const revisions = await ctx.api.get(`/api/issues/${issueId}/documents/${encodeURIComponent(key)}/revisions`);
+          const revisions = await ctx.api.get(apiPath`/api/issues/${issueId}/documents/${key}/revisions`);
           printOutput(revisions, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1136,7 +1138,7 @@ export function registerIssueCommands(program: Command): void {
           const ctx = resolveCommandContext(opts);
           const payload = restoreIssueDocumentRevisionSchema.parse({});
           const doc = await ctx.api.post(
-            `/api/issues/${issueId}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,
+            apiPath`/api/issues/${issueId}/documents/${key}/revisions/${revisionId}/restore`,
             payload,
           );
           printOutput(doc, { json: ctx.json });
@@ -1162,7 +1164,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const traces = (await ctx.api.get<FeedbackTrace[]>(
-            `/api/issues/${issueId}/feedback-traces${buildFeedbackTraceQuery(opts)}`,
+            `${apiPath`/api/issues/${issueId}/feedback-traces`}${buildFeedbackTraceQuery(opts)}`,
           )) ?? [];
           if (ctx.json) {
             printOutput(traces, { json: true });
@@ -1193,7 +1195,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<unknown[]>(`/api/issues/${issueId}/runs`)) ?? [];
+          const rows = (await ctx.api.get<unknown[]>(apiPath`/api/issues/${issueId}/runs`)) ?? [];
           printOutput(rows, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1209,7 +1211,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<HeartbeatRun[]>(`/api/issues/${issueId}/live-runs`)) ?? [];
+          const rows = (await ctx.api.get<HeartbeatRun[]>(apiPath`/api/issues/${issueId}/live-runs`)) ?? [];
           printOutput(rows, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1225,7 +1227,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const run = await ctx.api.get<HeartbeatRun | null>(`/api/issues/${issueId}/active-run`);
+          const run = await ctx.api.get<HeartbeatRun | null>(apiPath`/api/issues/${issueId}/active-run`);
           printOutput(run, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1251,7 +1253,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const traces = (await ctx.api.get<FeedbackTrace[]>(
-            `/api/issues/${issueId}/feedback-traces${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
+            `${apiPath`/api/issues/${issueId}/feedback-traces`}${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
           )) ?? [];
             const serialized = serializeFeedbackTraces(traces, opts.format);
             if (opts.out?.trim()) {
@@ -1291,7 +1293,7 @@ export function registerIssueCommands(program: Command): void {
             agentId: opts.agentId,
             expectedStatuses: parseCsv(opts.expectedStatuses),
           });
-          const updated = await ctx.api.post<Issue>(`/api/issues/${issueId}/checkout`, payload);
+          const updated = await ctx.api.post<Issue>(apiPath`/api/issues/${issueId}/checkout`, payload);
           printOutput(updated, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1307,7 +1309,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const updated = await ctx.api.post<Issue>(`/api/issues/${issueId}/release`, {});
+          const updated = await ctx.api.post<Issue>(apiPath`/api/issues/${issueId}/release`, {});
           printOutput(updated, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1337,8 +1339,8 @@ function addIssuePostDeleteMarkerCommand(
         try {
           const ctx = resolveCommandContext(opts);
           const result = method === "post"
-            ? await ctx.api.post(`/api/issues/${issueId}${pathSuffix}`, {})
-            : await ctx.api.delete(`/api/issues/${issueId}${pathSuffix}`);
+            ? await ctx.api.post(`${apiPath`/api/issues/${issueId}`}${pathSuffix}`, {})
+            : await ctx.api.delete(`${apiPath`/api/issues/${issueId}`}${pathSuffix}`);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -1391,9 +1393,9 @@ async function uploadAttachment(
 ): Promise<unknown> {
   const bytes = await readFile(input.filePath);
   const form = new FormData();
-  form.set("file", new Blob([bytes]), input.filePath.split(/[\\/]/).pop() ?? "attachment");
+  form.set("file", new Blob([bytes], { type: inferContentTypeFromPath(input.filePath) }), input.filePath.split(/[\\/]/).pop() ?? "attachment");
   if (input.commentId) form.set("issueCommentId", input.commentId);
-  const response = await fetch(buildApiUrl(apiBase, `/api/companies/${input.companyId}/issues/${input.issueId}/attachments`), {
+  const response = await fetch(buildApiUrl(apiBase, apiPath`/api/companies/${input.companyId}/issues/${input.issueId}/attachments`), {
     method: "POST",
     headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
     body: form,
@@ -1406,7 +1408,7 @@ async function downloadAttachment(
   apiKey: string | undefined,
   attachmentId: string,
 ): Promise<Buffer> {
-  const response = await fetch(buildApiUrl(apiBase, `/api/attachments/${attachmentId}/content`), {
+  const response = await fetch(buildApiUrl(apiBase, apiPath`/api/attachments/${attachmentId}/content`), {
     headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
   });
   if (!response.ok) {

@@ -3,7 +3,9 @@ import { Command } from "commander";
 import { ApiRequestError } from "../../client/http.js";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
+  inferContentTypeFromPath,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
@@ -33,7 +35,7 @@ export function registerAssetCommands(program: Command): void {
       .action(async (opts: AssetOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await uploadAsset(ctx.api.apiBase, ctx.api.apiKey, `/api/companies/${ctx.companyId}/assets/images`, opts);
+          const result = await uploadAsset(ctx.api.apiBase, ctx.api.apiKey, apiPath`/api/companies/${ctx.companyId}/assets/images`, opts);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -51,7 +53,7 @@ export function registerAssetCommands(program: Command): void {
       .action(async (opts: AssetOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await uploadAsset(ctx.api.apiBase, ctx.api.apiKey, `/api/companies/${ctx.companyId}/logo`, opts);
+          const result = await uploadAsset(ctx.api.apiBase, ctx.api.apiKey, apiPath`/api/companies/${ctx.companyId}/logo`, opts);
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -94,7 +96,7 @@ async function uploadAsset(
   }
   const bytes = await readFile(opts.file);
   const form = new FormData();
-  form.set("file", new Blob([bytes]), opts.file.split(/[\\/]/).pop() ?? "asset");
+  form.set("file", new Blob([bytes], { type: inferContentTypeFromPath(opts.file) }), opts.file.split(/[\\/]/).pop() ?? "asset");
   if (opts.namespace?.trim()) form.set("namespace", opts.namespace.trim());
   if (opts.alt?.trim()) form.set("alt", opts.alt.trim());
   if (opts.title?.trim()) form.set("title", opts.title.trim());
@@ -108,7 +110,7 @@ async function uploadAsset(
 }
 
 async function downloadAsset(apiBase: string, apiKey: string | undefined, assetId: string): Promise<Buffer> {
-  const response = await fetch(buildApiUrl(apiBase, `/api/assets/${assetId}/content`), {
+  const response = await fetch(buildApiUrl(apiBase, apiPath`/api/assets/${assetId}/content`), {
     headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
   });
   if (!response.ok) {
