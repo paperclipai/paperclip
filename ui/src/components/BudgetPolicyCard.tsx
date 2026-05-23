@@ -98,8 +98,8 @@ export function BudgetPolicyCard({
   const progressSection = (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Remaining</span>
-        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
+        <span>{t("budget.remaining", { defaultValue: "Remaining" })}</span>
+        <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : t("budget.unlimited", { defaultValue: "Unlimited" })}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
@@ -184,7 +184,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("budget.validAmountError", { defaultValue: "Enter a valid non-negative dollar amount." })}</p>
         ) : null}
       </div>
     );
@@ -213,7 +213,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("budget.validAmountError", { defaultValue: "Enter a valid non-negative dollar amount." })}</p>
         ) : null}
       </CardContent>
     </Card>
