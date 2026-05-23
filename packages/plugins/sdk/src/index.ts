@@ -50,6 +50,7 @@
 // ---------------------------------------------------------------------------
 
 export { definePlugin } from "./define-plugin.js";
+export { defineOAuthProvider } from "./define-oauth-provider.js";
 export { createTestHarness, createEnvironmentTestHarness, createFakeEnvironmentDriver, filterEnvironmentEvents, assertEnvironmentEventOrder, assertLeaseLifecycle, assertWorkspaceRealizationLifecycle, assertExecutionLifecycle, assertEnvironmentError } from "./testing.js";
 export { createPluginBundlerPresets } from "./bundlers.js";
 export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";

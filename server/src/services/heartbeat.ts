@@ -443,7 +443,12 @@ export async function resolveExecutionRunAdapterConfig(input: {
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
   }
-  const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+  const {
+    config: resolvedConfig,
+    secretKeys,
+    manifest,
+    oauthConnectionIds,
+  } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
     input.agentId
@@ -518,6 +523,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
     ],
+    oauthConnectionIds: oauthConnectionIds ?? [],
   };
 }
 
@@ -3015,6 +3021,10 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  // OAuth wiring: when present, runtime resolution will resolve oauth_token
+  // bindings (lazy refresh + access-token decryption). Tests/embedded callers
+  // can omit it; the resolver throws on oauth_token bindings without it.
+  oauthDeps?: Parameters<typeof secretService>[1];
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3024,7 +3034,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
 
   const runLogStore = getRunLogStore();
-  const secretsSvc = secretService(db);
+  const secretsSvc = secretService(db, options.oauthDeps);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -8100,7 +8110,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig, secretKeys, secretManifest, oauthConnectionIds } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
       issueId,
@@ -8754,7 +8764,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const adapter = getServerAdapter(agent.adapterType);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(
+            agent.id,
+            agent.companyId,
+            agent.adapterType,
+            run.id,
+            oauthConnectionIds.length > 0
+              ? { connectionIds: oauthConnectionIds }
+              : undefined,
+          )
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(

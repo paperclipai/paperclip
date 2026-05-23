@@ -1,0 +1,30 @@
+id: slack
+displayName: Slack
+docUrl: https://api.slack.com/authentication/oauth-v2
+clientCredentials:
+  clientIdEnv: SLACK_OAUTH_CLIENT_ID
+  clientSecretEnv: SLACK_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://slack.com/oauth/v2/authorize
+  token: https://slack.com/api/oauth.v2.access
+  accountInfo: https://slack.com/api/auth.test
+scopes:
+  default: [channels:read, chat:write]
+  offered:
+    - channels:read
+    - chat:write
+    - channels:history
+    - files:read
+    - users:read
+    - im:history
+    - mpim:history
+    - groups:history
+pkce: optional
+authMethod: post
+responseFormat: json
+accountIdField: team_id
+accountLabelField: team
+refresh:
+  supported: true
+  rotatesRefreshToken: true
+shape: slack

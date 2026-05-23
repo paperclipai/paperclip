@@ -1,0 +1,23 @@
+id: notion
+displayName: Notion
+docUrl: https://developers.notion.com/docs/authorization
+clientCredentials:
+  clientIdEnv: NOTION_OAUTH_CLIENT_ID
+  clientSecretEnv: NOTION_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://api.notion.com/v1/oauth/authorize
+  token: https://api.notion.com/v1/oauth/token
+  accountInfo: https://api.notion.com/v1/users/me
+# Notion uses workspace-bound bot tokens — no refresh, no scopes parameter.
+# `accountInfo` returns the bot owner's user record; the dot-paths reach into
+# the nested response.
+scopes:
+  default: []
+  offered: []
+pkce: optional
+authMethod: basic
+responseFormat: json
+accountIdField: bot.owner.user.id
+accountLabelField: bot.owner.user.name
+refresh:
+  supported: false

@@ -1,0 +1,28 @@
+id: atlassian
+displayName: Atlassian (Jira / Confluence)
+docUrl: https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/
+clientCredentials:
+  clientIdEnv: ATLASSIAN_OAUTH_CLIENT_ID
+  clientSecretEnv: ATLASSIAN_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://auth.atlassian.com/authorize
+  token: https://auth.atlassian.com/oauth/token
+  accountInfo: https://api.atlassian.com/me
+scopes:
+  default: [read:jira-work, read:jira-user, offline_access]
+  offered:
+    - read:jira-work
+    - read:jira-user
+    - write:jira-work
+    - manage:jira-project
+    - read:confluence-content.all
+    - write:confluence-content
+    - offline_access
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: account_id
+accountLabelField: email
+refresh:
+  supported: true
+  rotatesRefreshToken: true

@@ -1,0 +1,29 @@
+id: microsoft-graph
+displayName: Microsoft Graph
+docUrl: https://learn.microsoft.com/en-us/graph/auth-overview
+clientCredentials:
+  clientIdEnv: MICROSOFT_OAUTH_CLIENT_ID
+  clientSecretEnv: MICROSOFT_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+  token: https://login.microsoftonline.com/common/oauth2/v2.0/token
+  accountInfo: https://graph.microsoft.com/v1.0/me
+scopes:
+  default: [User.Read, offline_access]
+  offered:
+    - User.Read
+    - offline_access
+    - Mail.Read
+    - Mail.Send
+    - Files.Read.All
+    - Calendars.Read
+    - Sites.Read.All
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: id
+accountLabelField: displayName
+refresh:
+  supported: true
+  rotatesRefreshToken: true
+shape: microsoft

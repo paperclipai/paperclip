@@ -46,6 +46,20 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
+import { ProviderRegistry } from "./oauth/registry.js";
+import { loadProviderConfigsFromDirectory } from "./oauth/yaml-loader.js";
+import { registerPluginContributions } from "./oauth/plugin-loader.js";
+import { createSlidingWindowLimiter } from "./oauth/rate-limiter.js";
+import { KNOWN_SHAPES } from "./oauth/shapes/index.js";
+import { oauthLogger } from "./oauth/logger.js";
+import { oauthRoutes } from "./routes/oauth.js";
+import { oauthCallbackRoute } from "./routes/oauth-callback.js";
+import { oauthMarkRevokedRoute } from "./routes/oauth-mark-revoked.js";
+import { runJwtMiddleware } from "./middleware/run-jwt.js";
+import { startRefreshWorker } from "./oauth/refresh-worker.js";
+import { refreshConnection as refreshConnectionImpl } from "./oauth/refresh.js";
+import { startStateSweeper } from "./oauth/state-sweeper.js";
+import { secretService } from "./services/index.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -321,6 +335,100 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+
+  // ---------------------------------------------------------------------------
+  // OAuth backbone wiring (T28).
+  //
+  // Registry is constructed once at startup. YAML provider configs are loaded
+  // synchronously (createApp is already async), so the registry is populated
+  // before the routes that read from it are mounted. Plugin contributions are
+  // registered later, inside `loader.loadAll().then(...)` below — the route
+  // mounts read the registry per request, so late additions are picked up.
+  const oauthRegistry = new ProviderRegistry({ env: process.env });
+  const yamlConfigs = await loadProviderConfigsFromDirectory(
+    path.join(process.cwd(), "server", "oauth-providers"),
+  );
+  const registerYamlConfig = (cfg: (typeof yamlConfigs)[number]): void => {
+    if (cfg.shape !== undefined) {
+      const shape = KNOWN_SHAPES[cfg.shape];
+      if (!shape) {
+        oauthLogger.error(
+          { provider: cfg.id, shape: cfg.shape, known: Object.keys(KNOWN_SHAPES) },
+          "OAuth provider references unknown shape module; skipping",
+        );
+        return;
+      }
+      oauthRegistry.register(cfg, "yaml", shape);
+      return;
+    }
+    oauthRegistry.register(cfg, "yaml");
+  };
+  for (const cfg of yamlConfigs) registerYamlConfig(cfg);
+  const extraOauthDir = process.env.PAPERCLIP_OAUTH_PROVIDERS_DIR;
+  if (extraOauthDir) {
+    const extra = await loadProviderConfigsFromDirectory(extraOauthDir);
+    for (const cfg of extra) registerYamlConfig(cfg);
+  }
+
+  // publicUrl: prefer the explicit PAPERCLIP_PUBLIC_URL env var; fall back to
+  // the local bind. loadConfig() does not surface a single `publicUrl` field
+  // (it has authPublicBaseUrl which is auth-specific), so the env var is the
+  // single source of truth here. T31 may revisit this once a unified public
+  // URL field exists on the loaded config.
+  const oauthPublicUrl =
+    process.env.PAPERCLIP_PUBLIC_URL ?? `http://localhost:${opts.serverPort}`;
+
+  const oauthSecretService = secretService(db, {
+    registry: oauthRegistry,
+    refreshFn: refreshConnectionImpl,
+  });
+  const oauthLimiter = createSlidingWindowLimiter({ limit: 60, windowMs: 60_000 });
+  // Per-tenant flood guard on POST /connect/:providerId to prevent
+  // `oauth_authorization_states` row-flood abuse from a single company
+  // (spec §10.4). Tuned at 50 requests / 5 minutes; complements the per-user
+  // rateLimiter above.
+  const oauthConnectFloodLimiter = createSlidingWindowLimiter({
+    limit: 50,
+    windowMs: 5 * 60 * 1000,
+  });
+
+  api.use(
+    "/companies/:companyId/oauth",
+    oauthRoutes({
+      registry: oauthRegistry,
+      db,
+      publicUrl: oauthPublicUrl,
+      rateLimiter: oauthLimiter,
+      connectFloodLimiter: oauthConnectFloodLimiter,
+      secretService: oauthSecretService,
+    }),
+  );
+  api.use(
+    "/oauth/callback/:providerId",
+    oauthCallbackRoute({
+      registry: oauthRegistry,
+      db,
+      publicUrl: oauthPublicUrl,
+      secretService: oauthSecretService,
+    }),
+  );
+  // Bearer-token run-JWT middleware: extracts oauth.connectionIds claim from
+  // the Authorization header and puts it on req.runJwt. The mark-revoked
+  // handler enforces 401/403 based on its presence + connection scoping.
+  api.use(
+    "/oauth/connections/:id/mark-revoked",
+    runJwtMiddleware(),
+    oauthMarkRevokedRoute({ db }),
+  );
+
+  const refreshWorker = startRefreshWorker({
+    db,
+    registry: oauthRegistry,
+    secretService: oauthSecretService,
+  });
+  const stateSweeper = startStateSweeper({ db });
+  // ---------------------------------------------------------------------------
+
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -473,10 +581,19 @@ export async function createApp(
   );
   void loader.loadAll().then((result) => {
     if (!result) return;
+    const oauthManifests = [];
     for (const loaded of result.results) {
       if (devWatcher && loaded.success && loaded.plugin.packagePath) {
         devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
       }
+      if (loaded.success && loaded.plugin.manifestJson) {
+        oauthManifests.push(loaded.plugin.manifestJson);
+      }
+    }
+    try {
+      registerPluginContributions(oauthRegistry, oauthManifests);
+    } catch (err) {
+      logger.error({ err }, "Failed to register plugin OAuth contributions");
     }
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
@@ -490,6 +607,8 @@ export async function createApp(
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    refreshWorker.stop();
+    stateSweeper.stop();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
@@ -497,6 +616,14 @@ export async function createApp(
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });
+
+  // Expose the OAuth registry on `app.locals` so the scheduler in index.ts
+  // (which constructs a heartbeatService outside this function) can build the
+  // same oauthDeps and reuse a single registry. Late-registered plugin
+  // contributions land on the same object, so the runtime resolver and the
+  // dispatcher always see the same provider set.
+  (app as unknown as { locals: Record<string, unknown> }).locals.oauthRegistry =
+    oauthRegistry;
 
   return app;
 }

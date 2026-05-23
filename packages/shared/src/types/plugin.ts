@@ -503,6 +503,58 @@ export interface PluginApiRouteDeclaration {
 // ---------------------------------------------------------------------------
 
 /**
+ * OAuth provider contribution from a plugin manifest.
+ *
+ * Mirrors the server-side `OAuthProviderConfig` Zod schema. Duplicated here
+ * (rather than imported from the server package) so the shared package stays
+ * free of server dependencies. The server validates each contribution via the
+ * Zod schema at registration time, so this interface is the structural
+ * contract plugin authors program against.
+ */
+export interface OAuthProviderContributionConfig {
+  id: string;
+  displayName: string;
+  iconUrl?: string;
+  docUrl?: string;
+  clientCredentials: { clientIdEnv: string; clientSecretEnv: string };
+  endpoints: { authorize: string; token: string; revoke?: string; accountInfo: string };
+  scopes: { default: string[]; offered: string[] };
+  pkce: "required" | "optional" | "unsupported";
+  authMethod: "post" | "basic";
+  responseFormat: "json" | "form";
+  accountIdField: string;
+  accountLabelField: string;
+  refresh:
+    | { supported: false }
+    | { supported: true; rotatesRefreshToken: boolean; expirySeconds?: number };
+  shape?: string;
+}
+
+/**
+ * Optional response-shape overrides a plugin can supply alongside an OAuth
+ * provider config. When omitted, the server falls back to the default
+ * RFC-6749 parser configured by `accountIdField` / `accountLabelField`.
+ */
+export interface OAuthProviderShape {
+  parseTokenResponse?: (raw: unknown) => {
+    accessToken: string;
+    refreshToken?: string;
+    expiresInSeconds?: number;
+    scope?: string[];
+  };
+  parseAccountInfo?: (raw: unknown) => { accountId: string; accountLabel?: string };
+}
+
+/**
+ * Wrapper a plugin emits per OAuth provider it contributes. Plugins may
+ * publish multiple contributions in a single manifest.
+ */
+export interface OAuthProviderContribution {
+  config: OAuthProviderContributionConfig;
+  shape?: OAuthProviderShape;
+}
+
+/**
  * The manifest shape every plugin package must export.
  * See PLUGIN_SPEC.md §10.1 for the normative definition.
  */
@@ -571,6 +623,24 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * Optional plugin classification used by host-side dispatch when the
+   * manifest contributes to one of the typed contribution surfaces. The
+   * absence of this field denotes a generic plugin (the historical default).
+   *
+   * - `sandbox_provider` — plugin contributes a core-driver sandbox provider
+   *   keyed by `environmentDrivers[].driverKey`.
+   * - `oauth_provider` — plugin contributes one or more OAuth providers via
+   *   {@link oauthProviders}.
+   * - `composite` — plugin contributes a mix of contribution kinds.
+   */
+  kind?: "sandbox_provider" | "oauth_provider" | "composite";
+  /**
+   * OAuth provider contributions. Each entry pairs a provider config with an
+   * optional response-shape override. The host validates each entry via the
+   * server-side Zod schema before registering it into the provider registry.
+   */
+  oauthProviders?: OAuthProviderContribution[];
 }
 
 // ---------------------------------------------------------------------------
