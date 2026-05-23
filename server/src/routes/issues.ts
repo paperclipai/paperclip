@@ -2,15 +2,17 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, not, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agents as agentsTable,
   executionWorkspaces,
   heartbeatRuns,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
+  issues as issuesTable,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
@@ -114,6 +116,14 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+
+const suggestAssigneeSchema = z.object({
+  title: z.string().optional().default(""),
+  description: z.string().optional().default(""),
+  labels: z.array(z.string()).optional().default([]),
+  parentId: z.string().optional(),
+  limit: z.number().int().min(1).max(20).optional().default(3),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -4402,6 +4412,108 @@ export function issueRoutes(
     });
 
     res.json(issue);
+  });
+
+  router.post("/companies/:companyId/issues/suggest-assignee", validate(suggestAssigneeSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    if (process.env.FEATURE_SUGGEST_ASSIGNEE === "false") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    const { title, description, labels, parentId, limit } = req.body as z.infer<typeof suggestAssigneeSchema>;
+    void parentId; // accepted for forward compatibility; v1 uses keyword matching only
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const rows = await db
+      .select({
+        agentId: agentsTable.id,
+        agentName: agentsTable.name,
+        role: agentsTable.role,
+        activeIssueCount: sql<number>`COUNT(CASE WHEN ${issuesTable.status} IN ('in_progress', 'in_review') THEN 1 END)::int`,
+        intake7d: sql<number>`COUNT(CASE WHEN ${issuesTable.startedAt} >= ${sevenDaysAgo} THEN 1 END)::int`,
+        lastActiveAt: sql<string | null>`MAX(${issuesTable.executionLockedAt})`,
+      })
+      .from(agentsTable)
+      .leftJoin(
+        issuesTable,
+        and(eq(issuesTable.assigneeAgentId, agentsTable.id), eq(issuesTable.companyId, companyId)),
+      )
+      .where(
+        and(
+          eq(agentsTable.companyId, companyId),
+          not(inArray(agentsTable.status, ["terminated", "pending_approval"])),
+        ),
+      )
+      .groupBy(agentsTable.id, agentsTable.name, agentsTable.role);
+
+    const keywords = [title, description, ...labels]
+      .join(" ")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const suggestions = rows
+      .map((row) => {
+        const activeIssueCount = Number(row.activeIssueCount);
+        const intake7d = Number(row.intake7d);
+        const lastActiveAt = row.lastActiveAt ? new Date(row.lastActiveAt).toISOString() : null;
+        const idleDays =
+          lastActiveAt !== null
+            ? Number(((now.getTime() - new Date(lastActiveAt).getTime()) / 86400000).toFixed(2))
+            : null;
+        const busynessScore = Number(Math.min(1, Math.max(0, activeIssueCount / 5)).toFixed(2));
+
+        const roleLower = (row.role ?? "").toLowerCase();
+        const nameLower = (row.agentName ?? "").toLowerCase();
+        let roleMatchScore = 0;
+        for (const keyword of keywords) {
+          if (roleLower.includes(keyword) || nameLower.includes(keyword)) {
+            roleMatchScore = 1.0;
+            break;
+          }
+        }
+        if (roleMatchScore === 0) {
+          const roleTokens = roleLower.split(/\W+/).filter(Boolean);
+          const nameTokens = nameLower.split(/\W+/).filter(Boolean);
+          const allTokens = [...roleTokens, ...nameTokens];
+          for (const keyword of keywords) {
+            if (keyword.length >= 3 && allTokens.some((token) => token.startsWith(keyword) || keyword.startsWith(token))) {
+              roleMatchScore = 0.5;
+              break;
+            }
+          }
+        }
+
+        const overallScore = Number((roleMatchScore * 0.6 + (1 - busynessScore) * 0.4).toFixed(4));
+        const reason =
+          roleMatchScore >= 1.0
+            ? `Role "${row.role}" matches issue keywords`
+            : roleMatchScore > 0
+              ? `Partial role match for "${row.role}"`
+              : `No role match - selected for availability (load: ${busynessScore})`;
+
+        return {
+          agentId: row.agentId,
+          agentName: row.agentName,
+          role: row.role,
+          activeIssueCount,
+          intake7d,
+          idleDays,
+          busynessScore,
+          roleMatchScore,
+          overallScore,
+          reason,
+        };
+      })
+      .sort((a, b) => b.overallScore - a.overallScore)
+      .slice(0, limit);
+
+    res.json({ suggestions, updatedAt: now.toISOString() });
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
