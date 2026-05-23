@@ -217,6 +217,64 @@ export async function planSeedIngest({ bankId, candidates, dryRun, ledger, hinds
   };
 }
 
+export async function seedBankAfterAgentBankCreated({
+  agent,
+  bankId = null,
+  enqueueSeedBankJob,
+  mode = DEFAULT_MODE,
+  recordSeedBankFailure = null,
+  reportsTo = null,
+}) {
+  if (!agent?.id) {
+    throw new Error("agent.id is required to seed a hindsight bank");
+  }
+  if (!agent?.companyId) {
+    throw new Error("agent.companyId is required to seed a hindsight bank");
+  }
+  if (typeof enqueueSeedBankJob !== "function") {
+    throw new Error("enqueueSeedBankJob is required to seed a hindsight bank");
+  }
+
+  const targetBankId = bankId || canonicalBankId(agent.companyId, agent.id);
+  const queries = deriveSeedQueries({ agent, reportsTo });
+  const job = {
+    agentId: agent.id,
+    bankId: targetBankId,
+    companyId: agent.companyId,
+    mode,
+    queries,
+  };
+
+  try {
+    await enqueueSeedBankJob(job);
+    return { ok: true, bankId: targetBankId, retryable: false, queryCount: queries.length };
+  } catch (error) {
+    const failure = {
+      agentId: agent.id,
+      bankId: targetBankId,
+      companyId: agent.companyId,
+      error: error instanceof Error ? error.message : String(error),
+      mode,
+      queries,
+      retryable: true,
+    };
+    if (recordSeedBankFailure) {
+      try {
+        await recordSeedBankFailure(failure);
+      } catch (recordError) {
+        return {
+          ok: false,
+          bankId: targetBankId,
+          retryable: true,
+          error: failure.error,
+          failureRecordError: recordError instanceof Error ? recordError.message : String(recordError),
+        };
+      }
+    }
+    return { ok: false, bankId: targetBankId, retryable: true, error: failure.error };
+  }
+}
+
 export class SqliteLedger {
   constructor(ledgerPath) {
     this.ledgerPath = ledgerPath;

@@ -13,6 +13,7 @@ import {
   HindsightClient,
   McpClient,
   planSeedIngest,
+  seedBankAfterAgentBankCreated,
   SqliteLedger,
 } from "./seed_bank_core.mjs";
 
@@ -146,6 +147,75 @@ test("planSeedIngest ingests first run, skips unchanged seed rerun, and refreshe
   assert.equal(ingested.length, 2);
   assert.equal(ingested[0].title, "nop/runbook");
   assert.equal(ingested[1].body, "# NOP changed");
+});
+
+test("seedBankAfterAgentBankCreated schedules one seed job for the canonical per-agent bank", async () => {
+  const jobs = [];
+
+  const result = await seedBankAfterAgentBankCreated({
+    agent: fixtureAgent,
+    reportsTo: fixtureParent,
+    enqueueSeedBankJob: async (job) => jobs.push(job),
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    bankId: "paperclip::company-1::agent-1",
+    retryable: false,
+    queryCount: 4,
+  });
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0], {
+    agentId: "agent-1",
+    bankId: "paperclip::company-1::agent-1",
+    companyId: "company-1",
+    mode: "seed",
+    queries: deriveSeedQueries({ agent: fixtureAgent, reportsTo: fixtureParent }),
+  });
+});
+
+test("seedBankAfterAgentBankCreated records retryable hook failure without throwing", async () => {
+  const failures = [];
+
+  const result = await seedBankAfterAgentBankCreated({
+    agent: fixtureAgent,
+    enqueueSeedBankJob: async () => {
+      throw new Error("queue unavailable");
+    },
+    recordSeedBankFailure: async (failure) => failures.push(failure),
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    bankId: "paperclip::company-1::agent-1",
+    retryable: true,
+    error: "queue unavailable",
+  });
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].agentId, "agent-1");
+  assert.equal(failures[0].bankId, "paperclip::company-1::agent-1");
+  assert.equal(failures[0].retryable, true);
+  assert.match(failures[0].error, /queue unavailable/);
+});
+
+test("seedBankAfterAgentBankCreated does not throw when failure recording also fails", async () => {
+  const result = await seedBankAfterAgentBankCreated({
+    agent: fixtureAgent,
+    enqueueSeedBankJob: async () => {
+      throw new Error("queue unavailable");
+    },
+    recordSeedBankFailure: async () => {
+      throw new Error("state store unavailable");
+    },
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    bankId: "paperclip::company-1::agent-1",
+    retryable: true,
+    error: "queue unavailable",
+    failureRecordError: "state store unavailable",
+  });
 });
 
 test("extractGbrainPageBody composes compiled_truth + timeline and falls back to body/markdown/content (BLO-6793)", () => {

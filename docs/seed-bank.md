@@ -1,6 +1,6 @@
 # Hindsight Seed Bank
 
-`pnpm paperclip-seed-bank` pre-seeds an existing per-agent hindsight bank with domain-specific pages from gbrain. It is intended as the v1 manual tool before any lifecycle hook is added to the hindsight plugin.
+`pnpm paperclip-seed-bank` pre-seeds an existing per-agent hindsight bank with domain-specific pages from gbrain. The same core module also exposes `seedBankAfterAgentBankCreated` so the hindsight plugin can schedule a seed after it creates a per-agent bank.
 
 ## Invocation
 
@@ -60,6 +60,22 @@ v1 is deterministic and does not call an LLM. It builds queries in this order:
 
 The tool calls gbrain query with salience and recency enabled, dedupes by `(source, slug)`, and keeps the first `--max-pages` candidates in query-result order.
 
+## Hindsight Lifecycle Hook
+
+When `paperclip-plugin-hindsight` creates a new per-agent bank, it should call `seedBankAfterAgentBankCreated` from `scripts/seed_bank_core.mjs` with the created agent record and the same bank id it just created:
+
+```js
+await seedBankAfterAgentBankCreated({
+  agent,
+  bankId,
+  reportsTo,
+  enqueueSeedBankJob: (job) => queue.enqueue("paperclip-seed-bank", job),
+  recordSeedBankFailure: (failure) => state.set(retryKey(failure), failure),
+});
+```
+
+The hook derives the same deterministic query plan as the manual CLI and schedules exactly one seed job for the canonical `paperclip::<companyId>::<agentId>` bank id unless the caller passes the just-created bank id explicitly. Queue failures are caught and returned as `{ ok: false, retryable: true }`; callers should surface the recorded failure in plugin health/state and offer a retry action. Even if failure recording itself fails, the hook returns the secondary `failureRecordError` instead of throwing. The hook must not throw queue failures back into agent creation, because hindsight bank seeding is a best-effort domain-prior bootstrap rather than a prerequisite for creating the agent or bank.
+
 ## Dry Run
 
 `--dry-run` prints the derived queries, candidate pages, hashes, and action plan. It does not call hindsight ingest and does not write ledger rows. The text report includes `ledgerRows: before=<n> after=<n>` so operators can verify the ledger count did not change.
@@ -111,3 +127,4 @@ The ledger is an optimization. Correctness still depends on hindsight replacing 
 - Wrong target: the report prints the bank id before listing candidates; verify it is a per-agent bank, not `agent-memories`.
 - Non-deterministic query drift: v1 derives queries only from stored agent fields and desired skill slugs.
 - Missing SQLite runtime: the ledger adapter requires `python3` with stdlib `sqlite3` support in the operator environment.
+- Lifecycle hook queue failure: `seedBankAfterAgentBankCreated` returns a retryable failure payload and calls `recordSeedBankFailure` when provided; agent creation and bank creation should still complete.
