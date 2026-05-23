@@ -37,6 +37,31 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.error?.message).toBe("boom");
   });
 
+  it("exposes raw 500 messages for trusted Cloud tenant imports", () => {
+    const req = {
+      ...makeReq(),
+      method: "POST",
+      originalUrl: "/api/companies/import",
+      actor: {
+        type: "board",
+        userId: "cloud-user",
+        source: "cloud_tenant",
+      },
+    } as unknown as Request;
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new Error("portable file references missing upload id");
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Internal server error",
+      message: "portable file references missing upload id",
+    });
+    expect(res.err).toBe(err);
+  });
+
   it("attaches HttpError instances for 500 responses", () => {
     const req = makeReq();
     const res = makeRes() as any;

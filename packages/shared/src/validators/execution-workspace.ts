@@ -13,7 +13,7 @@ export const executionWorkspaceConfigSchema = z.object({
   provisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
-  workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+  workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
   serviceStates: z.record(z.enum(["running", "stopped", "manual"])).optional().nullable(),
 }).strict();
@@ -94,7 +94,7 @@ export const workspaceRuntimeServiceSchema = z.object({
   lastUsedAt: z.coerce.date(),
   startedAt: z.coerce.date(),
   stoppedAt: z.coerce.date().nullable(),
-  stopPolicy: z.record(z.unknown()).nullable(),
+  stopPolicy: z.record(z.string(), z.unknown()).nullable(),
   healthStatus: z.enum(["unknown", "healthy", "unhealthy"]),
   configIndex: z.number().int().nonnegative().nullable().optional(),
   createdAt: z.coerce.date(),
@@ -125,7 +125,7 @@ export const updateExecutionWorkspaceSchema = z.object({
   cleanupEligibleAt: z.string().datetime().optional().nullable(),
   cleanupReason: z.string().optional().nullable(),
   config: executionWorkspaceConfigSchema.optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 }).strict();
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
