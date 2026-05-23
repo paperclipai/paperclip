@@ -141,12 +141,75 @@ pnpm paperclipai issue list --company-id <company-id> [--status todo,in_progress
 pnpm paperclipai issue get <issue-id-or-identifier>
 pnpm paperclipai issue create --company-id <company-id> --title "..." [--description "..."] [--status todo] [--priority high]
 pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm paperclipai issue delete <issue-id> --yes
 pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
+pnpm paperclipai issue comments <issue-id> [--limit 50]
+pnpm paperclipai issue comment:get <issue-id> <comment-id>
+pnpm paperclipai issue comment:delete <issue-id> <comment-id>
 pnpm paperclipai issue runs <issue-id-or-identifier>
 pnpm paperclipai issue live-runs <issue-id-or-identifier>
 pnpm paperclipai issue active-run <issue-id-or-identifier>
+pnpm paperclipai issue heartbeat-context <issue-id>
 pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id> [--expected-statuses todo,backlog,blocked]
 pnpm paperclipai issue release <issue-id>
+pnpm paperclipai issue force-release <issue-id>
+```
+
+Issue subresources are exposed as Paperclip API wrappers. Commands that map to broad server schemas accept JSON payloads and validate them with shared schemas before sending.
+
+```sh
+pnpm paperclipai issue child:create <issue-id> --payload-json '{"title":"Child task"}'
+pnpm paperclipai issue approvals <issue-id>
+pnpm paperclipai issue approval:link <issue-id> <approval-id>
+pnpm paperclipai issue approval:unlink <issue-id> <approval-id>
+pnpm paperclipai issue read <issue-id>
+pnpm paperclipai issue unread <issue-id>
+pnpm paperclipai issue archive <issue-id>
+pnpm paperclipai issue unarchive <issue-id>
+pnpm paperclipai issue recovery-actions <issue-id>
+pnpm paperclipai issue recovery:resolve <issue-id> --outcome restored --source-issue-status todo
+```
+
+```sh
+pnpm paperclipai issue documents <issue-id> [--include-system]
+pnpm paperclipai issue document:get <issue-id> <key>
+pnpm paperclipai issue document:put <issue-id> <key> --body-file ./plan.md [--title Plan]
+pnpm paperclipai issue document:lock <issue-id> <key>
+pnpm paperclipai issue document:unlock <issue-id> <key>
+pnpm paperclipai issue document:revisions <issue-id> <key>
+pnpm paperclipai issue document:restore <issue-id> <key> <revision-id>
+pnpm paperclipai issue document:delete <issue-id> <key>
+```
+
+```sh
+pnpm paperclipai issue work-products <issue-id>
+pnpm paperclipai issue work-product:create <issue-id> --payload-json '{"type":"pull_request","provider":"github","title":"PR"}'
+pnpm paperclipai issue work-product:update <work-product-id> --payload-json '{"status":"archived"}'
+pnpm paperclipai issue work-product:delete <work-product-id>
+pnpm paperclipai issue interactions <issue-id>
+pnpm paperclipai issue interaction:create <issue-id> --payload-json '{"kind":"request_confirmation","payload":{"version":1,"prompt":"Continue?"}}'
+pnpm paperclipai issue interaction:accept <issue-id> <interaction-id> [--selected-client-keys key1,key2]
+pnpm paperclipai issue interaction:reject <issue-id> <interaction-id> [--reason "..."]
+pnpm paperclipai issue interaction:respond <issue-id> <interaction-id> --answers-json '[{"questionId":"q1","optionIds":["yes"]}]'
+pnpm paperclipai issue interaction:cancel <issue-id> <interaction-id> [--reason "..."]
+```
+
+```sh
+pnpm paperclipai issue tree-state <issue-id>
+pnpm paperclipai issue tree-preview <issue-id> --payload-json '{"mode":"pause"}'
+pnpm paperclipai issue tree-holds <issue-id> [--status active] [--include-members]
+pnpm paperclipai issue tree-hold:create <issue-id> --payload-json '{"mode":"pause","reason":"review"}'
+pnpm paperclipai issue tree-hold:get <issue-id> <hold-id>
+pnpm paperclipai issue tree-hold:release <issue-id> <hold-id> [--payload-json '{"reason":"done"}']
+pnpm paperclipai issue attachments <issue-id>
+pnpm paperclipai issue attachment:upload <issue-id> --company-id <company-id> --file ./artifact.txt
+pnpm paperclipai issue attachment:download <attachment-id> [--out ./artifact.txt]
+pnpm paperclipai issue attachment:delete <attachment-id>
+pnpm paperclipai issue label:list --company-id <company-id>
+pnpm paperclipai issue label:create --company-id <company-id> --name bug --color '#ff0000'
+pnpm paperclipai issue label:delete <label-id>
+pnpm paperclipai issue feedback:votes <issue-id>
+pnpm paperclipai issue feedback:vote <issue-id> --payload-json '{"targetType":"issue_comment","targetId":"...","vote":"up"}'
 ```
 
 ## Project Commands
