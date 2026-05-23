@@ -1254,13 +1254,18 @@ async function emitAcpxFailure(input: {
   prepared: AcpxPreparedRuntime;
   err: unknown;
   phase: AcpxExecutionPhase;
+  // Replace the err-derived message in both the stderr-tail log header and the
+  // acpx.error payload. Used by the turn path to surface "Timed out after Ns"
+  // instead of the raw underlying error message.
+  messageOverride?: string;
 }): Promise<{
   classified: Pick<AdapterExecutionResult, "errorCode" | "errorMeta">;
   message: string;
   childStderrTail: string | null;
 }> {
-  const { ctx, prepared, err, phase } = input;
-  const message = err instanceof Error ? err.message : String(err);
+  const { ctx, prepared, err, phase, messageOverride } = input;
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const message = messageOverride ?? rawMessage;
   const classified = classifyError(err, phase);
   const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
   if (childStderrTail) {
@@ -1389,7 +1394,11 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
-      verbose: true,
+      // Scope ACPX runtime verbose logs to the claude agent only — that's the
+      // surface we know needs the extra session-event detail (PAPA-388). codex
+      // and custom agents already emit their own per-tool output and don't
+      // benefit from doubling the log volume.
+      verbose: prepared.acpxAgent === "claude",
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
     if (cached) clearWarmHandleTimer(cached);
@@ -1680,11 +1689,11 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       };
     } catch (err) {
       if (timeout) clearTimeout(timeout);
-      const classified = classifyError(err, "turn");
-      const rawMessage = err instanceof Error ? err.message : String(err);
-      const message = timedOut ? `Timed out after ${prepared.timeoutSec}s` : rawMessage;
+      const messageOverride = timedOut ? `Timed out after ${prepared.timeoutSec}s` : undefined;
       const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
-      if (cancel) await cancel(message).catch(() => {});
+      const preEmitMessage =
+        messageOverride ?? (err instanceof Error ? err.message : String(err));
+      if (cancel) await cancel(preEmitMessage).catch(() => {});
       await runtime.close({
         handle: sessionHandle,
         reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
@@ -1695,21 +1704,12 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
-      const childStderrTail = await readChildStderrTail({
-        logPath: prepared.childStderrLogPath,
-      });
-      if (childStderrTail) {
-        await ctx.onLog(
-          "stderr",
-          `[paperclip] ACPX child stderr tail (turn):\n${childStderrTail}\n`,
-        );
-      }
-      await emitAcpxLog(ctx, {
-        type: "acpx.error",
-        message,
+      const { classified, message } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
         phase: "turn",
-        ...classified.errorMeta,
-        ...(childStderrTail ? { childStderrTail } : {}),
+        messageOverride,
       });
       return {
         exitCode: 1,

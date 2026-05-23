@@ -482,7 +482,9 @@ describe("acpx_local runtime skill isolation", () => {
 
     expect(result.exitCode).toBe(0);
     const verboseFlags = runtimeOptions.map((options) => (options as { verbose?: boolean }).verbose);
-    expect(verboseFlags.every((flag) => flag === true)).toBe(true);
+    // verbose is scoped to the claude agent (PAPA-388); the custom agent here
+    // should not opt in to ACPX runtime verbose session-event logs.
+    expect(verboseFlags.every((flag) => flag === false)).toBe(true);
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
     const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
@@ -647,6 +649,41 @@ describe("acpx_local runtime skill isolation", () => {
       entry.includes("overrode user dontAsk"),
     );
     expect(overrideNote).toBeTruthy();
+  });
+
+  it("opts the claude agent into ACPX runtime verbose logs but leaves codex/custom agents quiet", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const verboseByAgent: Record<string, boolean | undefined> = {};
+    for (const agent of ["claude", "codex", "custom"] as const) {
+      const runtimeOptions: AcpRuntimeOptions[] = [];
+      const execute = createAcpxLocalExecutor({
+        createRuntime: (options) => {
+          runtimeOptions.push(options as AcpRuntimeOptions);
+          return buildRuntime() as never;
+        },
+      });
+      const result = await execute({
+        runId: `run-${agent}`,
+        agent: { id: `agent-${agent}`, companyId: "company-1" },
+        runtime: {},
+        config:
+          agent === "custom"
+            ? { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, `state-${agent}`), cwd }
+            : { agent, stateDir: path.join(root, `state-${agent}`), cwd },
+        context: { paperclipWorkspace: { cwd } },
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      expect(result.exitCode).toBe(0);
+      verboseByAgent[agent] = (runtimeOptions[0] as { verbose?: boolean } | undefined)?.verbose;
+    }
+
+    expect(verboseByAgent.claude).toBe(true);
+    expect(verboseByAgent.codex).toBe(false);
+    expect(verboseByAgent.custom).toBe(false);
   });
 
   it("does not touch .claude/settings.local.json for the codex agent", async () => {
