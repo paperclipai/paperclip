@@ -165,19 +165,20 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain("Resolved as restored");
   });
 
-  it("calls resolve with done and does not offer delegated recovery", () => {
+  it("calls resolve with todo and does not offer delegated recovery", () => {
     const onResolve = vi.fn();
     const node = render(
       <IssueRecoveryActionCard action={buildAction()} onResolve={onResolve} />,
     );
     click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
 
+    expect(document.body.textContent).toContain("Try again");
     expect(document.body.textContent).toContain("Mark issue done");
     expect(document.body.textContent).not.toContain("Mark blocked");
     expect(document.body.textContent).not.toContain("Delegate follow-up issue");
-    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Mark issue done")) ?? null);
+    click([...document.body.querySelectorAll("button")].find((button) => button.textContent?.includes("Try again")) ?? null);
 
-    expect(onResolve).toHaveBeenCalledWith("done");
+    expect(onResolve).toHaveBeenCalledWith("todo");
   });
 
   it("does not offer blocked recovery resolution without a blocker selection flow", () => {
@@ -186,6 +187,7 @@ describe("IssueRecoveryActionCard", () => {
     );
     click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
 
+    expect(document.body.textContent).toContain("Try again");
     expect(document.body.textContent).toContain("Mark issue done");
     expect(document.body.textContent).toContain("Send for review");
     expect(document.body.textContent).toContain("False positive, done");

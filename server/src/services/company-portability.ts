@@ -4118,7 +4118,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
-        await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
+        const ownerPrincipalId = actorUserId ?? "board";
+        await access.ensureMembership(created.id, "user", ownerPrincipalId, "owner", "active");
+        await access.ensureRoleDefaultGrants(
+          created.id,
+          ownerPrincipalId,
+          "owner",
+          actorUserId ?? null,
+        );
       }
       targetCompany = created;
       companyAction = "created";

@@ -26,4 +26,5 @@ describe("executionWorkspacesApi.listSummaries", () => {
       "/companies/company-1/execution-workspaces?projectId=project-1&reuseEligible=true&summary=true",
     );
   });
+
 });

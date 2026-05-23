@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
@@ -68,6 +69,25 @@ describe("issue validators", () => {
     expect(
       resolveIssueRecoveryActionSchema.safeParse({
         outcome: "false_positive",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("allows restored recovery resolutions to return the source issue to todo", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+      }),
+    ).toMatchObject({
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "todo",
       }).success,
     ).toBe(false);
   });
@@ -216,6 +236,50 @@ describe("issue validators", () => {
       title: "Plan child",
       workMode: "planning",
     }).workMode).toBe("planning");
+  });
+
+  it("validates blocked inbox attention payloads and requires redacted secret fields", () => {
+    const parsed = issueBlockedInboxAttentionSchema.parse({
+      kind: "blocked",
+      state: "needs_attention",
+      reason: "blocked_by_unassigned_issue",
+      severity: "critical",
+      stoppedSinceAt: "2026-05-09T12:00:00.000Z",
+      owner: { type: "unknown", agentId: null, userId: null, label: null },
+      action: { label: "Assign blocker", detail: "Assign the leaf blocker." },
+      sourceIssue: {
+        id: "11111111-1111-4111-8111-111111111111",
+        identifier: "PAP-1",
+        title: "Blocked source",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      leafIssue: {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-2",
+        title: "Unassigned leaf",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      recoveryIssue: null,
+      approvalId: null,
+      interactionId: null,
+      sampleIssueIdentifier: "PAP-2",
+      redaction: {
+        externalDetailsRedacted: false,
+        secretFieldsOmitted: true,
+      },
+    });
+
+    expect(parsed.redaction.secretFieldsOmitted).toBe(true);
+    expect(issueBlockedInboxAttentionSchema.safeParse({
+      ...parsed,
+      redaction: { externalDetailsRedacted: false, secretFieldsOmitted: false },
+    }).success).toBe(false);
   });
 
   it("rejects unknown issue work modes", () => {

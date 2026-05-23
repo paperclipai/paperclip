@@ -28,6 +28,69 @@ import {
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
+export const issueBlockedInboxStateSchema = z.enum([
+  "needs_attention",
+  "awaiting_decision",
+  "external_wait",
+  "recovery_open",
+  "missing_disposition",
+]);
+
+export const issueBlockedInboxSeveritySchema = z.enum(["critical", "high", "medium", "low"]);
+
+export const issueBlockedInboxReasonSchema = z.enum([
+  "blocked_by_unassigned_issue",
+  "blocked_by_assigned_backlog_issue",
+  "blocked_by_uninvokable_assignee",
+  "blocked_by_cancelled_issue",
+  "blocked_chain_stalled",
+  "invalid_review_participant",
+  "in_review_without_action_path",
+  "missing_successful_run_disposition",
+  "pending_board_decision",
+  "pending_user_decision",
+  "external_owner_action",
+  "open_recovery_issue",
+]);
+
+export const issueBlockedInboxIssueRefSchema = z.object({
+  id: z.string().uuid(),
+  identifier: z.string().nullable(),
+  title: z.string(),
+  status: z.enum(ISSUE_STATUSES),
+  priority: z.enum(ISSUE_PRIORITIES),
+  assigneeAgentId: z.string().uuid().nullable(),
+  assigneeUserId: z.string().nullable(),
+}).strict();
+
+export const issueBlockedInboxAttentionSchema = z.object({
+  kind: z.literal("blocked"),
+  state: issueBlockedInboxStateSchema,
+  reason: issueBlockedInboxReasonSchema,
+  severity: issueBlockedInboxSeveritySchema,
+  stoppedSinceAt: z.string().datetime().nullable(),
+  owner: z.object({
+    type: z.enum(["agent", "user", "board", "external", "unknown"]),
+    agentId: z.string().uuid().nullable(),
+    userId: z.string().nullable(),
+    label: z.string().nullable(),
+  }).strict(),
+  action: z.object({
+    label: z.string().trim().min(1),
+    detail: z.string().nullable(),
+  }).strict(),
+  sourceIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  leafIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  recoveryIssue: issueBlockedInboxIssueRefSchema.nullable(),
+  approvalId: z.string().uuid().nullable(),
+  interactionId: z.string().uuid().nullable(),
+  sampleIssueIdentifier: z.string().nullable(),
+  redaction: z.object({
+    externalDetailsRedacted: z.boolean(),
+    secretFieldsOmitted: z.literal(true),
+  }).strict(),
+}).strict();
+
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
   "shared_workspace",
@@ -53,14 +116,14 @@ export const issueExecutionWorkspaceSettingsSchema = z
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     environmentId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
-    workspaceRuntime: z.record(z.unknown()).optional().nullable(),
+    workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   })
   .strict();
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
-    adapterConfig: z.record(z.unknown()).optional(),
+    adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();
@@ -185,10 +248,10 @@ export const issueRecoveryActionReadModelSchema = z.object({
   returnOwnerAgentId: z.string().uuid().nullable(),
   cause: z.string().min(1),
   fingerprint: z.string().min(1),
-  evidence: z.record(z.unknown()),
+  evidence: z.record(z.string(), z.unknown()),
   nextAction: z.string().min(1),
-  wakePolicy: z.record(z.unknown()).nullable(),
-  monitorPolicy: z.record(z.unknown()).nullable(),
+  wakePolicy: z.record(z.string(), z.unknown()).nullable(),
+  monitorPolicy: z.record(z.string(), z.unknown()).nullable(),
   attemptCount: z.number().int().nonnegative(),
   maxAttempts: z.number().int().positive().nullable(),
   timeoutAt: z.union([z.date(), z.string().datetime()]).nullable(),
@@ -212,14 +275,18 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
 export const resolveIssueRecoveryActionSchema = z.object({
   actionId: z.string().uuid().optional(),
   outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
-  sourceIssueStatus: z.enum(["done", "in_review", "blocked"]),
+  sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),
   resolutionNote: multilineTextSchema.optional().nullable(),
 }).strict().superRefine((value, ctx) => {
   if (value.outcome === "restored") {
-    if (value.sourceIssueStatus !== "done" && value.sourceIssueStatus !== "in_review") {
+    if (
+      value.sourceIssueStatus !== "todo" &&
+      value.sourceIssueStatus !== "done" &&
+      value.sourceIssueStatus !== "in_review"
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Restored recovery actions must move the source issue to done or in_review",
+        message: "Restored recovery actions must move the source issue to todo, done, or in_review",
         path: ["sourceIssueStatus"],
       });
     }
