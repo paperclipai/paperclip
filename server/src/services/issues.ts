@@ -683,14 +683,25 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
   `;
 }
 
+const LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS = [
+  "plugin:paperclipai.content-machine:case",
+  "plugin:paperclipai.content-machine:evaluation",
+  "plugin:paperclipai.content-machine:source-sync",
+] as const;
+
 function nonPluginOperationIssueCondition() {
-  return sql<boolean>`NOT (${issues.originKind} LIKE 'plugin:%:operation' OR ${issues.originKind} LIKE 'plugin:%:operation:%')`;
+  return sql<boolean>`NOT (
+    ${issues.originKind} LIKE 'plugin:%:operation'
+    OR ${issues.originKind} LIKE 'plugin:%:operation:%'
+    OR ${inArray(issues.originKind, LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS)}
+  )`;
 }
 
 function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
   return Boolean(
     filters?.includePluginOperations ||
     filters?.originKind ||
+    filters?.originKindPrefix ||
     filters?.originId ||
     filters?.projectId,
   );

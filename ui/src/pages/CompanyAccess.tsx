@@ -2,17 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
-  PERMISSION_KEYS,
   type Agent,
-  type PermissionKey,
 } from "@paperclipai/shared";
-import { ShieldCheck, Trash2, Users } from "lucide-react";
+import { Shield, ShieldCheck, Trash2, Users } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -25,37 +22,12 @@ import { Badge } from "@/components/ui/badge";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
+import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-
-const permissionLabels: Record<PermissionKey, string> = {
-  "agents:create": "Create agents",
-  "users:invite": "Invite humans and agents",
-  "users:manage_permissions": "Manage members and grants",
-  "tasks:assign": "Assign tasks",
-  "tasks:assign_scope": "Assign scoped tasks",
-  "tasks:manage_active_checkouts": "Manage active task checkouts",
-  "joins:approve": "Approve join requests",
-  "environments:manage": "Manage environments",
-};
-
-function formatGrantSummary(member: CompanyMember) {
-  if (member.grants.length === 0) return "No explicit grants";
-  return member.grants.map((grant) => permissionLabels[grant.permissionKey]).join(", ");
-}
-
-const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>, PermissionKey[]> = {
-  owner: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "joins:approve"],
-  admin: ["agents:create", "users:invite", "tasks:assign", "joins:approve"],
-  operator: ["tasks:assign"],
-  viewer: [],
-};
+import { usePluginSlots } from "@/plugins/slots";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
-
-function getImplicitGrantKeys(role: CompanyMember["membershipRole"]) {
-  return role ? implicitRoleGrantMap[role] : [];
-}
 
 export function CompanyAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -67,13 +39,12 @@ export function CompanyAccess() {
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
-  const [draftGrants, setDraftGrants] = useState<Set<PermissionKey>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Access" },
+      { label: "Members" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -103,11 +74,10 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus; grants: PermissionKey[] }) => {
-      return accessApi.updateMemberAccess(selectedCompanyId!, input.memberId, {
+    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus }) => {
+      return accessApi.updateMember(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
-        grants: input.grants.map((permissionKey) => ({ permissionKey })),
       });
     },
     onSuccess: async () => {
@@ -223,7 +193,6 @@ export function CompanyAccess() {
     if (!editingMember) return;
     setDraftRole(editingMember.membershipRole);
     setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
-    setDraftGrants(new Set(editingMember.grants.map((grant) => grant.permissionKey)));
   }, [editingMember]);
 
   useEffect(() => {
@@ -255,8 +224,6 @@ export function CompanyAccess() {
     joinRequestsQuery.data?.filter((request) => request.requestType === "human") ?? [];
   const joinRequestActionPending =
     approveJoinRequestMutation.isPending || rejectJoinRequestMutation.isPending;
-  const implicitGrantKeys = getImplicitGrantKeys(draftRole);
-  const implicitGrantSet = new Set(implicitGrantKeys);
   const activeReassignmentUsers = members.filter(
     (member) =>
       member.status === "active" &&
@@ -271,11 +238,14 @@ export function CompanyAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Access</h1>
+          <h1 className="text-lg font-semibold">Company Members</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Manage company user memberships, membership status, and explicit permission grants for {selectedCompany?.name}.
+          Manage the people who can work in {selectedCompany?.name}. Members can collaborate across the company by default.
         </p>
+        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          Core keeps this page focused on membership, invite approvals, and safe member removal.
+        </div>
       </div>
 
       {access && !access.currentUserRole && (
@@ -291,7 +261,7 @@ export function CompanyAccess() {
             <h2 className="text-base font-semibold">Humans</h2>
           </div>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Manage human company memberships, status, and grants here.
+            Manage human company memberships and status here.
           </p>
         </div>
 
@@ -340,11 +310,10 @@ export function CompanyAccess() {
         ) : null}
 
         <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_180px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_180px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             <div>User account</div>
             <div>Role</div>
             <div>Status</div>
-            <div>Grants</div>
             <div className="text-right">Action</div>
           </div>
           {members.length === 0 ? (
@@ -356,7 +325,7 @@ export function CompanyAccess() {
               return (
                 <div
                   key={member.id}
-                  className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_minmax(0,1.2fr)_180px] gap-3 border-b border-border px-4 py-3 last:border-b-0"
+                  className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_180px] gap-3 border-b border-border px-4 py-3 last:border-b-0"
                 >
                   <div className="min-w-0">
                     <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
@@ -372,7 +341,6 @@ export function CompanyAccess() {
                       {member.status.replace("_", " ")}
                     </Badge>
                   </div>
-                  <div className="min-w-0 text-sm text-muted-foreground">{formatGrantSummary(member)}</div>
                   <div className="space-y-1 text-right">
                     <div className="flex justify-end gap-2">
                       <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
@@ -405,7 +373,7 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>Edit member</DialogTitle>
             <DialogDescription>
-              Update company role, membership status, and explicit grants for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+              Update company role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
@@ -443,66 +411,6 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
-
-              <div className="space-y-3">
-                <div>
-                  <h3 className="text-sm font-medium">Grants</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Roles provide implicit grants automatically. Explicit grants below are only for overrides and extra access that should persist even if the role changes.
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border px-3 py-3">
-                  <div className="text-sm font-medium">Implicit grants from role</div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {draftRole
-                      ? `${HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[draftRole]} currently includes these permissions automatically.`
-                      : "No role is selected, so this member has no implicit grants right now."}
-                  </p>
-                  {implicitGrantKeys.length > 0 ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {implicitGrantKeys.map((permissionKey) => (
-                        <Badge key={permissionKey} variant="outline">
-                          {permissionLabels[permissionKey]}
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {PERMISSION_KEYS.map((permissionKey) => (
-                    <label
-                      key={permissionKey}
-                      className="flex items-start gap-3 rounded-lg border border-border px-3 py-2"
-                    >
-                      <Checkbox
-                        checked={draftGrants.has(permissionKey)}
-                        onCheckedChange={(checked) => {
-                          setDraftGrants((current) => {
-                            const next = new Set(current);
-                            if (checked) next.add(permissionKey);
-                            else next.delete(permissionKey);
-                            return next;
-                          });
-                        }}
-                      />
-                      <span className="space-y-1">
-                        <span className="block text-sm font-medium">{permissionLabels[permissionKey]}</span>
-                        <span className="block text-xs text-muted-foreground">{permissionKey}</span>
-                        {implicitGrantSet.has(permissionKey) ? (
-                          <span className="block text-xs text-muted-foreground">
-                            Included implicitly by the {draftRole ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[draftRole] : "selected"} role. Add an explicit grant only if it should stay after the role changes.
-                          </span>
-                        ) : null}
-                        {draftGrants.has(permissionKey) ? (
-                          <span className="block text-xs text-muted-foreground">
-                            Stored explicitly for this member.
-                          </span>
-                        ) : null}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
           <DialogFooter>
@@ -516,12 +424,11 @@ export function CompanyAccess() {
                   memberId: editingMember.id,
                   membershipRole: draftRole,
                   status: draftStatus,
-                  grants: [...draftGrants],
                 });
               }}
               disabled={updateMemberMutation.isPending}
             >
-              {updateMemberMutation.isPending ? "Saving…" : "Save access"}
+              {updateMemberMutation.isPending ? "Saving…" : "Save member"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -612,6 +519,66 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+export function CompanyAccessLegacyRoute() {
+  const { selectedCompanyId } = useCompany();
+  const { setBreadcrumbs } = useBreadcrumbs();
+  const { slots, isLoading, errorMessage } = usePluginSlots({
+    slotTypes: ["companySettingsPage"],
+    companyId: selectedCompanyId,
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    setBreadcrumbs([
+      { label: "Settings", href: "/company/settings" },
+      { label: "Access" },
+    ]);
+  }, [setBreadcrumbs]);
+
+  const permissionsSlot = slots.find((slot) => slot.routePath === "permissions");
+  if (permissionsSlot) {
+    return <Navigate to="/company/settings/permissions" replace />;
+  }
+
+  if (isLoading) {
+    return <div className="text-sm text-muted-foreground">Checking for advanced permission extensions...</div>;
+  }
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Shield className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Advanced Permissions</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-xl border border-border px-5 py-5">
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
+          <p className="text-sm text-muted-foreground">
+            Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
+          </p>
+          {errorMessage ? (
+            <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild>
+            <Link to="/company/settings/members">Open Members</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/company/settings/invites">Open Invites</Link>
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

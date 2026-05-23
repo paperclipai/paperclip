@@ -122,6 +122,17 @@ function boardActor(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function agentActor(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "agent",
+    agentId: agentA,
+    companyId: companyA,
+    runId: runA,
+    source: "agent_jwt",
+    ...overrides,
+  };
+}
+
 function readyPlugin() {
   mockRegistry.getById.mockResolvedValue({
     id: pluginId,
@@ -679,6 +690,28 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  it("forwards authorized bridge company scope to the plugin worker", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA, params: { view: "compact" } });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "getData", {
+      key: "health",
+      companyId: companyA,
+      params: { view: "compact" },
+      renderEnvironment: null,
+    });
+  });
+
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });
@@ -700,8 +733,158 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
       params: {},
+      actorContext: {
+        type: "user",
+        userId: "admin-1",
+        agentId: null,
+        runId: null,
+        companyId: null,
+      },
       renderEnvironment: null,
     });
+  });
+
+  it("passes authenticated actor context and overrides spoofed company scope for plugin actions", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ runId: runA }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerUserId: "spoofed-user",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerUserId: "spoofed-user",
+      },
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it("uses null for board actor userId when no authenticated user id is present", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ userId: undefined }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", expect.objectContaining({
+      actorContext: expect.objectContaining({
+        type: "user",
+        userId: null,
+        companyId: companyA,
+      }),
+    }));
+  });
+
+  it("allows agent-scoped plugin actions with authenticated actor context", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(agentActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerAgentId: "spoofed-agent",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerAgentId: "spoofed-agent",
+      },
+      actorContext: {
+        type: "agent",
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+
+    call.mockClear();
+    const legacyRes = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/action`)
+      .send({
+        key: "sync",
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerAgentId: "spoofed-agent",
+        },
+      });
+
+    expect(legacyRes.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerAgentId: "spoofed-agent",
+      },
+      actorContext: {
+        type: "agent",
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it("rejects agent plugin actions outside the authenticated company scope", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(agentActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyB });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("attaches worker bridge errors to the HTTP logger context", async () => {

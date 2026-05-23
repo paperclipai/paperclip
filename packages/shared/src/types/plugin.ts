@@ -346,8 +346,11 @@ export interface PluginUiSlotDeclaration {
    */
   entityTypes?: PluginUiSlotEntityType[];
   /**
-   * Optional company-scoped route segment for page and routeSidebar slots.
+   * Optional company-scoped route segment for page, routeSidebar, and
+   * companySettingsPage slots.
    * Example: `kitchensink` becomes `/:companyPrefix/kitchensink`.
+   * For companySettingsPage, `permissions` becomes
+   * `/:companyPrefix/company/settings/permissions`.
    */
   routePath?: string;
   /**

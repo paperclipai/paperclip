@@ -610,6 +610,27 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779360000000,
+      "tag": "0087_backfill_environment_manage_human_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779446400000,
+      "tag": "0088_backfill_principal_access_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1779129600000,
+      "tag": "0089_cloud_upstreams",
+      "breakpoints": true
     }
   ]
 }
