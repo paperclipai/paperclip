@@ -17,14 +17,9 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
-<<<<<<< HEAD:docker-compose.yml
-    build: .
-    hostname: paperclip
-=======
     build:
       context: ..
       dockerfile: Dockerfile
->>>>>>> upstream-sync:docker/docker-compose.yml
     ports:
       - "3100:3100"
     environment:
