@@ -44,16 +44,21 @@ interface ConversionResult {
 
 // Allowed icons in Paperclip
 const ALLOWED_ICONS = [
-  'user', 'users', 'crown', 'cpu', 'code', 'shield', 'chart',
-  'pen', 'megaphone', 'headphones', 'dollar', 'globe', 'briefcase',
-  'gear', 'star', 'heart', 'zap', 'eye', 'mail', 'message',
-  'file', 'folder', 'calendar', 'clock', 'search', 'filter',
-  'settings', 'trash', 'edit', 'copy', 'link', 'download',
-  'upload', 'check', 'x', 'plus', 'minus', 'arrow', 'menu'
+  'bot', 'cpu', 'brain', 'zap', 'rocket', 'code', 'terminal', 'shield', 'eye', 'search',
+  'wrench', 'hammer', 'lightbulb', 'sparkles', 'star', 'heart', 'flame', 'bug', 'cog',
+  'database', 'globe', 'lock', 'mail', 'message-square', 'file-code', 'git-branch',
+  'package', 'puzzle', 'target', 'wand', 'atom', 'circuit-board', 'radar', 'swords',
+  'telescope', 'microscope', 'crown', 'gem', 'hexagon', 'pentagon', 'fingerprint'
 ];
 
 // Supported adapter types
 const SUPPORTED_ADAPTERS = ['process', 'openai', 'claude_local', 'codex_local'];
+
+// Valid roles in Paperclip
+const VALID_ROLES = [
+  'ceo', 'cto', 'cmo', 'cfo', 'security', 'engineer', 'designer',
+  'pm', 'qa', 'devops', 'researcher', 'general'
+];
 
 function toKebabCase(str: string): string {
   return str
