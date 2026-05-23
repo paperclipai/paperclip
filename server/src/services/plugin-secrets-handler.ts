@@ -33,15 +33,24 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companySecrets } from "@paperclipai/db";
+import { notFound } from "../errors.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
+
+/** Opt-out env flag for operators who need the pre-0.3.2 fail-closed behavior. */
+export function isPluginSecretRefsDisabled(): boolean {
+  return process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED === "true";
+}
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -199,7 +208,7 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { db, pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
@@ -230,9 +239,31 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      if (isPluginSecretRefsDisabled()) {
+        throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      }
+
+      const rows = await db
+        .select({
+          id: companySecrets.id,
+          companyId: companySecrets.companyId,
+          status: companySecrets.status,
+        })
+        .from(companySecrets)
+        .where(eq(companySecrets.id, trimmedRef))
+        .limit(1);
+
+      const secret = rows[0];
+      if (!secret) {
+        throw notFound("Secret not found");
+      }
+
+      if (secret.status !== "active") {
+        throw invalidSecretRef(trimmedRef);
+      }
+
+      const secrets = secretService(db);
+      return secrets.resolveSecretValue(secret.companyId, trimmedRef, "latest");
     },
   };
 }

@@ -1,5 +1,15 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Minor Changes
+
+- Enable plugin runtime `secrets.read-ref` resolution for UUID secret references declared in plugin instance config. Operators can opt back into the previous fail-closed behavior with `PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true`.
+
+### Patch Changes
+
+- Plugin config API now accepts `format: "secret-ref"` UUID values when plugin secret refs are enabled.
+
 ## 0.3.1
 
 ### Patch Changes
