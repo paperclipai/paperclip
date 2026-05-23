@@ -6061,12 +6061,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const deadline = new Date(now.getTime() - timeoutMs);
 
     const staleIssues = await db
-      .select({ id: issues.id, companyId: issues.companyId })
+      .select({ id: issues.id, companyId: issues.companyId, status: issues.status })
       .from(issues)
       .where(
         and(
           eq(issues.originKind, "routine_execution"),
-          eq(issues.status, "in_progress"),
+          inArray(issues.status, ["todo", "in_progress"]),
           lt(issues.updatedAt, deadline),
         ),
       );
@@ -6083,8 +6083,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(issues.id, issue.id));
         closed++;
         logger.warn(
-          { issueId: issue.id, companyId: issue.companyId, deadline, now },
-          "auto-closed stale audit-execution issue (in_progress >30min)",
+          { issueId: issue.id, companyId: issue.companyId, status: issue.status, deadline, now },
+          "auto-closed stale audit-execution issue",
         );
       } catch (err) {
         logger.error(

@@ -193,6 +193,122 @@ describe("autoCloseStaleAuditExecutionIssues", () => {
     expect(issue.status).toBe("in_progress");
   });
 
+  it("closes audit-execution issues that remain todo for >30 minutes", async () => {
+    // Setup
+    const company = await db.insert(companies).values({
+      id: randomUUID(),
+      name: "Test Company",
+      status: "active",
+    }).returning();
+    const companyId = company[0].id;
+
+    const agent = await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Test Agent",
+      adapterType: "test",
+      status: "active",
+    }).returning();
+    const agentId = agent[0].id;
+
+    // Create a routine execution run
+    const routineRun = await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "done",
+    }).returning();
+    const routineRunId = routineRun[0].id;
+
+    // Create an audit-execution issue that's been todo for 35 minutes (never picked up)
+    const now = new Date();
+    const thirtyFiveMinutesAgo = new Date(now.getTime() - 35 * 60 * 1000);
+
+    const auditIssue = await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Audit Execution",
+      status: "todo",
+      originKind: "routine_execution",
+      originRunId: routineRunId,
+      updatedAt: thirtyFiveMinutesAgo,
+    }).returning();
+    const issueId = auditIssue[0].id;
+
+    // Run the auto-close function
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.autoCloseStaleAuditExecutionIssues({ now });
+
+    // Verify the issue was closed
+    expect(result.scanned).toBe(1);
+    expect(result.closed).toBe(1);
+
+    const [closedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+
+    expect(closedIssue.status).toBe("done");
+  });
+
+  it("does not close audit-execution todo issues updated recently", async () => {
+    // Setup
+    const company = await db.insert(companies).values({
+      id: randomUUID(),
+      name: "Test Company",
+      status: "active",
+    }).returning();
+    const companyId = company[0].id;
+
+    const agent = await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Test Agent",
+      adapterType: "test",
+      status: "active",
+    }).returning();
+    const agentId = agent[0].id;
+
+    // Create a routine execution run
+    const routineRun = await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "done",
+    }).returning();
+    const routineRunId = routineRun[0].id;
+
+    // Create an audit-execution todo issue updated just 5 minutes ago
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+    const auditIssue = await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Audit Execution",
+      status: "todo",
+      originKind: "routine_execution",
+      originRunId: routineRunId,
+      updatedAt: fiveMinutesAgo,
+    }).returning();
+    const issueId = auditIssue[0].id;
+
+    // Run the auto-close function
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.autoCloseStaleAuditExecutionIssues({ now });
+
+    // Verify the issue was NOT closed
+    expect(result.scanned).toBe(0);
+    expect(result.closed).toBe(0);
+
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+
+    expect(issue.status).toBe("todo");
+  });
+
   it("supports custom timeout values", async () => {
     // Setup
     const company = await db.insert(companies).values({
