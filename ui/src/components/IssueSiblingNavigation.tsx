@@ -5,6 +5,7 @@ import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDet
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
 import { StatusIcon } from "./StatusIcon";
+import { useTranslation } from "@/i18n";
 
 type IssueSiblingNavigationProps = {
   navigation: IssueSiblingNavigationState | null;
@@ -12,11 +13,12 @@ type IssueSiblingNavigationProps = {
 };
 
 export function IssueSiblingNavigation({ navigation, linkState }: IssueSiblingNavigationProps) {
+  const { t } = useTranslation();
   if (!navigation) return null;
 
   return (
     <nav
-      aria-label="Sub-issue navigation"
+      aria-label={t("issueSibling.aria", { defaultValue: "Sub-issue navigation" })}
       className="mt-4 flex flex-col gap-3 sm:mt-6 sm:grid sm:grid-cols-2"
     >
       {navigation.previous ? (
@@ -45,9 +47,14 @@ function SiblingLink({
   linkState?: unknown;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const issuePathId = issue.identifier ?? issue.id;
-  const label = direction === "previous" ? "Previous" : "Next";
-  const ariaDirection = direction === "previous" ? "Previous sub-issue" : "Next sub-issue";
+  const label = direction === "previous"
+    ? t("issueSibling.previous", { defaultValue: "Previous" })
+    : t("issueSibling.next", { defaultValue: "Next" });
+  const ariaDirection = direction === "previous"
+    ? t("issueSibling.previousAria", { defaultValue: "Previous sub-issue" })
+    : t("issueSibling.nextAria", { defaultValue: "Next sub-issue" });
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const Icon = direction === "previous" ? ChevronLeft : ChevronRight;
 

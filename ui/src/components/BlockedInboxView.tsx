@@ -22,6 +22,7 @@ import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -58,6 +59,7 @@ export function BlockedInboxView({
   showIdentifierColumn,
   showUpdatedColumn,
 }: BlockedInboxViewProps) {
+  const { t } = useTranslation();
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
   const {
@@ -146,9 +148,9 @@ export function BlockedInboxView({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
+            <p className="text-sm font-medium">{t("blockedInbox.loadFailed", { defaultValue: "Couldn't load the Blocked tab." })}</p>
             <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {message}
+              {t("blockedInbox.otherWork", { defaultValue: "Other Inbox tabs still work." })} {message}
             </p>
           </div>
           <Button
@@ -159,7 +161,7 @@ export function BlockedInboxView({
             onClick={() => void refetch()}
             disabled={isFetching}
           >
-            {isFetching ? "Trying…" : "Try again"}
+            {isFetching ? t("blockedInbox.trying", { defaultValue: "Trying…" }) : t("blockedInbox.tryAgain", { defaultValue: "Try again" })}
           </Button>
         </div>
       </div>
@@ -176,9 +178,9 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
+          <p className="text-sm font-medium text-foreground">{t("blockedInbox.empty", { defaultValue: "No work is stopped." })}</p>
           <p className="text-xs text-muted-foreground">
-            Issues that need a decision, recovery, or external action will appear here.
+            {t("blockedInbox.emptyDescription", { defaultValue: "Issues that need a decision, recovery, or external action will appear here." })}
           </p>
         </div>
       </div>

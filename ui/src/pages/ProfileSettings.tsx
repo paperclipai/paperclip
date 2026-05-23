@@ -11,6 +11,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LanguageSelector } from "@/components/LanguageSelector";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -258,6 +259,10 @@ export function ProfileSettings() {
             <p className="text-xs text-muted-foreground">
               Email is managed by your auth session and is read-only here.
             </p>
+          </div>
+
+          <div className="md:col-span-2">
+            <LanguageSelector />
           </div>
 
           <div className="md:col-span-2 flex justify-end">

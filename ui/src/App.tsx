@@ -148,6 +148,15 @@ function boardRoutes() {
   );
 }
 
+function LoadingFallback() {
+  const { t } = useTranslation();
+  return (
+    <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+      {t("app.loading", { defaultValue: "Loading..." })}
+    </div>
+  );
+}
+
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
 }
@@ -161,20 +170,30 @@ function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { t } = useTranslation();
   const matchedCompany = companyPrefix
     ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
     : null;
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? t("app.onboarding.addAgentTitle", {
+        defaultValue: "Add another agent to {{name}}",
+        name: matchedCompany.name,
+      })
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? t("app.onboarding.createAnotherCompanyTitle", { defaultValue: "Create another company" })
+      : t("app.onboarding.createFirstCompanyTitle", { defaultValue: "Create your first company" });
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? t("app.onboarding.addAgentDescription", {
+        defaultValue: "Run onboarding again to add an agent and a starter task for this company.",
+      })
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? t("app.onboarding.createAnotherCompanyDescription", {
+          defaultValue: "Run onboarding again to create another company and seed its first agent.",
+        })
+      : t("app.onboarding.createFirstCompanyDescription", {
+          defaultValue: "Get started by creating a company and your first agent.",
+        });
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -189,7 +208,9 @@ function OnboardingRoutePage() {
                 : openOnboarding()
             }
           >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            {matchedCompany
+              ? t("app.onboarding.addAgentButton", { defaultValue: "Add Agent" })
+              : t("app.onboarding.startButton", { defaultValue: "Start Onboarding" })}
           </Button>
         </div>
       </div>
@@ -202,7 +223,7 @@ function CompanyRootRedirect() {
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <LoadingFallback />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -226,7 +247,7 @@ function UnprefixedBoardRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <LoadingFallback />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;

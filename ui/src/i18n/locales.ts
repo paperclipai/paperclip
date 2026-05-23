@@ -1,8 +1,11 @@
 import type { Resource } from "i18next";
 
-import { assertValidLocaleMessages } from "./locale-validation";
+import { assertValidLocaleMessages, validateLocaleMessages } from "./locale-validation";
 
 export const DEFAULT_LOCALE = "en" as const;
+// Locales that we hand-translate and validate strictly against en.json.
+// Other locales are kept as-is and may have missing keys (i18next falls back to en).
+const STRICT_LOCALES = new Set(["en", "tr"]);
 
 const localeModules = import.meta.glob("./locales/*.json", {
   eager: true,
@@ -23,12 +26,22 @@ if (!(DEFAULT_LOCALE in localeMessages)) {
   throw new Error(`Missing default locale messages for ${DEFAULT_LOCALE}`);
 }
 
+// Strict validation only for hand-maintained locales (en, tr). Other locales
+// can be incomplete — i18next will fall back to en for missing keys.
 for (const [locale, messages] of Object.entries(localeMessages)) {
-  try {
-    assertValidLocaleMessages(messages);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Invalid ${locale} locale messages: ${message}`);
+  if (STRICT_LOCALES.has(locale)) {
+    try {
+      assertValidLocaleMessages(messages);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid ${locale} locale messages: ${message}`);
+    }
+  } else {
+    // Non-strict: surface any structural issues to the console but never throw.
+    const issues = validateLocaleMessages(messages);
+    if (issues.length > 0 && typeof console !== "undefined") {
+      console.warn(`[i18n] ${locale} has ${issues.length} non-blocking validation issue(s); falling back to ${DEFAULT_LOCALE} where needed.`);
+    }
   }
 }
 
