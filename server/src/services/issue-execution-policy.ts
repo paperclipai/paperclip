@@ -458,6 +458,29 @@ function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecu
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
 }
 
+/**
+ * Like {@link selectStageParticipant}, but if the `exclude` filter would
+ * leave zero candidates, fall back to ignoring `exclude` rather than
+ * returning null. Used at call sites where a null result deadlocks the
+ * issue (issue #5104) — better to let the executor self-review than to
+ * leave the workflow stuck with no normal-flow path forward.
+ *
+ * Note: the auto-skip path (`canAutoSkipPendingStage` loop) deliberately
+ * does NOT use this — its null result is the signal to skip a
+ * self-review-only review stage entirely.
+ */
+function selectStageParticipantOrFallback(
+  stage: IssueExecutionStage,
+  opts: {
+    preferred?: IssueExecutionStagePrincipal | null;
+    exclude?: IssueExecutionStagePrincipal | null;
+  },
+): IssueExecutionStagePrincipal | null {
+  const filtered = selectStageParticipant(stage, opts);
+  if (filtered) return filtered;
+  return selectStageParticipant(stage, { preferred: opts.preferred });
+}
+
 function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
   if (!principal) {
     return { assigneeAgentId: null, assigneeUserId: null };
@@ -653,7 +676,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   if (activeStage) {
     const currentParticipant =
       existingState?.currentParticipant ??
-      selectStageParticipant(activeStage, {
+      selectStageParticipantOrFallback(activeStage, {
         exclude: existingState?.returnAssignee ?? null,
       });
     if (!currentParticipant) {
@@ -714,7 +737,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           };
         }
 
-        const participant = selectStageParticipant(nextStage, {
+        const participant = selectStageParticipantOrFallback(nextStage, {
           preferred: explicitAssignee,
           exclude: existingState?.returnAssignee ?? null,
         });
@@ -844,6 +867,19 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
       exclude: returnAssignee,
+    });
+  }
+  if (!participant) {
+    // The auto-skip loop above only fires for review stages where every
+    // participant equals returnAssignee (canAutoSkipPendingStage). For all
+    // other "everyone got excluded" cases — typically an approval stage
+    // whose only configured participant is the executor — fall back to
+    // self-review rather than deadlocking the issue (#5104).
+    participant = selectStageParticipant(pendingStage, {
+      preferred:
+        existingState?.status === CHANGES_REQUESTED_STATUS
+          ? explicitAssignee ?? existingState.currentParticipant ?? null
+          : explicitAssignee,
     });
   }
   if (!participant) {
