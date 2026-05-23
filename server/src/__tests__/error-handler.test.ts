@@ -75,4 +75,48 @@ describe("errorHandler", () => {
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
   });
+
+  it("maps Postgres 22P02 (invalid_text_representation) to 400 bad_uuid_input", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    // Replicate the shape of `postgres` driver's PostgresError without importing it.
+    const err = Object.assign(new Error('invalid input syntax for type uuid: "surface-ceo-123"'), {
+      name: "PostgresError",
+      code: "22P02",
+      where: "unnamed portal parameter $5 = '...'",
+      severity: "ERROR",
+      file: "uuid.c",
+      routine: "string_to_uuid",
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "bad_uuid_input",
+      details: {
+        message: 'invalid input syntax for type uuid: "surface-ceo-123"',
+        where: "unnamed portal parameter $5 = '...'",
+      },
+    });
+    // 22P02 is caller error, not a server crash — do not attach error context.
+    expect(res.err).toBeUndefined();
+    expect(res.__errorContext).toBeUndefined();
+  });
+
+  it("does not coerce unrelated PostgresError codes to 400", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = Object.assign(new Error("connection terminated"), {
+      name: "PostgresError",
+      code: "57P01",
+    });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+  });
 });
