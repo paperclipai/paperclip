@@ -361,7 +361,7 @@ export function OnboardingWizard() {
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
-        "Create or select a company before testing adapter environment."
+        t("onboarding.errors.createOrSelectCompany", { defaultValue: "Create or select a company before testing adapter environment." })
       );
       return null;
     }
@@ -379,7 +379,7 @@ export function OnboardingWizard() {
       return result;
     } catch (err) {
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        err instanceof Error ? err.message : t("onboarding.errors.envTestFailed", { defaultValue: "Adapter environment test failed" })
       );
       return null;
     } finally {
@@ -431,7 +431,7 @@ export function OnboardingWizard() {
       if (adapterType === "opencode_local") {
         if (!isValidOpenCodeModelId(model)) {
           setError(
-            "OpenCode requires an explicit model in provider/model format."
+            t("onboarding.errors.openCodeModel", { defaultValue: "OpenCode requires an explicit model in provider/model format." })
           );
           return;
         }
@@ -506,14 +506,14 @@ export function OnboardingWizard() {
       const result = await runAdapterEnvironmentTest(configWithUnset);
       if (result?.status === "fail") {
         setError(
-          "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing."
+          t("onboarding.errors.anthropicRetryFailed", { defaultValue: "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing." })
         );
       }
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Failed to unset ANTHROPIC_API_KEY and retry."
+          : t("onboarding.errors.unsetAnthropicFailed", { defaultValue: "Failed to unset ANTHROPIC_API_KEY and retry." })
       );
     } finally {
       setUnsetAnthropicLoading(false);
@@ -634,10 +634,10 @@ export function OnboardingWizard() {
               <div className="flex items-center gap-0 mb-8 border-b border-border">
                 {(
                   [
-                    { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
+                    { step: 1 as Step, label: t("onboarding.tabs.company", { defaultValue: "Company" }), icon: Building2 },
+                    { step: 2 as Step, label: t("onboarding.tabs.agent", { defaultValue: "Agent" }), icon: Bot },
+                    { step: 3 as Step, label: t("onboarding.tabs.task", { defaultValue: "Task" }), icon: ListTodo },
+                    { step: 4 as Step, label: t("onboarding.tabs.launch", { defaultValue: "Launch" }), icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -667,7 +667,7 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">{t("onboarding.step1.title", { defaultValue: "Name your company" })}</h3>
                       <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
+                        {t("onboarding.step1.subtitle", { defaultValue: "This is the organization your agents will work for." })}
                       </p>
                     </div>
                   </div>
@@ -680,7 +680,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      {t("onboarding.step1.companyNameLabel", { defaultValue: "Company name" })}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -699,7 +699,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Mission / goal (optional)
+                      {t("onboarding.step1.goalLabel", { defaultValue: "Mission / goal (optional)" })}
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
@@ -720,13 +720,13 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">{t("onboarding.step2.title", { defaultValue: "Create your first agent" })}</h3>
                       <p className="text-xs text-muted-foreground">
-                        Choose how this agent will run tasks.
+                        {t("onboarding.step2.subtitle", { defaultValue: "Choose how this agent will run tasks." })}
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Agent name
+                      {t("onboarding.step2.agentNameLabel", { defaultValue: "Agent name" })}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -740,7 +740,7 @@ export function OnboardingWizard() {
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
+                      {t("onboarding.step2.adapterTypeLabel", { defaultValue: "Adapter type" })}
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
@@ -770,7 +770,7 @@ export function OnboardingWizard() {
                         >
                           {opt.recommended && (
                             <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
+                              {t("onboarding.shared.recommended", { defaultValue: "Recommended" })}
                             </span>
                           )}
                           <opt.icon className="h-4 w-4" />
@@ -792,7 +792,7 @@ export function OnboardingWizard() {
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      {t("onboarding.step2.moreAdapters", { defaultValue: "More Agent Adapter Types" })}
                     </button>
 
                     {showMoreAdapters && (
@@ -832,7 +832,7 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
+                                ? opt.disabledLabel ?? t("onboarding.shared.comingSoon", { defaultValue: "Coming soon" })
                                 : opt.description}
                             </span>
                           </button>
@@ -846,7 +846,7 @@ export function OnboardingWizard() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
+                          {t("onboarding.step2.modelLabel", { defaultValue: "Model" })}
                         </label>
                         <Popover
                           open={modelOpen}
@@ -866,8 +866,8 @@ export function OnboardingWizard() {
                                   ? selectedModel.label
                                   : model ||
                                     (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
+                                      ? t("onboarding.step2.selectModelRequired", { defaultValue: "Select model (required)" })
+                                      : t("onboarding.step2.modelDefault", { defaultValue: "Default" }))}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -894,7 +894,7 @@ export function OnboardingWizard() {
                                   setModelOpen(false);
                                 }}
                               >
-                                Default
+                                {t("onboarding.step2.modelDefault", { defaultValue: "Default" })}
                               </button>
                             )}
                             <div className="max-h-[240px] overflow-y-auto">
@@ -935,7 +935,7 @@ export function OnboardingWizard() {
                             </div>
                             {filteredModels.length === 0 && (
                               <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
+                                {t("onboarding.step2.noModelsDiscovered", { defaultValue: "No models discovered." })}
                               </p>
                             )}
                           </PopoverContent>
@@ -949,11 +949,10 @@ export function OnboardingWizard() {
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <p className="text-xs font-medium">
-                            Adapter environment check
+                            {t("onboarding.step2.envCheckTitle", { defaultValue: "Adapter environment check" })}
                           </p>
                           <p className="text-[11px] text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
+                            {t("onboarding.step2.envCheckSubtitle", { defaultValue: "Runs a live probe that asks the adapter CLI to respond with hello." })}
                           </p>
                         </div>
                         <Button
@@ -963,7 +962,9 @@ export function OnboardingWizard() {
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
+                          {adapterEnvLoading
+                            ? t("onboarding.step2.testing", { defaultValue: "Testing..." })
+                            : t("onboarding.step2.testNow", { defaultValue: "Test now" })}
                         </Button>
                       </div>
 
@@ -986,10 +987,9 @@ export function OnboardingWizard() {
                       {shouldSuggestUnsetAnthropicApiKey && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
                           <p className="text-[11px] text-amber-900/90 leading-relaxed">
-                            Claude failed while{" "}
-                            <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
-                            is set. You can clear it in this CEO adapter config
-                            and retry the probe.
+                            {t("onboarding.step2.anthropicKeyWarningPrefix", { defaultValue: "Claude failed while " })}
+                            <span className="font-mono">ANTHROPIC_API_KEY</span>
+                            {t("onboarding.step2.anthropicKeyWarningSuffix", { defaultValue: " is set. You can clear it in this CEO adapter config and retry the probe." })}
                           </p>
                           <Button
                             size="sm"
@@ -1001,8 +1001,8 @@ export function OnboardingWizard() {
                             onClick={() => void handleUnsetAnthropicApiKey()}
                           >
                             {unsetAnthropicLoading
-                              ? "Retrying..."
-                              : "Unset ANTHROPIC_API_KEY"}
+                              ? t("onboarding.step2.retrying", { defaultValue: "Retrying..." })
+                              : t("onboarding.step2.unsetAnthropicKey", { defaultValue: "Unset ANTHROPIC_API_KEY" })}
                           </Button>
                         </div>
                       )}
@@ -1022,7 +1022,7 @@ export function OnboardingWizard() {
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
-                            Prompt:{" "}
+                            {t("onboarding.step2.prompt", { defaultValue: "Prompt:" })}{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
                           {adapterType === "cursor" ||
@@ -1030,15 +1030,15 @@ export function OnboardingWizard() {
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
-                              If auth fails, set{" "}
+                              {t("onboarding.step2.authHintPrefix", { defaultValue: "If auth fails, set " })}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
-                              </span>{" "}
-                              in env or run{" "}
+                              </span>
+                              {t("onboarding.step2.authHintInfix", { defaultValue: " in env or run " })}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
@@ -1048,13 +1048,13 @@ export function OnboardingWizard() {
                                       ? "gemini auth"
                                       : "opencode auth login"}
                               </span>
-                              .
+                              {t("onboarding.step2.authHintSuffix", { defaultValue: "." })}
                             </p>
                           ) : (
                             <p className="text-muted-foreground">
-                              If login is required, run{" "}
-                              <span className="font-mono">claude login</span>{" "}
-                              and retry.
+                              {t("onboarding.step2.claudeLoginHintPrefix", { defaultValue: "If login is required, run " })}
+                              <span className="font-mono">claude login</span>
+                              {t("onboarding.step2.claudeLoginHintSuffix", { defaultValue: " and retry." })}
                             </p>
                           )}
                         </div>
@@ -1067,8 +1067,8 @@ export function OnboardingWizard() {
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
-                          ? "Gateway URL"
-                          : "Webhook URL"}
+                          ? t("onboarding.step2.gatewayUrl", { defaultValue: "Gateway URL" })
+                          : t("onboarding.step2.webhookUrl", { defaultValue: "Webhook URL" })}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1094,14 +1094,13 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">{t("onboarding.step3.title", { defaultValue: "Give it something to do" })}</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        {t("onboarding.step3.subtitle", { defaultValue: "Give your agent a small task to start with — a bug fix, a research question, writing a script." })}
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Task title
+                      {t("onboarding.step3.taskTitleLabel", { defaultValue: "Task title" })}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1113,7 +1112,7 @@ export function OnboardingWizard() {
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Description (optional)
+                      {t("onboarding.step3.descriptionLabel", { defaultValue: "Description (optional)" })}
                     </label>
                     <textarea
                       ref={textareaRef}
@@ -1135,8 +1134,7 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">{t("onboarding.step4.title", { defaultValue: "Ready to launch" })}</h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
+                        {t("onboarding.step4.subtitle", { defaultValue: "Everything is set up. Launching now will create the starter task, wake the agent, and open the issue." })}
                       </p>
                     </div>
                   </div>

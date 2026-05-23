@@ -430,6 +430,12 @@
     "errorCompany": "Şirket oluşturulamadı",
     "errorAgent": "Ajan oluşturulamadı",
     "errorTask": "Görev oluşturulamadı",
+    "tabs": {
+      "company": "Şirket",
+      "agent": "Ajan",
+      "task": "Görev",
+      "launch": "Başlat"
+    },
     "close": "Kapat",
     "back": "Geri",
     "next": "İleri",
@@ -439,6 +445,19 @@
     "manualDebug": "Manuel hata ayıklama",
     "searchModels": "Model ara...",
     "hint": "İpucu",
+    "shared": {
+      "recommended": "Önerilen",
+      "optional": "İsteğe bağlı",
+      "required": "Zorunlu",
+      "comingSoon": "Yakında"
+    },
+    "errors": {
+      "createOrSelectCompany": "Adaptör ortamını test etmeden önce bir şirket oluşturun veya seçin.",
+      "envTestFailed": "Adaptör ortam testi başarısız oldu",
+      "openCodeModel": "OpenCode, provider/model biçiminde açık bir model gerektirir.",
+      "anthropicRetryFailed": "Adaptör yapılandırmasında ANTHROPIC_API_KEY temizlenerek yeniden denendi, ancak ortam testi hâlâ başarısız.",
+      "unsetAnthropicFailed": "ANTHROPIC_API_KEY temizlenip yeniden denenemedi."
+    },
     "envStatus": {
       "passed": "Geçti",
       "warnings": "Uyarılar",
@@ -446,20 +465,51 @@
     },
     "step1": {
       "title": "Şirketinize ad verin",
+      "subtitle": "Bu, ajanlarınızın çalışacağı kuruluş.",
+      "companyNameLabel": "Şirket adı",
+      "goalLabel": "Misyon / hedef (isteğe bağlı)",
       "namePlaceholder": "Acme Şirketi",
       "goalPlaceholder": "Bu şirket ne başarmaya çalışıyor?"
     },
     "step2": {
       "title": "İlk ajanınızı oluşturun",
-      "agentNamePlaceholder": "CEO"
+      "subtitle": "Bu ajanın görevleri nasıl çalıştıracağını seçin.",
+      "agentNameLabel": "Ajan adı",
+      "agentNamePlaceholder": "CEO",
+      "adapterTypeLabel": "Adaptör türü",
+      "moreAdapters": "Daha Fazla Ajan Adaptör Türü",
+      "modelLabel": "Model",
+      "selectModelRequired": "Model seçin (zorunlu)",
+      "modelDefault": "Varsayılan",
+      "noModelsDiscovered": "Model bulunamadı.",
+      "envCheckTitle": "Adaptör ortam kontrolü",
+      "envCheckSubtitle": "Adaptör CLI'sından hello yanıtı isteyen canlı bir test çalıştırır.",
+      "testing": "Test ediliyor...",
+      "testNow": "Şimdi test et",
+      "anthropicKeyWarningPrefix": "Claude, ",
+      "anthropicKeyWarningSuffix": " ayarlıyken başarısız oldu. Bunu bu CEO adaptör yapılandırmasında temizleyip testi yeniden çalıştırabilirsiniz.",
+      "retrying": "Yeniden deneniyor...",
+      "unsetAnthropicKey": "ANTHROPIC_API_KEY'i temizle",
+      "prompt": "İstem:",
+      "authHintPrefix": "Kimlik doğrulama başarısız olursa, ortamda ",
+      "authHintInfix": " ayarlayın veya ",
+      "authHintSuffix": " komutunu çalıştırın.",
+      "claudeLoginHintPrefix": "Giriş gerekiyorsa, ",
+      "claudeLoginHintSuffix": " komutunu çalıştırın ve yeniden deneyin.",
+      "gatewayUrl": "Gateway URL",
+      "webhookUrl": "Webhook URL"
     },
     "step3": {
       "title": "Yapacak bir şey verin",
+      "subtitle": "Ajana başlangıç için küçük bir görev verin — bir hata düzeltmesi, bir araştırma sorusu veya bir betik yazmak.",
+      "taskTitleLabel": "Görev başlığı",
+      "descriptionLabel": "Açıklama (isteğe bağlı)",
       "taskTitlePlaceholder": "ör. Rakip fiyatlandırmasını araştır",
       "taskDescPlaceholder": "Ajanın ne yapması gerektiği hakkında daha fazla ayrıntı ekle..."
     },
     "step4": {
       "title": "Başlamaya hazır",
+      "subtitle": "Her şey hazır. Şimdi başlatmak başlangıç görevini oluşturacak, ajanı uyandıracak ve görevi açacak.",
       "companyLabel": "Şirket",
       "taskLabel": "Görev"
     }
