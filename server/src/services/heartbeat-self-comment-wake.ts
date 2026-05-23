@@ -40,15 +40,47 @@
  * recorded actor-type and the deployment mode. The original actor-type check
  * remains as defense-in-depth; this helper adds the missing second check.
  *
+ * Two-signal recognition (covers BOTH MCP-routed and shell-routed writes)
+ * ----------------------------------------------------------------------
+ * On `local_trusted` the agent has two materially different write paths:
+ *
+ *   - MCP-routed (`paperclipAddComment` etc.) — the comment row gets
+ *     `author_agent_id = <the agent>`, `author_user_id = NULL`, and
+ *     `created_by_run_id` linked to the current heartbeat run.
+ *   - Shell-routed (`curl` from the agent's terminal with the agent's
+ *     Bearer authToken) — the auth middleware's `local_trusted`
+ *     short-circuit promotes the actor to the `local-board` USER principal,
+ *     so the comment row gets `author_agent_id = NULL`,
+ *     `author_user_id = "local-board"`, and `created_by_run_id` STILL linked
+ *     to the agent's heartbeat run.
+ *
+ * The first signal (`author_agent_id === assigneeAgentId`) catches MCP-routed
+ * self-comments. The second signal (`createdByRunAgentId === assigneeAgentId`)
+ * catches shell-routed self-comments, because while the auth middleware loses
+ * the agent identity, the heartbeat-run reference is set by the run-level
+ * comment plumbing and survives. A comment is self-authored when EITHER signal
+ * fires.
+ *
  * The helper is intentionally pure so it can be unit-tested without database
- * fixtures. The caller (`heartbeat.ts`) is responsible for the lookup.
+ * fixtures. The caller (`heartbeat.ts`) is responsible for the lookup (which
+ * is a single `LEFT JOIN` between `issue_comments` and `heartbeat_runs`).
  */
 
 export interface DeferredCommentAuthorRow {
   /** `issue_comments.id` */
   id: string;
-  /** `issue_comments.author_agent_id` — null for human-authored comments */
+  /**
+   * `issue_comments.author_agent_id` — null for human-authored comments AND
+   * for agent-authored comments that round-tripped through a path which lost
+   * agent identity (see "shell-routed" in the file header).
+   */
   authorAgentId: string | null;
+  /**
+   * `heartbeat_runs.agent_id` joined via `issue_comments.created_by_run_id`.
+   * Null if the comment was not created during an agent run (e.g. a real
+   * human comment posted from the dashboard), or if the run is missing/deleted.
+   */
+  createdByRunAgentId: string | null;
 }
 
 export interface SelfAuthoredDeferredCommentWakeInput {
@@ -61,9 +93,16 @@ export interface SelfAuthoredDeferredCommentWakeInput {
    */
   assigneeAgentId: string | null | undefined;
   /**
-   * The lookup result of `SELECT id, author_agent_id FROM issue_comments WHERE
-   * id IN (deferredCommentIds)`. The caller performs this lookup; we just
-   * compare. Order does not matter.
+   * The lookup result of:
+   *
+   *   SELECT ic.id,
+   *          ic.author_agent_id          AS authorAgentId,
+   *          hr.agent_id                 AS createdByRunAgentId
+   *   FROM   issue_comments ic
+   *   LEFT JOIN heartbeat_runs hr ON hr.id = ic.created_by_run_id
+   *   WHERE  ic.id IN (deferredCommentIds);
+   *
+   * Order does not matter.
    */
   deferredCommentAuthors: ReadonlyArray<DeferredCommentAuthorRow>;
 }
@@ -73,6 +112,12 @@ export interface SelfAuthoredDeferredCommentWakeInput {
  * assignee agent itself (a "self-comment wake"). Such wakes must never reopen
  * a done/cancelled issue, regardless of the wake's recorded `actor_type`.
  *
+ * A single comment counts as self-authored when EITHER:
+ *   - `authorAgentId === assigneeAgentId` (the MCP-routed path preserves
+ *     agent identity), OR
+ *   - `createdByRunAgentId === assigneeAgentId` (the shell-routed path loses
+ *     agent identity at the auth layer but the run linkage survives).
+ *
  * Returns `false` when:
  *   - There are no deferred comment IDs (the wake isn't comment-driven at all).
  *   - The issue has no assignee agent (no agent can have authored the comments).
@@ -80,7 +125,9 @@ export interface SelfAuthoredDeferredCommentWakeInput {
  *     comments; treat as "unknown" and let the existing predicate decide
  *     conservatively rather than skipping a possibly-legitimate reopen).
  *   - At least one comment was authored by someone other than the assignee
- *     (a real human comment or a different agent's comment is in the batch).
+ *     by BOTH signals (i.e. neither `authorAgentId` nor `createdByRunAgentId`
+ *     equals the assignee). This is a real human comment or a comment created
+ *     by a different agent's run.
  */
 export function isExclusivelySelfAuthoredDeferredCommentWake(
   input: SelfAuthoredDeferredCommentWakeInput,
@@ -90,7 +137,10 @@ export function isExclusivelySelfAuthoredDeferredCommentWake(
   if (input.deferredCommentAuthors.length !== input.deferredCommentIds.length) {
     return false;
   }
+  const assigneeAgentId = input.assigneeAgentId;
   return input.deferredCommentAuthors.every(
-    (row) => row.authorAgentId === input.assigneeAgentId,
+    (row) =>
+      row.authorAgentId === assigneeAgentId ||
+      row.createdByRunAgentId === assigneeAgentId,
   );
 }
