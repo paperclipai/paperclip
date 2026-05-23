@@ -4277,6 +4277,7 @@ export function issueRoutes(
               issueId: dependent.id,
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
+              dependentStatus: dependent.status,
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
@@ -4287,7 +4288,26 @@ export function issueRoutes(
               source: "issue.blockers_resolved",
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
+              dependentStatus: dependent.status,
             },
+          });
+          logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.blockers_resolved_wake_emitted",
+            entityType: "issue",
+            entityId: dependent.id,
+            details: {
+              dependentIssueId: dependent.id,
+              resolvedBlockerIssueId: issue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+              dependentAssigneeAgentId: dependent.assigneeAgentId,
+            },
+          }).catch((err: unknown) => {
+            logger.warn({ err, issueId: dependent.id }, "failed to record blockers_resolved audit event");
           });
         }
       }
