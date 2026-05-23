@@ -829,6 +829,32 @@ async function recordGitOperation(
   return stdout.trim();
 }
 
+// Refresh remote-tracking refs before branching a new worktree off them.
+// Best-effort: fetch failures (no remote, network blip, GitHub outage, auth)
+// must not block provisioning — agents need to keep moving even when origin
+// is unreachable. We log a warning and proceed with possibly-stale local refs.
+async function fetchOriginBestEffort(
+  recorder: WorkspaceOperationRecorder | null | undefined,
+  repoRoot: string,
+): Promise<void> {
+  try {
+    await recordGitOperation(recorder, {
+      phase: "worktree_prepare",
+      args: ["fetch", "origin"],
+      cwd: repoRoot,
+      metadata: { repoRoot, fetchOrigin: true },
+      successMessage: `Fetched latest refs from origin in ${repoRoot}\n`,
+      failureLabel: `git fetch origin in ${repoRoot}`,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[workspace-runtime] git fetch origin in ${repoRoot} failed; ` +
+        `proceeding with possibly-stale local refs: ${message}`,
+    );
+  }
+}
+
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
@@ -1099,6 +1125,8 @@ export async function realizeExecutionWorkspace(input: {
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
+  await fetchOriginBestEffort(input.recorder, repoRoot);
+
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
@@ -1268,6 +1296,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       throw error;
     }
     const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
+    await fetchOriginBestEffort(input.recorder, repoRoot);
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
       args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
