@@ -16,10 +16,23 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   const ac: Record<string, unknown> = {};
   if (v.url) ac.url = v.url;
   ac.timeoutSec = 120;
-  ac.waitTimeoutMs = 120000;
-  ac.sessionKeyStrategy = "issue";
-  ac.role = "operator";
-  ac.scopes = ["operator.admin"];
+
+  const waitTimeoutMs = v.openClawWaitTimeoutMs ? Number.parseInt(v.openClawWaitTimeoutMs, 10) : NaN;
+  ac.waitTimeoutMs = Number.isFinite(waitTimeoutMs) && waitTimeoutMs > 0 ? waitTimeoutMs : 120000;
+
+  ac.sessionKeyStrategy = v.openClawSessionKeyStrategy || "issue";
+  ac.role = v.openClawRole || "operator";
+
+  const scopes = v.openClawScopes
+    ? v.openClawScopes.split(",").map((s) => s.trim()).filter(Boolean)
+    : ["operator.admin"];
+  ac.scopes = scopes.length > 0 ? scopes : ["operator.admin"];
+
+  const token = v.openClawToken?.trim();
+  if (token) ac.headers = { "x-openclaw-token": token };
+
+  if (v.openClawPaperclipApiUrl?.trim()) ac.paperclipApiUrl = v.openClawPaperclipApiUrl.trim();
+
   const payloadTemplate = parseJsonObject(v.payloadTemplateJson ?? "");
   if (payloadTemplate) ac.payloadTemplate = payloadTemplate;
   const runtimeServices = parseJsonObject(v.runtimeServicesJson ?? "");
