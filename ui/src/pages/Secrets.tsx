@@ -209,8 +209,8 @@ function modeLabel(managedMode: SecretManagedMode) {
 
 function modeDescription(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
-    : "Paperclip resolves this provider reference but does not rotate the provider value.";
+    ? "Jade Computer owns create and rotation writes for this provider secret."
+    : "Jade Computer resolves this provider reference but does not rotate the provider value.";
 }
 
 function healthEntryForProvider(

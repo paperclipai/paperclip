@@ -4,9 +4,9 @@ export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION = "issue.successful_run_hand
 export const SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION = "issue.successful_run_handoff_resolved";
 export const SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION = "issue.successful_run_handoff_escalated";
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
-  "Paperclip needs a disposition before this issue can continue.";
+  "Jade Computer needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+  "Jade Computer could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
 
 export function isSuccessfulRunHandoffActivity(action: string) {
   return action === SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION

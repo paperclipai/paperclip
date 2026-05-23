@@ -141,7 +141,7 @@ export function RoutineHistoryTab({
     onError: (error) => {
       pushToast({
         title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        body: error instanceof Error ? error.message : "Jade Computer could not restore the revision.",
         tone: "error",
       });
     },
