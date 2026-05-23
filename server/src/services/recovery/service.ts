@@ -1156,18 +1156,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
-    const candidates = await db
-      .select()
+    const candidateRows = await db
+      .select({ run: heartbeatRuns })
       .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          eq(companies.disableAutoProductivityReview, false),
           eq(heartbeatRuns.status, "running"),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt))
       .limit(100);
+    const candidates = candidateRows.map((row) => row.run);
 
     const result = {
       scanned: candidates.length,
@@ -1179,22 +1182,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueIds: [] as string[],
     };
 
-    const companyProductivityReviewFlagCache = new Map<string, boolean>();
     for (const run of candidates) {
-      let disableFlag = companyProductivityReviewFlagCache.get(run.companyId);
-      if (disableFlag === undefined) {
-        disableFlag = await db
-          .select({ disableAutoProductivityReview: companies.disableAutoProductivityReview })
-          .from(companies)
-          .where(eq(companies.id, run.companyId))
-          .then((rows) => rows[0]?.disableAutoProductivityReview ?? false);
-        companyProductivityReviewFlagCache.set(run.companyId, disableFlag);
-      }
-      if (disableFlag) {
-        logger.info({ companyId: run.companyId }, "auto-productivity-review skipped (company flag)");
-        result.skipped += 1;
-        continue;
-      }
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;

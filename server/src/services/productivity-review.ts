@@ -765,12 +765,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
-    const candidates = await db
-      .select()
+    const candidateRows = await db
+      .select({ issue: issues })
       .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
       .where(
         and(
           opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(companies.disableAutoProductivityReview, false),
           isNull(issues.hiddenAt),
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
@@ -780,6 +782,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
       .limit(MAX_CANDIDATE_ISSUES);
+    const candidates = candidateRows.map((row) => row.issue);
 
     const result = {
       scanned: candidates.length,
@@ -795,22 +798,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
 
     const prefixCache = new Map<string, string>();
-    const companyProductivityReviewFlagCache = new Map<string, boolean>();
     for (const candidate of candidates) {
-      let disableFlag = companyProductivityReviewFlagCache.get(candidate.companyId);
-      if (disableFlag === undefined) {
-        disableFlag = await db
-          .select({ disableAutoProductivityReview: companies.disableAutoProductivityReview })
-          .from(companies)
-          .where(eq(companies.id, candidate.companyId))
-          .then((rows) => rows[0]?.disableAutoProductivityReview ?? false);
-        companyProductivityReviewFlagCache.set(candidate.companyId, disableFlag);
-      }
-      if (disableFlag) {
-        logger.info({ companyId: candidate.companyId }, "auto-productivity-review skipped (company flag)");
-        result.skipped += 1;
-        continue;
-      }
       if (!candidate.assigneeAgentId) {
         result.skipped += 1;
         continue;
