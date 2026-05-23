@@ -537,6 +537,115 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(activities[0]?.entityId).toBe(seeded.issueId);
   });
 
+  it("suppresses long_active_duration trigger for 24h after a productive close (issue #5145)", async () => {
+    // Repro: routine_execution-style issue stays in_progress beyond longActiveMs.
+    // First reconcile creates a long_active_duration review. The reviewer closes
+    // it as productive (status=done). On master, after the 6h blanket snooze
+    // expires the trigger re-fires immediately because the only suppression is
+    // the blanket window. The reporter asks for a 24h targeted suppression on
+    // long_active_duration specifically, so the trigger does not noisily re-fire
+    // at the 6h+1m mark on issues whose long-active state is the intended steady
+    // state (e.g. routine-execution-origin issues).
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [firstReview] = await listProductivityReviews(seeded.companyId);
+    expect(firstReview?.description).toContain("Primary trigger: `long_active_duration`");
+
+    // Reviewer closes the review as productive 30 minutes later.
+    const closedAt = new Date(now.getTime() + 30 * 60 * 1000);
+    await db.update(issues).set({ status: "done", updatedAt: closedAt }).where(eq(issues.id, firstReview!.id));
+
+    // 12 hours after the close: past the 6h blanket window, but well within
+    // the 24h long_active_duration suppression window. No new review should
+    // be spawned, and the issue lands in the `snoozed` bucket (not `skipped`)
+    // so dashboards can distinguish "actively suppressed" from "no evidence".
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(closedAt.getTime() + 12 * 60 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(reviews).toHaveLength(1);
+  });
+
+  it("re-fires long_active_duration after the 24h productive-close window expires", async () => {
+    // Boundary regression: after the long_active suppression window elapses,
+    // the trigger resumes its current behavior on issues that genuinely remain
+    // long-active.
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [firstReview] = await listProductivityReviews(seeded.companyId);
+
+    const closedAt = new Date(now.getTime() + 30 * 60 * 1000);
+    await db.update(issues).set({ status: "done", updatedAt: closedAt }).where(eq(issues.id, firstReview!.id));
+
+    // 25 hours after the close: past the 24h suppression window. Trigger
+    // resumes; a fresh review is spawned.
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(closedAt.getTime() + 25 * 60 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(result.created).toBe(1);
+    expect(reviews).toHaveLength(2);
+  });
+
+  it("still fires no_comment_streak within the long_active suppression window", async () => {
+    // Regression guard for the "other triggers remain unaffected" requirement
+    // in #5145. A productive close on a prior long_active review does NOT
+    // suppress an unrelated no_comment_streak signal — these are independent.
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    const service = productivityReviewService(db);
+
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [firstReview] = await listProductivityReviews(seeded.companyId);
+
+    const closedAt = new Date(now.getTime() + 30 * 60 * 1000);
+    await db.update(issues).set({ status: "done", updatedAt: closedAt }).where(eq(issues.id, firstReview!.id));
+
+    // 12h after the close, plant a no_comment_streak signal (10 runs, no
+    // comments). longActive is still suppressed in this window, but the
+    // higher-priority no_comment trigger should still fire.
+    const reEvalAt = new Date(closedAt.getTime() + 12 * 60 * 60 * 1000);
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: reEvalAt,
+    });
+
+    const result = await service.reconcileProductivityReviews({
+      now: reEvalAt,
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+    const newReview = reviews.find((r) => r.id !== firstReview!.id);
+
+    expect(result.created).toBe(1);
+    expect(newReview?.description).toContain("Primary trigger: `no_comment_streak`");
+  });
+
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

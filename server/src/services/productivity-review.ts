@@ -26,6 +26,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -49,6 +50,7 @@ type ProductivityReviewThresholds = {
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
+  longActiveResolvedSnoozeMs: number;
   refreshIntervalMs: number;
   maxRefreshComments: number;
   creationWindowMs: number;
@@ -160,6 +162,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
     ),
+    longActiveResolvedSnoozeMs: readPositiveInteger(
+      overrides?.longActiveResolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS,
+    ),
     refreshIntervalMs: readPositiveInteger(
       overrides?.refreshIntervalMs ?? DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -262,10 +268,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   async function findRecentResolvedProductivityReview(
     companyId: string,
     sourceIssueId: string,
-    thresholds: ProductivityReviewThresholds,
-    now: Date,
+    cutoff: Date,
   ) {
-    const cutoff = new Date(now.getTime() - thresholds.resolvedSnoozeMs);
     return db
       .select({ id: issues.id, identifier: issues.identifier, status: issues.status, updatedAt: issues.updatedAt })
       .from(issues)
@@ -804,7 +808,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
-      if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
+      if (
+        await findRecentResolvedProductivityReview(
+          candidate.companyId,
+          candidate.id,
+          new Date(now.getTime() - thresholds.resolvedSnoozeMs),
+        )
+      ) {
         result.snoozed += 1;
         continue;
       }
@@ -816,6 +826,24 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
+        continue;
+      }
+      // Suppress long_active_duration when a productivity review on this issue
+      // closed as productive within the longActiveResolvedSnoozeMs window
+      // (issue #5145). Other triggers (no_comment_streak, high_churn) are
+      // intentionally not gated by this window — they signal independent
+      // lifecycle problems that a "long-active is fine" close doesn't address.
+      // Counted as snoozed (not skipped) so it's distinguishable from
+      // "no evidence" in observability counters.
+      if (
+        evidence.trigger === "long_active_duration" &&
+        (await findRecentResolvedProductivityReview(
+          candidate.companyId,
+          candidate.id,
+          new Date(now.getTime() - thresholds.longActiveResolvedSnoozeMs),
+        ))
+      ) {
+        result.snoozed += 1;
         continue;
       }
       let prefix = prefixCache.get(candidate.companyId);
