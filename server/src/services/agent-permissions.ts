@@ -1,5 +1,6 @@
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
+  canCreateInteractions?: boolean;
 };
 
 export function defaultPermissionsForRole(role: string): NormalizedAgentPermissions {
@@ -19,11 +20,15 @@ export function normalizeAgentPermissions(
 
   const record = permissions as Record<string, unknown>;
   const preserved = { ...record };
-  return {
+  const result: NormalizedAgentPermissions = {
     ...preserved,
     canCreateAgents:
       typeof record.canCreateAgents === "boolean"
         ? record.canCreateAgents
         : defaults.canCreateAgents,
   };
+  if (typeof record.canCreateInteractions === "boolean") {
+    result.canCreateInteractions = record.canCreateInteractions;
+  }
+  return result;
 }
