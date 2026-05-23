@@ -461,10 +461,26 @@ persist_claimed_key_artifacts() {
   local claim_json="$1"
   local workspace_dir="${OPENCLAW_CONFIG_DIR%/}/workspace"
   local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/paperclip"
-  local claimed_file="${workspace_dir}/paperclip-claimed-api-key.json"
-  local claimed_raw_file="${workspace_dir}/paperclip-claimed-api-key.raw.json"
+  local suggested_file_path
+  local company_id
+  local agent_id
+  suggested_file_path="$(jq -r '.suggestedFilePath // empty' <<<"$claim_json")"
+  company_id="$(jq -r '.companyId // empty' <<<"$claim_json")"
+  agent_id="$(jq -r '.agentId // empty' <<<"$claim_json")"
 
-  mkdir -p "$workspace_dir" "$skill_dir"
+  local claimed_file="${suggested_file_path/#\~/$HOME}"
+  if [[ -z "$claimed_file" ]]; then
+    if [[ -n "$company_id" && -n "$agent_id" ]]; then
+      claimed_file="${workspace_dir}/paperclip/${company_id}/${agent_id}/claimed-api-key.json"
+    else
+      claimed_file="${workspace_dir}/paperclip-claimed-api-key.json"
+    fi
+  fi
+  local claimed_dir
+  claimed_dir="$(dirname "$claimed_file")"
+  local claimed_raw_file="${claimed_dir}/claimed-api-key.raw.json"
+
+  mkdir -p "$workspace_dir" "$skill_dir" "$claimed_dir"
   local token
   token="$(jq -r '.token // .apiKey // empty' <<<"$claim_json")"
   [[ -n "$token" ]] || fail "claim response missing token/apiKey"
@@ -472,16 +488,17 @@ persist_claimed_key_artifacts() {
   printf "%s\n" "$claim_json" > "$claimed_raw_file"
   chmod 600 "$claimed_raw_file"
 
-  jq -nc --arg token "$token" '{ token: $token, apiKey: $token }' > "$claimed_file"
-  # Keep this readable for OpenClaw runtime users across sandbox/container contexts.
-  chmod 644 "$claimed_file"
+  printf "%s\n" "$claim_json" > "$claimed_file"
+  chmod 600 "$claimed_file"
 
   local container
   container="$(detect_openclaw_container || true)"
   if [[ -n "$container" ]]; then
-    docker exec "$container" sh -lc "mkdir -p /home/node/.openclaw/workspace" >/dev/null 2>&1 || true
-    docker cp "$claimed_file" "${container}:/home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
-    docker exec "$container" sh -lc "chmod 644 /home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
+    local container_claimed_file
+    container_claimed_file="${claimed_file/#$HOME/\/home\/node}"
+    docker exec "$container" sh -lc "mkdir -p \"$(dirname "$container_claimed_file")\"" >/dev/null 2>&1 || true
+    docker cp "$claimed_file" "${container}:${container_claimed_file}" >/dev/null 2>&1 || true
+    docker exec "$container" sh -lc "chmod 600 \"$container_claimed_file\"" >/dev/null 2>&1 || true
   fi
 
   if [[ "$AUTO_INSTALL_SKILL" == "1" ]]; then

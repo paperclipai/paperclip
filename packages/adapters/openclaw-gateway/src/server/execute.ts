@@ -331,17 +331,28 @@ function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   }
 }
 
-const DEFAULT_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+const LEGACY_CLAIMED_API_KEY_PATH = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
 
-function resolveClaimedApiKeyPath(value: unknown): string {
-  return nonEmpty(value) ?? DEFAULT_CLAIMED_API_KEY_PATH;
+export function buildScopedClaimedApiKeyPath(companyId: string | null, agentId: string | null): string {
+  if (!companyId || !agentId) return LEGACY_CLAIMED_API_KEY_PATH;
+  return `~/.openclaw/workspace/paperclip/${companyId}/${agentId}/claimed-api-key.json`;
+}
+
+export function resolveClaimedApiKeyPath(
+  value: unknown,
+  companyId: string | null,
+  agentId: string | null,
+): string {
+  return nonEmpty(value) ?? buildScopedClaimedApiKeyPath(companyId, agentId);
 }
 
 function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: WakePayload): Record<string, string> {
   const paperclipApiUrlOverride = resolvePaperclipApiUrlOverride(ctx.config.paperclipApiUrl);
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(ctx.config.claimedApiKeyPath, ctx.agent.companyId, ctx.agent.id);
   const paperclipEnv: Record<string, string> = {
     ...buildPaperclipEnv(ctx.agent),
     PAPERCLIP_RUN_ID: ctx.runId,
+    PAPERCLIP_CLAIMED_API_KEY_PATH: claimedApiKeyPath,
   };
 
   if (paperclipApiUrlOverride) {
@@ -361,17 +372,20 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(
+export function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
 ): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const claimedApiKeyPath =
+    nonEmpty(paperclipEnv.PAPERCLIP_CLAIMED_API_KEY_PATH) ??
+    buildScopedClaimedApiKeyPath(nonEmpty(paperclipEnv.PAPERCLIP_COMPANY_ID), nonEmpty(paperclipEnv.PAPERCLIP_AGENT_ID));
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_API_URL",
+    "PAPERCLIP_CLAIMED_API_KEY_PATH",
     "PAPERCLIP_TASK_ID",
     "PAPERCLIP_WAKE_REASON",
     "PAPERCLIP_WAKE_COMMENT_ID",
@@ -400,6 +414,7 @@ function buildWakeText(
     `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
     `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    `Legacy flat path for migration only: ${LEGACY_CLAIMED_API_KEY_PATH}`,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -409,6 +424,12 @@ function buildWakeText(
     `approval_id=${payload.approvalId ?? ""}`,
     `approval_status=${payload.approvalStatus ?? ""}`,
     `linked_issue_ids=${payload.issueIds.join(",")}`,
+    "",
+    "Claimed-key preflight before any API call:",
+    `- Read ${claimedApiKeyPath} and verify file.agentId == ${paperclipEnv.PAPERCLIP_AGENT_ID}.`,
+    `- Verify file.companyId == ${paperclipEnv.PAPERCLIP_COMPANY_ID}.`,
+    `- If the scoped file is missing and ${LEGACY_CLAIMED_API_KEY_PATH} exists, only migrate it when both ids match.`,
+    "- If either id mismatches, do not attempt Paperclip API calls with that token. Claim a fresh key for this agent/company and save it to the scoped path first.",
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
