@@ -15,7 +15,7 @@
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { agents, skills } from "@paperclipai/db";
+import { agents, skillUses, skills } from "@paperclipai/db";
 import type {
   GuildSkillCreate,
   GuildSkillListQuery,
@@ -164,23 +164,25 @@ export function guildSkillService(db: Db) {
     guildId: string,
     skillId: string,
     success: boolean,
+    runId: string,
   ): Promise<GuildSkillRow> {
     // Verify the skill exists in this guild + company first; otherwise
     // a worker in guild A could increment a skill in guild B.
     await get(companyId, guildId, skillId);
-    const column = success ? skills.successCount : skills.failCount;
-    const updated = await db
-      .update(skills)
-      .set({
-        successCount: success
-          ? sql`${skills.successCount} + 1`
-          : skills.successCount,
-        failCount: success ? skills.failCount : sql`${skills.failCount} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(skills.id, skillId), eq(skills.guildId, guildId)))
-      .returning();
-    return updated[0]!;
+    return db.transaction(async (tx) => {
+      // Insert the event-log row before the counter update so that a FK
+      // violation on run_id rolls back both writes atomically.
+      await tx.insert(skillUses).values({ skillId, guildId, runId, success });
+      const counterUpdate = success
+        ? { successCount: sql`${skills.successCount} + 1` }
+        : { failCount: sql`${skills.failCount} + 1` };
+      const updated = await tx
+        .update(skills)
+        .set({ ...counterUpdate, updatedAt: new Date() })
+        .where(and(eq(skills.id, skillId), eq(skills.guildId, guildId)))
+        .returning();
+      return updated[0]!;
+    });
   }
 
   async function retire(

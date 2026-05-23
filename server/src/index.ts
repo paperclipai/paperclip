@@ -36,6 +36,8 @@ import {
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { autoPromotionService } from "./services/auto-promotion.js";
+import { autoPromotionScanner } from "./services/auto-promotion-scanner.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -784,7 +786,19 @@ export async function startServer(): Promise<StartedServer> {
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
-  
+
+  {
+    const autoPromotionSvc = autoPromotionService(db as any);
+    const autoPromotionScannerInstance = autoPromotionScanner(db as any, {
+      intervalMs: config.autoPromotionScanIntervalMs,
+      service: autoPromotionSvc,
+      logger,
+    });
+    if (config.autoPromotionScannerEnabled) {
+      autoPromotionScannerInstance.start();
+    }
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 

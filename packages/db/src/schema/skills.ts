@@ -54,6 +54,9 @@ export const skills = pgTable(
     }),
     successCount: integer("success_count").notNull().default(0),
     failCount: integer("fail_count").notNull().default(0),
+    bodyUpdatedAt: timestamp("body_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

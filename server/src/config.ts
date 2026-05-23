@@ -85,6 +85,8 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  autoPromotionScannerEnabled: boolean;
+  autoPromotionScanIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -331,6 +333,8 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    autoPromotionScannerEnabled: process.env.AUTO_PROMOTION_SCANNER_ENABLED !== "false",
+    autoPromotionScanIntervalMs: Math.max(60000, Number(process.env.AUTO_PROMOTION_SCAN_INTERVAL_MS) || 900000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

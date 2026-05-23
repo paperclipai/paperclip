@@ -173,6 +173,7 @@ export function guildSkillRoutes(db: Db) {
         guildId,
         skillId,
         req.body.success,
+        req.body.runId,
       );
       res.json(updated);
     },

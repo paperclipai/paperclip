@@ -276,6 +276,7 @@ export async function ingestGuildLearnings(
         input.agent.id,
         id,
         success,
+        input.run.id,
       );
       recordedUse.push({
         id: updated.id,

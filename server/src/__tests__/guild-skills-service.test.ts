@@ -40,6 +40,8 @@ describeEmbeddedPostgres("guildSkillService (Plan 3 Phase B3)", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // skill_uses rows cascade-delete when skills or heartbeat_runs are
+    // removed; direct DELETE trips the append-only trigger.
     await db.delete(skills);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -206,20 +208,30 @@ describeEmbeddedPostgres("guildSkillService (Plan 3 Phase B3)", () => {
     it("increments successCount on success=true and failCount on success=false", async () => {
       const companyId = await seedCompany();
       const guildId = await seedAgent(companyId, "guild");
+      // heartbeat_runs.id is now a required FK on skill_uses, so each
+      // recordUse call needs a real run row.
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: guildId,
+        invocationSource: "manual",
+        status: "running",
+      });
       const created = await svc.create(companyId, guildId, {
         name: "counts",
         body: "x",
       });
 
-      const after1 = await svc.recordUse(companyId, guildId, created.id, true);
+      const after1 = await svc.recordUse(companyId, guildId, created.id, true, runId);
       expect(after1.successCount).toBe(1);
       expect(after1.failCount).toBe(0);
 
-      const after2 = await svc.recordUse(companyId, guildId, created.id, false);
+      const after2 = await svc.recordUse(companyId, guildId, created.id, false, runId);
       expect(after2.successCount).toBe(1);
       expect(after2.failCount).toBe(1);
 
-      const after3 = await svc.recordUse(companyId, guildId, created.id, true);
+      const after3 = await svc.recordUse(companyId, guildId, created.id, true, runId);
       expect(after3.successCount).toBe(2);
       expect(after3.failCount).toBe(1);
     });

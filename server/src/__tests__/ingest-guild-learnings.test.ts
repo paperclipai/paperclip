@@ -109,8 +109,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
       id: runId,
       agentId,
       companyId,
-      reason: "on_demand",
-      source: "manual",
+      invocationSource: "manual",
       status: "succeeded",
     });
     return runId;
@@ -414,6 +413,9 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
 
   it("Plan 3b: used[] increments success_count when success=true", async () => {
     const { companyId, agentId } = await seed("guild");
+    // skill_uses.run_id is a FK to heartbeat_runs, so a real run row is
+    // required or the insert will raise a FK violation.
+    const runId = await seedRun(companyId, agentId);
     const skillId = await seedSkill(companyId, agentId, "redis-pool", "use pool size 20");
     const { sandboxDir, cleanup } = await withSandbox(
       JSON.stringify({
@@ -425,7 +427,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
     const result = await ingestGuildLearnings({
       db,
       agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
-      run: { id: randomUUID() },
+      run: { id: runId },
       sandboxDir,
     });
 
@@ -445,6 +447,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
 
   it("Plan 3b: used[] increments fail_count when success=false", async () => {
     const { companyId, agentId } = await seed("guild");
+    const runId = await seedRun(companyId, agentId);
     const skillId = await seedSkill(companyId, agentId, "stale-advice", "this is misleading");
     const { sandboxDir, cleanup } = await withSandbox(
       JSON.stringify({
@@ -456,7 +459,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
     const result = await ingestGuildLearnings({
       db,
       agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
-      run: { id: randomUUID() },
+      run: { id: runId },
       sandboxDir,
     });
 
@@ -471,6 +474,10 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
 
   it("Plan 3b: unknown skill id in used[] is rejected (caught service error)", async () => {
     const { companyId, agentId } = await seed("guild");
+    // The skill id check fires in get() before the transaction, so the
+    // run id is never reached. A real run row is seeded anyway for
+    // consistency and to guard against future reordering.
+    const runId = await seedRun(companyId, agentId);
     const bogusId = randomUUID();
     const { sandboxDir, cleanup } = await withSandbox(
       JSON.stringify({
@@ -482,7 +489,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
     const result = await ingestGuildLearnings({
       db,
       agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
-      run: { id: randomUUID() },
+      run: { id: runId },
       sandboxDir,
     });
 
@@ -495,6 +502,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
 
   it("Plan 3b: missing id or non-boolean success rejected per entry; siblings unaffected", async () => {
     const { companyId, agentId } = await seed("guild");
+    const runId = await seedRun(companyId, agentId);
     const goodId = await seedSkill(companyId, agentId, "good-one", "useful");
     const { sandboxDir, cleanup } = await withSandbox(
       JSON.stringify({
@@ -513,7 +521,7 @@ describeEmbeddedPostgres("ingestGuildLearnings (Plan 3 Phase E2a)", () => {
     const result = await ingestGuildLearnings({
       db,
       agent: { id: agentId, companyId, kind: "guild", name: "eng-guild" },
-      run: { id: randomUUID() },
+      run: { id: runId },
       sandboxDir,
     });
 

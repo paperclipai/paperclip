@@ -1144,3 +1144,12 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+
+export {
+  autoPromotionConfigPatchSchema,
+  autoPromotionListQuerySchema,
+  autoPromotionRevertSchema,
+  type AutoPromotionConfigPatch,
+  type AutoPromotionListQuery,
+  type AutoPromotionRevertInput,
+} from "./auto-promotion-config.js";

@@ -50,6 +50,7 @@ export const guildSkillUpdateSchema = z.object({
 
 export const guildSkillRecordUseSchema = z.object({
   success: z.boolean(),
+  runId: z.string().uuid(),
 });
 
 export const guildSkillListQuerySchema = z.object({
