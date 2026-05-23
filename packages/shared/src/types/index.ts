@@ -205,6 +205,8 @@ export type {
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationCustomTarget,
   RequestConfirmationTarget,
+  RequestConfirmationCommentPatternStopCondition,
+  RequestConfirmationStopCondition,
   RequestConfirmationPayload,
   RequestConfirmationResult,
   IssueThreadInteractionBase,

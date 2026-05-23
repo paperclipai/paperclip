@@ -691,6 +691,14 @@ export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
   | RequestConfirmationCustomTarget;
 
+export interface RequestConfirmationCommentPatternStopCondition {
+  type: "comment_pattern";
+  pattern: string;
+  description?: string | null;
+}
+
+export type RequestConfirmationStopCondition = RequestConfirmationCommentPatternStopCondition;
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -703,14 +711,16 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  stopCondition?: RequestConfirmationStopCondition | null;
 }
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "auto_resolved";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+  matchedExcerpt?: string | null;
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {

@@ -702,6 +702,16 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationCustomTargetSchema,
 ]);
 
+export const requestConfirmationStopConditionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("comment_pattern"),
+    pattern: z.string().trim().min(1).max(500),
+    description: z.string().trim().min(1).max(500).nullable().optional(),
+  }),
+]);
+
+export type RequestConfirmationStopCondition = z.infer<typeof requestConfirmationStopConditionSchema>;
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -714,14 +724,16 @@ export const requestConfirmationPayloadSchema = z.object({
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
+  stopCondition: requestConfirmationStopConditionSchema.nullable().optional(),
 });
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "auto_resolved"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
+  matchedExcerpt: z.string().max(500).nullable().optional(),
 });
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

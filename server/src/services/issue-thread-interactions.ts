@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -1312,4 +1312,140 @@ export function issueThreadInteractionService(db: Db) {
       return hydrateInteraction(updated);
     },
   };
+}
+
+const STOP_CONDITION_EXCERPT_MAX = 200;
+
+function evaluateCommentPatternStopCondition(args: {
+  pattern: string;
+  commentBodies: string[];
+}): { matched: true; matchedExcerpt: string } | { matched: false } {
+  let regex: RegExp;
+  try {
+    regex = new RegExp(args.pattern, "i");
+  } catch {
+    return { matched: false };
+  }
+  for (const body of args.commentBodies) {
+    const match = regex.exec(body);
+    if (match) {
+      const start = Math.max(0, match.index - 40);
+      const raw = body.slice(start, start + STOP_CONDITION_EXCERPT_MAX);
+      const excerpt = start > 0 ? `…${raw}` : raw;
+      return { matched: true, matchedExcerpt: excerpt };
+    }
+  }
+  return { matched: false };
+}
+
+export type AutoResolvedConfirmation = {
+  interactionId: string;
+  matchedExcerpt: string;
+  continuationPolicy: string;
+  createdByAgentId: string | null;
+};
+
+/**
+ * Evaluates pending request_confirmation interactions that carry a stopCondition
+ * against the current issue thread. Any whose condition is satisfied are marked
+ * accepted with outcome "auto_resolved" and a system audit comment is posted.
+ *
+ * Called in the harness pre-dispatch step (claimQueuedRun) so no agent heartbeat
+ * budget is consumed for the evaluation itself.
+ */
+export async function autoResolveStopConditionInteractions(
+  db: Db,
+  issue: { id: string; companyId: string },
+): Promise<AutoResolvedConfirmation[]> {
+  const pendingRows = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, issue.companyId),
+      eq(issueThreadInteractions.issueId, issue.id),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "pending"),
+    ));
+
+  const withStopCondition = pendingRows.filter((row) => {
+    const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+    return interaction.payload.stopCondition != null;
+  });
+
+  if (withStopCondition.length === 0) return [];
+
+  const commentBodies = await db
+    .select({ body: issueComments.body })
+    .from(issueComments)
+    .where(and(
+      eq(issueComments.companyId, issue.companyId),
+      eq(issueComments.issueId, issue.id),
+    ))
+    .orderBy(desc(issueComments.createdAt))
+    .limit(100)
+    .then((rows) => rows.map((r) => r.body));
+
+  const resolved: AutoResolvedConfirmation[] = [];
+  const now = new Date();
+
+  for (const row of withStopCondition) {
+    const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+    const stopCondition = interaction.payload.stopCondition!;
+
+    let result: { matched: true; matchedExcerpt: string } | { matched: false };
+    if (stopCondition.type === "comment_pattern") {
+      result = evaluateCommentPatternStopCondition({
+        pattern: stopCondition.pattern,
+        commentBodies,
+      });
+    } else {
+      continue;
+    }
+
+    if (!result.matched) continue;
+
+    const [updated] = await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "accepted",
+        result: {
+          version: 1,
+          outcome: "auto_resolved",
+          matchedExcerpt: result.matchedExcerpt,
+        },
+        resolvedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueThreadInteractions.id, row.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .returning();
+
+    if (!updated) continue;
+
+    const excerptSnippet = result.matchedExcerpt.length > 80
+      ? `${result.matchedExcerpt.slice(0, 80)}…`
+      : result.matchedExcerpt;
+
+    await db
+      .insert(issueComments)
+      .values({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        authorType: "system",
+        body: `Auto-resolved confirmation \`${row.id}\` — stop condition matched: \`${excerptSnippet}\``,
+      });
+
+    await touchIssue(db, issue.id);
+
+    resolved.push({
+      interactionId: row.id,
+      matchedExcerpt: result.matchedExcerpt,
+      continuationPolicy: row.continuationPolicy,
+      createdByAgentId: row.createdByAgentId ?? null,
+    });
+  }
+
+  return resolved;
 }
