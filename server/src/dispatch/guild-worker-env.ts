@@ -40,9 +40,30 @@ export const GUILD_WORKER_AUTONOMY_FILE = "autonomy.json";
  * Convention from spec D7: `farm/<guild-slug>`. */
 export const GUILD_MEMORY_PROJECT_PREFIX = "farm";
 
+/**
+ * Phase 2 Task 2.1 — video-guild dispatcher env-var pass-through.
+ *
+ * Issue titles of the form `video-<stage>/<request_id>` are emitted by
+ * the video-ad orchestrator for each pipeline stage. When the
+ * dispatcher spawns a worker for one of these issues we surface the
+ * parent request id + stage as env vars so worker-side tools can scope
+ * their reads/writes to the right ad campaign.
+ *
+ * Stages are exact: research, strategy, copy, edit. Anything else (e.g.
+ * `video-foo/...`) is ignored so a typo never silently activates the
+ * video-ad code path.
+ */
+const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/(.+)$/;
+
 export interface BuildGuildWorkerEnvInput {
   agent: Pick<AgentRow, "id" | "name" | "kind">;
   sandboxDir: string;
+  /**
+   * Title of the issue the worker is being dispatched for, if any.
+   * When the title matches `video-<stage>/<request_id>` the helper
+   * additionally emits VIDEO_AD_STAGE + VIDEO_AD_REQUEST_ID.
+   */
+  issueTitle?: string | null;
 }
 
 /**
@@ -53,8 +74,8 @@ export function buildGuildWorkerEnv(
   input: BuildGuildWorkerEnvInput,
 ): Record<string, string> {
   if (input.agent.kind !== "guild") return {};
-  const { agent, sandboxDir } = input;
-  return {
+  const { agent, sandboxDir, issueTitle } = input;
+  const env: Record<string, string> = {
     GUILD_ID: agent.id,
     GUILD_SLUG: agent.name,
     GUILD_AUTONOMY_JSON_PATH: path.join(sandboxDir, GUILD_WORKER_AUTONOMY_FILE),
@@ -62,4 +83,12 @@ export function buildGuildWorkerEnv(
     WORKER_LEARNINGS_PATH: path.join(sandboxDir, GUILD_WORKER_LEARNINGS_FILE),
     MEMORY_SERVICE_PROJECT: `${GUILD_MEMORY_PROJECT_PREFIX}/${agent.name}`,
   };
+  if (typeof issueTitle === "string") {
+    const match = issueTitle.match(VIDEO_ISSUE_TITLE_PATTERN);
+    if (match) {
+      env.VIDEO_AD_STAGE = match[1];
+      env.VIDEO_AD_REQUEST_ID = match[2];
+    }
+  }
+  return env;
 }
