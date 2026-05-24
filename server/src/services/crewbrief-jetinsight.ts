@@ -405,8 +405,11 @@ export async function parseItinerary(text: string): Promise<ParsedItinerary> {
 export async function extractPdfText(pdfBuffer: Buffer): Promise<string> {
   const result = spawnSync("python3", ["-c", `
 import sys
+from io import BytesIO
 from pdfminer.high_level import extract_text
-sys.stdout.write(extract_text(sys.stdin.buffer))
+data = sys.stdin.buffer.read()
+text = extract_text(BytesIO(data))
+sys.stdout.write(text)
 `], { input: pdfBuffer, maxBuffer: 50 * 1024 * 1024, timeout: 30000 });
 
   if (result.error) throw new Error(`PDF extraction subprocess failed: ${result.error.message}`);
