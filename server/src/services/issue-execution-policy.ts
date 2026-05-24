@@ -1048,3 +1048,21 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   Object.assign(stageResult.patch, monitorPatch);
   return stageResult;
 }
+
+/**
+ * Pattern matching issue title or description against keywords that suggest
+ * production deployment, runtime change, or database work that requires
+ * a Quinn QA review gate.
+ */
+export const QA_GATE_RE =
+  /\b(?:production deploy|deploy(?:ing)? to production|deploy(?:ing)? to prod|prod deploy|database migration|db migration|schema (?:change|migration|update|alter|migrate)|runtime (?:change|update|deploy)|production release|prod release|production access|rotate .{0,40}\b(?:secret|key|token))\b/i;
+
+/**
+ * Returns true when the issue title or description matches the QA gate
+ * pattern, meaning it likely involves production/runtime/DB work that
+ * should require Quinn review before completion.
+ */
+export function issueMatchesQaGate(title: string, description: string | null): boolean {
+  const textToCheck = `${title} ${description ?? ""}`;
+  return QA_GATE_RE.test(textToCheck);
+}
