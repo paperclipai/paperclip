@@ -520,6 +520,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Fake cloud artifacts are under `tmp/cli-api-parity/artifacts/cloud-*`. The fake cloud token is synthetic and stored only in scratch Paperclip home. `connect` remains intentionally interactive; scriptable equivalent coverage is via `context set`, token commands, `whoami`, and agent/board prompt flows already tested.
 - Follow-up: Stop the fake upstream server. Keep the real scratch Paperclip server running on `127.0.0.1:3197`.
 
+### 2026-05-24T13:15:09+02:00 - Routine lifecycle coverage
+
+- Command: `routine create --company-id 12e9db4b-f66c-459b-959e-d645002240fb --payload-json '{"title":"CLI parity routine smoke",...}' --json`; `routine list`; `routine get 8254ead3-7edd-43fc-97ca-cb3f477cefc9`; `routine update`; `routine revisions`; `routine runs`; `routine trigger:create <routine-id>` for API and webhook triggers; `routine trigger:update <api-trigger-id>`; `routine trigger:rotate-secret <api-trigger-id>`; `routine trigger:rotate-secret <webhook-trigger-id>`; `routine trigger:fire <webhook-public-id>`; `routine run <routine-id>` without and then with `assigneeAgentId`; `routine trigger:delete` for both triggers; final `routine update <routine-id> --payload-json '{"status":"archived"}'`
+- Purpose: Exercise routine CRUD, revision/runs inspection, manual run, trigger create/update/delete, trigger secret rotation, public trigger fire validation, and cleanup by archiving the disposable routine.
+- Prerequisites/IDs used: Company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`; routine `8254ead3-7edd-43fc-97ca-cb3f477cefc9`.
+- Expected result: Routine can be created, listed, read, updated, inspected, manually run when an assignee is supplied, and archived. API trigger secret rotation should fail because only webhook triggers have secrets. Disabled webhook fire should fail cleanly. Trigger delete should remove disposable triggers.
+- Actual result: Routine create/list/get/update/revisions/runs passed. API trigger create/update/delete passed. `trigger:rotate-secret` on the API trigger returned expected `422: Only webhook triggers can rotate secrets`; webhook trigger create and rotate passed. `trigger:fire` on the disabled webhook returned expected `409: Routine trigger is not active`. `routine run` without assignee returned expected `422: Default agent required`; rerun with `assigneeAgentId` passed and produced one routine run. Both triggers were deleted and the routine was archived.
+- Status: PASS with expected validation failures.
+- Output summary: Routine artifacts are under `tmp/cli-api-parity/artifacts/routine`. No active routine/trigger from this batch remains; the disposable routine is archived.
+- Follow-up: Final inventory and status check.
+
 ## Bugs And Mismatches
 
 ### BUG-007 - `worktree:make` can recurse through pnpm shim when `HOME` is isolated
