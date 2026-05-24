@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
+  costEvents,
   executionWorkspaces,
   goals,
   heartbeatRuns,
@@ -19,6 +20,8 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  tokenCapResets,
+  tokenCapWarnings,
 } from "@paperclipai/db";
 import type {
   CreateRoutine,
@@ -1090,6 +1093,101 @@ export function routineService(
       );
   }
 
+  async function enforceTokenCap(companyId: string, agentId: string): Promise<void> {
+    const agentRow = await db
+      .select({ monthlyTokenCapTokens: agents.monthlyTokenCapTokens, name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    const cap = agentRow?.monthlyTokenCapTokens ?? null;
+    if (cap === null) return;
+
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+
+    const [rawRow] = await db
+      .select({
+        rawUsage: sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)`,
+      })
+      .from(costEvents)
+      .where(and(eq(costEvents.agentId, agentId), gte(costEvents.occurredAt, monthStart)));
+
+    const [resetRow] = await db
+      .select({
+        resetOffset: sql<number>`coalesce(sum(${tokenCapResets.offsetTokens}), 0)`,
+      })
+      .from(tokenCapResets)
+      .where(and(eq(tokenCapResets.agentId, agentId), eq(tokenCapResets.month, monthDate)));
+
+    const rawUsage = Number(rawRow?.rawUsage ?? 0);
+    const resetOffset = Number(resetRow?.resetOffset ?? 0);
+    const netUsage = rawUsage - resetOffset;
+
+    if (netUsage >= cap) {
+      throw conflict("Monthly token cap exceeded", { code: "token_cap_exceeded", agentId, cap, netUsage });
+    }
+
+    if (netUsage >= 0.8 * cap) {
+      const sentAt = new Date();
+      const inserted = await db
+        .insert(tokenCapWarnings)
+        .values({ companyId, agentId, month: monthDate, sentAt })
+        .onConflictDoNothing()
+        .returning({ id: tokenCapWarnings.id })
+        .then((rows) => rows[0] ?? null);
+
+      if (inserted) {
+        const agentName = agentRow?.name ?? agentId;
+        const pct = Math.round((netUsage / cap) * 100);
+        const inboxIssue = await issueSvc.create(companyId, {
+          title: `Budget warning: ${agentName} at 80% token cap`,
+          description: [
+            `Agent **${agentName}** has used ${netUsage.toLocaleString()} tokens this month`,
+            `(${pct}% of its ${cap.toLocaleString()}-token cap).`,
+            `No action is required yet, but the monthly cap will be reached soon.`,
+          ].join(" "),
+          status: "todo",
+          priority: "high",
+          originKind: "token_cap_warning",
+          originId: agentId,
+        });
+
+        const activeIssue = await db
+          .select({ id: issues.id, identifier: issues.identifier })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              eq(issues.assigneeAgentId, agentId),
+              eq(issues.status, "in_progress"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (activeIssue) {
+          const prefix = inboxIssue.identifier?.split("-")[0] ?? "";
+          const issueLink = inboxIssue.identifier
+            ? `[${inboxIssue.identifier}](/${prefix}/issues/${inboxIssue.identifier})`
+            : "the operator inbox issue";
+          await issueSvc.addComment(
+            activeIssue.id,
+            [
+              `## Budget Warning`,
+              ``,
+              `This agent has used **${netUsage.toLocaleString()}** tokens this month`,
+              `(${pct}% of its ${cap.toLocaleString()}-token cap), crossing the 80% threshold.`,
+              `See ${issueLink} for details.`,
+            ].join("\n"),
+            {},
+          );
+        }
+      }
+    }
+  }
+
   async function dispatchRoutineRun(input: {
     routine: typeof routines.$inferSelect;
     trigger: typeof routineTriggers.$inferSelect | null;
@@ -1109,6 +1207,7 @@ export function routineService(
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
+    await enforceTokenCap(input.routine.companyId, assigneeAgentId);
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db

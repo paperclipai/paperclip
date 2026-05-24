@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -8,10 +8,12 @@ import {
   companySecretBindings,
   companySecrets,
   companySecretVersions,
+  costEvents,
   createDb,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueInboxArchives,
   issueReadStates,
   issues,
@@ -21,6 +23,8 @@ import {
   routines,
   routineTriggers,
   secretAccessEvents,
+  tokenCapResets,
+  tokenCapWarnings,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -58,6 +62,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
     }
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
     await db.delete(secretAccessEvents);
@@ -68,6 +73,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(tokenCapWarnings);
+    await db.delete(tokenCapResets);
+    await db.delete(costEvents);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -1509,5 +1517,170 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  describe("token cap enforcement in dispatchRoutineRun", () => {
+    async function seedCapFixture(opts: {
+      monthlyTokenCapTokens: number | null;
+    }) {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const projectId = randomUUID();
+      const issuePrefix = `TC${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({ id: companyId, name: "CapCo", issuePrefix, requireBoardApprovalForNewAgents: false });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "CapAgent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        monthlyTokenCapTokens: opts.monthlyTokenCapTokens,
+      });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Cap Project", status: "in_progress" });
+
+      const svc = routineService(db, {
+        heartbeat: {
+          wakeup: async (wakeupAgentId, wakeupOpts) => {
+            const issueId =
+              (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+              (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+              null;
+            if (!issueId) return null;
+            const queuedRunId = randomUUID();
+            await db.insert(heartbeatRuns).values({
+              id: queuedRunId,
+              companyId,
+              agentId: wakeupAgentId,
+              invocationSource: wakeupOpts.source ?? "assignment",
+              triggerDetail: wakeupOpts.triggerDetail ?? null,
+              status: "queued",
+              contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+            });
+            await db.update(issues).set({ executionRunId: queuedRunId, executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+            return { id: queuedRunId };
+          },
+        },
+      });
+
+      const routine = await svc.create(
+        companyId,
+        {
+          projectId,
+          goalId: null,
+          parentIssueId: null,
+          title: "cap test routine",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+        },
+        {},
+      );
+
+      return { companyId, agentId, projectId, routine, svc };
+    }
+
+    async function seedTokenUsage(agentId: string, companyId: string, tokens: number) {
+      const now = new Date();
+      await db.insert(costEvents).values({
+        agentId,
+        companyId,
+        provider: "anthropic",
+        model: "claude-3-opus",
+        inputTokens: tokens,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        costCents: 0,
+        occurredAt: now,
+      });
+    }
+
+    it("passes through when cap is null (no cap configured)", async () => {
+      const { routine, svc } = await seedCapFixture({ monthlyTokenCapTokens: null });
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+    });
+
+    it("passes through when netUsage is below 80% of cap", async () => {
+      const { companyId, agentId, routine, svc } = await seedCapFixture({ monthlyTokenCapTokens: 1000 });
+      await seedTokenUsage(agentId, companyId, 700);
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+      const warnings = await db.select().from(tokenCapWarnings).where(eq(tokenCapWarnings.agentId, agentId));
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("emits soft warning exactly once when netUsage first crosses 80%", async () => {
+      const { companyId, agentId, routine, svc } = await seedCapFixture({ monthlyTokenCapTokens: 1000 });
+      await seedTokenUsage(agentId, companyId, 850);
+
+      const firstRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(firstRun.status).toBe("issue_created");
+
+      const warnings = await db.select().from(tokenCapWarnings).where(eq(tokenCapWarnings.agentId, agentId));
+      expect(warnings).toHaveLength(1);
+
+      const inboxIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "token_cap_warning")));
+      expect(inboxIssues).toHaveLength(1);
+      expect(inboxIssues[0]?.title).toContain("Budget warning:");
+      expect(inboxIssues[0]?.title).toContain("CapAgent");
+
+      const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(secondRun.status).toBe("issue_created");
+
+      const warningsAfterSecond = await db.select().from(tokenCapWarnings).where(eq(tokenCapWarnings.agentId, agentId));
+      expect(warningsAfterSecond).toHaveLength(1);
+
+      const inboxIssuesAfterSecond = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "token_cap_warning")));
+      expect(inboxIssuesAfterSecond).toHaveLength(1);
+    });
+
+    it("hard-stops when netUsage >= cap, no RoutineRun issue created", async () => {
+      const { companyId, agentId, routine, svc } = await seedCapFixture({ monthlyTokenCapTokens: 1000 });
+      await seedTokenUsage(agentId, companyId, 1000);
+
+      await expect(svc.runRoutine(routine.id, { source: "manual" })).rejects.toMatchObject({
+        status: 409,
+        details: { code: "token_cap_exceeded" },
+      });
+
+      const executionIssues = await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "routine_execution")));
+      expect(executionIssues).toHaveLength(0);
+    });
+
+    it("token_cap_resets offsets subtract from the usage total", async () => {
+      const { companyId, agentId, routine, svc } = await seedCapFixture({ monthlyTokenCapTokens: 1000 });
+      await seedTokenUsage(agentId, companyId, 1000);
+
+      const now = new Date();
+      const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+      await db.insert(tokenCapResets).values({
+        agentId,
+        companyId,
+        month: monthDate,
+        offsetTokens: 200,
+        resetAt: new Date(),
+        authorizedByUserId: "user-123",
+      });
+
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("issue_created");
+    });
   });
 });
