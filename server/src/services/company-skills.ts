@@ -549,6 +549,15 @@ function buildGitHubAuthHeaders(auth?: GitHubImportAuth) {
   return { authorization: `Bearer ${auth.githubToken}` };
 }
 
+function isGitHubUrl(url: string): boolean {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === "github.com" || h === "www.github.com" || h.endsWith(".github.com") || h.endsWith(".githubusercontent.com");
+  } catch {
+    return false;
+  }
+}
+
 async function fetchText(url: string, auth?: GitHubImportAuth) {
   const response = await ghFetch(url, {
     headers: buildGitHubAuthHeaders(auth),
@@ -1181,7 +1190,8 @@ async function readUrlSkillImports(
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {
-    const markdown = await fetchText(url, auth);
+    // Only forward the GitHub token to recognized GitHub hostnames; never to arbitrary URLs.
+    const markdown = await fetchText(url, isGitHubUrl(url) ? auth : undefined);
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const urlObj = new URL(url);
     const fileName = path.posix.basename(urlObj.pathname);
