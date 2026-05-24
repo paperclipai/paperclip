@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NullBearer,
   OAuthMintBearer,
+  ServerGbrainCallError,
   StaticBearer,
   createServerGbrainClient,
   resolveBearerSource,
@@ -349,5 +350,133 @@ describe("createServerGbrainClient (integration smoke)", () => {
     const result = await client.call("get_page", { slug: "x" });
     expect(result).toBe("ok");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("HttpServerGbrainClient.call isError handling (BLO-6979)", () => {
+  function mcpResponse(body: object) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  function clientWithFetch(fetchMock: ReturnType<typeof vi.fn>) {
+    return createServerGbrainClient({
+      url: "http://gbrain/mcp",
+      bearerSource: new NullBearer(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+  }
+
+  it("throws ServerGbrainCallError with errorCode='page_not_found' when the upstream OperationError says so", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "page_not_found",
+                message: "Page not found: sweep-wake-frames/blockcast/ceo/blo-1",
+                suggestion: "Page may be soft-deleted; pass include_deleted: true to verify",
+              }),
+            },
+          ],
+          isError: true,
+        },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const err = await client.call("get_page", { slug: "x" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerGbrainCallError);
+    expect((err as ServerGbrainCallError).errorCode).toBe("page_not_found");
+    expect((err as ServerGbrainCallError).message).toMatch(/get_page.*page_not_found.*Page not found/);
+  });
+
+  it("throws ServerGbrainCallError with errorCode='invalid_params' for slug-validation failures", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "invalid_params",
+                message: "Invalid page_slug: Foo/BAR (allowed: alphanumeric, ...)",
+              }),
+            },
+          ],
+          isError: true,
+        },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const err = await client.call("put_page", { slug: "Foo/BAR", content: "" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerGbrainCallError);
+    expect((err as ServerGbrainCallError).errorCode).toBe("invalid_params");
+  });
+
+  it("falls back to errorCode='internal_error' when content[0].text is missing", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [], isError: true },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const err = await client.call("get_page", { slug: "x" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerGbrainCallError);
+    expect((err as ServerGbrainCallError).errorCode).toBe("internal_error");
+    expect((err as ServerGbrainCallError).message).toMatch(/<no error payload>/);
+  });
+
+  it("falls back to errorCode='internal_error' when content[0].text is not JSON", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "boom: not json" }], isError: true },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const err = await client.call("get_page", { slug: "x" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServerGbrainCallError);
+    expect((err as ServerGbrainCallError).errorCode).toBe("internal_error");
+    expect((err as ServerGbrainCallError).message).toMatch(/boom: not json/);
+  });
+
+  it("returns the parsed result when isError is absent", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: JSON.stringify({ slug: "x", body: "ok" }) }] },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const result = await client.call<{ slug: string; body: string }>("get_page", { slug: "x" });
+    expect(result).toEqual({ slug: "x", body: "ok" });
+  });
+
+  it("returns the parsed result when isError is explicitly false", async () => {
+    const fetchMock = vi.fn(async () =>
+      mcpResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [{ type: "text", text: JSON.stringify({ slug: "x" }) }],
+          isError: false,
+        },
+      }),
+    );
+    const client = clientWithFetch(fetchMock);
+    const result = await client.call<{ slug: string }>("get_page", { slug: "x" });
+    expect(result).toEqual({ slug: "x" });
   });
 });

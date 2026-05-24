@@ -2,7 +2,7 @@ import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, issueComments, issueRelations, issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import type { ServerGbrainClient } from "./gbrain-client-factory.js";
+import { ServerGbrainCallError, type ServerGbrainClient } from "./gbrain-client-factory.js";
 
 export type SweepWakePreflightVerdict =
   | "skip"
@@ -473,8 +473,19 @@ export async function runSweepWakePreflight(input: {
     issueIdentifier: issue.identifier,
   };
   try {
+    // BLO-6979: get_page now throws `ServerGbrainCallError` with
+    // `errorCode === "page_not_found"` for genuinely missing frames (was
+    // a silent null pre-fix). Translate that single expected absence
+    // back into a null page so the downstream `parseSweepWakeFramePage(null)`
+    // path keeps producing `missing_or_invalid_frame` + seed. Every other
+    // error code (invalid_params, permission_denied, internal_error,
+    // transport-layer aborts/HTTP errors) bubbles to the outer catch and
+    // becomes `gbrain_error`, which is now observable instead of masked.
     const [page, comments] = await Promise.all([
-      input.gbrain.call("get_page", { slug }),
+      input.gbrain.call("get_page", { slug }).catch((err: unknown) => {
+        if (err instanceof ServerGbrainCallError && err.errorCode === "page_not_found") return null;
+        throw err;
+      }),
       listRecentComments(input.db, issue.id, issue.companyId),
     ]);
     const frame = parseSweepWakeFramePage(page);

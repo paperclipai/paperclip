@@ -20,9 +20,51 @@ export interface ServerGbrainClient {
 }
 
 export class ServerGbrainCallError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
+  /**
+   * Upstream error code, when the failure originated from gbrain's
+   * `OperationError` (e.g. `"page_not_found"`, `"invalid_params"`,
+   * `"permission_denied"`) and we could parse it out of the `isError: true`
+   * response payload. `"internal_error"` is the fallback when the payload
+   * is missing or malformed. `undefined` for transport-level failures
+   * (HTTP errors, aborts, fetch failures) that never reached the tool.
+   *
+   * Callers that need to differentiate "no such page" from a real failure
+   * (e.g. `sweep-wake-preflight` treating `page_not_found` as a valid
+   * missing-frame state) should check this field rather than the raw
+   * message string.
+   */
+  public readonly errorCode?: string;
+
+  constructor(
+    message: string,
+    public readonly cause?: unknown,
+    opts?: { errorCode?: string },
+  ) {
     super(message);
     this.name = "ServerGbrainCallError";
+    this.errorCode = opts?.errorCode;
+  }
+}
+
+/**
+ * Parse the JSON payload inside an `isError: true` response's first
+ * content[0].text entry. gbrain's `dispatch.ts` emits
+ * `JSON.stringify(operationError.toJSON())` here, which produces
+ * `{ error, message, suggestion?, docs? }`. Falls back to an
+ * "internal_error" sentinel when the payload is missing or unparseable
+ * so callers always get a usable `errorCode`.
+ */
+function parseGbrainErrorPayload(text: string | undefined): { errorCode: string; message: string } {
+  if (typeof text !== "string" || text.length === 0) {
+    return { errorCode: "internal_error", message: "<no error payload>" };
+  }
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+    const errorCode = typeof parsed.error === "string" && parsed.error.length > 0 ? parsed.error : "internal_error";
+    const message = typeof parsed.message === "string" && parsed.message.length > 0 ? parsed.message : text.slice(0, 500);
+    return { errorCode, message };
+  } catch {
+    return { errorCode: "internal_error", message: text.slice(0, 500) };
   }
 }
 
@@ -228,7 +270,19 @@ class HttpServerGbrainClient implements ServerGbrainClient {
       if (json.error) throw new ServerGbrainCallError(`JSON-RPC error ${json.error.code}: ${json.error.message}`);
 
       const result = json.result as { content?: Array<{ type: string; text?: string }>; isError?: boolean } | undefined;
-      if (result?.isError === true) return null as T;
+      if (result?.isError === true) {
+        // BLO-6979: do NOT silently return null here. The prior behavior hid
+        // all three BLO-6388 gbrain server bugs (slug-case asymmetry +
+        // missing content field) under "seedWritten:true" log lines for ~13h.
+        // Surface the upstream error code so callers can differentiate
+        // expected absences (e.g. `page_not_found` on a brand-new issue's
+        // first get_page) from real failures (e.g. validation, permission,
+        // or upstream-internal errors).
+        const { errorCode, message } = parseGbrainErrorPayload(result.content?.[0]?.text);
+        throw new ServerGbrainCallError(`tools/call ${tool} returned isError: ${errorCode}: ${message}`, undefined, {
+          errorCode,
+        });
+      }
       const text = result?.content?.[0]?.text;
       if (typeof text !== "string") return result as T;
       try {
