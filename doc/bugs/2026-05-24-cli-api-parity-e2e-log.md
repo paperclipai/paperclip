@@ -564,6 +564,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Live OpenAPI artifact is `tmp/cli-api-parity/artifacts/openapi-live-after-fix.json`. The route exposes operation inventory, tags, summaries, and standard responses from the parity reference; it intentionally does not yet include full request/response schemas.
 - Follow-up: Commit the OpenAPI route fix, then rerun the final inventory/status sweep.
 
+### 2026-05-24T13:31:50+02:00 - Instructions path help fix verification
+
+- Command: Edited `cli/src/commands/client/agent.ts`; ran `pnpm exec vitest run cli/src/__tests__/agent-lifecycle.test.ts`; `pnpm --dir cli typecheck`; `pnpm --silent paperclipai agent instructions-path:update --help`.
+- Purpose: Close the remaining logged UX mismatch where process-adapter instructions path requirements were only discoverable through failing API calls.
+- Prerequisites/IDs used: Local source-tree CLI; no live server mutation required.
+- Expected result: Help text explains that process adapters require `adapterConfigKey`, relative paths require `adapterConfig.cwd`, and the JSON payload option includes a concrete example.
+- Actual result: Focused agent lifecycle test and CLI typecheck passed. Help output now includes the process-adapter requirement, the relative path `adapterConfig.cwd` requirement, and example payload `{"path":"/tmp/AGENTS.md","adapterConfigKey":"instructionsFilePath"}`.
+- Status: PASS after MISMATCH-004 help fix.
+- Output summary: This is a help-only CLI change; no scratch instance resources were created.
+- Follow-up: Commit the help fix, then continue residual command coverage.
+
 ## Bugs And Mismatches
 
 ### BUG-009 - `token agent list --agent <agent-id>` failed even when the agent exists
@@ -685,16 +696,16 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 
 ### MISMATCH-004 - `agent instructions-path:update` help does not expose process adapter requirements
 
-- Status: Not fixed in this pass.
+- Status: Fixed and verified.
 - Severity: Low command UX drift.
 - Reproduction command: `pnpm paperclipai agent instructions-path:update <process-agent-id> --payload-json '{"path":"docs/cli-parity.md"}' --json`.
 - Expected result: Help or validation guidance makes clear that process adapters need an explicit `adapterConfigKey`, and relative paths need `adapterConfig.cwd`.
 - Actual result: First attempt failed with `No default instructions path key for adapter type 'process'. Provide adapterConfigKey.` A second attempt with a relative path and `adapterConfigKey` failed with `Relative instructions path requires adapterConfig.cwd to be set to an absolute path`.
 - Suspected cause: CLI help only describes the JSON payload type; adapter-specific path requirements are enforced server-side.
-- Files changed: none for this mismatch.
-- Fix summary: Not fixed yet; adapted E2E to use `{"path":"<absolute scratch path>","adapterConfigKey":"instructionsFilePath"}`.
-- Verification command: `pnpm paperclipai agent instructions-path:update <process-agent-id> --payload-json '{"path":"<absolute scratch path>","adapterConfigKey":"instructionsFilePath"}' --json`.
-- Remaining risk: Users of generic/process adapters may need source inspection or trial-and-error to discover the required key/path shape.
+- Files changed: `cli/src/commands/client/agent.ts`, `doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`.
+- Fix summary: Updated the command description and `--payload-json` help to call out process-adapter `adapterConfigKey`, relative path `adapterConfig.cwd`, and an example payload.
+- Verification command: `pnpm exec vitest run cli/src/__tests__/agent-lifecycle.test.ts`; `pnpm --dir cli typecheck`; `pnpm paperclipai agent instructions-path:update --help`.
+- Remaining risk: Low; this is help text only and server-side validation remains authoritative.
 
 ### MISMATCH-005 - `invite test-resolution` omits required URL query
 

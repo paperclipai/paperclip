@@ -604,9 +604,9 @@ export function registerAgentCommands(program: Command): void {
   addCommonClientOptions(
     agent
       .command("instructions-path:update")
-      .description("Update an agent instructions path")
+      .description("Update an agent instructions path. Process adapters require adapterConfigKey and relative paths require adapterConfig.cwd.")
       .argument("<agentId>", "Agent ID")
-      .requiredOption("--payload-json <json>", "UpdateAgentInstructionsPath JSON payload")
+      .requiredOption("--payload-json <json>", "UpdateAgentInstructionsPath JSON payload, for example {\"path\":\"/tmp/AGENTS.md\",\"adapterConfigKey\":\"instructionsFilePath\"}")
       .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
