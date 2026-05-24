@@ -691,13 +691,22 @@ export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
   | RequestConfirmationCustomTarget;
 
-export interface RequestConfirmationCommentPatternStopCondition {
-  type: "comment_pattern";
+export interface RequestConfirmationCommentContainsExpression {
+  type: "comment_contains";
   pattern: string;
   description?: string | null;
 }
 
-export type RequestConfirmationStopCondition = RequestConfirmationCommentPatternStopCondition;
+export interface RequestConfirmationEnvVarPresentExpression {
+  type: "env_var_present_by_name";
+  name: string;
+  evidence?: "presence_only" | "length_only" | null;
+  description?: string | null;
+}
+
+export type RequestConfirmationSatisfactionExpression =
+  | RequestConfirmationCommentContainsExpression
+  | RequestConfirmationEnvVarPresentExpression;
 
 export interface RequestConfirmationPayload {
   version: 1;
@@ -711,7 +720,7 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
-  stopCondition?: RequestConfirmationStopCondition | null;
+  satisfactionExpression?: RequestConfirmationSatisfactionExpression | null;
 }
 
 export interface RequestConfirmationResult {

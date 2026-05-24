@@ -187,7 +187,7 @@ export {
   requestConfirmationIssueDocumentTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
-  requestConfirmationStopConditionSchema,
+  requestConfirmationSatisfactionExpressionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   createIssueThreadInteractionSchema,

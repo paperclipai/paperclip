@@ -169,7 +169,7 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
-import { autoResolveStopConditionInteractions } from "./issue-thread-interactions.js";
+import { autoResolveSatisfactionExpressionInteractions } from "./issue-thread-interactions.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -5971,9 +5971,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       // Pre-dispatch: auto-resolve any pending request_confirmation interactions whose
-      // stopCondition is already satisfied by the current issue thread. This runs before
-      // the agent is woken so no heartbeat budget is consumed for the evaluation itself.
-      const autoResolved = await autoResolveStopConditionInteractions(db, {
+      // satisfactionExpression is already satisfied. This runs before the agent is woken
+      // so no heartbeat budget is consumed for the evaluation itself.
+      const autoResolved = await autoResolveSatisfactionExpressionInteractions(db, {
         id: issueId,
         companyId: run.companyId,
       });

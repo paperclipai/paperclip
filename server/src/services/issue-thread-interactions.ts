@@ -1314,12 +1314,14 @@ export function issueThreadInteractionService(db: Db) {
   };
 }
 
-const STOP_CONDITION_EXCERPT_MAX = 200;
+const SATISFACTION_EXCERPT_MAX = 200;
 
-function evaluateCommentPatternStopCondition(args: {
+type EvalResult = { matched: true; expressionType: string; matchedExcerpt: string } | { matched: false };
+
+function evaluateCommentContainsExpression(args: {
   pattern: string;
   commentBodies: string[];
-}): { matched: true; matchedExcerpt: string } | { matched: false } {
+}): EvalResult {
   let regex: RegExp;
   try {
     regex = new RegExp(args.pattern, "i");
@@ -1330,12 +1332,25 @@ function evaluateCommentPatternStopCondition(args: {
     const match = regex.exec(body);
     if (match) {
       const start = Math.max(0, match.index - 40);
-      const raw = body.slice(start, start + STOP_CONDITION_EXCERPT_MAX);
+      const raw = body.slice(start, start + SATISFACTION_EXCERPT_MAX);
       const excerpt = start > 0 ? `…${raw}` : raw;
-      return { matched: true, matchedExcerpt: excerpt };
+      return { matched: true, expressionType: "comment_contains", matchedExcerpt: excerpt };
     }
   }
   return { matched: false };
+}
+
+function evaluateEnvVarPresentExpression(args: {
+  name: string;
+  evidence?: "presence_only" | "length_only" | null;
+}): EvalResult {
+  const value = process.env[args.name];
+  if (!value || value.length === 0) return { matched: false };
+  const mode = args.evidence ?? "presence_only";
+  const matchedExcerpt = mode === "length_only"
+    ? `${args.name} present (length: ${value.length}). No secret values exposed.`
+    : `${args.name} present. No secret values exposed.`;
+  return { matched: true, expressionType: "env_var_present_by_name", matchedExcerpt };
 }
 
 export type AutoResolvedConfirmation = {
@@ -1346,14 +1361,15 @@ export type AutoResolvedConfirmation = {
 };
 
 /**
- * Evaluates pending request_confirmation interactions that carry a stopCondition
- * against the current issue thread. Any whose condition is satisfied are marked
- * accepted with outcome "auto_resolved" and a system audit comment is posted.
+ * Evaluates pending request_confirmation interactions that carry a satisfactionExpression
+ * against the current issue thread state. Any whose expression resolves true are marked
+ * accepted with outcome "auto_resolved" and a redacted system audit comment is posted.
  *
+ * Safety: evaluators are read-only, non-secret-printing, and bounded.
  * Called in the harness pre-dispatch step (claimQueuedRun) so no agent heartbeat
  * budget is consumed for the evaluation itself.
  */
-export async function autoResolveStopConditionInteractions(
+export async function autoResolveSatisfactionExpressionInteractions(
   db: Db,
   issue: { id: string; companyId: string },
 ): Promise<AutoResolvedConfirmation[]> {
@@ -1367,12 +1383,12 @@ export async function autoResolveStopConditionInteractions(
       eq(issueThreadInteractions.status, "pending"),
     ));
 
-  const withStopCondition = pendingRows.filter((row) => {
+  const withExpression = pendingRows.filter((row) => {
     const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
-    return interaction.payload.stopCondition != null;
+    return interaction.payload.satisfactionExpression != null;
   });
 
-  if (withStopCondition.length === 0) return [];
+  if (withExpression.length === 0) return [];
 
   const commentBodies = await db
     .select({ body: issueComments.body })
@@ -1388,16 +1404,15 @@ export async function autoResolveStopConditionInteractions(
   const resolved: AutoResolvedConfirmation[] = [];
   const now = new Date();
 
-  for (const row of withStopCondition) {
+  for (const row of withExpression) {
     const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
-    const stopCondition = interaction.payload.stopCondition!;
+    const expr = interaction.payload.satisfactionExpression!;
 
-    let result: { matched: true; matchedExcerpt: string } | { matched: false };
-    if (stopCondition.type === "comment_pattern") {
-      result = evaluateCommentPatternStopCondition({
-        pattern: stopCondition.pattern,
-        commentBodies,
-      });
+    let result: EvalResult;
+    if (expr.type === "comment_contains") {
+      result = evaluateCommentContainsExpression({ pattern: expr.pattern, commentBodies });
+    } else if (expr.type === "env_var_present_by_name") {
+      result = evaluateEnvVarPresentExpression({ name: expr.name, evidence: expr.evidence });
     } else {
       continue;
     }
@@ -1424,8 +1439,8 @@ export async function autoResolveStopConditionInteractions(
 
     if (!updated) continue;
 
-    const excerptSnippet = result.matchedExcerpt.length > 80
-      ? `${result.matchedExcerpt.slice(0, 80)}…`
+    const excerptSnippet = result.matchedExcerpt.length > 120
+      ? `${result.matchedExcerpt.slice(0, 120)}…`
       : result.matchedExcerpt;
 
     await db
@@ -1434,7 +1449,7 @@ export async function autoResolveStopConditionInteractions(
         companyId: issue.companyId,
         issueId: issue.id,
         authorType: "system",
-        body: `Auto-resolved confirmation \`${row.id}\` — stop condition matched: \`${excerptSnippet}\``,
+        body: `request_confirmation auto-accepted by satisfactionExpression: ${result.expressionType}(${excerptSnippet}) resolved true. No secret values exposed. Resume wake queued.`,
       });
 
     await touchIssue(db, issue.id);

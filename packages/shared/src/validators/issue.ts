@@ -702,15 +702,19 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationCustomTargetSchema,
 ]);
 
-export const requestConfirmationStopConditionSchema = z.discriminatedUnion("type", [
+export const requestConfirmationSatisfactionExpressionSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal("comment_pattern"),
+    type: z.literal("comment_contains"),
     pattern: z.string().trim().min(1).max(500),
     description: z.string().trim().min(1).max(500).nullable().optional(),
   }),
+  z.object({
+    type: z.literal("env_var_present_by_name"),
+    name: z.string().trim().min(1).max(256).regex(/^[A-Z][A-Z0-9_]*$/, "must be an uppercase env var name"),
+    evidence: z.enum(["presence_only", "length_only"]).nullable().optional(),
+    description: z.string().trim().min(1).max(500).nullable().optional(),
+  }),
 ]);
-
-export type RequestConfirmationStopCondition = z.infer<typeof requestConfirmationStopConditionSchema>;
 
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
@@ -724,7 +728,7 @@ export const requestConfirmationPayloadSchema = z.object({
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
-  stopCondition: requestConfirmationStopConditionSchema.nullable().optional(),
+  satisfactionExpression: requestConfirmationSatisfactionExpressionSchema.nullable().optional(),
 });
 
 export const requestConfirmationResultSchema = z.object({
