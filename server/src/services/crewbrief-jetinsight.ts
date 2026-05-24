@@ -4,6 +4,15 @@ import { readConfigFile } from "../config-file.js";
 
 const require = createRequire(import.meta.url);
 
+type CrewAssignment = {
+  dutyDayId: string;
+  employeeId: string;
+  dutyDate: string;
+  position?: string;
+  reportTime?: string;
+  releaseTime?: string;
+};
+
 export interface ParsedItinerary {
   tripId: string;
   airline?: string;
@@ -24,14 +33,7 @@ export interface ParsedItinerary {
     fuelPlan?: string;
     fuelUnit?: string;
   }[];
-  crewAssignments?: {
-    dutyDayId: string;
-    employeeId: string;
-    dutyDate: string;
-    position?: string;
-    reportTime?: string;
-    releaseTime?: string;
-  }[];
+  crewAssignments?: CrewAssignment[];
 }
 
 export interface ExtractionCounts {
@@ -215,7 +217,7 @@ export function deterministicParse(text: string): ParsedItinerary | null {
   const crewAssignments: ParsedItinerary["crewAssignments"] = [];
   const legs: ParsedItinerary["legs"] = [];
   let currentLeg: Partial<ParsedItinerary["legs"][number]> | null = null;
-  let currentCrew: Partial<ParsedItinerary["crewAssignments"][number]> | null = null;
+  let currentCrew: Partial<CrewAssignment> | null = null;
   let inCrewSection = false;
   let inLegSection = false;
 
@@ -259,7 +261,7 @@ export function deterministicParse(text: string): ParsedItinerary | null {
 
     if (lower.includes("crew") && (lower.includes("assign") || lower.includes("member") || lower.includes(":"))) {
       if (currentCrew && currentCrew.employeeId) {
-        crewAssignments.push(currentCrew as ParsedItinerary["crewAssignments"][number]);
+        crewAssignments.push(currentCrew as CrewAssignment);
       }
       currentCrew = {};
       inCrewSection = true;
@@ -311,7 +313,7 @@ export function deterministicParse(text: string): ParsedItinerary | null {
       const empVal = extractValue(line, "Employee ID:") || extractValue(line, "Employee Id:") || extractValue(line, "ID:") || extractValue(line, "Employee:");
       if (empVal) {
         if (currentCrew.employeeId) {
-          crewAssignments.push(currentCrew as ParsedItinerary["crewAssignments"][number]);
+          crewAssignments.push(currentCrew as CrewAssignment);
           currentCrew = {};
         }
         currentCrew.employeeId = empVal;
@@ -336,7 +338,7 @@ export function deterministicParse(text: string): ParsedItinerary | null {
     legs.push(currentLeg as ParsedItinerary["legs"][number]);
   }
   if (currentCrew && currentCrew.employeeId) {
-    crewAssignments.push(currentCrew as ParsedItinerary["crewAssignments"][number]);
+    crewAssignments.push(currentCrew as CrewAssignment);
   }
 
   if (legs.length === 0 && crewAssignments.length === 0) return null;

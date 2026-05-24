@@ -161,7 +161,7 @@ function createUploadHandler(db: Db, storage: StorageService) {
       if (!companyId) {
         companyId = "default";
       }
-      const actor = (req as Record<string, unknown>).actor as
+      const actor = (req as unknown as Record<string, unknown>).actor as
         | { agentId?: string; agentType?: string; actorType?: string; actorId?: string }
         | undefined;
 
