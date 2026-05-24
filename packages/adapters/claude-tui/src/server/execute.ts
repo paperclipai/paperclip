@@ -204,8 +204,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "--policy",
     "auto_approve",
   ];
-  if (model) cliArgs.push("--model", model);
-  if (instructionsFilePath) cliArgs.push("--instructions-file", instructionsFilePath);
+  // NOTE: model + instructionsFile aren't wired through the Python CLI yet —
+  // the CLI's argparse only accepts the flags above. The instructions live at
+  // `instructionsFilePath` and need a separate plumbing pass (likely via
+  // `claude --append-system-prompt @file` inside driver.py). Logged here to
+  // surface in onMeta so the gap is visible.
+  void model;
+  void instructionsFilePath;
 
   if (onMeta) {
     await onMeta({
