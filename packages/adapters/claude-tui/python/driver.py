@@ -303,6 +303,21 @@ class ClaudeTuiDriver:
 
     # ----------------------------------------------------------- lifecycle
 
+    # Substrings that mark a first-run onboarding screen we must dismiss
+    # before we can submit prompts. Each screen is advanced by pressing Enter
+    # on its default selection.
+    _ONBOARDING_MARKERS = (
+        "Let's get started",
+        "Choose the text style",
+        "Choose what to do with",
+        "Do you trust the files",
+        "Press Enter to continue",
+        "Use Claude Code's terminal setup",
+    )
+
+    def _looks_like_onboarding(self, text: str) -> bool:
+        return any(marker in text for marker in self._ONBOARDING_MARKERS)
+
     def start(self) -> None:
         if self._started:
             return
@@ -313,6 +328,25 @@ class ClaudeTuiDriver:
             quiet_sec=self.SETTLE_QUIET_SEC,
             hard_timeout=10.0,
         )
+
+        # Dismiss any first-run onboarding screens. claude shows a theme
+        # picker / trust-files / setup wizard on a fresh .claude directory,
+        # and the TUI blocks on these until the user advances. We send Enter
+        # to accept whatever default is highlighted and re-settle, up to
+        # MAX_ONBOARDING_STEPS times.
+        MAX_ONBOARDING_STEPS = 6
+        for _ in range(MAX_ONBOARDING_STEPS):
+            snap = self._session.snapshot()
+            screen = snap.visible_text or ""
+            if not self._looks_like_onboarding(screen):
+                break
+            self._session.write_keys("\r")
+            self._session.read_until(
+                predicate=lambda v, h: False,
+                quiet_sec=1.0,
+                hard_timeout=5.0,
+            )
+
         self._started = True
 
     def close(self) -> None:
