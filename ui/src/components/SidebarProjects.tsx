@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Plus } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import {
   DndContext,
   MouseSensor,
@@ -36,11 +37,14 @@ import type { Project } from "@paperclipai/shared";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
-const PROJECT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
-];
+function useProjectSortChoices(): SidebarSectionRadioChoice[] {
+  const { t } = useTranslation();
+  return [
+    { value: "top", label: t("sidebar.projectsSort.top", { defaultValue: "Top" }) },
+    { value: "alphabetical", label: t("sidebar.projectsSort.alphabetical", { defaultValue: "Alphabetical" }) },
+    { value: "recent", label: t("sidebar.projectsSort.recent", { defaultValue: "Recent" }) },
+  ];
+}
 const REORDER_POINTER_MEDIA = "(hover: hover) and (pointer: fine)";
 
 type ProjectItemProps = {
@@ -95,6 +99,11 @@ function useFineReorderPointer() {
   return matches;
 }
 
+function BudgetPausedMarker() {
+  const { t } = useTranslation();
+  return <BudgetSidebarMarker title={t("sidebar.projectPausedByBudget", { defaultValue: "Project paused by budget" })} />;
+}
+
 function ProjectItem({
   activeProjectRef,
   companyId,
@@ -131,7 +140,7 @@ function ProjectItem({
           style={{ backgroundColor: project.color ?? "#6366f1" }}
         />
         <span className="flex-1 truncate">{project.name}</span>
-        {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+        {project.pauseReason === "budget" ? <BudgetPausedMarker /> : null}
       </NavLink>
       {projectSidebarSlots.length > 0 && (
         <div className="ml-5 flex flex-col gap-0.5">
@@ -184,6 +193,8 @@ function SortableProjectItem(props: ProjectItemProps) {
 }
 
 export function SidebarProjects() {
+  const { t } = useTranslation();
+  const PROJECT_SORT_CHOICES = useProjectSortChoices();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
@@ -314,20 +325,20 @@ export function SidebarProjects() {
 
   return (
     <SidebarSection
-      label="Projects"
+      label={t("sidebar.projects", { defaultValue: "Projects" })}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New project",
+        ariaLabel: t("sidebar.newProject", { defaultValue: "New project" }),
         icon: Plus,
         onClick: openNewProject,
       }}
       menu={{
-        ariaLabel: "Projects section actions",
+        ariaLabel: t("sidebar.projectsSectionActions", { defaultValue: "Projects section actions" }),
         actions: [
-          { type: "item", label: "Browse projects", icon: FolderOpen, href: "/projects" },
+          { type: "item", label: t("sidebar.browseProjects", { defaultValue: "Browse projects" }), icon: FolderOpen, href: "/projects" },
           { type: "separator" },
         ],
-        radioLabel: "Project sort",
+        radioLabel: t("sidebar.projectsSort.label", { defaultValue: "Project sort" }),
         radioChoices: PROJECT_SORT_CHOICES,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,

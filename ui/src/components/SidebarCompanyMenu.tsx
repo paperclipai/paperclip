@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { Company } from "@paperclipai/shared";
+import type { Company, DeploymentMode } from "@paperclipai/shared";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
+import { useOptionalToastActions } from "@/context/ToastContext";
+import { useTranslation } from "@/i18n";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -43,6 +45,7 @@ import { CompanyPatternIcon } from "./CompanyPatternIcon";
 interface SidebarCompanyMenuProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  deploymentMode?: DeploymentMode;
 }
 
 function WorkspaceIcon({ company }: { company: Company }) {
@@ -67,6 +70,7 @@ function SortableCompanyItem({
   isSelected: boolean;
   onSelect: (company: Company) => void;
 }) {
+  const { t } = useTranslation();
   const {
     attributes,
     listeners,
@@ -105,7 +109,7 @@ function SortableCompanyItem({
         <button
           type="button"
           ref={setActivatorNodeRef}
-          aria-label={`Reorder ${company.name}`}
+          aria-label={t("companyMenu.reorder", { defaultValue: "Reorder {{name}}", name: company.name })}
           className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring"
           onClick={(event) => {
             event.preventDefault();
@@ -128,12 +132,18 @@ function SortableCompanyItem({
   );
 }
 
-export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
+export function SidebarCompanyMenu({
+  open: controlledOpen,
+  onOpenChange,
+  deploymentMode,
+}: SidebarCompanyMenuProps = {}) {
+  const { t } = useTranslation();
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const toastActions = useOptionalToastActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -168,6 +178,13 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (error) => {
+      toastActions?.pushToast({
+        title: t("companyMenu.signOutFailedTitle", { defaultValue: "Sign out failed" }),
+        body: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     },
   });
 
@@ -225,12 +242,14 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         <Button
           variant="ghost"
           className="h-9 flex-1 justify-start gap-2 px-2 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          aria-label={selectedCompany
+            ? t("companyMenu.openSwitcherFor", { defaultValue: "Open {{name}} workspace switcher", name: selectedCompany.name })
+            : t("companyMenu.openSwitcher", { defaultValue: "Open workspace switcher" })}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             <span className="truncate text-sm font-bold text-foreground">
-              {selectedCompany?.name ?? "Select workspace"}
+              {selectedCompany?.name ?? t("companyMenu.selectWorkspace", { defaultValue: "Select workspace" })}
             </span>
           </span>
           <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
@@ -239,7 +258,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
-            Switch workspace
+            {t("companyMenu.switchWorkspace", { defaultValue: "Switch workspace" })}
           </DropdownMenuLabel>
           <button
             type="button"
@@ -250,7 +269,9 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             }}
             className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            {isEditingOrder ? "Done" : "Edit"}
+            {isEditingOrder
+              ? t("companyMenu.done", { defaultValue: "Done" })
+              : t("companyMenu.edit", { defaultValue: "Edit" })}
           </button>
         </div>
         <div className="max-h-96 overflow-y-auto">
@@ -275,7 +296,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </SortableContext>
           </DndContext>
           {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
+            <DropdownMenuItem disabled>{t("companyMenu.empty", { defaultValue: "No workspaces" })}</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
@@ -285,7 +306,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>Add company...</span>
+          <span>{t("companyMenu.addCompany", { defaultValue: "Add company..." })}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
@@ -301,7 +322,9 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           >
             <UserPlus className="size-4" />
             <span className="truncate">
-              {selectedCompany ? `Invite people to ${selectedCompany.name}` : "Invite people"}
+              {selectedCompany
+                ? t("companyMenu.invitePeopleTo", { defaultValue: "Invite people to {{name}}", name: selectedCompany.name })
+                : t("companyMenu.invitePeople", { defaultValue: "Invite people" })}
             </span>
           </Link>
         </DropdownMenuItem>
@@ -317,10 +340,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             }}
           >
             <Settings className="size-4" />
-            <span>Company settings</span>
+            <span>{t("companyMenu.companySettings", { defaultValue: "Company settings" })}</span>
           </Link>
         </DropdownMenuItem>
-        {session?.session ? (
+        {deploymentMode === "authenticated" && session?.session ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -329,7 +352,9 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder || signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending
+                ? t("companyMenu.signingOut", { defaultValue: "Signing out..." })
+                : t("companyMenu.signOut", { defaultValue: "Sign out" })}</span>
             </DropdownMenuItem>
           </>
         ) : null}

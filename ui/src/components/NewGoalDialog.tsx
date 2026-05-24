@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import { goalsApi } from "../api/goals";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -25,17 +26,24 @@ import {
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { useTranslation } from "@/i18n";
 
-const levelLabels: Record<string, string> = {
-  company: "Company",
-  team: "Team",
-  agent: "Agent",
-  task: "Task",
-};
+function useLevelLabels(): Record<string, string> {
+  const { t } = useTranslation();
+  return {
+    company: t("newGoalDialog.level.company", { defaultValue: "Company" }),
+    team: t("newGoalDialog.level.team", { defaultValue: "Team" }),
+    agent: t("newGoalDialog.level.agent", { defaultValue: "Agent" }),
+    task: t("newGoalDialog.level.task", { defaultValue: "Task" }),
+  };
+}
 
 export function NewGoalDialog() {
+  const { t } = useTranslation();
+  const levelLabels = useLevelLabels();
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const toastActions = useOptionalToastActions();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -43,6 +51,7 @@ export function NewGoalDialog() {
   const [level, setLevel] = useState("task");
   const [parentId, setParentId] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [levelOpen, setLevelOpen] = useState(false);
@@ -66,11 +75,20 @@ export function NewGoalDialog() {
       reset();
       closeNewGoal();
     },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setSubmitError(message);
+      toastActions?.pushToast({
+        title: t("newGoalDialog.createFailedTitle", { defaultValue: "Could not create goal" }),
+        body: message,
+        tone: "error",
+      });
+    },
   });
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error(t("newGoalDialog.noCompanyError", { defaultValue: "No company selected" }));
       return assetsApi.uploadImage(selectedCompanyId, file, "goals/drafts");
     },
   });
@@ -82,10 +100,19 @@ export function NewGoalDialog() {
     setLevel("task");
     setParentId("");
     setExpanded(false);
+    setSubmitError(null);
   }
 
   function handleSubmit() {
-    if (!selectedCompanyId || !title.trim()) return;
+    if (!selectedCompanyId) {
+      setSubmitError(t("newGoalDialog.noCompanyError", { defaultValue: "No company selected" }));
+      return;
+    }
+    if (!title.trim()) {
+      setSubmitError(t("newGoalDialog.titleRequired", { defaultValue: "Goal title is required." }));
+      return;
+    }
+    setSubmitError(null);
     createGoal.mutate({
       title: title.trim(),
       description: description.trim() || undefined,
@@ -128,7 +155,9 @@ export function NewGoalDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+            <span>{newGoalDefaults.parentId
+              ? t("newGoalDialog.newSubGoal", { defaultValue: "New sub-goal" })
+              : t("newGoalDialog.newGoal", { defaultValue: "New goal" })}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -154,7 +183,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={t("newGoalDialog.titlePlaceholder", { defaultValue: "Goal title" })}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -173,7 +202,7 @@ export function NewGoalDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("newGoalDialog.descriptionPlaceholder", { defaultValue: "Add description..." })}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -237,7 +266,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
+                {currentParent ? currentParent.title : t("newGoalDialog.parentGoal", { defaultValue: "Parent goal" })}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
@@ -248,7 +277,7 @@ export function NewGoalDialog() {
                 )}
                 onClick={() => { setParentId(""); setParentOpen(false); }}
               >
-                No parent
+                {t("newGoalDialog.noParent", { defaultValue: "No parent" })}
               </button>
               {(goals ?? []).map((g) => (
                 <button
@@ -267,13 +296,26 @@ export function NewGoalDialog() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-border">
+          <p
+            className={cn(
+              "text-xs text-destructive truncate",
+              submitError ? "opacity-100" : "opacity-0",
+            )}
+            role={submitError ? "alert" : undefined}
+          >
+            {submitError ?? ""}
+          </p>
           <Button
             size="sm"
             disabled={!title.trim() || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending
+              ? t("newGoalDialog.creating", { defaultValue: "Creating…" })
+              : newGoalDefaults.parentId
+                ? t("newGoalDialog.createSubGoal", { defaultValue: "Create sub-goal" })
+                : t("newGoalDialog.createGoal", { defaultValue: "Create goal" })}
           </Button>
         </div>
       </DialogContent>

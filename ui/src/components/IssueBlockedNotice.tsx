@@ -18,6 +18,7 @@ import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
 } from "../lib/recovery-display";
+import { useTranslation } from "@/i18n";
 
 function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const state = deriveActiveRecoveryDisplayState(action);
@@ -121,6 +122,7 @@ export function IssueBlockedNotice({
   scheduledRetry?: IssueScheduledRetry | null;
   agentName?: string | null;
 }) {
+  const { t } = useTranslation();
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
   if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
@@ -205,7 +207,7 @@ export function IssueBlockedNotice({
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
-              <p className="font-medium leading-5">This issue still needs a next step.</p>
+              <p className="font-medium leading-5">{t("issueBlocked.needsNextStep", { defaultValue: "This issue still needs a next step." })}</p>
               <p className="leading-5">
                 A run finished successfully, but this issue is still open in{" "}
                 <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
@@ -214,10 +216,10 @@ export function IssueBlockedNotice({
                 with no clear owner for the next action.
               </p>
               <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
-                <li>Mark it done or cancelled.</li>
-                <li>Send it for review or ask for input.</li>
-                <li>Mark it blocked with a blocker owner.</li>
-                <li>Delegate follow-up work or queue a continuation.</li>
+                <li>{t("issueBlocked.markDone", { defaultValue: "Mark it done or cancelled." })}</li>
+                <li>{t("issueBlocked.sendReview", { defaultValue: "Send it for review or ask for input." })}</li>
+                <li>{t("issueBlocked.markBlocked", { defaultValue: "Mark it blocked with a blocker owner." })}</li>
+                <li>{t("issueBlocked.delegate", { defaultValue: "Delegate follow-up work or queue a continuation." })}</li>
               </ul>
               <div className="flex flex-wrap gap-1.5 text-xs">
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (

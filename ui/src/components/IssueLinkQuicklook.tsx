@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import * as RouterDom from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { timeAgo } from "@/lib/timeAgo";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
 import {
@@ -39,7 +40,9 @@ export function IssueQuicklookCard({
   linkState?: unknown;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
+  const statusLabel = issue.status.replace(/_/g, " ");
 
   return (
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
@@ -56,7 +59,7 @@ export function IssueQuicklookCard({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
         <span>&middot;</span>
-        <span>{issue.status.replace(/_/g, " ")}</span>
+        <span>{t(`issueLinkQuicklook.status.${issue.status}`, { defaultValue: statusLabel })}</span>
         <span>&middot;</span>
         <span>{timeAgo(new Date(issue.updatedAt))}</span>
       </div>
@@ -99,6 +102,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   },
   ref,
 ) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const prefetchedState = issuePrefetch ? withIssueDetailHeaderSeed(state, issuePrefetch) : state;
@@ -182,7 +186,9 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load issue preview.</p>
+              <p className="text-xs text-muted-foreground">
+                {t("issueLinkQuicklook.unableToLoad", { defaultValue: "Unable to load issue preview." })}
+              </p>
             ) : null}
           </div>
         )}

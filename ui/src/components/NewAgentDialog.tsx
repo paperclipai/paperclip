@@ -27,6 +27,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
+import { useTranslation } from "@/i18n";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -41,6 +42,7 @@ function isAgentAdapterType(type: string): boolean {
 }
 
 export function NewAgentDialog() {
+  const { t } = useTranslation();
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
@@ -119,8 +121,8 @@ export function NewAgentDialog() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      title: t("newAgentDialog.ceoIssueTitle", { defaultValue: "Create a new agent" }),
+      description: t("newAgentDialog.ceoIssueDescription", { defaultValue: "(type in what kind of agent you want here)" }),
     });
   }
 
@@ -232,7 +234,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{t("newAgentDialog.title", { defaultValue: "Add a new agent" })}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -255,28 +257,36 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
+                  {t("newAgentDialog.recommendCEO", {
+                    defaultValue:
+                      "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent.",
+                  })}
                 </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {t("newAgentDialog.askCEO", { defaultValue: "Ask the CEO to create a new agent" })}
               </Button>
 
               <div className="grid gap-2">
                 <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
                   <Settings2 className="h-4 w-4 mr-2" />
-                  Configure a runtime manually
+                  {t("newAgentDialog.configureRuntimeManually", {
+                    defaultValue: "Configure a runtime manually",
+                  })}
                 </Button>
                 <div className="space-y-1">
                   <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
                     <MailPlus className="h-4 w-4 mr-2" />
-                    Invite an external agent
+                    {t("newAgentDialog.inviteExternalAgent", {
+                      defaultValue: "Invite an external agent",
+                    })}
                   </Button>
                   <p className="text-xs text-muted-foreground text-center">
-                    (OpenClaw, Hermes, or any agent that can call the invite API.)
+                    {t("newAgentDialog.inviteExternalAgentHelp", {
+                      defaultValue: "(OpenClaw, Hermes, or any agent that can call the invite API.)",
+                    })}
                   </p>
                 </div>
               </div>
@@ -289,10 +299,12 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("newAgentDialog.back", { defaultValue: "Back" })}
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose the runtime Paperclip should start or resume directly.
+                  {t("newAgentDialog.chooseAdapter", {
+                    defaultValue: "Choose the runtime Paperclip should start or resume directly.",
+                  })}
                 </p>
               </div>
 
@@ -312,7 +324,7 @@ export function NewAgentDialog() {
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                        Recommended
+                        {t("newAgentDialog.recommended", { defaultValue: "Recommended" })}
                       </span>
                     )}
                     <opt.icon className="h-4 w-4" />

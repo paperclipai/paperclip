@@ -1,9 +1,3197 @@
 {
+  "pathPicker": {
+    "choose": "Seç",
+    "title": "Yolu manuel olarak belirt",
+    "description": "Tarayıcı güvenliği uygulamaların dosya seçici ile tam yerel yolları okumasını engelliyor. Mutlak yolu kopyala ve girişe yapıştır.",
+    "macHeading": "macOS (Finder)",
+    "macStep1": "Klasörü Finder'da bul.",
+    "macStep2": "Option tuşunu basılı tut ve klasöre sağ tıkla.",
+    "macStep3": "\"<klasör adı> Yolu Olarak Kopyala\" tıkla.",
+    "macStep4": "Sonucu yol kutusuna yapıştır.",
+    "winHeading": "Windows (Dosya Gezgini)",
+    "winStep1": "Klasörü Dosya Gezgini'nde bul.",
+    "winStep2": "Shift tuşunu basılı tut ve klasöre sağ tıkla.",
+    "winStep3": "\"Yol olarak kopyala\" tıkla.",
+    "winStep4": "Sonucu yol kutusuna yapıştır.",
+    "terminalHeading": "Terminal alternatifi (macOS/Linux)",
+    "terminalStep1": "cd /klasör/yolu komutunu çalıştır.",
+    "terminalStep2": "pwd komutunu çalıştır.",
+    "terminalStep3": "Çıktıyı kopyala ve yol kutusuna yapıştır.",
+    "ok": "Tamam"
+  },
+  "approvalPayload": {
+    "skills": "Yetenekler",
+    "capabilities": "Yetenekler",
+    "adapter": "Adaptör",
+    "title": "Başlık",
+    "summary": "Özet",
+    "recommendedAction": "Önerilen eylem",
+    "onApproval": "Onay üzerine",
+    "risks": "Riskler"
+  },
+  "secretPicker": {
+    "version": "Sürüm",
+    "createSecret": "Sır oluştur",
+    "createNew": "Yeni sır oluştur",
+    "pasteValue": "Sır değerini yapıştır",
+    "value": "Değer",
+    "description": "Açıklama",
+    "notesPlaceholder": "İsteğe bağlı notlar (değer içermez)"
+  },
+  "envVar": {
+    "plain": "Düz",
+    "secret": "Sır",
+    "selectSecret": "Sır seç...",
+    "createFromPlain": "Mevcut düz değerden sır oluştur",
+    "storeAsSecret": "Değeri sır olarak sakla ve referans ile değiştir"
+  },
+  "profileSettings": {
+    "loading": "Profil yükleniyor...",
+    "title": "Profil",
+    "displayName": "Görünen ad"
+  },
+  "docDiff": {
+    "selectRevision": "Sürüm seç",
+    "old": "Eski",
+    "new": "Yeni",
+    "content": "İçerik",
+    "loadingRevisions": "Sürümler yükleniyor...",
+    "selectTwo": "Karşılaştırmak için iki sürüm seçin.",
+    "sameRevision": "İki taraf aynı sürüm."
+  },
+  "routineRun": {
+    "title": "Rutini çalıştır",
+    "agent": "Ajan",
+    "selectAgent": "Bir ajan seçin",
+    "project": "Proje",
+    "noProject": "Proje yok",
+    "noValue": "Değer yok",
+    "false": "Hayır",
+    "chooseValue": "Bir değer seçin",
+    "defaultAgentRequired": "Bu çalışma için varsayılan ajan gerekli."
+  },
+  "workspaceClose": {
+    "retryClose": "Kapatmayı tekrar dene",
+    "closeWorkspace": "Çalışma alanını kapat",
+    "closeRetried": "Çalışma alanı kapatma yeniden denendi",
+    "closed": "Çalışma alanı kapatıldı",
+    "failed": "Çalışma alanı kapatılamadı",
+    "unknownError": "Bilinmeyen hata",
+    "description": "{{name}} arşivle ve sahip olduğu çalışma alanı varlıklarını temizle. Paperclip çalışma alanı kaydını ve görev geçmişini korur ama aktif çalışma alanı görünümlerinden kaldırır.",
+    "checking": "Bu çalışma alanının güvenle kapatılıp kapatılamayacağı kontrol ediliyor...",
+    "inspectFailed": "Çalışma alanı kapatma durumu incelenemedi.",
+    "blocked": "Kapatma engellenmiş",
+    "allowedWithWarnings": "Kapatma uyarılarla izinli",
+    "ready": "Kapatmaya hazır",
+    "blockingIssues": "Engelleyici görevler",
+    "blockingReasons": "Engelleme sebepleri",
+    "warnings": "Uyarılar",
+    "gitStatus": "Git durumu",
+    "otherLinkedIssues": "Diğer bağlı görevler",
+    "attachedServices": "Bağlı çalışma zamanı servisleri",
+    "cleanupActions": "Temizleme işlemleri",
+    "cleanupFailedBefore": "Bu çalışma alanında temizleme daha önce başarısız oldu. Kapatmayı tekrar denemek temizleme akışını yeniden çalıştırır ve başarılı olursa durumu günceller.",
+    "alreadyArchived": "Bu çalışma alanı zaten arşivlenmiş.",
+    "lastChecked": "Son kontrol {{when}}"
+  },
+  "routineVars": {
+    "variables": "Değişkenler",
+    "label": "Etiket",
+    "defaultValue": "Varsayılan değer",
+    "noDefault": "Varsayılan yok",
+    "options": "Seçenekler",
+    "defaultOption": "Varsayılan seçenek",
+    "showHelp": "Değişken yardımını göster",
+    "title": "Rutin değişkenleri",
+    "placeholder": "Yer tutucu",
+    "example": "Örnek",
+    "description": "Açıklama"
+  },
+  "filtersPopover": {
+    "title": "Filtreler",
+    "quickFilters": "Hızlı filtreler",
+    "status": "Durum",
+    "priority": "Öncelik",
+    "assignee": "Atanan",
+    "creator": "Oluşturan",
+    "searchCreators": "Oluşturan ara...",
+    "noCreatorsMatch": "Eşleşen oluşturan yok.",
+    "project": "Proje",
+    "labels": "Etiketler",
+    "workspace": "Çalışma alanı",
+    "visibility": "Görünürlük",
+    "liveRunsOnly": "Yalnızca canlı çalışmalar",
+    "hideRoutineRuns": "Rutin çalışmaları gizle"
+  },
+  "documents": {
+    "newDocument": "Yeni belge",
+    "documents": "Belgeler",
+    "documentKey": "Belge anahtarı",
+    "optionalTitle": "İsteğe bağlı başlık",
+    "markdownBody": "Markdown gövdesi",
+    "revisionHistory": "Sürüm geçmişi",
+    "loadingRevisions": "Sürümler yükleniyor...",
+    "noRevisions": "Henüz sürüm yok",
+    "lockedDocument": "Kilitli belge",
+    "documentActions": "Belge işlemleri",
+    "outOfDate": "Güncel değil"
+  },
+  "agentConfig": {
+    "unsavedChanges": "Kaydedilmemiş değişiklikler",
+    "identity": "Kimlik",
+    "execution": "Yürütme",
+    "adapter": "Adaptör",
+    "primaryModel": "Birincil model",
+    "cheapModel": "Ucuz model",
+    "useManualModel": "Manuel model kullan",
+    "advancedRunPolicy": "Gelişmiş Çalıştırma Politikası",
+    "comingSoon": "Yakında",
+    "agentNamePlaceholder": "Ajan adı",
+    "descriptionPlaceholder": "Bu ajanın neler yapabileceğini açıkla...",
+    "promptTemplatePlaceholder": "Sen {{ agent.name }} ajanısın. Rolün {{ agent.role }}...",
+    "initialPromptPlaceholder": "İlk çalışma için isteğe bağlı başlangıç istemi"
+  },
+  "invite": {
+    "aCompanyAdmin": "Bir şirket yöneticisi",
+    "requestToJoin": "{{name}} şirketine katılma isteği",
+    "awaitingApproval": "İsteğiniz hâlâ onay bekliyor. {{label}} katılma isteğinizi onaylamalı.",
+    "approvalPage": "Onay sayfası",
+    "companySettingsMembers": "Şirket Ayarları → Üyeler",
+    "askVisit": "Onlardan",
+    "toApprove": "adresini ziyaret edip isteğinizi onaylamasını isteyin.",
+    "refreshAfterApproval": "Onaylandıktan sonra bu sayfayı yenileyin — otomatik olarak yönlendirileceksiniz.",
+    "claimSecret": "Talep gizliliği",
+    "onboarding": "Tanıtım",
+    "invalidToken": "Geçersiz davet jetonu.",
+    "loading": "Davet yükleniyor...",
+    "checkingAccess": "Erişiminiz kontrol ediliyor...",
+    "notAvailable": "Davet kullanılamıyor",
+    "openingCompany": "Şirket açılıyor...",
+    "bootstrapComplete": "Önyükleme tamamlandı",
+    "openBoard": "Paneli aç",
+    "joinedCompany": "Şirkete katıldınız",
+    "company": "Şirket",
+    "invitedBy": "Davet eden",
+    "requestedAccess": "Talep edilen erişim",
+    "expires": "Davet bitiş tarihi",
+    "messageFromInviter": "Davet edenden mesaj",
+    "submitAgentDetails": "Ajan detaylarını gönder",
+    "agentName": "Ajan adı",
+    "adapterType": "Adaptör türü",
+    "capabilities": "Yetenekler",
+    "email": "E-posta",
+    "password": "Şifre"
+  },
+  "chat": {
+    "fallbackTitle": "Sohbet oluşturucu bir iç durum hatasına çarptı.",
+    "fallbackDescription": "Görev sayfasını çökertmek yerine güvenli yedek bir transkript gösteriliyor.",
+    "noMessageContent": "Mesaj içeriği yok.",
+    "copy": "Kopyala",
+    "copyMessage": "Mesajı kopyala",
+    "moreActions": "Diğer işlemler",
+    "helpful": "Yararlı",
+    "needsWork": "Geliştirilmeli",
+    "noDetails": "Ek detay yok.",
+    "copyLink": "Bağlantıyı kopyala",
+    "copyLinkToNotice": "Sistem bildirimine bağlantıyı kopyala",
+    "copyNoticeText": "Bildirim metnini kopyala",
+    "copyNotice": "Sistem bildirimini kopyala",
+    "dropToUpload": "Yüklemek için bırakın",
+    "reply": "Yanıtla",
+    "attachFile": "Dosya ekle",
+    "moreComposerOptions": "Diğer yazma seçenekleri",
+    "planningModeOn": "Bu gönderi için planlama modu açık. Standart'a geçmek için tıklayın.",
+    "planning": "Planlama",
+    "assignee": "Atanan",
+    "posting": "Gönderiliyor...",
+    "send": "Gönder",
+    "feedback": {
+      "prompt": "Daha iyi ne olabilirdi?",
+      "shortNote": "Kısa bir not ekleyin",
+      "savePref": "Geri bildirim paylaşım tercihinizi kaydedin",
+      "savedLocally": "Bu oy her zaman yerel olarak kaydedilir.",
+      "chooseAlways": "Gelecekteki oyları Paperclip ile paylaşmak için \"Her zaman izin ver\"i seçin.",
+      "dontAllow": "Bu oyu yerel tutmak için \"İzin verme\"yi seçin."
+    }
+  },
   "app": {
+    "loading": "Yükleniyor...",
     "noCompanies": {
       "title": "İlk şirketinizi oluşturun",
       "description": "Bir şirket oluşturarak başlayın.",
       "newCompany": "Yeni Şirket"
+    },
+    "onboarding": {
+      "addAgentTitle": "{{name}} şirketine yeni bir ajan ekleyin",
+      "createAnotherCompanyTitle": "Yeni bir şirket oluşturun",
+      "createFirstCompanyTitle": "İlk şirketinizi oluşturun",
+      "addAgentDescription": "Bu şirkete bir ajan ve başlangıç görevi eklemek için kurulumu tekrar çalıştırın.",
+      "createAnotherCompanyDescription": "Yeni bir şirket oluşturmak ve ilk ajanını hazırlamak için kurulumu tekrar çalıştırın.",
+      "createFirstCompanyDescription": "Bir şirket ve ilk ajanınızı oluşturarak başlayın.",
+      "addAgentButton": "Ajan Ekle",
+      "startButton": "Kuruluma Başla"
+    },
+    "settings": {
+      "language": {
+        "label": "Dil",
+        "description": "Panel arayüzünün dilini seçin."
+      }
     }
+  },
+  "sidebar": {
+    "openSearch": "Arama aç",
+    "newIssue": "Yeni Görev",
+    "dashboard": "Panel",
+    "inbox": "Gelen Kutusu",
+    "work": "İş",
+    "issues": "Görevler",
+    "routines": "Rutinler",
+    "goals": "Hedefler",
+    "workspaces": "Çalışma Alanları",
+    "company": "Şirket",
+    "org": "Organizasyon",
+    "skills": "Yetenekler",
+    "costs": "Maliyetler",
+    "activity": "Etkinlik",
+    "settings": "Ayarlar",
+    "agents": "Ajanlar",
+    "newAgent": "Yeni ajan",
+    "browseAgents": "Ajanlara göz at",
+    "agentsSectionActions": "Ajanlar bölüm işlemleri",
+    "agentsSort": {
+      "label": "Ajan sıralama",
+      "top": "Üst",
+      "alphabetical": "Alfabetik",
+      "recent": "Son"
+    },
+    "agentResume": "Ajanı sürdür",
+    "agentPause": "Ajanı duraklat",
+    "agentUpdating": "Güncelleniyor...",
+    "agentBudgetPaused": "Bütçe ile duraklatıldı",
+    "agentLiveCount": "{{count}} canlı",
+    "agentPausedByBudget": "Ajan bütçe nedeniyle duraklatıldı",
+    "agentPausedByBudgetTitle": "Ajan bütçe limitleri nedeniyle duraklatıldı",
+    "openAgentActions": "{{name}} için işlemleri aç",
+    "editAgent": "Ajanı düzenle",
+    "liveCount": "{{count}} canlı",
+    "projects": "Projeler",
+    "newProject": "Yeni proje",
+    "browseProjects": "Projelere göz at",
+    "projectsSectionActions": "Projeler bölüm işlemleri",
+    "projectsSort": {
+      "label": "Proje sıralama",
+      "top": "Üst",
+      "alphabetical": "Alfabetik",
+      "recent": "Son"
+    },
+    "projectPausedByBudget": "Proje bütçe nedeniyle duraklatıldı",
+    "sectionActions": "{{label}} işlemleri",
+    "collapseSection": "{{label}} bölümünü daralt",
+    "expandSection": "{{label}} bölümünü genişlet",
+    "toast": {
+      "agentPaused": "Ajan duraklatıldı",
+      "agentResumed": "Ajan sürdürüldü",
+      "agentPauseFailed": "Ajan duraklatılamadı",
+      "agentResumeFailed": "Ajan sürdürülemedi"
+    }
+  },
+  "breadcrumb": {
+    "openSidebar": "Yan menüyü aç"
+  },
+  "layout": {
+    "closeSidebar": "Yan menüyü kapat"
+  },
+  "companySwitcher": {
+    "select": "Şirket seç",
+    "companies": "Şirketler",
+    "empty": "Şirket yok",
+    "companySettings": "Şirket Ayarları",
+    "manageCompanies": "Şirketleri Yönet"
+  },
+  "companyMenu": {
+    "reorder": "{{name}} sırasını değiştir",
+    "openSwitcher": "Çalışma alanı seçiciyi aç",
+    "openSwitcherFor": "{{name}} çalışma alanı seçiciyi aç",
+    "selectWorkspace": "Çalışma alanı seç",
+    "switchWorkspace": "Çalışma alanı değiştir",
+    "edit": "Düzenle",
+    "done": "Bitti",
+    "empty": "Çalışma alanı yok",
+    "addCompany": "Şirket ekle...",
+    "invitePeople": "Kişi davet et",
+    "invitePeopleTo": "{{name}} şirketine kişi davet et",
+    "companySettings": "Şirket ayarları",
+    "signOut": "Çıkış yap",
+    "signingOut": "Çıkış yapılıyor..."
+  },
+  "account": {
+    "boardName": "Yönetim",
+    "signedIn": "Giriş yapıldı",
+    "localBoard": "Yerel çalışma alanı paneli",
+    "badgeAccount": "Hesap",
+    "badgeLocal": "Yerel",
+    "openMenu": "Hesap menüsünü aç",
+    "version": "Paperclip v{{version}}",
+    "viewProfile": "Profili görüntüle",
+    "viewProfileDescription": "Etkinlik, görev ve kullanım kayıtlarınızı açar.",
+    "editProfile": "Profili düzenle",
+    "editProfileDescription": "Görünen adınızı ve avatarınızı güncelleyin.",
+    "instanceSettings": "Sistem ayarları",
+    "instanceSettingsDescription": "Açtığınız son ayarlar sayfasına geri dönün.",
+    "documentation": "Belgeler",
+    "documentationDescription": "Paperclip belgelerini yeni sekmede aç.",
+    "switchToLight": "Açık moda geç",
+    "switchToDark": "Koyu moda geç",
+    "toggleTheme": "Uygulama görünümünü değiştir.",
+    "signOut": "Çıkış yap",
+    "signingOut": "Çıkış yapılıyor...",
+    "signOutDescription": "Bu tarayıcı oturumunu sonlandır."
+  },
+  "dashboard": {
+    "welcomeMessage": "Paperclip'e hoş geldiniz. Başlamak için ilk şirketinizi ve ajanınızı kurun.",
+    "getStarted": "Başla",
+    "selectCompany": "Paneli görüntülemek için bir şirket oluşturun veya seçin.",
+    "noAgents": "Hiç ajanınız yok.",
+    "createOne": "Buradan oluştur",
+    "budgetIncidents": "{{count}} aktif bütçe olayı",
+    "budgetSummary": "{{paused}} ajan duraklatıldı · {{projects}} proje duraklatıldı · {{pending}} bekleyen bütçe onayı",
+    "openBudgets": "Bütçeleri aç",
+    "agentsEnabled": "Aktif Ajanlar",
+    "agentsSummary": "{{running}} çalışıyor, {{paused}} duraklatıldı, {{errors}} hata",
+    "tasksInProgress": "Süren Görevler",
+    "tasksSummary": "{{open}} açık, {{blocked}} engelli",
+    "monthSpend": "Aylık Harcama",
+    "monthBudget": "{{budget}} bütçesinin %{{percent}}'i",
+    "unlimitedBudget": "Sınırsız bütçe",
+    "pendingApprovals": "Bekleyen Onaylar",
+    "budgetOverrides": "{{count}} bütçe aşımı yönetim incelemesi bekliyor",
+    "awaitingBoardReview": "Yönetim incelemesi bekleniyor",
+    "charts": {
+      "runActivity": "Çalışma Etkinliği",
+      "issuesByPriority": "Önceliğe Göre Görevler",
+      "issuesByStatus": "Duruma Göre Görevler",
+      "successRate": "Başarı Oranı",
+      "last14Days": "Son 14 gün"
+    },
+    "recentActivity": "Son Etkinlikler",
+    "recentTasks": "Son Görevler",
+    "noTasksYet": "Henüz görev yok."
+  },
+  "issues": {
+    "selectCompany": "Görevleri görüntülemek için bir şirket seçin."
+  },
+  "goals": {
+    "selectCompany": "Hedefleri görüntülemek için bir şirket seçin.",
+    "empty": "Henüz hedef yok.",
+    "addGoal": "Hedef Ekle",
+    "newGoal": "Yeni Hedef"
+  },
+  "projects": {
+    "selectCompany": "Projeleri görüntülemek için bir şirket seçin.",
+    "empty": "Henüz proje yok.",
+    "addProject": "Proje Ekle"
+  },
+  "approvals": {
+    "title": "Onaylar",
+    "selectCompany": "Önce bir şirket seçin.",
+    "errorApprove": "Onaylanamadı",
+    "errorReject": "Reddedilemedi",
+    "pending": "Bekleyen",
+    "all": "Tümü",
+    "noPending": "Bekleyen onay yok.",
+    "empty": "Henüz onay yok."
+  },
+  "activity": {
+    "selectCompany": "Etkinlikleri görüntülemek için bir şirket seçin.",
+    "empty": "Henüz etkinlik yok.",
+    "filterByType": "Türe göre filtrele",
+    "allTypes": "Tüm türler"
+  },
+  "agents": {
+    "selectCompany": "Ajanları görüntülemek için bir şirket seçin.",
+    "tabs": {
+      "all": "Tümü",
+      "active": "Aktif",
+      "paused": "Duraklatıldı",
+      "error": "Hata"
+    },
+    "filters": "Filtreler",
+    "showTerminated": "Sonlandırılanları göster",
+    "newAgent": "Yeni Ajan",
+    "countAgents": "{{count}} ajan",
+    "empty": "Başlamak için ilk ajanınızı oluşturun.",
+    "noFilterMatch": "Seçili filtreye uyan ajan yok.",
+    "noOrg": "Tanımlı bir organizasyon hiyerarşisi yok.",
+    "live": "Canlı",
+    "liveWithCount": "Canlı ({{count}})"
+  },
+  "onboarding": {
+    "defaultTaskTitle": "İlk mühendisini işe al ve bir işe alım planı oluştur",
+    "errorCompany": "Şirket oluşturulamadı",
+    "errorAgent": "Ajan oluşturulamadı",
+    "errorTask": "Görev oluşturulamadı",
+    "tabs": {
+      "company": "Şirket",
+      "agent": "Ajan",
+      "task": "Görev",
+      "launch": "Başlat"
+    },
+    "close": "Kapat",
+    "back": "Geri",
+    "next": "İleri",
+    "creating": "Oluşturuluyor...",
+    "createAndOpen": "Oluştur ve Görevi Aç",
+    "passed": "Geçti",
+    "manualDebug": "Manuel hata ayıklama",
+    "searchModels": "Model ara...",
+    "hint": "İpucu",
+    "shared": {
+      "recommended": "Önerilen",
+      "optional": "İsteğe bağlı",
+      "required": "Zorunlu",
+      "comingSoon": "Yakında"
+    },
+    "errors": {
+      "createOrSelectCompany": "Adaptör ortamını test etmeden önce bir şirket oluşturun veya seçin.",
+      "envTestFailed": "Adaptör ortam testi başarısız oldu",
+      "openCodeModel": "OpenCode, provider/model biçiminde açık bir model gerektirir.",
+      "anthropicRetryFailed": "Adaptör yapılandırmasında ANTHROPIC_API_KEY temizlenerek yeniden denendi, ancak ortam testi hâlâ başarısız.",
+      "unsetAnthropicFailed": "ANTHROPIC_API_KEY temizlenip yeniden denenemedi."
+    },
+    "envStatus": {
+      "passed": "Geçti",
+      "warnings": "Uyarılar",
+      "failed": "Başarısız"
+    },
+    "step1": {
+      "title": "Şirketinize ad verin",
+      "subtitle": "Bu, ajanlarınızın çalışacağı kuruluş.",
+      "companyNameLabel": "Şirket adı",
+      "goalLabel": "Misyon / hedef (isteğe bağlı)",
+      "namePlaceholder": "Acme Şirketi",
+      "goalPlaceholder": "Bu şirket ne başarmaya çalışıyor?"
+    },
+    "step2": {
+      "title": "İlk ajanınızı oluşturun",
+      "subtitle": "Bu ajanın görevleri nasıl çalıştıracağını seçin.",
+      "agentNameLabel": "Ajan adı",
+      "agentNamePlaceholder": "CEO",
+      "adapterTypeLabel": "Adaptör türü",
+      "moreAdapters": "Daha Fazla Ajan Adaptör Türü",
+      "modelLabel": "Model",
+      "selectModelRequired": "Model seçin (zorunlu)",
+      "modelDefault": "Varsayılan",
+      "noModelsDiscovered": "Model bulunamadı.",
+      "envCheckTitle": "Adaptör ortam kontrolü",
+      "envCheckSubtitle": "Adaptör CLI'sından hello yanıtı isteyen canlı bir test çalıştırır.",
+      "testing": "Test ediliyor...",
+      "testNow": "Şimdi test et",
+      "anthropicKeyWarningPrefix": "Claude, ",
+      "anthropicKeyWarningSuffix": " ayarlıyken başarısız oldu. Bunu bu CEO adaptör yapılandırmasında temizleyip testi yeniden çalıştırabilirsiniz.",
+      "retrying": "Yeniden deneniyor...",
+      "unsetAnthropicKey": "ANTHROPIC_API_KEY'i temizle",
+      "prompt": "İstem:",
+      "authHintPrefix": "Kimlik doğrulama başarısız olursa, ortamda ",
+      "authHintInfix": " ayarlayın veya ",
+      "authHintSuffix": " komutunu çalıştırın.",
+      "claudeLoginHintPrefix": "Giriş gerekiyorsa, ",
+      "claudeLoginHintSuffix": " komutunu çalıştırın ve yeniden deneyin.",
+      "gatewayUrl": "Gateway URL",
+      "webhookUrl": "Webhook URL"
+    },
+    "step3": {
+      "title": "Yapacak bir şey verin",
+      "subtitle": "Ajana başlangıç için küçük bir görev verin — bir hata düzeltmesi, bir araştırma sorusu veya bir betik yazmak.",
+      "taskTitleLabel": "Görev başlığı",
+      "descriptionLabel": "Açıklama (isteğe bağlı)",
+      "taskTitlePlaceholder": "ör. Rakip fiyatlandırmasını araştır",
+      "taskDescPlaceholder": "Ajanın ne yapması gerektiği hakkında daha fazla ayrıntı ekle..."
+    },
+    "step4": {
+      "title": "Başlamaya hazır",
+      "subtitle": "Her şey hazır. Şimdi başlatmak başlangıç görevini oluşturacak, ajanı uyandıracak ve görevi açacak.",
+      "companyLabel": "Şirket",
+      "taskLabel": "Görev"
+    }
+  },
+  "newIssueDialog": {
+    "titlePlaceholder": "Görev başlığı",
+    "descriptionPlaceholder": "Açıklama ekle...",
+    "noCompanyError": "Şirket seçilmedi",
+    "assignee": "Atanan",
+    "project": "Proje",
+    "reviewer": "İnceleyen",
+    "approver": "Onaylayan",
+    "executionWorkspace": "Yürütme çalışma alanı",
+    "chooseWorkspace": "Mevcut bir çalışma alanı seç",
+    "modelLane": "Model şeridi",
+    "runsOnPrimaryModel": "Ajanın birincil modelinde çalışır.",
+    "overrideModelEffort": "Yalnızca bu görev için modeli ve eforu geçersiz kıl.",
+    "model": "Model",
+    "defaultModel": "Varsayılan model",
+    "thinkingEffort": "Düşünme eforu",
+    "documents": "Belgeler",
+    "attachments": "Ekler",
+    "assigneeBacklogNote": "Atama yürütülebilir niyeti ima eder — sadece bilinçli olarak beklemeye almak için durumu Beklemede bırakın. Durum Yapılacak veya Devam Ediyor olarak değişene kadar atanan kişi uyandırılmayacak.",
+    "discardDraft": "Taslağı Sil",
+    "creatingIssue": "Görev oluşturuluyor...",
+    "creating": "Oluşturuluyor...",
+    "createSubIssue": "Alt Görev Oluştur",
+    "createIssue": "Görev Oluştur",
+    "addReviewerOrApprover": "İnceleyici veya onaylayan ekle",
+    "subIssueOf": "Alt görevi:",
+    "removeDocument": "Dokümanı kaldır",
+    "removeAttachment": "Eki kaldır",
+    "startDate": "Başlangıç tarihi",
+    "dueDate": "Bitiş tarihi",
+    "status": {
+      "backlog": "Beklemede",
+      "backlogDesc": "Park edildi — atanan uyandırılmayacak",
+      "todo": "Yapılacak",
+      "todoDesc": "Yürütülebilir — atanan uyandırılacak",
+      "inProgress": "Devam Ediyor",
+      "inReview": "İncelemede",
+      "done": "Bitti"
+    },
+    "priority": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük"
+    },
+    "workspaceMode": {
+      "shared": "Proje varsayılanı",
+      "isolated": "Yeni izole çalışma alanı",
+      "reuse": "Mevcut çalışma alanını kullan"
+    }
+  },
+  "newAgentDialog": {
+    "title": "Yeni ajan ekle",
+    "ceoIssueTitle": "Yeni bir ajan oluştur",
+    "ceoIssueDescription": "(ne tür bir ajan istediğinizi buraya yazın)",
+    "recommendCEO": "Bir yöneticiden işe alımı önermesini isteyin, bir çalışma zamanını kendiniz yapılandırın veya harici bir ajana onboarding istemi gönderin.",
+    "askCEO": "CEO'dan yeni bir ajan oluşturmasını isteyin",
+    "advancedLink": "Gelişmiş yapılandırmayı kendim yapmak istiyorum",
+    "configureRuntimeManually": "Çalışma zamanını manuel yapılandır",
+    "inviteExternalAgent": "Harici bir ajan davet et",
+    "inviteExternalAgentHelp": "(OpenClaw, Hermes veya davet API'sini çağırabilen herhangi bir ajan.)",
+    "back": "Geri",
+    "chooseAdapter": "Paperclip'in doğrudan başlatması veya devam ettirmesi gereken çalışma zamanını seçin.",
+    "recommended": "Önerilen"
+  },
+  "newAgent": {
+    "ceo": "CEO",
+    "errorCreate": "Ajan oluşturulamadı",
+    "openCodeModelError": "OpenCode için provider/model biçiminde açık bir model belirtilmelidir.",
+    "title": "Yeni Ajan",
+    "subtitle": "Gelişmiş ajan yapılandırması",
+    "namePlaceholder": "Ajan adı",
+    "titlePlaceholder": "Unvan (örn. Mühendislik Başkan Yardımcısı)",
+    "companySkills": "Şirket yetenekleri",
+    "companySkillsHint": "Şirket kütüphanesinden isteğe bağlı yetenekler. Yerleşik Paperclip çalışma zamanı yetenekleri otomatik olarak eklenir.",
+    "noOptionalSkills": "Henüz yüklü isteğe bağlı şirket yeteneği yok.",
+    "willBeCeo": "Bu ajan CEO olacak",
+    "cancel": "İptal",
+    "testing": "Test ediliyor...",
+    "testAgent": "Ajanı Test Et",
+    "creating": "Oluşturuluyor…",
+    "createAgent": "Ajan oluştur"
+  },
+  "newGoalDialog": {
+    "noCompanyError": "Şirket seçilmedi",
+    "newSubGoal": "Yeni alt hedef",
+    "newGoal": "Yeni hedef",
+    "titlePlaceholder": "Hedef başlığı",
+    "descriptionPlaceholder": "Açıklama ekle...",
+    "parentGoal": "Üst hedef",
+    "noParent": "Üst hedef yok",
+    "creating": "Oluşturuluyor…",
+    "createSubGoal": "Alt hedef oluştur",
+    "createGoal": "Hedef oluştur",
+    "level": {
+      "company": "Şirket",
+      "team": "Takım",
+      "agent": "Ajan",
+      "task": "Görev"
+    }
+  },
+  "newProjectDialog": {
+    "title": "Yeni proje",
+    "namePlaceholder": "Proje adı",
+    "descriptionPlaceholder": "Açıklama ekle...",
+    "repoUrl": "Depo URL'si",
+    "repoUrlHelp": "Ajanların bu proje için kod klonlayıp okuyup gönderebilmesi için bir GitHub deposu bağlayın.",
+    "localFolder": "Yerel klasör",
+    "localFolderHelp": "Yerel ajanların bu proje için dosya okuyup yazabilmesi için bu makinedeki mutlak bir yol belirleyin.",
+    "localFolderPlaceholder": "/mutlak/yol/calisma-alani",
+    "optional": "isteğe bağlı",
+    "addGoal": "+ Hedef",
+    "goal": "Hedef",
+    "noGoal": "Hedef yok",
+    "allGoalsSelected": "Tüm hedefler zaten seçili.",
+    "removeGoal": "{{name}} hedefini kaldır",
+    "targetDate": "Hedef tarih",
+    "createError": "Proje oluşturulamadı.",
+    "creating": "Oluşturuluyor…",
+    "create": "Proje oluştur",
+    "status": {
+      "backlog": "Beklemede",
+      "planned": "Planlandı",
+      "inProgress": "Devam Ediyor",
+      "completed": "Tamamlandı",
+      "cancelled": "İptal Edildi"
+    }
+  },
+  "companies": {
+    "title": "Şirketler",
+    "newCompany": "Yeni Şirket",
+    "loading": "Şirketler yükleniyor...",
+    "rename": "Yeniden adlandır",
+    "deleteCompany": "Şirketi Sil",
+    "agentCount": "{{count}} ajan",
+    "issueCount": "{{count}} görev",
+    "unlimitedBudget": "Sınırsız bütçe",
+    "createdAt": "{{when}} oluşturuldu",
+    "deleteConfirm": "Bu şirketi ve tüm verilerini silmek istediğinize emin misiniz? Bu işlem geri alınamaz.",
+    "cancel": "İptal",
+    "delete": "Sil",
+    "deleting": "Siliniyor…"
+  },
+  "toast": {
+    "dismiss": "Bildirimi kapat"
+  },
+  "issueRow": {
+    "productivityReviewOpen": "Verimlilik incelemesi açık",
+    "blockedByParked": "Park edilmiş işe takılı — atanmış engelleyicilerden en az biri beklemede ve atananını uyandırmıyor."
+  },
+  "kanban": {
+    "nextStep": "Sonraki adım"
+  },
+  "pathInstructions": {
+    "title": "Tam yol nasıl alınır",
+    "description": "Mutlak yolu yapıştırın (ör.",
+    "descriptionEnd": ") giriş alanına.",
+    "choose": "Seç"
+  },
+  "scrollToBottom": {
+    "aria": "En alta kaydır"
+  },
+  "resizableSidebar": {
+    "aria": "Yan menüyü yeniden boyutlandır"
+  },
+  "issueBlocked": {
+    "needsNextStep": "Bu görev hâlâ sonraki adıma ihtiyaç duyuyor.",
+    "markDone": "Bitti veya iptal edildi olarak işaretle.",
+    "sendReview": "İncelemeye gönder veya girdi iste.",
+    "markBlocked": "Bir engelleyici sahibi ile engelli olarak işaretle.",
+    "delegate": "Takip işini başkasına ver veya bir devam kuyruğa al."
+  },
+  "issueBacklog": {
+    "theAssignee": "atanan",
+    "parked": "Park edildi",
+    "notWoken": "durum şuna değişene kadar uyandırılmayacak:",
+    "or": "veya",
+    "commentsStillWake": "Yorumlar atananı sorular veya iletim için uyandırmaya devam ediyor. Bunu yalnızca iş kasıtlı olarak beklemede olduğunda park edilmiş bırakın.",
+    "resuming": "Sürdürülüyor…",
+    "resumeNow": "Şimdi sürdür"
+  },
+  "projectProperties": {
+    "lead": "Lider",
+    "codebase": "Kod tabanı",
+    "codebaseHelp": "Kod tabanı yardımı",
+    "clearRepo": "Depoyu temizle",
+    "notSet": "Ayarlanmadı.",
+    "localFolder": "Yerel klasör",
+    "clearLocalFolder": "Yerel klasörü temizle",
+    "saveWorkspaceFailed": "Çalışma alanı kaydedilemedi.",
+    "deleteWorkspaceFailed": "Çalışma alanı silinemedi.",
+    "updateWorkspaceFailed": "Çalışma alanı güncellenemedi.",
+    "executionWorkspaces": "Yürütme Çalışma Alanları",
+    "executionWorkspacesHelp": "Yürütme çalışma alanları yardımı",
+    "enableIsolated": "İzole görev kontrollerini etkinleştir",
+    "newIssuesIsolated": "Yeni görevler varsayılan olarak izole kontrolde",
+    "managedFolder": "Paperclip-yönetimli klasör.",
+    "changeLocalFolder": "Yerel klasörü değiştir",
+    "setLocalFolder": "Yerel klasörü ayarla",
+    "hostManagedImpl": "Host tarafından yönetilen uygulama:",
+    "gitWorktree": "Git worktree",
+    "environment": "Ortam",
+    "noEnvironment": "Ortam yok",
+    "baseRef": "Temel ref",
+    "branchTemplate": "Dal şablonu",
+    "worktreeParentDir": "Worktree üst klasörü",
+    "provisionCommand": "Provision komutu",
+    "teardownCommand": "Teardown komutu"
+  },
+  "agentProperties": {
+    "status": "Durum",
+    "role": "Rol",
+    "title": "Unvan",
+    "adapter": "Adaptör",
+    "session": "Oturum",
+    "lastError": "Son hata",
+    "lastHeartbeat": "Son Kalp Atışı",
+    "reportsTo": "Bağlı Olduğu",
+    "created": "Oluşturuldu"
+  },
+  "goalProperties": {
+    "status": "Durum",
+    "level": "Seviye",
+    "owner": "Sahip",
+    "none": "Yok",
+    "parentGoal": "Üst Hedef",
+    "created": "Oluşturuldu",
+    "updated": "Güncellendi"
+  },
+  "issueProperties": {
+    "removeBlocker": "Engelleyici kaldırılsın mı?",
+    "cheapModel": "Ucuz model",
+    "primaryModel": "Birincil model",
+    "reason": "Sebep",
+    "nextAttempt": "Sonraki deneme",
+    "replacesRun": "Yerine geçen çalışma",
+    "agent": "Ajan",
+    "lastError": "Son hata",
+    "recheckPlaceholder": "Ajan neyi tekrar kontrol etmeli?",
+    "externalService": "Harici servis",
+    "noLabels": "Etiket yok",
+    "addLabel": "Etiket ekle",
+    "searchLabels": "Etiket ara...",
+    "newLabel": "Yeni etiket",
+    "unassigned": "Atanmamış",
+    "noProject": "Proje yok",
+    "searchProjects": "Proje ara...",
+    "noParent": "Üst görev yok",
+    "searchIssues": "Görev ara...",
+    "searchBlockers": "Engelleyici olarak eklenecek görev ara",
+    "noBlockers": "Engelleyici yok",
+    "searchingIssues": "Görevler aranıyor...",
+    "noMatchingIssues": "Eşleşen görev yok.",
+    "addBlocker": "Engelleyici ekle",
+    "clearAdapterOptions": "Adaptör seçeneklerini temizle",
+    "createdBy": "Oluşturan",
+    "user": "Kullanıcı",
+    "started": "Başladı",
+    "completed": "Tamamlandı",
+    "created": "Oluşturuldu",
+    "updated": "Güncellendi",
+    "service": "Servis",
+    "workspace": "Çalışma alanı",
+    "viewWorkspace": "Çalışma alanını görüntüle",
+    "branch": "Dal",
+    "folder": "Klasör",
+    "monitor": "İzleme",
+    "depth": "Derinlik",
+    "execution": "Yürütme",
+    "scheduledRetry": "Planlı tekrar deneme",
+    "nextCheck": "Sonraki kontrol {{when}}",
+    "cleared": "Temizlendi",
+    "lastTriggered": "Son tetiklenme {{when}}",
+    "notScheduled": "Planlanmadı"
+  },
+  "comments": {
+    "copied": "Kopyalandı",
+    "copyFailed": "Kopyalama başarısız",
+    "copy": "Kopyala",
+    "copyAsMarkdown": "Yorumu markdown olarak kopyala",
+    "noTimeline": "Henüz zaman çizelgesi girişi yok.",
+    "composePlaceholder": "Bir yorum bırak...",
+    "attachImage": "Görsel ekle",
+    "assignee": "Atanan",
+    "noAssignee": "Atanan yok",
+    "searchAssignees": "Atanan ara...",
+    "noAssigneesFound": "Atanan bulunamadı."
+  },
+  "agentActions": {
+    "runNow": "Şimdi çalıştır",
+    "resume": "Sürdür",
+    "pause": "Duraklat"
+  },
+  "iconPicker": {
+    "searchPlaceholder": "Simge ara...",
+    "noMatch": "Eşleşen simge yok"
+  },
+  "blockedInbox": {
+    "loadFailed": "Engelli sekmesi yüklenemedi.",
+    "otherWork": "Diğer Gelen Kutusu sekmeleri hâlâ çalışıyor.",
+    "trying": "Deneniyor…",
+    "tryAgain": "Tekrar dene",
+    "empty": "Durmuş iş yok.",
+    "emptyDescription": "Karar, kurtarma veya dış işlem gerektiren görevler burada görünecek."
+  },
+  "recovery": {
+    "recovery": "Kurtarma",
+    "board": "Yönetim",
+    "system": "Sistem",
+    "unassigned": "atanmamış — birini uyandırmak için seçin",
+    "resolveRecovery": "Kurtarmayı çöz",
+    "resolve": "Çöz…"
+  },
+  "issuesList": {
+    "searchPlaceholder": "Görev ara...",
+    "searchAria": "Görev ara",
+    "subIssueProgress": "Alt görev tamamlanma ilerlemesi",
+    "paused": "Duraklatıldı",
+    "needsNextStep": "Sonraki adım gerekli",
+    "needsNextStepTitle": "Bu görev sonraki adıma ihtiyaç duyuyor",
+    "searchAssignees": "Atanan ara...",
+    "subIssues": {
+      "none": "Aktif alt görev yok",
+      "allDone": "Tüm alt görevler tamamlandı",
+      "noneActionable": "Eyleme geçilebilir alt görev yok"
+    },
+    "view": {
+      "list": "Liste görünümü",
+      "board": "Pano görünümü"
+    },
+    "nestingDisable": "Üst-alt iç içe yerleşimi devre dışı bırak",
+    "nestingEnable": "Üst-alt iç içe yerleşimi etkinleştir",
+    "board": {
+      "cardsPerColumn": "Sütun başına kart",
+      "perColumn": "Sütun başına {{count}}",
+      "resetDensity": "Pano yoğunluğunu sıfırla"
+    },
+    "columnsTitle": "Hangi görev sütunlarının görünür kalacağını seç",
+    "sort": "Sırala",
+    "sortField": {
+      "workflow": "İş akışı",
+      "status": "Durum",
+      "priority": "Öncelik",
+      "title": "Başlık",
+      "created": "Oluşturulma",
+      "updated": "Güncellenme"
+    },
+    "group": "Grupla"
+  },
+  "approvalCard": {
+    "requestedBy": "Talep eden",
+    "created": "{{when}} onay isteği oluşturuldu",
+    "decisionNote": "Karar notu.",
+    "approving": "Onaylanıyor...",
+    "approve": "Onayla",
+    "rejecting": "Reddediliyor...",
+    "reject": "Reddet",
+    "viewDetails": "Detayları görüntüle"
+  },
+  "goalTree": {
+    "empty": "Hedef yok."
+  },
+  "budget": {
+    "observed": "Gözlemlenen",
+    "budget": "Bütçe"
+  },
+  "filterBar": {
+    "clearAll": "Tümünü temizle"
+  },
+  "activeAgents": {
+    "liveNow": "Şu anda canlı",
+    "finished": "{{when}} bitti",
+    "started": "{{when}} başladı"
+  },
+  "commandPalette": {
+    "searchPlaceholder": "Görev, ajan, proje ara...",
+    "noQuickMatch": "Hızlı görev eşleşmesi yok. Şuna basın",
+    "toSearchAllOrRefine": "tümünde aramak için veya yazmaya devam edin.",
+    "noResults": "Sonuç bulunamadı.",
+    "searchHeading": "Arama",
+    "searchAllFor": "Tümünde ara:",
+    "openFullSearch": "tüm aramayı aç",
+    "actions": "İşlemler",
+    "createNewIssue": "Yeni görev oluştur",
+    "createNewAgent": "Yeni ajan oluştur",
+    "createNewProject": "Yeni proje oluştur",
+    "pages": "Sayfalar"
+  },
+  "shortcuts": {
+    "title": "Klavye kısayolları",
+    "moveDown": "Aşağı git",
+    "moveUp": "Yukarı git",
+    "collapseGroup": "Seçili grubu daralt",
+    "expandGroup": "Seçili grubu genişlet",
+    "openItem": "Seçili öğeyi aç",
+    "archiveItem": "Öğeyi arşivle",
+    "markRead": "Okundu olarak işaretle",
+    "markUnread": "Okunmamış olarak işaretle",
+    "quickArchive": "Gelen kutusuna hızlı arşivle",
+    "goToInbox": "Gelen kutusuna git",
+    "focusComposer": "Yorum yazıcıya odaklan",
+    "search": "Mevcut sayfada ara veya hızlı ara",
+    "newIssue": "Yeni görev",
+    "toggleSidebar": "Yan menüyü aç/kapat",
+    "togglePanel": "Paneli aç/kapat",
+    "showShortcuts": "Klavye kısayollarını göster",
+    "then": "sonra",
+    "pressEsc": "Kapatmak için",
+    "toClose": "tuşuna basın · Kısayollar metin alanlarında devre dışıdır",
+    "inbox": {
+      "title": "Gelen Kutusu"
+    },
+    "issueDetail": {
+      "title": "Görev detayı"
+    },
+    "global": {
+      "title": "Genel"
+    }
+  },
+  "mobileNav": {
+    "home": "Ana sayfa",
+    "create": "Oluştur",
+    "aria": "Mobil gezinme"
+  },
+  "worktree": {
+    "label": "Worktree",
+    "copyTitle": "Worktree adını kopyalamak için tıkla",
+    "copied": "Kopyalandı!"
+  },
+  "cloudGate": {
+    "bootstrapTitle": "Örnek kurulumu gerekli",
+    "bootstrapWithInvite": "Henüz örnek yöneticisi yok. Bir önyükleme daveti zaten aktif. İlk yönetici davet URL'si için Paperclip başlatma loglarını kontrol edin veya rotasyon için bu komutu çalıştırın:",
+    "bootstrapWithoutInvite": "Henüz örnek yöneticisi yok. İlk yönetici davet URL'sini oluşturmak için Paperclip ortamınızda bu komutu çalıştırın:",
+    "noAccessTitle": "Şirket erişimi yok",
+    "noAccessBody1": "Bu hesap giriş yapmış ancak bu Paperclip örneğinde aktif şirket üyeliği veya örnek yöneticisi erişimi yok.",
+    "noAccessBody2": "Şirket daveti kullanın veya bu organizasyona zaten ait olan bir hesapla giriş yapın.",
+    "loadFailed": "Uygulama durumu yüklenemedi"
+  },
+  "devBanner": {
+    "justNow": "az önce",
+    "minutesAgo": "{{count}} dk önce",
+    "hoursAgo": "{{count}} sa önce",
+    "daysAgo": "{{count}} gün önce",
+    "reasonBackendAndMigrations": "arka uç dosyaları değişti ve migration'lar bekliyor",
+    "reasonMigrations": "bekleyen migration'lar yeni boot gerektiriyor",
+    "reasonBackend": "bu sunucu başladıktan sonra arka uç dosyaları değişti",
+    "liveRuns": "{{count}} canlı çalışma",
+    "restartConfirmWithRuns": "Paperclip şimdi yeniden başlatılsın mı? Bu {{label}} kesintiye uğratabilir.",
+    "restartConfirm": "Paperclip şimdi yeniden başlatılsın mı?",
+    "restartFailed": "Yeniden başlatma isteği başarısız",
+    "restartRequired": "Yeniden Başlatma Gerekli",
+    "autoRestartOn": "Otomatik Yeniden Başlatma Açık",
+    "updated": "güncellendi",
+    "changed": "Değişen",
+    "more": "+{{n}} daha",
+    "pendingMigrations": "Bekleyen migration'lar",
+    "waitingForIdle": "{{label}} tamamlanması bekleniyor",
+    "autoRestartWillTrigger": "Otomatik yeniden başlatma örnek boşa çıkınca tetiklenecek",
+    "manualRestart": "Aktif iş güvenli olduğunda pnpm dev:once'ı yeniden başlatın",
+    "restartRequested": "Yeniden başlatma istendi",
+    "restartNow": "Şimdi yeniden başlat"
+  },
+  "dashboardLive": {
+    "title": "Canlı çalışmalar",
+    "createCompany": "Canlı çalışmaları görüntülemek için bir şirket oluşturun.",
+    "selectCompany": "Canlı çalışmaları görüntülemek için bir şirket seçin.",
+    "heading": "Canlı ajan çalışmaları",
+    "description": "Önce aktif çalışmalar, ardından en son tamamlanan çalışmalar.",
+    "showingUpTo": "{{count}} taneye kadar gösteriliyor",
+    "activeOrRecent": "Aktif / son",
+    "emptyRuns": "Aktif veya son ajan çalışması yok."
+  },
+  "search": {
+    "title": "Arama",
+    "scope": {
+      "all": "Tümü",
+      "issues": "Görevler",
+      "comments": "Yorumlar",
+      "documents": "Dokümanlar",
+      "agents": "Ajanlar",
+      "projects": "Projeler"
+    },
+    "subgroup": {
+      "issues": "Görevler",
+      "comments": "Yorumlar",
+      "documents": "Dokümanlar",
+      "agents": "Ajanlar",
+      "projects": "Projeler"
+    },
+    "allScopes": "Tüm kapsamlar",
+    "unknownError": "Bilinmeyen hata",
+    "placeholder": "Görev, yorum, doküman, ajan, proje ara…",
+    "queryLabel": "Arama sorgusu",
+    "clear": "Aramayı temizle",
+    "initial": {
+      "heading": "Şirket belleğinde arama yapmak için yazın.",
+      "subheading": "Görevler, yorumlar, plan dokümanları, ajanlar, projeler — hepsi tek yüzeyde, alaka düzeyine göre sıralı."
+    },
+    "recentSearches": "Son aramalar",
+    "tip": {
+      "identifierLabel": "Tanımlayıcı araması:",
+      "identifierBefore": "yazın",
+      "identifierAfter": "ve doğrudan ilgili göreve atlayın.",
+      "quotedLabel": "Tırnaklı ifadeler:",
+      "quotedDesc": "Tam dizilimi eşleştirmek için ifadeyi tırnak içine alın.",
+      "cmdKLabel": "⌘K:",
+      "cmdKDesc": "Mevcut sorgunuzla önceden doldurulmuş komut paletini tekrar açar."
+    },
+    "error": {
+      "title": "Bu arama çalıştırılamadı",
+      "serverReturned": "Sunucu {{status}} döndü.",
+      "requestFailed": "İstek başarısız oldu.",
+      "retryHint": "Girdileriniz ve filtreleriniz hâlâ duruyor; tekrar deneyebilir veya Görevler filtresine düşebilirsiniz."
+    },
+    "retry": "Tekrar dene",
+    "openIssuesFilter": "Açık görevler filtresini görüntüle",
+    "searchingFor": "\"{{query}}\" aranıyor…",
+    "empty": {
+      "title": "\"{{query}}\" için sonuç bulunamadı",
+      "body": "{{scope}} içinde eşleşme bulunamadı. Kapsamı genişletmeyi veya sorgunuzu yeniden ifade etmeyi deneyin.",
+      "hint1": "Daha az kelime veya tek bir ayırt edici terim deneyin.",
+      "hint2Before": "Şuna benzer bir tanımlayıcı kısayolu kullanın:",
+      "hint3": "Çok kelimeli ifadeleri tırnak içine alın."
+    },
+    "searchAllScopes": "Tüm kapsamlarda ara",
+    "createIssueFromQuery": "Bu sorgudan görev oluştur",
+    "resultsSummaryOne": "1 sonuç · alaka düzeyine göre sıralı",
+    "resultsSummary": "{{count}} sonuç · alaka düzeyine göre sıralı",
+    "updating": "Güncelleniyor…"
+  },
+  "joinRequestQueue": {
+    "title": "Katılma İstekleri",
+    "heading": "Katılım İsteği Kuyruğu",
+    "pageDescription": "İnsan ve ajan katılım isteklerini karışık gelen kutusu akışı dışında inceleyin. Bu kuyruk, satır içi gelen kutusu kartlarıyla aynı onay mutasyonlarını kullanır.",
+    "status": "Durum",
+    "pendingApproval": "Onay bekliyor",
+    "approved": "Onaylandı",
+    "rejected": "Reddedildi",
+    "requestType": "İstek türü",
+    "all": "Tümü",
+    "human": "İnsan",
+    "agent": "Ajan",
+    "noRequests": "Mevcut filtrelere uyan katılım isteği yok.",
+    "unknownHuman": "Bilinmeyen insan talep eden",
+    "unknownAgent": "Bilinmeyen ajan talep eden",
+    "reject": "Reddet",
+    "approve": "Onayla",
+    "inviteContext": "Davet bağlamı",
+    "inviteSummary": "{{allowedJoinTypes}} katılım daveti{{roleSuffix}}",
+    "defaultRoleSuffix": " • varsayılan rol {{role}}",
+    "inviteUnavailable": "Davet meta verisi mevcut değil",
+    "requestDetails": "İstek detayları",
+    "submittedAt": "Gönderildi: {{when}}",
+    "sourceIp": "Kaynak IP {{ip}}",
+    "requestApproved": "Katılım isteği onaylandı",
+    "requestRejected": "Katılım isteği reddedildi",
+    "selectCompany": "Katılım isteklerini incelemek için bir şirket seçin.",
+    "loading": "Katılım istekleri yükleniyor…",
+    "noPermission": "Bu şirket için katılım isteklerini inceleme yetkiniz yok.",
+    "errorLoad": "Katılım istekleri yüklenemedi."
+  },
+  "instanceExperimentalSettings": {
+    "heading": "Deneysel",
+    "pageDescription": "Varsayılan davranış haline gelmeden önce hâlâ değerlendirilen özellikleri etkinleştirin.",
+    "enableEnvironments": "Ortamları Etkinleştir",
+    "enableEnvironmentsDesc": "Şirket ayarlarında ortam yönetimini gösterir ve proje ile ajan ortam atama kontrollerine izin verir.",
+    "toggleEnvironmentsAria": "Ortamlar deneysel ayarını aç/kapat",
+    "enableIsolatedWorkspaces": "İzole Çalışma Alanlarını Etkinleştir",
+    "enableIsolatedWorkspacesDesc": "Proje yapılandırmasında yürütme çalışma alanı kontrollerini gösterir ve yeni ile mevcut görev çalıştırmaları için izole çalışma alanı davranışına izin verir.",
+    "toggleIsolatedWorkspacesAria": "İzole çalışma alanları deneysel ayarını aç/kapat",
+    "cloudSync": "Bulut Senkronizasyonu",
+    "cloudSyncDesc": "Yerel Paperclip Cloud yukarı akış bağlantısı, önizleme, gönderim, yeniden deneme ve aktivasyon inceleme yüzeylerini gösterir. Devre dışı bırakıldığında kayıtlı bağlantılar ve çalıştırma geçmişi korunur.",
+    "toggleCloudSyncAria": "Bulut senkronizasyonu deneysel ayarını aç/kapat",
+    "autoRestartDev": "Boştayken Dev Sunucusunu Otomatik Yeniden Başlat",
+    "autoRestartDevDesc": "`pnpm dev:once` modunda, kuyrukta bekleyen ve çalışan tüm yerel ajan çalıştırmaları tamamlanana kadar bekler, ardından arka uç değişiklikleri veya migration'lar mevcut başlatmayı eskittiğinde sunucuyu otomatik olarak yeniden başlatır.",
+    "toggleAutoRestartAria": "Korumalı dev sunucusu otomatik yeniden başlatmayı aç/kapat",
+    "autoCreateRecovery": "Görev Kurtarma İşlerini Otomatik Oluştur",
+    "autoCreateRecoveryDesc": "Kalp atışı zamanlayıcısının, yapılandırılmış geriye bakma penceresi içinde bulunan görev bağımlılık zincirleri için kurtarma görevleri oluşturmasına izin verin.",
+    "toggleAutoRecoveryAria": "Görev grafiği canlılık otomatik kurtarmayı aç/kapat",
+    "lookbackHours": "Geriye bakma saatleri",
+    "lookbackInvalid": "Geriye bakma saatleri 1 ile 720 arasında bir tam sayı olmalıdır.",
+    "saveHours": "Saatleri kaydet",
+    "preview": "Önizleme",
+    "runNow": "Şimdi çalıştır",
+    "currentWindow": "Mevcut pencere: son {{count}} {{hourLabel}}.",
+    "hourSingular": "saat",
+    "hourPlural": "saat",
+    "loading": "Deneysel ayarlar yükleniyor...",
+    "errorLoad": "Deneysel ayarlar yüklenemedi.",
+    "errorUpdate": "Deneysel ayarlar güncellenemedi.",
+    "errorPreview": "Kurtarma görevleri önizlenemedi.",
+    "errorRun": "Kurtarma görevleri oluşturulamadı.",
+    "confirmAutoRecovery": "Otomatik kurtarmayı onayla",
+    "recoveryMatchDescription": "Son {{hours}} saat içinde {{count}} kurtarma {{taskLabel}} eşleşiyor.",
+    "taskSingular": "görev",
+    "taskPlural": "görev",
+    "checkingCandidates": "Etkinleştirmeden önce kurtarma adayları kontrol ediliyor.",
+    "noRecoveryTasksNow": "Şu an oluşturulacak kurtarma görevi yok. Otomatik kurtarma bu pencerede gelecekteki canlılık olayları için yine de çalışabilir.",
+    "recoveryTarget": "Kurtarma hedefi:",
+    "skippedOutsideLookback": "{{count}} mevcut {{verbPhrase}} yapılandırılmış geriye bakma penceresinin dışında ve değiştirilmeyecek.",
+    "findingIs": "bulgu",
+    "findingsAre": "bulgu",
+    "enableOnly": "Sadece etkinleştir",
+    "enableAndCreate": "Etkinleştir ve {{count}} oluştur",
+    "enable": "Etkinleştir"
+  },
+  "instanceGeneralSettings": {
+    "heading": "Genel",
+    "pageDescription": "Log gösterimi, klavye kısayolları, yedek saklama süresi ve veri paylaşımı dahil instance genelindeki tercihleri yapılandırın.",
+    "loading": "Genel ayarlar yükleniyor...",
+    "errorLoad": "Genel ayarlar yüklenemedi.",
+    "errorUpdate": "Genel ayarlar güncellenemedi.",
+    "deploymentAndAuth": "Dağıtım ve kimlik doğrulama",
+    "deploymentLocalTrusted": "Yerel güvenilir mod, yerel operatör için optimize edilmiştir. Tarayıcı istekleri yerel pano bağlamında çalışır ve giriş yapılması gerekmez.",
+    "deploymentPublic": "Kimlik doğrulamalı genel mod, pano erişimi için giriş yapılmasını gerektirir ve genel URL'ler için tasarlanmıştır.",
+    "deploymentPrivate": "Kimlik doğrulamalı özel mod, giriş yapılmasını gerektirir ve LAN, VPN veya diğer özel ağ dağıtımları için tasarlanmıştır.",
+    "authReadiness": "Kimlik doğrulama hazırlığı",
+    "bootstrapStatus": "Bootstrap durumu",
+    "bootstrapInvite": "Bootstrap daveti",
+    "ready": "Hazır",
+    "notReady": "Hazır değil",
+    "setupRequired": "Kurulum gerekli",
+    "active": "Aktif",
+    "none": "Yok",
+    "censorUsername": "Loglarda kullanıcı adını sansürle",
+    "censorUsernameDesc": "Ana dizin yollarındaki ve benzeri operatör tarafından görülebilen log çıktılarındaki kullanıcı adı segmentini gizler. Yollar dışındaki bağımsız kullanıcı adı geçişleri henüz canlı transkript görünümünde maskelenmemektedir. Bu varsayılan olarak kapalıdır.",
+    "censorUsernameAria": "Kullanıcı adı log sansürünü aç/kapat",
+    "keyboardShortcuts": "Klavye kısayolları",
+    "keyboardShortcutsDesc": "Gelen kutusu navigasyonu ve görev oluşturma veya panelleri açıp kapama gibi global kısayollar dahil uygulama klavye kısayollarını etkinleştirir. Bu varsayılan olarak kapalıdır.",
+    "keyboardShortcutsAria": "Klavye kısayollarını aç/kapat",
+    "backupRetention": "Yedek saklama",
+    "backupRetentionDesc": "Otomatik veritabanı yedeklerinin ne kadar süre saklanacağını yapılandırın. Yedekler yaklaşık her saat bir çalışır ve gzip ile sıkıştırılır. Günlük pencere içinde tüm yedekler korunur; bunun ötesinde haftada bir ve ayda bir yedek saklanır.",
+    "daily": "Günlük",
+    "daysLabel": "{{count}} gün",
+    "weekly": "Haftalık",
+    "weekSingular": "1 hafta",
+    "weeksLabel": "{{count}} hafta",
+    "monthly": "Aylık",
+    "monthSingular": "1 ay",
+    "monthsLabel": "{{count}} ay",
+    "aiFeedbackSharing": "AI geri bildirim paylaşımı",
+    "aiFeedbackSharingDesc": "Beğen ve beğenme oylarının oylanan AI çıktısını Paperclip Labs'e gönderip gönderemeyeceğini kontrol edin. Oylar her zaman yerel olarak kaydedilir.",
+    "readTos": "Hizmet şartlarımızı okuyun",
+    "retestPromptHintBefore": "Yerel dev'de ilk kullanım istemini yeniden test etmek için",
+    "retestPromptHintMiddle1": "anahtarını şu satırdan kaldırın:",
+    "retestPromptHintMiddle2": "Bu instance için JSON satırında ya da değerini şuna geri ayarlayın:",
+    "retestPromptHintAfter1": "Ayarlanmamış ve",
+    "retestPromptHintAfter2": "her ikisi de henüz varsayılan seçilmediği anlamına gelir.",
+    "signOut": "Çıkış yap",
+    "signOutDesc": "Bu Paperclip instance'ından çıkış yapın. Giriş sayfasına yönlendirileceksiniz.",
+    "signingOut": "Çıkış yapılıyor..."
+  },
+  "instanceAccess": {
+    "heading": "Instance Erişimi",
+    "pageDescription": "Kullanıcıları arayın, instance yönetici durumlarını yönetin ve hangi şirketlere erişebileceklerini kontrol edin.",
+    "searchUsers": "Kullanıcı ara",
+    "searchPlaceholder": "İsim veya e-posta ile ara",
+    "activeMembershipCount": "{{count}} aktif şirket üyeliği",
+    "selectUser": "Instance erişimini incelemek için bir kullanıcı seçin.",
+    "loadingUsers": "Instance kullanıcıları yükleniyor…",
+    "loadingUserAccess": "Kullanıcı erişimi yükleniyor…",
+    "adminRequired": "Kullanıcıları yönetmek için instance yöneticisi erişimi gereklidir.",
+    "errorLoadUsers": "Kullanıcılar yüklenemedi.",
+    "errorLoadUserAccess": "Kullanıcı erişimi yüklenemedi.",
+    "removeAdmin": "Instance yöneticiliğini kaldır",
+    "promoteAdmin": "Instance yöneticisine yükselt",
+    "companyAccess": "Şirket erişimi",
+    "companyAccessDesc": "Bu kullanıcı için şirket üyeliğini aç/kapat. Yeni erişim varsayılan olarak aktif bir operatör üyeliğine sahiptir.",
+    "saving": "Kaydediliyor…",
+    "saveCompanyAccess": "Şirket erişimini kaydet",
+    "currentMemberships": "Mevcut üyelikler",
+    "unsetRole": "atanmamış",
+    "companyAccessUpdated": "Şirket erişimi güncellendi",
+    "instanceRoleUpdated": "Instance rolü güncellendi"
+  },
+  "companyEnvironments": {
+    "title": "Ortamlar"
+  },
+  "adapterManager": {
+    "title": "Adaptörler"
+  },
+  "pluginManager": {
+    "title": "Eklentiler",
+    "heading": "Eklenti Yöneticisi",
+    "loadingPlugins": "Eklentiler yükleniyor...",
+    "loadError": "Eklentiler yüklenemedi.",
+    "installPlugin": "Eklenti Yükle",
+    "installPluginDescription": "Yüklemek istediğiniz eklentinin npm paket adını girin.",
+    "npmPackageName": "npm Paket Adı",
+    "install": "Yükle",
+    "installing": "Yükleniyor...",
+    "installSuccess": "Eklenti başarıyla yüklendi",
+    "installError": "Eklenti yüklenemedi",
+    "uninstallSuccess": "Eklenti başarıyla kaldırıldı",
+    "uninstallError": "Eklenti kaldırılamadı",
+    "enableSuccess": "Eklenti etkinleştirildi",
+    "enableError": "Eklenti etkinleştirilemedi",
+    "disableSuccess": "Eklenti devre dışı bırakıldı",
+    "disableError": "Eklenti devre dışı bırakılamadı",
+    "alphaTitle": "Eklentiler alfa aşamasındadır.",
+    "alphaDescription": "Eklenti çalışma zamanı ve API yüzeyi hâlâ değişmektedir. Bu özellik oturana kadar kırıcı değişiklikler bekleyin.",
+    "availablePlugins": "Mevcut Eklentiler",
+    "bundled": "Paketlenmiş",
+    "loadingBundled": "Paketlenmiş eklentiler yükleniyor...",
+    "bundledLoadError": "Paketlenmiş eklentiler yüklenemedi.",
+    "noBundledFound": "Bu kurulumda paketlenmiş eklenti bulunamadı.",
+    "firstParty": "Birinci taraf",
+    "example": "Örnek",
+    "notInstalled": "Yüklü değil",
+    "enable": "Etkinleştir",
+    "disable": "Devre dışı bırak",
+    "openSettings": "Ayarları Aç",
+    "review": "İncele",
+    "installExample": "Örneği Yükle",
+    "installedPlugins": "Yüklü Eklentiler",
+    "noPluginsInstalled": "Yüklü eklenti yok",
+    "noPluginsHint": "İşlevselliği genişletmek için bir eklenti yükleyin.",
+    "noDescription": "Açıklama sağlanmadı.",
+    "pluginError": "Eklenti hatası",
+    "viewFullError": "Tüm hatayı görüntüle",
+    "uninstall": "Kaldır",
+    "uninstallPlugin": "Eklentiyi Kaldır",
+    "uninstallConfirmPrefix": "Kaldırmak istediğinizden emin misiniz:",
+    "uninstallConfirmSuffix": "? Bu işlem geri alınamaz.",
+    "uninstalling": "Kaldırılıyor...",
+    "configure": "Yapılandır",
+    "errorDetails": "Hata Detayları",
+    "pluginFallback": "Eklenti",
+    "hitErrorState": "bir hata durumuna girdi.",
+    "whatErrored": "Ne hata verdi",
+    "noErrorSummary": "Hata özeti mevcut değil.",
+    "fullErrorOutput": "Tam hata çıktısı",
+    "noStoredErrorMessage": "Eklenti, kayıtlı hata mesajı olmadan hata durumuna girdi.",
+    "noStoredErrorMessageShort": "Kayıtlı hata mesajı yok.",
+    "close": "Kapat"
+  },
+  "pluginSettings": {
+    "fallback": "Eklenti Detayları",
+    "loadingDetails": "Eklenti detayları yükleniyor...",
+    "noDescription": "Açıklama sağlanmadı.",
+    "configuration": "Yapılandırma",
+    "status": "Durum",
+    "about": "Hakkında",
+    "description": "Açıklama",
+    "author": "Yazar",
+    "categories": "Kategoriler",
+    "none": "Yok",
+    "settings": "Ayarlar",
+    "configureFromEnvironments": "Bu eklentiyi Şirket Ortamlarından yapılandırın.",
+    "thisPlugin": "Bu eklenti",
+    "registersEnvironmentSettings": "kimlik bilgilerinin instance-global yerine şirket kapsamında kalması için orada ortam çalışma zamanı ayarlarını kaydeder.",
+    "openCompanyEnvironments": "Şirket Ortamlarını Aç",
+    "noSettingsRequired": "Bu eklenti herhangi bir ayar gerektirmez.",
+    "runtimeDashboard": "Çalışma Zamanı Panosu",
+    "runtimeDashboardDescription": "İşçi süreci, planlanmış işler ve webhook teslimatları",
+    "workerProcess": "İşçi Süreci",
+    "pid": "PID",
+    "uptime": "Çalışma süresi",
+    "pendingRpcs": "Bekleyen RPC'ler",
+    "crashes": "Çökmeler",
+    "crashesCount": "{{consecutive}} ardışık / {{total}} toplam",
+    "lastCrash": "Son Çökme",
+    "noWorkerProcess": "Kayıtlı işçi süreci yok.",
+    "recentJobRuns": "Son İş Çalıştırmaları",
+    "noJobRuns": "Henüz kayıtlı iş çalıştırması yok.",
+    "recentWebhookDeliveries": "Son Webhook Teslimatları",
+    "noWebhookDeliveries": "Henüz kayıtlı webhook teslimatı yok.",
+    "lastChecked": "Son kontrol:",
+    "diagnosticsUnavailable": "Çalışma zamanı tanılamaları şu an mevcut değil.",
+    "recentLogs": "Son Loglar",
+    "lastNLogEntries": "Son {{count}} log girişi",
+    "healthStatus": "Sağlık Durumu",
+    "checkingHealth": "Sağlık kontrol ediliyor...",
+    "overall": "Genel",
+    "lifecycle": "Yaşam döngüsü",
+    "healthChecksHint": "Sağlık kontrolleri eklenti hazır olduğunda çalışır.",
+    "details": "Detaylar",
+    "pluginId": "Eklenti ID",
+    "pluginKey": "Eklenti Anahtarı",
+    "npmPackage": "NPM Paketi",
+    "version": "Sürüm",
+    "permissions": "İzinler",
+    "noPermissions": "Özel izin istenmedi.",
+    "selectCompanyForFolders": "Bu eklentinin yerel klasörlerini yapılandırmak için bir şirket seçin.",
+    "localFolders": "Yerel klasörler",
+    "localFolderLoadError": "Yerel klasör ayarları yüklenemedi.",
+    "loadingLocalFolders": "Yerel klasörler yükleniyor...",
+    "localFolderSaved": "Yerel klasör kaydedildi.",
+    "localFolderSavedNeedsAttention": "Yerel klasör kaydedildi, ancak doğrulama hâlâ dikkat gerektiriyor.",
+    "localFolderSaveError": "Yerel klasör kaydedilemedi.",
+    "localFolderPathRequired": "Yerel klasör yolu gereklidir.",
+    "localFolderMustBeAbsolute": "Yerel klasör tam mutlak bir yol olmalıdır.",
+    "healthy": "Sağlıklı",
+    "needsAttention": "Dikkat gerekiyor",
+    "readWrite": "Okuma/yazma",
+    "readOnly": "Salt okunur",
+    "configured": "Yapılandırıldı",
+    "readable": "Okunabilir",
+    "writable": "Yazılabilir",
+    "yes": "Evet",
+    "no": "Hayır",
+    "notRequested": "İstenmedi",
+    "configuredPath": "Yapılandırılmış yol",
+    "localFolderPath": "Yerel klasör yolu",
+    "validationProblems": "Doğrulama sorunları",
+    "requiredDirectories": "Gerekli dizinler",
+    "missingDirectories": "Eksik dizinler",
+    "requiredFiles": "Gerekli dosyalar",
+    "missingFiles": "Eksik dosyalar",
+    "notInspected": "İncelenmedi",
+    "countMissing": "{{count}} eksik",
+    "present": "Mevcut",
+    "noneDeclared": "Belirtilmemiş.",
+    "rootNotInspected": "Yapılandırılmış kök incelenmedi.",
+    "configSaved": "Yapılandırma kaydedildi.",
+    "configSaveError": "Yapılandırma kaydedilemedi.",
+    "configTestPassed": "Yapılandırma testi başarılı.",
+    "configTestFailed": "Yapılandırma testi başarısız.",
+    "loadingConfiguration": "Yapılandırma yükleniyor...",
+    "saving": "Kaydediliyor...",
+    "saveConfiguration": "Yapılandırmayı Kaydet",
+    "testing": "Test ediliyor...",
+    "testConfiguration": "Yapılandırmayı Test Et"
+  },
+  "companyExport": {
+    "title": "Dışa Aktar"
+  },
+  "companyImport": {
+    "title": "İçe Aktar"
+  },
+  "instanceSettings": {
+    "title": "Sistem Ayarları",
+    "general": "Genel",
+    "access": "Erişim",
+    "heartbeats": "Kalp Atışları",
+    "experimental": "Deneysel",
+    "signOutFailed": "Çıkış yapılamadı.",
+    "feedbackNoDefault": "Henüz varsayılan kaydedilmedi. Bir sonraki beğen veya beğenme seçimi bir kez soracak ve cevabı buraya kaydedecek.",
+    "alwaysAllow": "Her zaman izin ver",
+    "alwaysAllowDesc": "Oylanan AI çıktılarını otomatik olarak paylaş.",
+    "dontAllow": "İzin verme",
+    "dontAllowDesc": "Oylanan AI çıktılarını yalnızca yerel tut."
+  },
+  "workspaces": {
+    "empty": "Henüz çalışma alanı etkinliği yok.",
+    "count": "{{count}} çalışma alanı"
+  },
+  "approvalDetail": {
+    "fallback": "Onay",
+    "error": {
+      "approve": "Onaylama başarısız",
+      "reject": "Reddetme başarısız",
+      "revision": "Revizyon isteği başarısız",
+      "resubmit": "Yeniden gönderme başarısız",
+      "comment": "Yorum başarısız",
+      "delete": "Silme başarısız"
+    },
+    "notFound": "Onay bulunamadı.",
+    "reviewLinkedIssues": "Bağlantılı görevleri incele",
+    "reviewLinkedIssue": "Bağlantılı görevi incele",
+    "openHiredAgent": "İşe alınan ajanı aç",
+    "backToApprovals": "Onaylara geri dön",
+    "confirmed": "Onay doğrulandı",
+    "confirmedBody": "Talep eden ajana bu onayı ve bağlantılı görevleri incelemesi için bildirim gönderildi.",
+    "requestedBy": "Talep eden",
+    "seeFullRequest": "Tüm isteği gör",
+    "decisionNote": "Karar notu: {{note}}",
+    "linkedIssues": "Bağlantılı Görevler",
+    "linkedIssuesNote": "Bağlantılı görevler, talep eden ajan takip edip kapatana kadar açık kalır.",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "budgetStopBefore": "Bu bütçe durdurmasını şuradaki bütçe kontrollerinden çözün:",
+    "requestRevision": "Revizyon iste",
+    "markResubmitted": "Yeniden gönderildi olarak işaretle",
+    "deleteAgentConfirm": "Onaylanmayan bu ajan silinsin mi? Bu işlem geri alınamaz.",
+    "deleteDisapprovedAgent": "Onaylanmayan ajanı sil",
+    "commentsCount": "Yorumlar ({{count}})",
+    "board": "Pano",
+    "addCommentPlaceholder": "Yorum ekle...",
+    "posting": "Gönderiliyor…",
+    "postComment": "Yorum gönder"
+  },
+  "userProfile": {
+    "users": "Kullanıcılar",
+    "userFallback": "Kullanıcı",
+    "unknown": "bilinmiyor",
+    "member": "üye",
+    "joinedOn": "{{date}} tarihinde katıldı",
+    "doneSuffix": "{{rate}} tamamlandı",
+    "touched": "Dokunulan",
+    "completed": "Tamamlanan",
+    "comments": "Yorumlar",
+    "actions": "Eylemler",
+    "tokens": "Tokenlar",
+    "spend": "Harcama",
+    "created": "Oluşturulan",
+    "open": "Açık",
+    "last14Days": "Son 14 gün",
+    "tokensTotal": "toplam token",
+    "dayTooltip": "{{date}}: {{tokens}} token, {{completed}} tamamlandı",
+    "tokensPerDay": "token / gün",
+    "completions": "tamamlama",
+    "issueLinkedUsage": "Göreve bağlı kullanım",
+    "billedThrough": "{{provider}} üzerinden faturalandırıldı",
+    "selectCompany": "Kullanıcı profillerini görüntülemek için bir şirket seçin.",
+    "notFound": "Bu şirket için kullanıcı profili bulunamadı.",
+    "allTimeTokens": "Tüm zamanlar tokenları",
+    "spentHint": "{{amount}} harcandı",
+    "rateHint": "{{rate}} oran",
+    "openAssigned": "Açık atanan",
+    "createdHint": "{{count}} oluşturuldu",
+    "sevenDayActions": "7 günlük eylemler",
+    "commentsHint": "{{count}} yorum",
+    "recentTasks": "Son görevler",
+    "noRecentTasks": "Henüz dokunulan görev yok.",
+    "recentActivity": "Son etkinlik",
+    "noRecentActivity": "Henüz kayıtlı doğrudan kullanıcı eylemi yok.",
+    "agentAttribution": "Ajan atfı",
+    "noAgentUsage": "Henüz göreve bağlı token kullanımı yok.",
+    "providerMix": "Sağlayıcı dağılımı",
+    "noProviderUsage": "Henüz atfedilmiş sağlayıcı kullanımı yok."
+  },
+  "goalDetail": {
+    "fallback": "Hedef"
+  },
+  "orgChart": {
+    "title": "Organizasyon Şeması",
+    "selectCompany": "Organizasyon şemasını görüntülemek için bir şirket seçin.",
+    "empty": "Tanımlı organizasyonel hiyerarşi yok.",
+    "importCompany": "Şirket içe aktar",
+    "exportCompany": "Şirket dışa aktar",
+    "zoomIn": "Yakınlaştır",
+    "zoomOut": "Uzaklaştır",
+    "fitToScreen": "Ekrana sığdır",
+    "fitChartToScreen": "Şemayı ekrana sığdır"
+  },
+  "companyAccess": {
+    "title": "Erişim"
+  },
+  "companyInvites": {
+    "title": "Davetler",
+    "clipboardUnavailable": "Pano kullanılamıyor",
+    "clipboardUnavailableBody": "Davet URL'sini aşağıdaki alandan manuel olarak kopyalayın."
+  },
+  "secrets": {
+    "title": "Sırlar"
+  },
+  "companySkills": {
+    "detail": "Detay"
+  },
+  "costs": {
+    "tabs": {
+      "overview": "Genel Bakış",
+      "budgets": "Bütçeler",
+      "providers": "Sağlayıcılar",
+      "billers": "Faturalandırıcılar",
+      "finance": "Finans"
+    },
+    "financeLedger": "Finans defteri",
+    "allProviders": "Tüm sağlayıcılar",
+    "allBillers": "Tüm faturalandırıcılar",
+    "financeLedgerDescription": "Tek bir inference isteğine eşlenmeyen hesap düzeyindeki ücretler.",
+    "selectCompany": "Maliyetleri görüntülemek için bir şirket seçin.",
+    "subtitle": "Inference harcaması, platform ücretleri, krediler ve canlı kota pencereleri.",
+    "dateRangeTo": "—",
+    "selectDateRange": "Verileri yüklemek için başlangıç ve bitiş tarihi seçin.",
+    "inferenceLedger": "Inference defteri",
+    "inferenceLedgerDescription": "Seçili dönem için istek kapsamlı inference harcaması.",
+    "budgetAmount": "Bütçe {{amount}}",
+    "unlimitedBudget": "Sınırsız bütçe",
+    "usageLabel": "kullanım",
+    "utilizationConsumed": "Aylık bütçenin %{{percent}}'i bu aralıkta tüketildi.",
+    "byAgent": "Ajana göre",
+    "byAgentDescription": "Her ajanın seçili dönemde tükettiği miktar.",
+    "noCostEvents": "Henüz maliyet olayı yok.",
+    "inOutTokens": "giriş {{in}} · çıkış {{out}}",
+    "apiCount": "{{count}} api",
+    "subscriptionCount": "{{count}} abonelik",
+    "tokensAbbreviated": "{{tokens}} tok",
+    "byProject": "Projeye göre",
+    "byProjectDescription": "Projeye bağlı görevler üzerinden atfedilen çalıştırma maliyetleri.",
+    "noProjectRunCosts": "Henüz projeye atfedilmiş çalıştırma maliyeti yok.",
+    "unattributed": "Atfedilmemiş",
+    "noFinanceEventsEmpty": "Henüz finans olayı yok. Faturalandırıcı faturaları veya krediler ulaştığında hesap düzeyindeki ücretleri ekleyin.",
+    "budgetControlPlane": "Bütçe kontrol düzlemi",
+    "budgetControlPlaneDescription": "Ajanlar ve projeler için kesin durdurma harcama limitleri. Sağlayıcı abonelik kotası ayrı kalır ve Sağlayıcılar altında görünür.",
+    "activeIncidentsHeading": "Aktif olaylar",
+    "activeIncidentsBody": "Bütçeyi artırarak veya kapsamı açıkça duraklatılmış tutarak burada kesin durdurmaları çözün.",
+    "companyBudgets": "Şirket bütçeleri",
+    "agentBudgets": "Ajan bütçeleri",
+    "projectBudgets": "Proje bütçeleri",
+    "companyBudgetDescription": "Şirket genelinde aylık politika.",
+    "agentBudgetDescription": "Bireysel ajanlar için tekrarlayan aylık harcama politikaları.",
+    "projectBudgetDescription": "Yürütmeye bağlı projeler için yaşam boyu harcama politikaları.",
+    "noBudgetPolicies": "Henüz bütçe politikası yok. Ajan ve proje bütçelerini detay sayfalarından ayarlayın veya mevcut şirket aylık bütçe kontrolünü kullanın.",
+    "noCostEventsPeriod": "Bu dönemde maliyet olayı yok.",
+    "noBillableEvents": "Bu dönemde faturalanabilir olay yok.",
+    "byBiller": "Faturalandırıcıya göre",
+    "byBillerDescription": "Kim tarafından ücretlendirildiği veya kredilendiğine göre gruplanmış hesap düzeyi finansal olaylar.",
+    "noFinanceEvents": "Henüz finans olayı yok.",
+    "metrics": {
+      "debits": "Borçlar",
+      "debitsSubtitle": "Aralıkta {{count}} toplam olay",
+      "credits": "Krediler",
+      "creditsSubtitle": "İadeler, mahsuplar ve kredi iadeleri",
+      "net": "Net",
+      "netSubtitle": "Seçili dönem için borç eksi kredi",
+      "estimated": "Tahmini",
+      "estimatedSubtitle": "Henüz fatura yetkili olmayan tahmini borçlar",
+      "inferenceSpend": "Inference harcaması",
+      "inferenceSpendSubtitle": "İstek kapsamlı olaylarda {{tokens}} token",
+      "budget": "Bütçe",
+      "budgetOpen": "Açık",
+      "budgetPaused": "{{agents}} ajan duraklatıldı · {{projects}} proje duraklatıldı",
+      "budgetOf": "{{cap}} bütçenin {{spend}}'i",
+      "noMonthlyCap": "Aylık limit yapılandırılmamış",
+      "financeNet": "Finans net",
+      "financeNetSubtitle": "{{debits}} borç · {{credits}} kredi",
+      "financeEvents": "Finans olayları",
+      "financeEventsSubtitle": "Aralıkta {{estimated}} tahmini",
+      "activeIncidents": "Aktif olaylar",
+      "activeIncidentsSubtitle": "Açık yumuşak veya kesin eşik aşımları",
+      "pendingApprovals": "Bekleyen onaylar",
+      "pendingApprovalsSubtitle": "Pano işlemi bekleyen bütçe geçersiz kılma onayları",
+      "pausedAgents": "Duraklatılmış ajanlar",
+      "pausedAgentsSubtitle": "Bütçeyle engellenen ajan kalp atışları",
+      "pausedProjects": "Duraklatılmış projeler",
+      "pausedProjectsSubtitle": "Bütçeyle engellenen proje yürütmesi"
+    }
+  },
+  "routineDetail": {
+    "nextAt": "Sonraki: {{time}}",
+    "webhook": "Webhook",
+    "api": "API",
+    "label": "Etiket",
+    "schedule": "Zamanlama",
+    "signingMode": "İmzalama modu",
+    "replayWindow": "Tekrar oynatma penceresi (saniye)",
+    "lastResult": "Son: {{result}}",
+    "rotateSecret": "Sırrı döndür",
+    "saveTrigger": "Tetikleyiciyi kaydet",
+    "dirty": {
+      "title": "başlığı",
+      "description": "açıklamayı",
+      "project": "projeyi",
+      "defaultAgent": "varsayılan ajanı",
+      "priority": "önceliği",
+      "concurrencyPolicy": "eşzamanlılık politikasını",
+      "catchUpPolicy": "yetişme politikasını",
+      "variables": "değişkenleri",
+      "secrets": "sırları"
+    },
+    "toast": {
+      "copied": "{{label}} kopyalandı",
+      "copyFailed": "{{label}} kopyalanamadı",
+      "clipboardDenied": "Pano erişimi reddedildi.",
+      "routineChanged": "Rutin değişti",
+      "routineChangedBody": "Bu rutini başka biri güncelledi. En son revizyonu görmek için yeniden yükleyin.",
+      "saveFailed": "Rutin kaydedilemedi",
+      "saveFailedBody": "Paperclip rutini kaydedemedi.",
+      "runStarted": "Rutin çalıştırması başladı",
+      "runFailed": "Rutin çalıştırması başarısız",
+      "runFailedBody": "Paperclip rutin çalıştırmasını başlatamadı.",
+      "routineSaved": "Rutin kaydedildi",
+      "automationPaused": "Otomasyon duraklatıldı.",
+      "automationEnabled": "Otomasyon etkinleştirildi.",
+      "updateFailed": "Rutin güncellenemedi",
+      "updateFailedBody": "Paperclip rutini güncelleyemedi.",
+      "webhookCreated": "Webhook tetikleyicisi oluşturuldu",
+      "triggerAdded": "Tetikleyici eklendi",
+      "triggerAddedBody": "Rutin zamanlaması kaydedildi.",
+      "addTriggerFailed": "Tetikleyici eklenemedi",
+      "addTriggerFailedBody": "Paperclip tetikleyiciyi oluşturamadı.",
+      "triggerSaved": "Tetikleyici kaydedildi",
+      "triggerSavedBody": "Rutin tempo güncellemesi kaydedildi.",
+      "updateTriggerFailed": "Tetikleyici güncellenemedi",
+      "updateTriggerFailedBody": "Paperclip tetikleyiciyi güncelleyemedi.",
+      "triggerDeleted": "Tetikleyici silindi",
+      "deleteTriggerFailed": "Tetikleyici silinemedi",
+      "deleteTriggerFailedBody": "Paperclip tetikleyiciyi silemedi.",
+      "webhookSecretRotated": "Webhook sırrı döndürüldü",
+      "rotateFailed": "Webhook sırrı döndürülemedi",
+      "rotateFailedBody": "Paperclip webhook sırrını döndüremedi.",
+      "defaultAgentRequired": "Varsayılan ajan gerekli",
+      "defaultAgentRequiredBody": "Rutin otomasyonunu etkinleştirmeden önce bir varsayılan ajan belirleyin.",
+      "webhookRestored": "Webhook tetikleyicisi geri yüklendi",
+      "webhooksRestored": "{{count}} webhook tetikleyicisi geri yüklendi"
+    },
+    "selectCompany": "Rutinleri görüntülemek için bir şirket seçin.",
+    "notFound": "Rutin bulunamadı",
+    "status": {
+      "archived": "Arşivlendi",
+      "draft": "Taslak",
+      "active": "Aktif",
+      "paused": "Duraklatıldı"
+    },
+    "titlePlaceholder": "Rutin başlığı",
+    "managedBy": "{{plugin}} tarafından yönetiliyor",
+    "aria": {
+      "pauseAutomation": "Otomatik tetikleyicileri duraklat",
+      "enableAutomation": "Otomatik tetikleyicileri etkinleştir"
+    },
+    "secretSaveWarning": "Bunu şimdi kaydedin. Paperclip sır değerini bir daha göstermeyecek.",
+    "webhookTriggerOf": "{{total}} webhook tetikleyicisinden {{index}}",
+    "webhookUrl": "Webhook URL'si",
+    "urlButton": "URL",
+    "webhookSecretLabel": "Webhook sırrı",
+    "secretButton": "Sır",
+    "outOfDate": "Güncel değil",
+    "outOfDateBody": "Siz düzenlerken bu rutin değişti. Tekrar kaydetmeden önce en son revizyonla birleştirmek için yeniden yükleyin.",
+    "reloadLatest": "En sonu yeniden yükle",
+    "defaultAgentBanner": "Varsayılan ajan gerekli. Bu rutin taslak olarak kalıp manuel çalıştırılabilir, ancak bir varsayılan ajan atayana kadar otomasyon duraklatılmış kalır.",
+    "for": "Şunun için",
+    "assignee": "Sorumlu",
+    "noAssignee": "Sorumlu yok",
+    "searchAssignees": "Sorumlu ara...",
+    "noAssigneesFound": "Sorumlu bulunamadı.",
+    "in": "şurada",
+    "project": "Proje",
+    "noProject": "Proje yok",
+    "searchProjects": "Proje ara...",
+    "noProjectsFound": "Proje bulunamadı.",
+    "instructionsPlaceholder": "Talimat ekle...",
+    "advancedDelivery": "Gelişmiş teslimat ayarları",
+    "concurrency": "Eşzamanlılık",
+    "catchUp": "Yetişme",
+    "unsavedChanges": "Kaydedilmemiş değişiklikler",
+    "saveRoutine": "Rutini kaydet",
+    "tabs": {
+      "triggers": "Tetikleyiciler",
+      "runs": "Çalıştırmalar",
+      "activity": "Etkinlik",
+      "secrets": "Sırlar",
+      "history": "Geçmiş"
+    },
+    "addTrigger": "Tetikleyici ekle",
+    "kind": "Tür",
+    "comingSoon": " — YAKINDA",
+    "adding": "Ekleniyor...",
+    "noTriggers": "Henüz yapılandırılmış tetikleyici yok.",
+    "noRuns": "Henüz çalıştırma yok.",
+    "noActivity": "Henüz etkinlik yok.",
+    "secretsDescription": "Rutin sırları, bu rutinin oluşturduğu her göreve uygulanır. Proje ve ajan ortamındaki eşleşen anahtarları geçersiz kılar.",
+    "secretsReserved": "değişkenleri ayrılmıştır."
+  },
+  "routines": {
+    "tabs": {
+      "routines": "Rutinler",
+      "recentRuns": "Son Çalışmalar"
+    },
+    "sort": "Sırala",
+    "group": "Grupla",
+    "newRoutine": "Yeni rutin",
+    "titlePlaceholder": "Rutin başlığı",
+    "assignee": "Atanan",
+    "project": "Proje",
+    "instructionsPlaceholder": "Talimatlar ekle...",
+    "advancedDelivery": "Gelişmiş teslim ayarları",
+    "selectCompany": "Rutinleri görüntülemek için bir şirket seçin.",
+    "subtitle": "Denetlenebilir yürütme görevlerine somutlaşan tekrarlayan iş tanımları.",
+    "createRoutine": "Rutin oluştur",
+    "routineCount": "{{count}} rutin",
+    "sortBy": {
+      "updated": "Güncellendi",
+      "created": "Oluşturuldu",
+      "lastRun": "Son çalıştırma",
+      "title": "Başlık"
+    },
+    "sortDir": {
+      "asc": "Artan",
+      "desc": "Azalan"
+    },
+    "groupBy": {
+      "project": "Proje",
+      "assignee": "Ajan",
+      "none": "Yok"
+    },
+    "newRoutineSubtitle": "Önce tekrarlayan işi tanımlayın. Varsayılan proje ve ajan, taslak rutinler için isteğe bağlıdır.",
+    "for": "Şunun için",
+    "in": "şurada",
+    "noAssignee": "Sorumlu yok",
+    "searchAssignees": "Sorumlu ara...",
+    "noAssigneesFound": "Sorumlu bulunamadı.",
+    "noProject": "Proje yok",
+    "searchProjects": "Proje ara...",
+    "noProjectsFound": "Proje bulunamadı.",
+    "advancedDeliverySubtitle": "Politika kontrollerini iş tanımının ardında ikincil tutun.",
+    "concurrency": "Eşzamanlılık",
+    "catchUp": "Yetişme",
+    "afterCreation": "Oluşturulduktan sonra Paperclip sizi doğrudan tetikleyici kurulumuna götürür. Taslak rutinler, bir varsayılan ajan ekleyene kadar duraklatılmış kalır.",
+    "creating": "Oluşturuluyor...",
+    "createFailed": "Rutin oluşturulamadı",
+    "loadFailed": "Rutinler yüklenemedi",
+    "empty": "Henüz rutin yok. İlk tekrarlayan iş akışını tanımlamak için Rutin oluştur'u kullanın.",
+    "toast": {
+      "defaultAgentRequired": "Varsayılan ajan gerekli",
+      "defaultAgentRequiredBody": "Rutin otomasyonunu etkinleştirmeden önce bir varsayılan ajan belirleyin.",
+      "routineCreated": "Rutin oluşturuldu",
+      "routineCreatedBody": "Canlı bir iş akışına dönüştürmek için ilk tetikleyiciyi ekleyin.",
+      "routineDraftSaved": "Taslak kaydedildi. Otomasyonu etkinleştirmeden önce bir varsayılan ajan ekleyin.",
+      "updateFailed": "Rutin güncellenemedi",
+      "updateFailedBody": "Paperclip rutini güncelleyemedi.",
+      "runFailed": "Rutin çalıştırması başarısız",
+      "runFailedBody": "Paperclip rutin çalıştırmasını başlatamadı."
+    },
+    "groupLabel": {
+      "noProject": "Proje yok",
+      "unknownProject": "Bilinmeyen proje",
+      "unassigned": "Atanmamış",
+      "unknownAgent": "Bilinmeyen ajan"
+    }
+  },
+  "companySettings": {
+    "title": "Şirket Ayarları",
+    "company": "Şirket",
+    "settings": "Ayarlar",
+    "descriptionPlaceholder": "İsteğe bağlı şirket açıklaması",
+    "uploadingLogo": "Logo yükleniyor...",
+    "auto": "Otomatik",
+    "saved": "Kaydedildi"
+  },
+  "auth": {
+    "loading": "Yükleniyor…",
+    "authFailed": "Kimlik doğrulama başarısız",
+    "fillRequired": "Lütfen tüm zorunlu alanları doldurun.",
+    "signInTitle": "Paperclip'e giriş yap",
+    "signUpTitle": "Paperclip hesabı oluştur",
+    "signInDescription": "Bu örneğe erişmek için e-posta ve şifrenizi kullanın.",
+    "signUpDescription": "Bu örnek için bir hesap oluşturun. v1'de e-posta onayı gerekmez.",
+    "name": "Ad",
+    "email": "E-posta",
+    "password": "Şifre",
+    "working": "Çalışıyor…",
+    "signIn": "Giriş Yap",
+    "createAccount": "Hesap Oluştur",
+    "needAccount": "Hesabın yok mu?",
+    "haveAccount": "Zaten hesabın var mı?",
+    "createOne": "Hesap oluştur",
+    "signInShort": "Giriş yap"
+  },
+  "notFound": {
+    "breadcrumb": "Bulunamadı",
+    "companyTitle": "Şirket bulunamadı",
+    "pageTitle": "Sayfa bulunamadı",
+    "companyDescription": "\"{{prefix}}\" önekiyle eşleşen şirket yok.",
+    "pageDescription": "Bu rota mevcut değil.",
+    "unknown": "bilinmeyen",
+    "requestedPath": "İstenen yol",
+    "openDashboard": "Paneli aç",
+    "goHome": "Ana sayfa"
+  },
+  "boardClaim": {
+    "invalidUrl": "Geçersiz panel sahiplenme URL'si.",
+    "loading": "Sahiplenme talebi yükleniyor...",
+    "unavailable": "Sahiplenme talebi kullanılamıyor",
+    "invalidExpired": "Talep geçersiz veya süresi dolmuş.",
+    "claimed": "Panel sahipliği üstlenildi",
+    "claimedDescription": "Bu örnek artık kimlik doğrulamalı kullanıcınıza bağlandı.",
+    "openBoard": "Paneli aç",
+    "signInRequired": "Giriş gerekli",
+    "signInDescription": "Giriş yapın veya hesap oluşturun, ardından panel sahipliğini üstlenmek için bu sayfaya geri dönün.",
+    "signInOrCreate": "Giriş Yap / Hesap Oluştur",
+    "title": "Panel Sahipliğini Üstlen",
+    "description": "Bu, kullanıcınızı örnek yöneticisi konumuna yükseltir ve yerel güvenilir moddan şirket sahiplik erişimini geçirir.",
+    "failed": "Panel sahipliği üstlenilemedi",
+    "claiming": "Üstleniliyor…",
+    "claim": "Sahipliği üstlen"
+  },
+  "cliAuth": {
+    "invalidUrl": "Geçersiz CLI kimlik doğrulama URL'si.",
+    "loading": "CLI kimlik doğrulama talebi yükleniyor...",
+    "unavailable": "CLI kimlik doğrulama talebi kullanılamıyor",
+    "invalidExpired": "Talep geçersiz veya süresi dolmuş.",
+    "approved": "CLI erişimi onaylandı",
+    "approvedDescription": "Paperclip CLI artık talep eden makinede kimlik doğrulamayı tamamlayabilir.",
+    "command": "Komut",
+    "expired": "CLI kimlik doğrulama talebinin süresi doldu",
+    "cancelled": "CLI kimlik doğrulama talebi iptal edildi",
+    "restartDescription": "Yeni bir onay isteği oluşturmak için CLI kimlik doğrulama akışını terminalinizden yeniden başlatın.",
+    "signInRequired": "Giriş gerekli",
+    "signInDescription": "Giriş yapın veya hesap oluşturun, ardından CLI erişim talebini onaylamak için bu sayfaya geri dönün.",
+    "signInOrCreate": "Giriş Yap / Hesap Oluştur",
+    "title": "Paperclip CLI Erişimini Onayla",
+    "description": "Yerel bir Paperclip CLI işlemi bu örneğe panel erişimi talep ediyor.",
+    "client": "İstemci",
+    "requestedAccess": "Talep edilen erişim",
+    "instanceAdmin": "Örnek yöneticisi",
+    "board": "Panel",
+    "requestedCompany": "Talep edilen şirket",
+    "updateFailed": "CLI kimlik doğrulama talebi güncellenemedi",
+    "needAdmin": "Bu talep örnek yöneticisi erişimi gerektirir. Onaylamak için örnek yöneticisi hesabıyla giriş yapın.",
+    "approving": "Onaylanıyor...",
+    "approveAccess": "CLI erişimini onayla",
+    "cancelling": "İptal ediliyor...",
+    "cancelBtn": "İptal"
+  },
+  "projectDetail": {
+    "addDescription": "Açıklama ekle...",
+    "status": "Durum",
+    "targetDate": "Hedef Tarih",
+    "changeColor": "Proje rengini değiştir",
+    "loadingWorkspaces": "Çalışma alanları yükleniyor...",
+    "project": "Proje",
+    "tabs": {
+      "issues": "Görevler",
+      "overview": "Genel Bakış",
+      "pluginOperations": "Eklenti işlemleri",
+      "workspaces": "Çalışma Alanları",
+      "configuration": "Yapılandırma",
+      "budget": "Bütçe"
+    }
+  },
+  "agentDetail": {
+    "assignTask": "Görev Ata",
+    "live": "Canlı",
+    "approveAgent": "Ajanı onayla",
+    "recentIssues": "Son Görevler",
+    "noRecentIssues": "Son görev yok.",
+    "costs": "Maliyetler",
+    "inputTokens": "Girdi token'ları",
+    "outputTokens": "Çıktı token'ları",
+    "cachedTokens": "Önbelleğe alınmış token'lar",
+    "totalCost": "Toplam maliyet",
+    "date": "Tarih",
+    "input": "Girdi",
+    "output": "Çıktı",
+    "cost": "Maliyet",
+    "apiKeys": "API Anahtarları",
+    "noConfigRevisions": "Henüz yapılandırma sürümü yok.",
+    "permissions": "İzinler",
+    "canCreateAgents": "Yeni ajan oluşturabilir",
+    "canAssignTasks": "Görev atayabilir"
+  },
+  "inbox": {
+    "search": "Gelen kutusunda ara…",
+    "category": "Kategori",
+    "approvalStatus": "Onay durumu",
+    "markAsRead": "Okundu olarak işaretle",
+    "markAllAsRead": "Tümünü okundu olarak işaretle?",
+    "dismiss": "Kapat",
+    "dismissFromInbox": "Gelen kutusundan kaldır",
+    "group": {
+      "none": "Yok",
+      "type": "Tür",
+      "assignee": "Sorumlu",
+      "project": "Proje",
+      "workspace": "Çalışma alanı"
+    },
+    "chooseColumns": "Hangi gelen kutusu sütunlarının görünür kalacağını seçin",
+    "sort": "Sırala",
+    "nestingDisable": "Üst-alt yuvalanmayı devre dışı bırak",
+    "nestingEnable": "Üst-alt yuvalanmayı etkinleştir",
+    "tabs": {
+      "mine": "Benim",
+      "recent": "Son",
+      "unread": "Okunmamış",
+      "blocked": "Engellenmiş",
+      "all": "Tümü"
+    },
+    "categories": {
+      "all": "Tüm kategoriler",
+      "myRecentIssues": "Son görevlerim",
+      "joinRequests": "Katılma istekleri",
+      "approvals": "Onaylar",
+      "failedRuns": "Başarısız çalışmalar",
+      "alerts": "Uyarılar"
+    },
+    "approvalStatuses": {
+      "all": "Tüm onay durumları",
+      "actionable": "Eylem gerekiyor",
+      "resolved": "Çözüldü"
+    },
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "retry": "Tekrar dene",
+    "retrying": "Tekrar deneniyor…",
+    "failedRun": "Başarısız çalışma",
+    "requestedBy": "{{name}} tarafından istendi",
+    "updatedWhen": "{{when}} güncellendi",
+    "requestedFromIp": "IP {{ip}} adresinden {{when}} istendi",
+    "adapterLabel": "adaptör: {{name}}"
+  },
+  "issueDetail": {
+    "backToInbox": "Gelen kutusuna dön",
+    "archiveFromInbox": "Gelen kutusundan arşivle",
+    "moreActions": "Diğer işlemler",
+    "moreIssueActions": "Diğer görev işlemleri",
+    "addDescription": "Açıklama ekle...",
+    "attachments": "Ekler",
+    "deletePrompt": "Sil?",
+    "uploadAttachment": "Ek yükle",
+    "upload": "Yükle",
+    "properties": "Özellikler",
+    "subtreeReasonPlaceholder": "Bu alt ağaç kontrolünün neden uygulandığını açıklayın...",
+    "complete": "Tamamlandı",
+    "previewUnavailable": "Önizleme kullanılamıyor.",
+    "costSummary": "Maliyet Özeti",
+    "noCostData": "Henüz maliyet verisi yok.",
+    "thisIssue": "Bu görev",
+    "pausedByBoardSentence": "Pano tarafından duraklatıldı.",
+    "subtreePauseActive": "Alt ağaç duraklatması etkin.",
+    "pauseLeafExplanation": "Görev çalışması devam edene kadar tutuluyor. İnsan yorumları yine de atanmış kişiyi triyaj için uyandırabilir.",
+    "pauseSubtreeExplanation": "Kök ve alt görev çalışmaları devam edene kadar tutuluyor. İnsan yorumları yine de atanmış kişileri triyaj için uyandırabilir.",
+    "oneIssueHeld": "1 görev tutuluyor",
+    "descendantsHeld_one": "{{count}} alt görev tutuluyor",
+    "descendantsHeld_other": "{{count}} alt görev tutuluyor",
+    "descendantsHeld": "{{count}} alt görev tutuluyor"
+  },
+  "imageGalleryModal": {
+    "imageFallback": "Resim",
+    "attachmentAlt": "ek",
+    "downloadFallbackName": "resim",
+    "download": "İndir",
+    "close": "Kapat",
+    "previous": "Önceki",
+    "next": "Sonraki"
+  },
+  "activityCharts": {
+    "noRuns": "Henüz çalışma yok",
+    "noIssues": "İş kaydı yok",
+    "runsTooltip": "{{day}}: {{count}} çalışma",
+    "issuesTooltip": "{{day}}: {{count}} iş kaydı",
+    "successRateTooltip": "{{day}}: %{{percent}} ({{succeeded}}/{{total}})",
+    "priority": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük"
+    },
+    "status": {
+      "todo": "Yapılacak",
+      "inProgress": "Devam Ediyor",
+      "inReview": "İncelemede",
+      "done": "Tamamlandı",
+      "blocked": "Engellendi",
+      "cancelled": "İptal Edildi",
+      "backlog": "Bekleme Listesi"
+    }
+  },
+  "importFromVault": {
+    "title": "AWS Secrets Manager'dan İçe Aktar",
+    "description": "AWS tarafından yönetilen gizli anahtarları harici referans olarak Paperclip'e getirin.",
+    "closeAria": "İçe aktarma diyaloğunu kapat",
+    "status": {
+      "imported": "İçe Aktarıldı",
+      "conflict": "Çakışma",
+      "ready": "Hazır"
+    },
+    "rowResult": {
+      "created": "Oluşturuldu",
+      "skipped": "Atlandı",
+      "failed": "Başarısız"
+    },
+    "relative": {
+      "secondsAgo": "{{n}} sn önce",
+      "minutesAgo": "{{n}} dk önce",
+      "hoursAgo": "{{n}} sa önce",
+      "daysAgo": "{{n}} gün önce"
+    },
+    "error": {
+      "requestFailed": "İstek başarısız oldu: {{status}}",
+      "unexpected": "Beklenmeyen hata",
+      "permissionTitle": "AWS listeleme erişimini reddetti",
+      "throttlingTitle": "AWS listeleme isteğini kısıtladı",
+      "loadFailedTitle": "Uzak gizli anahtarlar yüklenemedi",
+      "permissionBody": "Bu kasanın arkasındaki AWS sorumlusunda secretsmanager:ListSecrets izni eksik. IAM'i güncelleyin ve tekrar deneyin.",
+      "iamReferenceLink": "IAM referansı"
+    },
+    "validation": {
+      "nameRequired": "Ad zorunludur.",
+      "nameTooLong": "Ad en fazla 160 karakter olmalıdır.",
+      "keyRequired": "Anahtar zorunludur.",
+      "keyPattern": "Anahtar yalnızca küçük harfler, rakamlar, nokta, alt çizgi veya tire içerebilir.",
+      "keyTooLong": "Anahtar en fazla 120 karakter olmalıdır.",
+      "descriptionTooLong": "Açıklama en fazla 500 karakter olmalıdır.",
+      "nameInUse": "Bu adı kullanan bir Paperclip gizli anahtarı zaten var.",
+      "keyInUse": "Bu anahtarı kullanan bir Paperclip gizli anahtarı zaten var.",
+      "nameDuplicateInBatch": "Bu gruptaki başka bir satır zaten bu adı kullanıyor.",
+      "keyDuplicateInBatch": "Bu gruptaki başka bir satır zaten bu anahtarı kullanıyor."
+    },
+    "toast": {
+      "importFailedTitle": "İçe aktarma başarısız",
+      "noneImportedBody": "{{vault}} kasasından hiçbir gizli anahtar içe aktarılmadı.",
+      "completedWithErrorsTitle": "İçe aktarma hatalarla tamamlandı",
+      "completeTitle": "İçe aktarma tamamlandı",
+      "summaryBody": "{{imported}} oluşturuldu · {{skipped}} atlandı · {{failed}} başarısız",
+      "loadMoreFailedTitle": "Daha fazla sonuç yüklenemedi"
+    },
+    "confirm": {
+      "discardPending": "Bekleyen {{count}} içe aktarma iptal edilsin mi?"
+    },
+    "button": {
+      "cancel": "İptal",
+      "back": "Geri",
+      "continueReview": "Devam → İncele",
+      "importing": "İçe aktarılıyor…",
+      "importCount": "{{count}} öğeyi içe aktar",
+      "done": "Tamam",
+      "retry": "Tekrar dene"
+    },
+    "stepper": {
+      "select": "Seç",
+      "review": "İncele",
+      "result": "Sonuç"
+    },
+    "select": {
+      "noVaultsMessage": "Yapılandırılmış bir AWS sağlayıcı kasası yok. Gizli anahtarları içe aktarmak için bir kasa ekleyin.",
+      "manageVaults": "Kasaları yönet",
+      "vaultLabel": "Kasa",
+      "vaultAria": "AWS kasası seç",
+      "vaultPlaceholder": "Bir AWS kasası seçin",
+      "defaultBadge": "varsayılan",
+      "warningBadge": "uyarı",
+      "comingSoonBadge": "yakında",
+      "searchPlaceholder": "Ad, ARN veya etikete göre ara",
+      "searchAria": "Uzak gizli anahtarlarda ara",
+      "refreshAria": "Uzak gizli anahtarları yenile",
+      "selectedNotVisible": "{{selected}} seçildi · {{hidden}} mevcut aramada görünmüyor",
+      "showAll": "Tümünü göster",
+      "showSelected": "Seçilenleri göster",
+      "selectAllAria": "Yüklenen tümünü seç ({{count}})",
+      "rowSelectAria": "{{name}} öğesini seç",
+      "alreadyImported": "Zaten içe aktarıldı",
+      "loadedCount": "{{count}} yüklendi",
+      "selectableCount": "{{count}} seçilebilir",
+      "loading": "Yükleniyor…",
+      "loadMore": "{{count}} tane daha yükle"
+    },
+    "table": {
+      "remoteName": "Uzak ad",
+      "reference": "Referans",
+      "lastChanged": "Son değişiklik",
+      "suggestedName": "Önerilen ad",
+      "state": "Durum"
+    },
+    "empty": {
+      "noMatch": "\"{{query}}\" ile eşleşen uzak gizli anahtar yok.",
+      "noSecrets": "Bu kasaya görünür gizli anahtar yok."
+    },
+    "review": {
+      "emptyMessage": "Seçili gizli anahtar yok. İçe aktarmak için uzak gizli anahtarları seçmek üzere geri dönün.",
+      "readyHeader": "{{count}} gizli anahtar içe aktarmaya hazır",
+      "blockedHeader": "{{count}} öğe içe aktarmadan önce ilgi gerektiriyor",
+      "paperclipName": "Paperclip adı",
+      "key": "Anahtar",
+      "descriptionOptional": "Açıklama (isteğe bağlı)",
+      "removeAria": "{{name}} öğesini kaldır"
+    },
+    "result": {
+      "failedHeading": "İçe aktarma başarısız",
+      "allImportedHeading": "{{count}} gizli anahtarın tamamı içe aktarıldı",
+      "completeHeading": "İçe aktarma tamamlandı",
+      "createdCount": "{{count}} oluşturuldu",
+      "skippedCount": "{{count}} atlandı",
+      "failedCount": "{{count}} başarısız",
+      "groupCreated": "Oluşturuldu",
+      "groupSkipped": "Atlandı",
+      "groupFailed": "Başarısız"
+    },
+    "footer": {
+      "selectPrompt": "İçe aktarmak için uzak gizli anahtarları seçin",
+      "selectedCount": "{{count}} seçildi",
+      "readyCount": "{{count}} hazır",
+      "blockedCount": "{{count}} engellendi",
+      "createdCount": "{{count}} oluşturuldu",
+      "skippedCount": "{{count}} atlandı",
+      "failedCount": "{{count}} başarısız"
+    }
+  },
+  "routineHistory": {
+    "toast": {
+      "restoredTitle": "Revizyon {{from}}, revizyon {{to}} olarak geri yüklendi",
+      "restoredBodyWithSecrets": "Tetikleyici etkin durumu anlık görüntüden geri yüklendi. Yeni webhook gizli anahtarları yukarıdaki bildirim panelinde mevcuttur.",
+      "restoredBody": "Tetikleyici etkin durumu anlık görüntüden geri yüklendi.",
+      "restoreFailedTitle": "Revizyon geri yüklenemedi",
+      "restoreFailedBody": "Paperclip revizyonu geri yükleyemedi."
+    },
+    "loadError": {
+      "title": "Revizyonlar yüklenemedi",
+      "unknown": "Revizyonlar yüklenirken bilinmeyen bir hata oluştu."
+    },
+    "retry": "Yeniden dene",
+    "emptyState": {
+      "noEdits": "Henüz düzenleme yok",
+      "description": "Revizyon 1, bu rutinin sahip olduğu tek geçmiştir. Bir düzenlemeyi kaydetmek ilk ek revizyonu oluşturur."
+    },
+    "viewingRevision": "Revizyon {{n}} görüntüleniyor (salt-okunur)",
+    "historicalBanner": {
+      "description": "Bu revizyonu geri yüklemek, aynı içerikle yeni bir revizyon {{n}} oluşturur. Geçmiş yalnızca ekleme yapılabilir kalır."
+    },
+    "returnToCurrent": "Güncele dön",
+    "restoreAsNewRevision": "Yeni revizyon olarak geri yükle",
+    "theRoutine": "rutini",
+    "unsavedEditsTitle": "Kaydedilmemiş rutin düzenlemeleri",
+    "unsavedEditsBody": "{{fields}} alanını değiştirdiniz ancak henüz kaydetmediniz. Eski bir revizyonu önizlemeden veya geri yüklemeden önce kaydedin ya da değişiklikleri iptal edin.",
+    "discardChanges": "Değişiklikleri iptal et",
+    "saveAndContinue": "Kaydet ve devam et",
+    "revisions": "Revizyonlar",
+    "totalCount": "toplam {{count}}",
+    "revShort": "rev {{n}}",
+    "currentBadge": "Güncel",
+    "restoredBadge": "Geri Yüklendi",
+    "showOlder": "{{count}} daha eskisini göster…",
+    "restoreThisRevision": "Bu revizyonu geri yükle",
+    "field": {
+      "title": "Başlık",
+      "priority": "Öncelik",
+      "status": "Durum",
+      "defaultAgent": "Varsayılan ajan",
+      "project": "Proje",
+      "concurrency": "Eşzamanlılık",
+      "catchUp": "Yakalama",
+      "env": "Env",
+      "variables": "Değişkenler"
+    },
+    "savedBy": "{{when}} {{actor}} tarafından kaydedildi",
+    "compareWithCurrent": "Güncel ile karşılaştır",
+    "structuredFields": "Yapılandırılmış alanlar",
+    "differsFromCurrent": "güncelden farklı",
+    "description": "Açıklama",
+    "noDescription": "Açıklama yok",
+    "triggersHeading": "Tetikleyiciler ({{count}})",
+    "noTriggers": "Bu revizyonda tetikleyici yok.",
+    "triggerEnabled": "etkin",
+    "triggerDisabled": "devre dışı",
+    "webhookSecretsNote": "Webhook gizli anahtarları revizyonlarda saklanmaz. Geri yüklenen bir webhook tetikleyicisinin yeniden oluşturulması gerekirse Paperclip, geri yükleme sırasında taze gizli anahtar materyali üretir.",
+    "variablesHeading": "Değişkenler ({{count}})",
+    "variableDefault": "varsayılan: {{value}}",
+    "restoreDialog": {
+      "title": "Revizyon {{n}} geri yüklensin mi?",
+      "description": "Bu, revizyon {{targetN}} ile aynı içeriğe sahip yeni bir revizyon {{newN}} oluşturur. Revizyon {{targetN}}–{{currentN}} geçmişte kalır ve değiştirilmez.",
+      "fieldsRevert": "Rutin alan değerleri, değişkenler ve zamanlama cron'u geri alınacak.",
+      "secretsRevert": "Rutin gizli anahtarları geri alınacak: {{summary}}.",
+      "runHistoryPreserved": "Önceki çalıştırma geçmişi korunur.",
+      "webhookRecreated": "{{label}} webhook tetikleyicisi yeni bir URL ve gizli anahtar ile yeniden oluşturulacak. Paperclip, geri yüklemeden sonra gizli anahtarı bir kez gösterir — kapatmadan önce kopyalayın.",
+      "changeSummaryLabel": "Değişiklik özeti (isteğe bağlı)",
+      "changeSummaryPlaceholder": "Neden geri yüklüyorsunuz? Geçmişte görünür."
+    },
+    "cancel": "İptal",
+    "restoring": "Geri yükleniyor…",
+    "restoreAsRevisionN": "Revizyon {{n}} olarak geri yükle",
+    "compareDialog": {
+      "title": "Rutin revizyonlarını karşılaştır",
+      "oldLabel": "Eski",
+      "newLabel": "Yeni"
+    },
+    "fieldChanges": "Alan değişiklikleri",
+    "noFieldChanges": "Yapısal alan değişikliği yok.",
+    "tableHeader": {
+      "field": "Alan",
+      "oldValue": "Eski değer",
+      "newValue": "Yeni değer"
+    },
+    "descriptionDiff": "Açıklama farkı",
+    "close": "Kapat",
+    "restoreRevAsNew": "Rev {{n}}'i yeni revizyon olarak geri yükle",
+    "revOption": "rev {{n}} — {{when}}",
+    "diff": {
+      "noDescription": "Hiçbir revizyonda açıklama yok.",
+      "identical": "Açıklamalar aynı.",
+      "old": "Eski",
+      "new": "Yeni",
+      "content": "İçerik"
+    },
+    "actor": {
+      "board": "Pano",
+      "agent": "Ajan",
+      "system": "Sistem"
+    },
+    "unassigned": "Atanmamış",
+    "noProject": "Proje yok",
+    "trigger": {
+      "replay": "tekrar {{seconds}}sn",
+      "api": "API"
+    },
+    "list": {
+      "two": "{{first}} ve {{second}}",
+      "many": "{{leading}} ve {{last}}"
+    },
+    "versionLatest": "en son",
+    "env": {
+      "plainSet": "düz (ayarlı)",
+      "plainChanged": "düz (değişti)",
+      "keysOnly": "{{count}} anahtar",
+      "keysWithSecrets": "{{count}} anahtar ({{secrets}} gizli anahtar referansı)",
+      "added": "{{count}} anahtar eklendi",
+      "removed": "{{count}} anahtar kaldırıldı",
+      "changed": "{{count}} anahtar değişti"
+    },
+    "envChange": {
+      "added": "Env eklendi ({{key}})",
+      "removed": "Env kaldırıldı ({{key}})",
+      "bindingKind": "Env {{key}} bağlayıcı türü",
+      "secret": "Env {{key}} gizli anahtarı",
+      "version": "Env {{key}} sürümü",
+      "value": "Env {{key}} değeri"
+    },
+    "triggerChange": {
+      "removed": "Tetikleyici kaldırıldı ({{label}})",
+      "added": "Tetikleyici eklendi ({{label}})",
+      "label": "Tetikleyici {{label}}"
+    }
+  },
+  "cloudUpstream": {
+    "steps": {
+      "connect": "Bağlan",
+      "scan": "Tara",
+      "preview": "Önizleme",
+      "push": "Gönder",
+      "verify": "Doğrula",
+      "activate": "Etkinleştir"
+    },
+    "activation": {
+      "agents": {
+        "label": "Ajanlar",
+        "singular": "ajan",
+        "detail": "İçe aktarılan ajanların duraklatmasını kaldırmadan önce bulut sırlarını ve adaptör kimlik bilgilerini doğrulayın."
+      },
+      "routines": {
+        "label": "Rutinler",
+        "singular": "rutin",
+        "detail": "İçe aktarılan rutinleri etkinleştirmeden önce zamanlamaları ve tetikleyici ayarlarını gözden geçirin."
+      },
+      "monitors": {
+        "label": "İzleyiciler",
+        "singular": "izleyici",
+        "detail": "Hedef yığın duman testinden geçtikten sonra etkinleştirin."
+      },
+      "checklistTitle": "Etkinleştirme kontrol listesi",
+      "noneImported": "Bu çalışmada içe aktarılan 0 {{plural}}.",
+      "activatedButton": "Etkinleştirildi",
+      "activateButton": "Etkinleştir",
+      "keepPausedButton": "Duraklatılmış tut",
+      "rowDetail": "İçe aktarılan {{count}} {{plural}} varsayılan olarak duraklatılır. {{detail}}",
+      "statusActivated": "{{count}} etkinleştirildi",
+      "statusNoneImported": "0 içe aktarıldı",
+      "statusPaused": "{{count}} duraklatıldı"
+    },
+    "breadcrumb": {
+      "company": "Şirket",
+      "settings": "Ayarlar",
+      "cloudUpstream": "Bulut upstream"
+    },
+    "notice": {
+      "connectionApproved": "Bulut upstream bağlantısı onaylandı.",
+      "pushSucceeded": "Gönderim çalışması tamamlandı. Otomasyonların duraklatmasını kaldırmadan önce etkinleştirmeyi gözden geçirin.",
+      "pushFailed": "Gönderim çalışması başarısız oldu. Çalışma olaylarını inceleyin ve sorunu giderdikten sonra yeniden deneyin.",
+      "activationUpdated": "Etkinleştirme kontrol listesi güncellendi."
+    },
+    "error": {
+      "finishConnection": "Bağlantı tamamlanamadı.",
+      "noPendingConnection": "Bekleyen bulut upstream bağlantısı bulunamadı. Bağlantıyı yeniden başlatın.",
+      "connectionNotApproved": "Bulut upstream bağlantısı onaylanmadı: {{reason}}",
+      "startConnection": "Bağlantı başlatılamadı.",
+      "runPush": "Gönderim çalıştırılamadı.",
+      "activateEntities": "İçe aktarılan varlıklar etkinleştirilemedi.",
+      "previewPush": "Gönderim önizlemesi yapılamadı.",
+      "previewTooLarge": "Yerel şirket tek bir istekte önizlenemeyecek kadar büyük. Devam etmek için Gönder'e tıklayın (Gönder adımı parçalar halinde yükler) veya parçalı önizleme seçenekleri için belgelere bakın."
+    },
+    "empty": {
+      "selectCompany": "Bulut upstream'i yapılandırmak için bir şirket seçin.",
+      "loadingExperimental": "Deneysel ayarlar yükleniyor..."
+    },
+    "heading": {
+      "title": "Bulut upstream",
+      "description": "{{name}} şirketini bir Paperclip Cloud yığınına gönderin. Etkinleştirilene kadar otomasyonlar duraklatılmış kalır."
+    },
+    "disabled": {
+      "prefix": "Bulut senkronizasyonu devre dışı. Şuradan etkinleştirin:",
+      "instanceSettingsLink": "Örnek Ayarları",
+      "suffix": "upstream bağlantısı ve gönderim araçlarını göstermek için."
+    },
+    "action": {
+      "openCloud": "Bulutu aç",
+      "previewPush": "Gönderimi önizle",
+      "connect": "Bağlan",
+      "pushToCloud": "Buluta gönder",
+      "downloadReport": "Raporu indir",
+      "retry": "Yeniden dene",
+      "reRun": "Yeniden çalıştır"
+    },
+    "section": {
+      "connection": "Bağlantı",
+      "preview": "Önizleme",
+      "progressAndFinish": "İlerleme ve tamamlama",
+      "history": "Geçmiş"
+    },
+    "connection": {
+      "meta": "{{product}} · {{origin}} · token {{tokenStatus}}",
+      "schema": "Şema {{schemaMajor}}. Maks. parça {{chunkSize}}."
+    },
+    "input": {
+      "remoteUrlAria": "Paperclip Cloud yığın URL'si"
+    },
+    "preview": {
+      "buildingShort": "Manifest oluşturuluyor...",
+      "buildingMedium": "Manifest oluşturuluyor... {{seconds}} sn. Büyük şirketler bir dakikaya kadar sürebilir.",
+      "buildingLong": "Manifest hâlâ oluşturuluyor... {{seconds}} sn. PAP ölçeğindeki şirketler genellikle ~60 sn sürer.",
+      "warnings": "Uyarılar",
+      "conflicts": "Çakışmalar",
+      "noConflicts": "Bu önizleme için hedef çakışması algılanmadı."
+    },
+    "run": {
+      "metaCompleted": "Çalışma {{id}} · {{date}} tarihinde tamamlandı",
+      "metaInProgress": "Çalışma {{id}} · devam ediyor",
+      "progressPercent": "%{{percent}}",
+      "status": {
+        "succeeded": "Başarılı",
+        "failed": "Başarısız",
+        "cancelled": "İptal edildi",
+        "running": "Çalışıyor",
+        "previewed": "Önizlendi"
+      }
+    },
+    "history": {
+      "runLabel": "Çalışma {{id}} · {{status}}"
+    }
+  },
+  "companySettingsPluginPage": {
+    "breadcrumbSettings": "Ayarlar",
+    "selectCompany": "Bu sayfayı görüntülemek için bir şirket seçin.",
+    "loading": "Yükleniyor...",
+    "extensionsUnavailable": "Eklenti uzantıları kullanılamıyor: {{message}}",
+    "duplicateRoutePrefix": "Birden fazla eklenti şu şirket ayarları rotasını tanımlıyor:",
+    "duplicateRouteSuffix": ". Bir eklentiyi devre dışı bırakın veya rotasını değiştirin."
+  },
+  "pluginPage": {
+    "breadcrumbPlugins": "Eklentiler",
+    "selectCompany": "Bu sayfayı görüntülemek için bir şirket seçin.",
+    "loading": "Yükleniyor…",
+    "duplicateRoutePrefix": "Birden fazla eklenti şu rotayı tanımlıyor:",
+    "duplicateRouteSuffix": ". Çakışma giderilene kadar plugin-id rotasını kullanın.",
+    "back": "Geri"
+  },
+  "missingPluginTabPlaceholder": {
+    "unavailable": "Çalışma alanı eklenti sekmesi mevcut değil."
+  },
+  "productivityReviewBadge": {
+    "title": "Verimlilik incelemesi",
+    "trigger": {
+      "noCommentStreak": "Yorumsuz seri",
+      "longActiveDuration": "Uzun aktif süre",
+      "highChurn": "Yüksek değişim"
+    },
+    "status": {
+      "open": "Açık",
+      "inProgress": "Devam ediyor",
+      "inReview": "İncelemede",
+      "blocked": "Engellendi"
+    },
+    "ariaLabel": "İncelemede · verimlilik incelemesi {{identifier}} ({{label}})",
+    "underReview": "İncelemede",
+    "open": "Verimlilik incelemesi açık",
+    "triggerLabel": "Tetikleyici:",
+    "noCommentStreakLabel": "Yorumsuz seri:",
+    "runs": "{{count}} çalıştırma",
+    "reviewLabel": "İnceleme:"
+  },
+  "uiDialog": {
+    "close": "Kapat"
+  },
+  "uiSheet": {
+    "close": "Kapat"
+  },
+  "uiCommand": {
+    "title": "Komut Paleti",
+    "description": "Çalıştırılacak bir komut arayın...",
+    "close": "Kapat"
+  },
+  "uiBreadcrumb": {
+    "more": "Daha fazla"
+  },
+  "issueRunLedger": {
+    "liveness": {
+      "completed": {
+        "label": "Tamamlandı",
+        "description": "İş, son duruma ulaştı."
+      },
+      "advanced": {
+        "label": "İlerledi",
+        "description": "Çalıştırma, somut ilerleme kanıtı üretti."
+      },
+      "planOnly": {
+        "label": "Yalnızca plan",
+        "description": "Çalıştırma, somut eylem kanıtı olmadan gelecekteki çalışmayı tarif etti."
+      },
+      "emptyResponse": {
+        "label": "Boş yanıt",
+        "description": "Çalıştırma, yararlı bir çıktı olmadan tamamlandı."
+      },
+      "blocked": {
+        "label": "Engellendi",
+        "description": "Çalıştırma veya iş bir engel bildirdi."
+      },
+      "failed": {
+        "label": "Başarısız",
+        "description": "Çalıştırma başarısızlıkla sonuçlandı."
+      },
+      "needsFollowup": {
+        "label": "Takip gerekiyor",
+        "description": "Çalıştırma yararlı çıktı üretti ancak somut ilerleme kanıtlamadı."
+      },
+      "pending": {
+        "label": "Tamamlandıktan sonra kontrol edilir",
+        "description": "Canlılık, çalıştırma bittikten sonra değerlendirilir."
+      },
+      "retryPending": {
+        "label": "Yeniden deneme bekliyor",
+        "description": "Paperclip, henüz başlamamış bir otomatik yeniden denemeyi sıraya aldı."
+      },
+      "missing": {
+        "label": "Canlılık verisi yok",
+        "description": "Bu çalıştırma için kaydedilmiş bir canlılık sınıflandırması yok."
+      }
+    },
+    "outputSilence": {
+      "suspicious": "Sessizlik takibi",
+      "critical": "Eskimiş çalıştırma",
+      "snoozed": "Sessizlik ertelendi"
+    },
+    "modelProfile": {
+      "requested": "İstenen: {{value}}",
+      "applied": "Uygulanan: {{value}}",
+      "source": "Kaynak: {{value}}",
+      "fallback": "Yedek: {{value}}",
+      "badgeSame": "Profil: {{requested}}",
+      "badgeApplied": "Profil: {{requested}} → {{applied}}",
+      "badgeUnavailable": "Profil: {{requested}} (kullanılamıyor)",
+      "cheapFallback": "Ucuz profil birincil profile geri döndü",
+      "profileUnavailable": "{{requested}} profili kullanılamıyor"
+    },
+    "duration": {
+      "seconds": "{{count}} sn",
+      "minutes": "{{count}} dk",
+      "minutesSeconds": "{{minutes}} dk {{seconds}} sn",
+      "hours": "{{count}} sa",
+      "hoursMinutes": "{{hours}} sa {{minutes}} dk"
+    },
+    "runSummary": {
+      "running": "{{agent}} tarafından şu anda çalıştırılıyor",
+      "queued": "{{agent}} için kuyruğa alındı",
+      "scheduledRetry": "{{agent}} için otomatik yeniden deneme planlandı",
+      "other": "{{agent}} tarafından {{status}}"
+    },
+    "stopReason": {
+      "timeoutSeconds": "{{seconds}} sn zaman aşımı",
+      "timeoutWith": "zaman aşımı ({{detail}})",
+      "timeout": "zaman aşımı",
+      "maxTurnsExhausted": "maksimum tur sayısı tükendi",
+      "budgetPaused": "bütçe duraklatıldı",
+      "cancelled": "iptal edildi",
+      "pausedByBoard": "kurul tarafından duraklatıldı",
+      "processLost": "süreç kaybedildi",
+      "adapterFailed": "adaptör başarısız oldu",
+      "completedWith": "tamamlandı ({{detail}})",
+      "completed": "tamamlandı"
+    },
+    "stopStatus": {
+      "retryPending": "Yeniden deneme bekliyor",
+      "waitingToStart": "Başlatılmayı bekliyor",
+      "stillRunning": "Hâlâ çalışıyor",
+      "unavailable": "Kullanılamıyor",
+      "noStopReason": "Durdurma nedeni yok"
+    },
+    "lastUsefulAction": {
+      "waitingNextAttempt": "Sonraki denemeyi bekliyor",
+      "noneRecordedYet": "Henüz bir eylem kaydedilmedi",
+      "noConcreteAction": "Somut bir eylem yok",
+      "noUsefulOutput": "Yararlı çıktı yok",
+      "unavailable": "Kullanılamıyor",
+      "noneRecorded": "Kayıt yok"
+    },
+    "continuationLabel": "{{attempt}}. devam denemesi",
+    "silenceAge": {
+      "under1Minute": "1 dakikadan az",
+      "minutes_one": "{{count}} dakika",
+      "minutes_other": "{{count}} dakika",
+      "hours_one": "{{count}} saat",
+      "hours_other": "{{count}} saat",
+      "hoursMinutes": "{{hours}} sa {{minutes}} dk"
+    },
+    "watchdog": {
+      "errorForbidden": "Bekçi köpeği kararlarını yalnızca kurul veya atanmış kurtarma sorumlusu kaydedebilir",
+      "errorGeneric": "Paperclip bekçi köpeği kararını kaydedemedi.",
+      "toastTitle": "Bekçi köpeği kararı kaydedilmedi"
+    },
+    "section": {
+      "ariaLabel": "İş çalıştırma kayıt defteri"
+    },
+    "heading": "Çalıştırma kayıt defteri",
+    "emptyState": {
+      "inProgress": "İlk çalıştırma kaydı bekleniyor.",
+      "noRuns": "Henüz bağlı bir çalıştırma yok."
+    },
+    "latestRunLink": "Son çalıştırma",
+    "childWork": {
+      "label": "Alt çalışma",
+      "summaryActive": "{{active}} aktif, {{done}} tamamlandı, {{cancelled}} iptal edildi",
+      "summaryTerminal": "tamamı {{total}} sonlandı ({{done}} tamamlandı, {{cancelled}} iptal edildi)",
+      "moreCount": "+{{count}} daha"
+    },
+    "silence": {
+      "criticalTitle": "Eskimiş çalıştırma bekçi köpeği uyarısı",
+      "warningTitle": "Çıktı sessizliği bekçi köpeği uyarısı",
+      "body": "Son aktif çalıştırma {{age}} boyunca sessiz kaldı.",
+      "extendedPeriod": "uzun bir süre",
+      "reviewPrefix": "İnceleyin",
+      "reviewSuffix": "kurtarma bağlamı için.",
+      "actions": {
+        "continue": "İzlemeye devam et",
+        "snooze": "1 sa ertele",
+        "falsePositive": "Yanlış pozitif olarak işaretle"
+      }
+    },
+    "feedEmpty": {
+      "withActivity": "Bu işin geçmişi oluştuğunda çalıştırmalar ve etkinlikler burada görünecek.",
+      "runsOnly": "Bu işe bağlandıktan sonra canlılık meta verisi olmayan geçmiş çalıştırmalar burada görünecek."
+    },
+    "runCard": {
+      "run": "Çalıştırma",
+      "byAgent": "{{agent}} tarafından",
+      "liveBadge": "canlı",
+      "exhausted": "Tükendi",
+      "elapsed": "Geçen süre",
+      "unknown": "bilinmiyor",
+      "lastUsefulAction": "Son yararlı eylem",
+      "stop": "Durdurma",
+      "retryOfPrefix": "Yeniden deneme:",
+      "nextActionLabel": "Sonraki eylem: "
+    },
+    "olderItems": "{{count}} eski öğe gösterilmiyor"
+  },
+  "workspaceRuntimeControls": {
+    "statusLabel": {
+      "runOnce": "bir kez çalıştır",
+      "stopped": "durduruldu"
+    },
+    "disabledReason": {
+      "jobMissingCommand": "Bu işte bir komut eksik.",
+      "runtimeUntracked": "Bu çalışma zamanı servisi, yapılandırılmış bir çalışma alanı komutuyla artık eşleşmiyor."
+    },
+    "actions": {
+      "run": "Çalıştır",
+      "start": "Başlat",
+      "stop": "Durdur",
+      "restart": "Yeniden başlat"
+    },
+    "itemDetails": {
+      "port": "Port {{port}}"
+    },
+    "emptyMessages": {
+      "services": "Bu çalışma alanı için yapılandırılmış bir servis yok.",
+      "jobs": "Bu çalışma alanı için yapılandırılmış tek seferlik bir iş yok."
+    },
+    "header": {
+      "workspaceCommands": "Çalışma alanı komutları",
+      "servicesRunning": "{{count}} servis çalışıyor",
+      "noServicesRunning": "Çalışan servis yok",
+      "jobsAvailable_one": "Talep üzerine çalıştırılabilir {{count}} iş mevcut.",
+      "jobsAvailable_other": "Talep üzerine çalıştırılabilir {{count}} iş mevcut.",
+      "independent": "Her komut bağımsız olarak kontrol edilebilir."
+    },
+    "section": {
+      "servicesTitle": "Servisler",
+      "servicesDescription": "Paperclip'in bu çalışma alanı için denetleyebileceği uzun süreli komutlar.",
+      "jobsTitle": "İşler",
+      "jobsDescription": "Şimdi çalışan ve tamamlandığında çıkan tek seferlik komutlar.",
+      "untrackedTitle": "Takip edilmeyen servisler",
+      "untrackedDescription": "Mevcut çalışma alanı komut yapılandırmasıyla artık eşleşmeyen çalışan servisler."
+    }
+  },
+  "markdownBody": {
+    "issueLinkLabel": "İş {{identifier}}",
+    "issueLinkLabelWithTitle": "İş {{identifier}}: {{title}}",
+    "copy": "Kopyala",
+    "copied": "Kopyalandı!",
+    "copyFailed": "Kopyalama başarısız",
+    "copyCodeAriaLabel": "Kodu kopyala",
+    "wrapLines": "Satırları kaydır",
+    "unwrapLines": "Satır kaydırmayı kaldır",
+    "scrollableTableAriaLabel": "Kaydırılabilir tablo",
+    "mermaidRendering": "Mermaid diyagramı oluşturuluyor...",
+    "mermaidRenderFailed": "Mermaid diyagramı oluşturulamadı.",
+    "mermaidUnableToRender": "Mermaid diyagramı oluşturulamıyor: {{error}}"
+  },
+  "markdownEditor": {
+    "noImageUploadHandler": "Görsel yükleme işleyicisi yok",
+    "imageUploadFailed": "Görsel yüklemesi başarısız",
+    "richEditorLoadFailed": "Zengin editör içeriği yükleyemedi",
+    "richEditorUnavailable": "Bu markdown için zengin editör kullanılamıyor. Bunun yerine ham kaynak gösteriliyor.",
+    "retryRichEditor": "Zengin editörü yeniden dene",
+    "dropFileToUpload": "Yüklemek için dosyayı bırakın",
+    "dropImageToUpload": "Yüklemek için görseli bırakın",
+    "optionLabel": {
+      "project": "Proje",
+      "user": "Kullanıcı",
+      "skill": "Yetenek",
+      "routine": "Rutin"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "references": {
+      "title": "Referanslar",
+      "description": "Bu işin başlığında, açıklamasında, yorumlarında veya belgelerinde şu anda işaret ettiği diğer işler.",
+      "empty": "Bu iş henüz başka bir işe referans vermiyor."
+    },
+    "referencedBy": {
+      "title": "Referans verilenler",
+      "description": "Şu anda bu işe işaret eden diğer işler.",
+      "empty": "Henüz başka bir iş bu işe referans vermiyor."
+    }
+  },
+  "issueColumns": {
+    "columns": "Sütunlar",
+    "desktopIssueRows": "Masaüstü iş satırları",
+    "resetDefaults": "Varsayılanlara sıfırla",
+    "resetDefaultsHint": "durum, kimlik, güncellendi",
+    "live": "Canlı",
+    "unassigned": "Atanmamış",
+    "noProject": "Proje yok",
+    "subIssue": "Alt iş",
+    "filterByWorkspace": "Çalışma alanına göre filtrele",
+    "userFallback": "Kullanıcı",
+    "activity": {
+      "updated": "{{relative}} güncellendi"
+    },
+    "label": {
+      "status": "Durum",
+      "id": "Kimlik",
+      "assignee": "Atanan",
+      "project": "Proje",
+      "workspace": "Çalışma alanı",
+      "parent": "Üst iş",
+      "labels": "Etiketler",
+      "updated": "Son güncelleme"
+    },
+    "description": {
+      "status": "Sol kenardaki iş durumu rozeti.",
+      "id": "PAP-1009 gibi bilet tanımlayıcısı.",
+      "assignee": "Atanan ajan veya pano kullanıcısı.",
+      "project": "Renkli bağlı proje rozeti.",
+      "workspace": "İş için kullanılan çalıştırma veya proje çalışma alanı.",
+      "parent": "Üst iş tanımlayıcısı ve başlığı.",
+      "labels": "İş etiketleri.",
+      "updated": "Son görünür etkinlik zamanı."
+    }
+  },
+  "issueLinkQuicklook": {
+    "unableToLoad": "İş önizlemesi yüklenemiyor.",
+    "status": {
+      "backlog": "birikim",
+      "todo": "yapılacak",
+      "in_progress": "devam ediyor",
+      "in_review": "incelemede",
+      "done": "tamamlandı",
+      "blocked": "engellendi",
+      "cancelled": "iptal edildi"
+    }
+  },
+  "issueWorkspaceCard": {
+    "copy": "Kopyala",
+    "copied": "Kopyalandı!",
+    "cancel": "İptal",
+    "save": "Kaydet",
+    "edit": "Düzenle",
+    "repoLabel": "Depo:",
+    "environmentLabel": "Ortam:",
+    "reusedWorkspaceSuffix": "yeniden kullanılan çalışma alanı",
+    "projectDefaultSuffix": "proje varsayılanı",
+    "willCreateIsolated": "Bu iş çalıştırıldığında yeni bir izole çalışma alanı oluşturulacak.",
+    "willReuseExisting": "Bu iş çalıştırıldığında mevcut bir çalışma alanı yeniden kullanılacak.",
+    "willUseProjectDefault": "Bu iş çalıştırıldığında proje varsayılan çalışma alanı yapılandırması kullanılacak.",
+    "reusingLabel": "Yeniden kullanılıyor:",
+    "viewWorkspaceDetails": "Çalışma alanı ayrıntılarını görüntüle →",
+    "chooseExistingWorkspace": "Mevcut bir çalışma alanı seç",
+    "noEnvironmentOnReused": "Yeniden kullanılan çalışma alanında ortam yok",
+    "selectWorkspaceForEnvironment": "Ortamını incelemek için mevcut bir çalışma alanı seçin",
+    "projectDefaultEnvironment": "Proje varsayılan ortamı",
+    "noEnvironment": "Ortam yok",
+    "environmentLockedReuse": "Mevcut bir çalışma alanı yeniden kullanılırken ortam seçimi kilitlidir. Sonraki çalıştırma, o çalışma alanının kalıcı ortam yapılandırmasını kullanacaktır.",
+    "environmentLockedChooseFirst": "Önce mevcut bir çalışma alanı seçin. Onun kalıcı ortam yapılandırması sonraki çalıştırmayı belirleyecektir.",
+    "currentLabel": "Geçerli:",
+    "mode": {
+      "isolatedWorkspace": "İzole çalışma alanı",
+      "operatorBranch": "Operatör dalı",
+      "cloudSandbox": "Bulut sandbox",
+      "adapterManaged": "Adaptör yönetimli",
+      "workspace": "Çalışma alanı"
+    },
+    "selection": {
+      "newIsolated": "Yeni izole çalışma alanı",
+      "existingIsolated": "Mevcut izole çalışma alanı",
+      "reuseExisting": "Mevcut çalışma alanını yeniden kullan",
+      "projectDefault": "Proje varsayılanı"
+    },
+    "option": {
+      "projectDefault": "Proje varsayılanı",
+      "newIsolated": "Yeni izole çalışma alanı",
+      "reuseExisting": "Mevcut çalışma alanını yeniden kullan"
+    },
+    "status": {
+      "active": "etkin",
+      "idle": "boşta",
+      "in_review": "incelemede",
+      "archived": "arşivlendi"
+    }
+  },
+  "scheduleEditor": {
+    "chooseFrequency": "Sıklık seç...",
+    "fiveFieldsHelp": "Beş alan: dakika saat ayın-günü ay haftanın-günü",
+    "at": "saat",
+    "atMinute": "dakika",
+    "on": "gün",
+    "onDay": "ayın günü",
+    "preset": {
+      "everyMinute": "Her dakika",
+      "everyHour": "Her saat",
+      "everyDay": "Her gün",
+      "weekdays": "Hafta içi",
+      "weekly": "Haftalık",
+      "monthly": "Aylık",
+      "custom": "Özel (cron)"
+    },
+    "hour": {
+      "midnight": "12:00",
+      "noon": "12:00",
+      "am": "{{hour}}:00",
+      "pm": "{{hour}}:00"
+    },
+    "day": {
+      "mon": "Pzt",
+      "tue": "Sal",
+      "wed": "Çar",
+      "thu": "Per",
+      "fri": "Cum",
+      "sat": "Cmt",
+      "sun": "Paz"
+    },
+    "describe": {
+      "everyMinute": "Her dakika",
+      "everyHour": "Her saat :{{minute}}'de",
+      "everyDay": "Her gün {{time}}",
+      "weekdays": "Hafta içi {{time}}",
+      "weekly": "Her {{day}} {{time}}",
+      "monthly": "Her ayın {{day}}{{suffix}} günü {{time}}",
+      "noSchedule": "Zamanlama ayarlanmadı"
+    }
+  },
+  "sourceResolvedFold": {
+    "ariaLabel": "Kaynağı çözülmüş bekçi katlaması",
+    "headerTitle": "KAYNAĞI ÇÖZÜLMÜŞ KATLAMA",
+    "systemAudit": "sistem denetimi",
+    "description": "Bu çalıştırma, kaynağı çözülmüş bir yanlış pozitif olarak katlandı.",
+    "evidenceAt": "{{at}}'de",
+    "silenceStarted": "(sessizlik {{at}} tarihinde başladı)",
+    "unknown": "bilinmiyor",
+    "row": {
+      "sourceIssue": "Kaynak iş",
+      "sameRunEvidence": "Aynı çalıştırma kanıtı",
+      "silenceAge": "Katlamadan önceki sessizlik süresi",
+      "processCleanup": "İşlem temizliği",
+      "evaluationIssue": "Değerlendirme işi"
+    },
+    "badgeTitle": "Sistem bu çalıştırmayı kaynağı çözülmüş bir yanlış pozitif olarak katladı.",
+    "badgeLabel": "Kaynağı çözüldü"
+  },
+  "projectWorkspaceDetail": {
+    "tab": {
+      "configuration": "Yapılandırma"
+    },
+    "sourceType": {
+      "localPath": {
+        "label": "Yerel git çalışma kopyası",
+        "description": "Paperclip'in doğrudan kullanabileceği yerel bir dizin."
+      },
+      "nonGitPath": {
+        "label": "Yerel git olmayan dizin",
+        "description": "Git anlamı olmayan yerel bir klasör."
+      },
+      "gitRepo": {
+        "label": "Uzak git deposu",
+        "description": "İsteğe bağlı referanslar ve yerel çalışma kopyası içeren bir depo URL'si."
+      },
+      "remoteManaged": {
+        "label": "Uzaktan yönetilen çalışma alanı",
+        "description": "Harici bir referans üzerinden takip edilen, barındırılan bir çalışma alanı."
+      }
+    },
+    "visibility": {
+      "default": "Varsayılan",
+      "advanced": "Gelişmiş"
+    },
+    "error": {
+      "runtimeConfigMustBeObject": "Çalışma alanı komutları JSON'ı bir JSON nesnesi olmalıdır.",
+      "invalidJson": "Geçersiz JSON.",
+      "remoteManagedRequiresRef": "Uzaktan yönetilen çalışma alanları bir uzak çalışma alanı referansı veya depo URL'si gerektirir.",
+      "requiresPathOrRepo": "Çalışma alanı en az bir yerel dizin veya depo URL'si gerektirir.",
+      "localPathMustBeAbsolute": "Yerel çalışma alanı dizini mutlak yol olmalıdır.",
+      "repoUrlInvalid": "Depo URL'si geçerli bir URL olmalıdır.",
+      "saveFailed": "Çalışma alanı kaydedilemedi.",
+      "updateFailed": "Çalışma alanı güncellenemedi.",
+      "runtimeControlFailed": "Çalışma alanı komutları kontrol edilemedi.",
+      "loadFailed": "Çalışma alanı yüklenemedi"
+    },
+    "breadcrumb": {
+      "projects": "Projeler",
+      "workspaces": "Çalışma alanları"
+    },
+    "runtime": {
+      "jobCompleted": "Çalışma alanı işi tamamlandı.",
+      "serviceStopped": "Çalışma alanı servisi durduruldu. İş yürütmesi duraklatılmadı.",
+      "serviceRestarted": "Çalışma alanı servisi yeniden başlatıldı. İş yürütmesi duraklatılmadı.",
+      "serviceStarted": "Çalışma alanı servisi başlatıldı."
+    },
+    "loading": "Çalışma alanı yükleniyor…",
+    "notFound": "Bu proje için çalışma alanı bulunamadı.",
+    "backToWorkspaces": "Çalışma alanlarına dön",
+    "heading": {
+      "eyebrow": "Proje çalışma alanı"
+    },
+    "makePrimary": "Birincil yap",
+    "primaryNotice": "Bu, projenin birincil kod tabanı çalışma alanıdır.",
+    "intro": "Paperclip'in bu projeye bağladığı somut çalışma alanını yapılandırın. Bu değerler her çalışma alanına özel çalışma kopyası davranışını, alt yürütme çalışma alanları için varsayılan çalışma zamanı servislerini belirler ve bir çalışma alanı özel işlem gerektirdiğinde kurulum veya temizlik komutlarını geçersiz kılmanıza olanak tanır.",
+    "field": {
+      "workspaceName": "Çalışma alanı adı",
+      "visibility": "Görünürlük",
+      "sourceType": "Kaynak türü",
+      "localPath": "Yerel dizin",
+      "repoUrl": "Depo URL'si",
+      "repoRef": "Depo referansı",
+      "defaultRef": "Varsayılan referans",
+      "sharedWorkspaceKey": "Paylaşılan çalışma alanı anahtarı",
+      "remoteProvider": "Uzak sağlayıcı",
+      "remoteWorkspaceRef": "Uzak çalışma alanı referansı",
+      "setupCommand": "Kurulum komutu",
+      "cleanupCommand": "Temizlik komutu",
+      "workspaceCommandsJson": "Çalışma alanı komutları JSON"
+    },
+    "placeholder": {
+      "workspaceName": "Çalışma alanı adı"
+    },
+    "hint": {
+      "setupCommand": "Bu çalışma alanı özel önyükleme gerektirdiğinde çalışır",
+      "cleanupCommand": "Proje düzeyindeki yürütme çalışma alanı sonlandırılmadan önce çalışır",
+      "workspaceCommandsJson": "Yürütme çalışma alanları, geçersiz kılmadıkları sürece bu yapılandırmayı devralır. Eski `services` dizileri hâlâ çalışır, ancak `commands` hem servisleri hem de işleri destekler."
+    },
+    "advancedRuntime": {
+      "title": "Gelişmiş çalışma zamanı JSON",
+      "description": "Paperclip Servisleri ve İşleri bu JSON'dan türetir. Önce adlandırılmış komutları düzenlemeyi tercih edin; gelişmiş yaşam döngüsü, port, hazır olma veya ortam ayarları için ham JSON kullanın."
+    },
+    "action": {
+      "saveChanges": "Değişiklikleri kaydet",
+      "reset": "Sıfırla"
+    },
+    "noUnsavedChanges": "Kaydedilmemiş değişiklik yok.",
+    "facts": {
+      "eyebrow": "Çalışma alanı bilgileri",
+      "title": "Mevcut durum",
+      "project": "Proje",
+      "workspaceId": "Çalışma alanı kimliği",
+      "localPath": "Yerel dizin",
+      "repo": "Depo",
+      "defaultRef": "Varsayılan referans",
+      "updated": "Güncellendi"
+    },
+    "value": {
+      "none": "Yok"
+    },
+    "commands": {
+      "eyebrow": "Çalışma alanı komutları",
+      "title": "Servisler ve işler",
+      "description": "Uzun süreli servisler burada denetim altında kalır, tek seferlik işler ise bu çalışma alanına karşı talep üzerine çalışır. Yürütme çalışma alanları, geçersiz kılmadıkları sürece bu yapılandırmayı devralır.",
+      "noServicesStarted": "Bu çalışma alanı için henüz hiç servis başlatılmadı.",
+      "noConfig": "Bu çalışma alanı için henüz bir çalışma alanı komut yapılandırması tanımlanmadı.",
+      "noJobs": "Bu çalışma alanı için yapılandırılmış tek seferlik iş bulunmuyor.",
+      "disabledHint": "Proje çalışma alanlarının yerel komutlar çalıştırabilmesi için bir çalışma dizinine ihtiyacı vardır ve servisler ayrıca çalışma zamanı yapılandırması gerektirir."
+    },
+    "plugin": {
+      "loading": "Çalışma alanı eklentisi yükleniyor...",
+      "backToConfiguration": "Yapılandırmaya dön"
+    }
+  },
+  "issueThreadInteractionCard": {
+    "actor": {
+      "board": "Yönetim",
+      "unknown": "Bilinmiyor"
+    },
+    "status": {
+      "pending": "Bekliyor",
+      "accepted": "Kabul edildi",
+      "rejected": "Reddedildi",
+      "answered": "Yanıtlandı",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu",
+      "failed": "Başarısız"
+    },
+    "kind": {
+      "suggestTasks": "Önerilen işler",
+      "askUserQuestions": "Kullanıcıya soru sor",
+      "requestConfirmation": "Onay"
+    },
+    "target": {
+      "plan": "Plan{{revision}}"
+    },
+    "taskTree": {
+      "includeAria": "{{title}} öğesini dahil et",
+      "childTask": "Alt iş",
+      "skipped": "Atlandı",
+      "fieldAssignee": "Atanan",
+      "fieldBilling": "Faturalandırma",
+      "fieldProject": "Proje",
+      "fieldLabel": "Etiket",
+      "hiddenOne": "Önizlemede 1 takip işi gizli",
+      "hiddenMany": "Önizlemede {{count}} takip işi gizli"
+    },
+    "suggestTasks": {
+      "draftOne": "1 taslak iş",
+      "draftMany": "{{count}} taslak iş",
+      "defaultParent": "Varsayılan üst",
+      "resolutionSummary": "Sonuç özeti",
+      "createdWithSkippedOne": "İnceleme sırasında {{created}} taslak iş oluşturuldu ve {{skipped}} tanesi atlandı.",
+      "createdWithSkippedMany": "İnceleme sırasında {{created}} taslak iş oluşturuldu ve {{skipped}} tanesi atlandı.",
+      "createdAllOne": "{{created}} taslak işin tamamı oluşturuldu.",
+      "createdAllMany": "{{created}} taslak işin tamamı oluşturuldu.",
+      "rejectionReason": "Reddetme nedeni",
+      "noReasonProvided": "Neden belirtilmedi.",
+      "allSelectedOne": "{{total}} taslak işin tamamı seçildi",
+      "allSelectedMany": "{{total}} taslak işin tamamı seçildi",
+      "someSelectedOne": "{{total}} taslak işten {{selected}} tanesi seçildi",
+      "someSelectedMany": "{{total}} taslak işten {{selected}} tanesi seçildi",
+      "willSkip": "Bu etkileşimi kabul ederseniz {{count}} tanesi atlanacak.",
+      "accepting": "Kabul ediliyor...",
+      "acceptDrafts": "Taslakları kabul et",
+      "acceptSelectedDrafts": "Seçili taslakları kabul et",
+      "reject": "Reddet",
+      "resetSelection": "Seçimi sıfırla",
+      "rejectReasonPlaceholder": "Bu öneriyi reddetmek için kısa bir neden ekleyin",
+      "saving": "Kaydediliyor...",
+      "saveRejection": "Reddi kaydet"
+    },
+    "askUserQuestions": {
+      "eyebrow": "Kullanıcıya soru sor",
+      "questionOne": "1 soru",
+      "questionMany": "{{count}} soru",
+      "questionIndex": "Soru {{index}}",
+      "pick": "Seç",
+      "pickMany": "Çoklu seç",
+      "required": "Zorunlu",
+      "optional": "İsteğe bağlı",
+      "submitOnce": "Tüm formu tamamladıktan sonra bir kez gönderin.",
+      "cancelling": "İptal ediliyor...",
+      "cancelQuestion": "Soruyu iptal et",
+      "submitting": "Gönderiliyor...",
+      "submitAnswers": "Yanıtları gönder",
+      "questionCancelled": "Soru iptal edildi",
+      "noAnswerRecorded": "Hiçbir yanıt kaydedilmedi.",
+      "answer": "Yanıt",
+      "noAnswerRecordedShort": "Yanıt kaydedilmedi.",
+      "submittedSummary": "Gönderilen özet"
+    },
+    "confirmation": {
+      "confirmed": "Onaylandı",
+      "declined": "Reddedildi",
+      "expiredByComment": "Yorumla süresi doldu",
+      "expiredByTargetChange": "Hedef değişikliğiyle süresi doldu",
+      "expiredByCommentDescription": "Bu onay çözülmeden önce bir yönetim yorumu yerini aldı.",
+      "expiredByTargetChangeDescription": "Bu onay çözülmeden önce istenen hedef değişti.",
+      "jumpToComment": "Yoruma git",
+      "failed": "Bu istek çözülemedi. Tekrar deneyin veya yeni bir istek oluşturun.",
+      "declineReasonPlaceholderPlan": "İsteğe bağlı: Neyi gözden geçirmek istersiniz?",
+      "declineReasonPlaceholderDefault": "İsteğe bağlı: Ajanın neyi değiştirmesi gerektiğini söyleyin.",
+      "tryAgain": "Tekrar dene",
+      "confirming": "Onaylanıyor...",
+      "confirm": "Onayla",
+      "decline": "Reddet",
+      "declineReasonRequired": "Bir ret nedeni gereklidir.",
+      "cancelDecline": "Reddi iptal et",
+      "saving": "Kaydediliyor..."
+    },
+    "wakesOnConfirm": "Onayda uyandırır",
+    "wakesAssignee": "Atanan kişiyi uyandırır",
+    "fallbackTitle": {
+      "suggestTasks": "Önerilen iş ağacı",
+      "askUserQuestions": "Operatör için sorular",
+      "requestConfirmation": "Onay istendi"
+    },
+    "proposedBy": "{{name}} tarafından önerildi",
+    "createdOn": "{{date}} tarihinde oluşturuldu",
+    "resolvedBy": "Çözen:",
+    "resolvedOn": "{{date}} tarihinde"
+  },
+  "runTranscriptView": {
+    "user": "Kullanıcı",
+    "streaming": "Akış sürüyor",
+    "empty": "Henüz döküm yok.",
+    "status": {
+      "running": "Çalışıyor",
+      "errored": "Hata aldı",
+      "completed": "Tamamlandı"
+    },
+    "eventLabel": {
+      "init": "başlatma",
+      "result": "sonuç"
+    },
+    "event": {
+      "runFailed": "Çalıştırma başarısız oldu",
+      "init": "model {{model}}",
+      "initWithSession": "model {{model}} • oturum {{sessionId}}"
+    },
+    "tool": {
+      "input": "Girdi",
+      "result": "Sonuç",
+      "emptyPayload": "&lt;boş&gt;",
+      "waitingForResult": "Sonuç bekleniyor",
+      "waitingForResultEllipsis": "Sonuç bekleniyor...",
+      "failed": "Araç başarısız oldu",
+      "failedShort": "Başarısız",
+      "failedWithExitCode": "Çıkış kodu {{code}} ile başarısız oldu",
+      "executingCommand": "Komut çalıştırılıyor",
+      "inspectInput": "{{name}} girdisini incele",
+      "noInput": "{{name}} için girdi yok",
+      "singleKeyPayload": "{{key}} yükü",
+      "multiFields": "{{count}} alan: {{keys}}",
+      "pathsStartingWith": "{{count}} yol, {{first}} ile başlıyor",
+      "collapseDetails": "Araç ayrıntılarını daralt",
+      "expandDetails": "Araç ayrıntılarını genişlet",
+      "fallbackName": "araç"
+    },
+    "command": {
+      "executedOne": "Komut çalıştırıldı",
+      "executedMany": "{{count}} komut çalıştırıldı",
+      "failed": "Komut başarısız oldu",
+      "collapseDetails": "Komut ayrıntılarını daralt",
+      "expandDetails": "Komut ayrıntılarını genişlet"
+    },
+    "toolGroup": {
+      "toolCount": "{{count}} araç",
+      "using": "{{label}} kullanılıyor",
+      "usedOne": "{{label}} kullanıldı",
+      "usedMany": "{{label}} kullanıldı ({{count}} çağrı)"
+    },
+    "stderr": {
+      "oneLine": "{{count}} günlük satırı",
+      "manyLines": "{{count}} günlük satırı"
+    },
+    "system": {
+      "oneMessage": "{{count}} sistem mesajı",
+      "manyMessages": "{{count}} sistem mesajı"
+    },
+    "stdout": {
+      "label": "stdout",
+      "collapse": "stdout'u daralt",
+      "expand": "stdout'u genişlet"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "kind": {
+      "executionWorkspace": "Yürütme çalışma alanı",
+      "projectWorkspace": "Proje çalışma alanı"
+    },
+    "updated": "{{time}} güncellendi",
+    "servicesCount": "{{running}}/{{total}} servis",
+    "stopServices": "Servisleri durdur",
+    "startServices": "Servisleri başlat",
+    "retryClose": "Kapatmayı yeniden dene",
+    "closeWorkspace": "Çalışma alanını kapat",
+    "branch": "Dal",
+    "branchCopied": "Dal kopyalandı",
+    "copyBranch": "Dalı kopyala",
+    "path": "Yol",
+    "pathCopied": "Yol kopyalandı",
+    "copyPath": "Yolu kopyala",
+    "service": "Servis",
+    "linkedIssues": "Bağlı görevler",
+    "moreIssues": "+{{count}} daha"
+  },
+  "jsonSchemaForm": {
+    "noOptions": "Yapılandırma seçeneği bulunmuyor.",
+    "selectAnOption": "Bir seçenek seçin",
+    "secret": {
+      "sensitiveHidden": "Hassas — {{count}} karakter gizli. Görmek için göz simgesine tıklayın.",
+      "hide": "Sırrı gizle",
+      "show": "Sırrı göster",
+      "description": "Mevcut bir şirket sırrı seçin veya ham bir değer yapıştırın (Paperclip kaydedildiğinde onu bir sır olarak saklar).",
+      "pickerPlaceholder": "Mevcut bir sır seçin",
+      "emptyHint": "Henüz etkin sır yok. Bir tane oluşturun veya aşağıya ham bir değer yapıştırın.",
+      "hideRawInput": "Ham değer girişini gizle",
+      "orPasteRaw": "Ya da ham bir değer yapıştırın"
+    },
+    "array": {
+      "addItem": "Öğe ekle",
+      "add": "Ekle",
+      "itemLabel": "Öğe {{number}}",
+      "removeItem": "Öğeyi kaldır",
+      "empty": "Henüz öğe eklenmedi."
+    },
+    "validation": {
+      "required": "Bu alan zorunludur",
+      "minLength": "En az {{count}} karakter olmalıdır",
+      "maxLength": "En fazla {{count}} karakter olmalıdır",
+      "pattern": "Şu desene uymalıdır: {{pattern}}",
+      "notANumber": "Geçerli bir sayı olmalıdır",
+      "minimum": "En az {{value}} olmalıdır",
+      "maximum": "En fazla {{value}} olmalıdır",
+      "exclusiveMinimum": "{{value}} değerinden büyük olmalıdır",
+      "exclusiveMaximum": "{{value}} değerinden küçük olmalıdır",
+      "integer": "Tam sayı olmalıdır",
+      "multipleOf": "{{value}} değerinin katı olmalıdır",
+      "minItems": "En az {{count}} öğe içermelidir",
+      "maxItems": "En fazla {{count}} öğe içermelidir"
+    }
+  },
+  "time": {
+    "justNow": "az önce",
+    "now": "şimdi",
+    "secondsAgo": "{{count}} saniye önce",
+    "minutesAgo": "{{count}} dakika önce",
+    "hoursAgo": "{{count}} saat önce",
+    "daysAgo": "{{count}} gün önce",
+    "weeksAgo": "{{count}} hafta önce",
+    "monthsAgo": "{{count}} ay önce",
+    "inMinutes": "{{count}} dakika içinde",
+    "inHours": "{{count}} saat içinde",
+    "inDays": "{{count}} gün içinde"
+  },
+  "duration": {
+    "seconds_one": "{{count}} saniye",
+    "seconds_other": "{{count}} saniye",
+    "minutes_one": "{{count}} dakika",
+    "minutes_other": "{{count}} dakika",
+    "hours_one": "{{count}} saat",
+    "hours_other": "{{count}} saat",
+    "seconds": "{{count}} saniye",
+    "minutes": "{{count}} dakika",
+    "hours": "{{count}} saat",
+    "hoursAndMinutes": "{{hours}} {{minutes}}"
+  },
+  "runStatus": {
+    "running": "Çalışıyor",
+    "queued": "Sırada",
+    "queuedEllipsis": "Sırada...",
+    "working": "Çalışıyor...",
+    "workedFor": "{{duration}} süredir çalışıldı",
+    "workingFor": "{{duration}} süredir çalışıyor",
+    "finishedWork": "İş tamamlandı",
+    "runFailed": "Çalışma başarısız",
+    "failedAfter": "{{duration}} sonra başarısız oldu",
+    "runTimedOut": "Çalışma zaman aşımına uğradı",
+    "timedOutAfter": "{{duration}} sonra zaman aşımına uğradı",
+    "pausedByBoard": "Pano tarafından duraklatıldı",
+    "pausedByBoardAfter": "{{duration}} sonra pano tarafından duraklatıldı",
+    "runCancelled": "Çalışma iptal edildi",
+    "cancelledAfter": "{{duration}} sonra iptal edildi",
+    "runFinished": "Çalışma bitti",
+    "headerWorking": "Çalışıyor",
+    "headerWorked": "Çalışıldı",
+    "forDuration": "{{duration}} süredir",
+    "ranCommands_one": "{{count}} komut çalıştırıldı",
+    "ranCommands_other": "{{count}} komut çalıştırıldı",
+    "calledTools_one": "{{count}} araç çağrıldı",
+    "calledTools_other": "{{count}} araç çağrıldı",
+    "ranCommands": "{{count}} komut çalıştırıldı",
+    "calledTools": "{{count}} araç çağrıldı",
+    "executingCommand": "Komut çalıştırılıyor"
+  },
+  "issueChat": {
+    "updatedThisTask": "bu görevi güncelledi",
+    "requestedFollowUp": "takip istedi",
+    "hideConfirmation": "Onayı gizle",
+    "expiredConfirmation": "Süresi geçmiş onay",
+    "followUp": "Takip",
+    "fieldStatus": "Durum",
+    "fieldAssignee": "Atanan",
+    "fieldWorkspace": "Çalışma alanı"
+  },
+  "inviteLanding": {
+    "working": "Çalışıyor...",
+    "signInAndContinue": "Giriş yap ve devam et",
+    "createAccountAndContinue": "Hesap oluştur ve devam et"
   }
 }

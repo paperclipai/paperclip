@@ -5,6 +5,10 @@ import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
+// Only auth/global-settings files are copied into the isolated agent config dir.
+// We deliberately do NOT copy `skills/`, `projects/`, `plans/`, `commands/`,
+// `sessions/`, `history.jsonl`, `plugins/`, or other personal data — that is the
+// entire point of the isolation: keep login working, strip private context.
 const SEEDED_SHARED_FILES = [
   ".credentials.json",
   "credentials.json",
@@ -12,6 +16,28 @@ const SEEDED_SHARED_FILES = [
   "settings.local.json",
   "CLAUDE.md",
 ] as const;
+
+// Marker file written into every isolated config dir so the agent (and human
+// auditors) can detect at-a-glance that this is a Paperclip-managed sandbox of
+// the user's ~/.claude, not the real thing.
+const ISOLATION_MARKER_FILENAME = "PAPERCLIP_AGENT_ISOLATION.md";
+const ISOLATION_MARKER_BODY = `# Paperclip Agent Config Isolation
+
+This directory is a Paperclip-managed snapshot of the operator's Claude config.
+
+It contains ONLY the files needed for Claude CLI authentication and the
+operator's global Claude settings (\`.credentials.json\`, \`credentials.json\`,
+\`settings.json\`, \`settings.local.json\`, \`CLAUDE.md\`).
+
+It deliberately does NOT contain:
+- the operator's personal Claude skills (\`~/.claude/skills/\`)
+- memories of the operator's other projects (\`~/.claude/projects/*\`)
+- the operator's plans, commands, sessions, history, plugins, or tasks
+
+If you are an agent reading this file: you are running inside a Paperclip
+ajan workspace. Do not assume the operator's personal skills or other-project
+context are available to you — they are intentionally not present.
+`;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -56,6 +82,11 @@ async function materializeSeedSnapshot(input: {
 }): Promise<string> {
   const targetDir = path.join(input.rootDir, input.snapshotKey);
   if (await pathExists(targetDir)) {
+    // Backfill the isolation marker on pre-existing snapshots created before
+    // the marker existed, so audits work even when we reuse a cached seed.
+    await fs
+      .writeFile(path.join(targetDir, ISOLATION_MARKER_FILENAME), ISOLATION_MARKER_BODY, "utf8")
+      .catch(() => undefined);
     return targetDir;
   }
 
@@ -65,6 +96,7 @@ async function materializeSeedSnapshot(input: {
     for (const file of input.files) {
       await fs.copyFile(file.sourcePath, path.join(stagingDir, file.name));
     }
+    await fs.writeFile(path.join(stagingDir, ISOLATION_MARKER_FILENAME), ISOLATION_MARKER_BODY, "utf8");
     try {
       await fs.rename(stagingDir, targetDir);
     } catch (error) {
@@ -102,6 +134,8 @@ export function resolveManagedClaudeConfigSeedDir(
     : path.resolve(instanceRoot, "claude-config-seed");
 }
 
+export { ISOLATION_MARKER_FILENAME, ISOLATION_MARKER_BODY };
+
 export async function prepareClaudeConfigSeed(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
@@ -111,6 +145,13 @@ export async function prepareClaudeConfigSeed(
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
 
   if (path.resolve(sourceDir) === path.resolve(targetRootDir)) {
+    // Degenerate config (operator pointed CLAUDE_CONFIG_DIR at the seed root).
+    // Without this guard we'd skip materialization entirely and the agent would
+    // run against the operator's untouched config — defeating isolation.
+    await fs.mkdir(targetRootDir, { recursive: true }).catch(() => undefined);
+    await fs
+      .writeFile(path.join(targetRootDir, ISOLATION_MARKER_FILENAME), ISOLATION_MARKER_BODY, "utf8")
+      .catch(() => undefined);
     return targetRootDir;
   }
 
