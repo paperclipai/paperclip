@@ -454,6 +454,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Fixed the LLM route and available-skill isolation/list-get consistency parts of `MISMATCH-007`; `GET /api/openapi.json` remains unresolved.
 - Follow-up: Commit scoped fixes and leave OpenAPI generation as the remaining docs/catalog parity gap.
 
+### 2026-05-24T12:32:12+02:00 - Final cleanup and isolation verification
+
+- Command: environment echo; `pnpm paperclipai health --json`; `pnpm paperclipai token board list --json`; `pnpm paperclipai token board revoke <redacted-board-token-id> --json`; `pnpm paperclipai token agent list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --agent 1dd601a1-031a-4225-b005-419427fd059f --json`; `pnpm paperclipai plugin list --json`; `pnpm paperclipai secrets list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --json`; `pnpm paperclipai environment list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --json`; `pnpm paperclipai project-workspace list d32032ce-d95e-4c4e-a942-dd98498025fb --json`; `pnpm paperclipai openapi --json`
+- Purpose: Confirm the disposable instance remains isolated, clean up leftover tokens, and record final known gap.
+- Prerequisites/IDs used: Isolated env from the Isolation Contract; board token `<redacted-board-token-id>`; main agent `1dd601a1-031a-4225-b005-419427fd059f`.
+- Expected result: All env vars point under `tmp/cli-api-parity`; database env vars remain unset; health passes; no active disposable tokens, plugins, secrets, project workspaces, or non-default environments remain; OpenAPI still fails as the documented unresolved gap.
+- Actual result: Env echoed the scratch paths and `DATABASE_URL`/`DATABASE_MIGRATION_URL` as unset. Health passed. Board token list found one active key (`<redacted-board-token-id>`) from the earlier board-token test, which was revoked. Agent token list showed only revoked keys. Plugin list and secrets list returned empty arrays. Environment list contains the default local environment only. Project workspace list returned empty. `openapi` still returned `404: API route not found`.
+- Status: PASS with known OpenAPI gap.
+- Output summary: No active API tokens created by this run remain. Scratch instance remains running on `http://127.0.0.1:3197`.
+- Follow-up: Final report should call out `openapi` as unfixed and explain that implementing it needs a real OpenAPI generator/route rather than a small CLI wrapper correction.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
