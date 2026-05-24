@@ -21,7 +21,12 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
+        # `chore/refresh-lockfile` is the standing exemption for CI-driven
+        # lockfile refreshes. `rebrand/valadrien-os` is a one-time exemption
+        # for the fork's @paperclipai/* -> @valadrien-os/* workspace scope
+        # rename, which mechanically requires lockfile regeneration. Remove
+        # the rebrand branch from this list after the rebrand PR lands.
+        if: github.head_ref != 'chore/refresh-lockfile' && github.head_ref != 'rebrand/valadrien-os'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
