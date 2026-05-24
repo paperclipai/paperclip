@@ -7,6 +7,7 @@ import {
   configCheck,
   databaseCheck,
   deploymentAuthCheck,
+  diskCheck,
   llmCheck,
   logCheck,
   portCheck,
@@ -119,6 +120,11 @@ export async function doctor(opts: {
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
+
+  // 10. Disk health check (host filesystem + Paperclip's own footprint)
+  const diskResult = diskCheck();
+  results.push(diskResult);
+  printResult(diskResult);
 
   // Summary
   return printSummary(results);
