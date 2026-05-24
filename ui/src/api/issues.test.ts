@@ -43,6 +43,14 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes status as a comma-separated string to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { status: "todo,in_progress", limit: 100 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?status=todo%2Cin_progress&limit=100",
+    );
+  });
+
   it("passes pagination offsets through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { limit: 500, offset: 1500 });
 

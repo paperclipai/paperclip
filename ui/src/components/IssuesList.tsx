@@ -672,11 +672,13 @@ export function IssuesList({
       JSON.stringify(searchFilters ?? {}),
       ISSUE_SEARCH_RESULT_LIMIT,
       enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      viewState.statuses.join(",") || "__none__",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         q: normalizedIssueSearch,
         projectId,
+        status: viewState.statuses.length > 0 ? viewState.statuses.join(",") : undefined,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
         ...searchFilters,
         ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
