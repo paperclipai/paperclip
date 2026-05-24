@@ -300,7 +300,7 @@ If you already have Paperclip configured, rerunning `onboard` keeps the existing
 Or manually:
 
 ```bash
-git clone https://github.com/kp-pc/paperclip.git
+git clone https://github.com/paperclipai/paperclip.git
 cd paperclip
 pnpm install
 pnpm dev
@@ -386,7 +386,7 @@ This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.
 
 ## Community & Plugins
 
-Find Plugins and more at [awesome-paperclip](https://github.com/kp-pc/awesome-paperclip)
+Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
 
 ## Telemetry
 
