@@ -333,6 +333,39 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: These look like CLI/API parity gaps rather than test data problems; no code fix was applied yet.
 - Follow-up: Record mismatches and continue remaining command domains.
 
+### 2026-05-24T12:10:10+02:00 - Adapter, environment, project workspace, plugin coverage
+
+- Command: `curl -sf http://127.0.0.1:3197/api/health`; `pnpm paperclipai health --json`; `pnpm paperclipai adapter list/get/config-schema/ui-parser/models/model-profiles/detect-model/test-environment ... --json`; `pnpm paperclipai environment list/capabilities/probe-config/create ... --json`; `pnpm paperclipai project-workspace create/list/update/delete ... --json`; `pnpm paperclipai workspace list --company-id ... --json`; `pnpm paperclipai plugin list/examples/ui-contributions/tools/init ... --json`
+- Purpose: Cover remaining adapter, environment/workspace, and plugin command families with safe disposable state.
+- Prerequisites/IDs used: Company `12e9db4b-f66c-459b-959e-d645002240fb`; project `d32032ce-d95e-4c4e-a942-dd98498025fb`; isolated API `http://127.0.0.1:3197`.
+- Expected result: API health passes; registered CLI commands map to supported routes; disposable project workspace can be created, updated, and deleted; plugin read-only routes and scaffold init work.
+- Actual result: API health passed. `paperclipai health` is not registered. Adapter list/get/model commands passed for `process`; `process` config schema and UI parser returned expected unsupported 404s. `adapter test-environment process` returned a structured failure because no process command was supplied. Environment list/capabilities/probe-config passed, but creating a second local environment returned a 500 due to the unique `environments_company_driver_idx` constraint. Project workspace create/list passed; the first update/delete attempt failed because my shell ID extraction broke, then the workspace was recovered from `project-workspace list` and deleted successfully with `project-workspace delete d32032ce-d95e-4c4e-a942-dd98498025fb e271b6bc-368e-4a89-9824-d9e2b2bedb66 --json`. Workspace list passed. Plugin list/examples/ui-contributions/tools passed; `plugin init` scaffolded a disposable plugin under `tmp/cli-api-parity/artifacts/cli-parity-plugin`.
+- Status: MIXED.
+- Output summary: New mismatches/bugs recorded as `MISMATCH-008` and `BUG-004`. No external plugin install was attempted; no built-in adapter delete/reinstall was attempted.
+- Follow-up: Fix the duplicate local environment 500 and restart the isolated server before rerunning the failing CLI command against live code.
+
+### 2026-05-24T12:12:50+02:00 - Asset and company skill coverage
+
+- Command: `pnpm paperclipai asset image:upload --company-id <company-id> --file doc/assets/avatars/zinc.png --namespace cli-parity --alt ... --title ... --json`; `pnpm paperclipai asset content <asset-id> --out tmp/cli-api-parity/artifacts/asset-download.png --json`; `pnpm paperclipai asset logo:upload --company-id <company-id> --file ui/public/favicon-32x32.png --json`; `pnpm paperclipai skill list/create/get/file/file:update/update-status/install-update/delete/scan-projects ... --json`
+- Purpose: Cover asset upload/download/logo and company skill CRUD/file commands with disposable resources.
+- Prerequisites/IDs used: Company `12e9db4b-f66c-459b-959e-d645002240fb`; image asset `829fbd86-cd5c-4aaa-ad17-276faac7888b`; logo asset `1b3e7979-1359-4361-b3f5-c8a845e11659`; temporary skill `126ad416-864b-4136-8f48-f5adcf324f20`.
+- Expected result: Image upload returns an asset ID; content download writes bytes; logo upload succeeds; local skill create/get/file/update/delete works; update check reports unsupported for local skills.
+- Actual result: Image upload returned `assetId` and content download wrote `27949` bytes. Logo upload returned `assetId`. Skill list/create/get/file/file:update/update-status/delete/scan-projects passed. `skill install-update` returned `422: Only GitHub-managed skills support update checks`, matching the preceding `update-status supported: false` result.
+- Status: PASS with expected negative check.
+- Output summary: Temporary local skill was deleted. Uploaded image/logo assets remain in the disposable scratch storage as part of the test instance.
+- Follow-up: None for asset/skill surface.
+
+### 2026-05-24T12:13:24+02:00 - Fix duplicate local environment create error
+
+- Command: `pnpm exec vitest run server/src/__tests__/environment-routes.test.ts`; `pnpm --dir server typecheck`
+- Purpose: Verify the route-level fix for duplicate local environment creation before committing.
+- Prerequisites/IDs used: `BUG-004` reproduction from isolated E2E.
+- Expected result: Creating a second local environment returns a controlled conflict instead of leaking a database unique constraint as a 500.
+- Actual result: Focused route suite passed with 31 tests; server typecheck passed.
+- Status: PASS.
+- Output summary: Added a pre-insert `local` environment conflict check and regression coverage.
+- Follow-up: Commit immediately, then restart the isolated server and rerun the failing CLI command against the updated code.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
@@ -464,3 +497,29 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Fix summary: Not fixed yet; requires deciding whether to add routes, hide commands, or adjust command paths.
 - Verification command: `pnpm paperclipai available-skill list --json`; `pnpm paperclipai available-skill index --json` passed as partial coverage.
 - Remaining risk: CLI advertises docs/catalog commands that fail at runtime.
+
+### MISMATCH-008 - `paperclipai health` is not registered
+
+- Status: Not fixed in this pass.
+- Severity: Low command/API parity gap.
+- Reproduction command: `pnpm paperclipai health --json`.
+- Expected result: The CLI has a documented health command, or docs consistently direct users to `curl <api-url>/api/health`.
+- Actual result: Commander returned `unknown command 'health'`.
+- Suspected cause: Health checking exists as an API endpoint and setup/doctor workflow, but not as a CLI client command.
+- Files changed: none for this mismatch.
+- Fix summary: Not fixed yet; E2E used `curl -sf http://127.0.0.1:3197/api/health`.
+- Verification command: `curl -sf http://127.0.0.1:3197/api/health`.
+- Remaining risk: Runbooks or smoke-test expectations that call `paperclipai health` fail even when the server is healthy.
+
+### BUG-004 - Creating a second local environment returned 500 instead of conflict
+
+- Status: Fixed; pending live-server rerun after restart.
+- Severity: Medium API error handling bug.
+- Reproduction command: `pnpm paperclipai environment create --company-id 12e9db4b-f66c-459b-959e-d645002240fb --payload-json '{"name":"CLI parity local env","description":"Disposable CLI parity environment","driver":"local","config":{"cwd":"/Users/aronprins/Documents/PaperclipAI/paperclip"}}' --json`.
+- Expected result: Controlled `409` or other user-facing validation error because a default local environment already exists for the company.
+- Actual result: API returned `500: Internal server error`; server log showed duplicate key violation for `environments_company_driver_idx`.
+- Suspected cause: The route attempted the insert without checking the partial unique constraint on `(company_id, driver)` for `driver = 'local'`.
+- Files changed: `server/src/routes/environments.ts`, `server/src/__tests__/environment-routes.test.ts`, `doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`.
+- Fix summary: Added a route-level pre-insert check that throws `409` when a local environment already exists for the company; added regression coverage.
+- Verification command: `pnpm exec vitest run server/src/__tests__/environment-routes.test.ts`; `pnpm --dir server typecheck`.
+- Remaining risk: The currently running isolated server still has old code until it is restarted; live CLI rerun is required after restart.

@@ -7,7 +7,7 @@ import {
   probeEnvironmentConfigSchema,
   updateEnvironmentSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -196,6 +196,12 @@ export function environmentRoutes(
   router.post("/companies/:companyId/environments", validate(createEnvironmentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanMutateEnvironments(req, companyId);
+    if (req.body.driver === "local") {
+      const existingLocal = await svc.list(companyId, { driver: "local" });
+      if (existingLocal.length > 0) {
+        throw conflict("A local environment already exists for this company.");
+      }
+    }
     const actor = getActorInfo(req);
     const input = {
       ...req.body,
