@@ -313,6 +313,30 @@ export async function resolveCredentialEnv(
       await fs.writeFile(globalConfigFile, JSON.stringify(globalConfig), "utf-8");
       await fs.chmod(globalConfigFile, 0o600).catch(() => undefined);
 
+      // Pre-seed ~/.claude/settings.json so the interactive TUI skips the
+      // "Bypass Permissions mode — Yes, I accept" dialog that fires when
+      // --dangerously-skip-permissions is passed, and the auto-mode opt-in
+      // dialog. These keys are normally written when the user clicks accept
+      // (see binary: `m6("userSettings",{skipDangerousModePermissionPrompt:!0})`).
+      const settingsFile = path.join(claudeDir, "settings.json");
+      let existingSettings: Record<string, unknown> = {};
+      try {
+        const raw = await fs.readFile(settingsFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existingSettings = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // missing — start fresh
+      }
+      const settings: Record<string, unknown> = {
+        ...existingSettings,
+        skipDangerousModePermissionPrompt: true,
+        skipAutoPermissionPrompt: true,
+      };
+      await fs.writeFile(settingsFile, JSON.stringify(settings), "utf-8");
+      await fs.chmod(settingsFile, 0o600).catch(() => undefined);
+
       logger.info(
         { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, subscriptionType },
         "wrote claude_oauth credentials.json for agent",
