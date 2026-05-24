@@ -23,7 +23,9 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  onboardingIncidentsService,
 } from "../services/index.js";
+import { logger } from "../middleware/logger.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
@@ -36,6 +38,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const onboardingIncidents = onboardingIncidentsService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
 
@@ -322,6 +325,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         },
         req.actor.userId ?? "board",
       );
+    }
+    try {
+      await onboardingIncidents.ingestPendingIncidents(company.id, {
+        creatorUserId: req.actor.userId ?? null,
+        actorSource: req.actor.source ?? null,
+      });
+    } catch (err) {
+      logger.warn({ err, companyId: company.id }, "Failed to ingest pending onboarding incidents");
     }
     res.status(201).json(company);
   });
