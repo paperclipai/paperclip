@@ -36,8 +36,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # Use setup-node@v4 to match the sibling workflows (pr.yml, release.yml).
+      # @v5 auto-detects the package manager from any lockfile it can find by
+      # walking up the workspace tree; with this repo's `pnpm-lock.yaml` at the
+      # root, it tries to invoke pnpm — which is not installed on the
+      # self-hosted runners that don't pre-run `pnpm/action-setup`. The
+      # designer subdir is npm-only, so we just stay on @v4 to skip the
+      # auto-detect.
       - name: Set up Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: "22"
 
