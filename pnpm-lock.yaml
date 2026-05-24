@@ -457,10 +457,10 @@ importers:
         version: 0.27.3
       react:
         specifier: ^19.0.0
-        version: 18.3.1
+        version: 19.2.4
       react-dom:
         specifier: ^19.0.0
-        version: 19.2.4(react@18.3.1)
+        version: 19.2.4(react@19.2.4)
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -482,10 +482,10 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       react:
         specifier: ^19.0.0
-        version: 18.3.1
+        version: 19.2.4
       react-dom:
         specifier: ^19.0.0
-        version: 19.2.4(react@18.3.1)
+        version: 19.2.4(react@19.2.4)
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -513,10 +513,10 @@ importers:
         version: 0.27.3
       react:
         specifier: ^19.0.0
-        version: 18.3.1
+        version: 19.2.4
       react-dom:
         specifier: ^19.0.0
-        version: 19.2.4(react@18.3.1)
+        version: 19.2.4(react@19.2.4)
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -720,9 +720,6 @@ importers:
       open:
         specifier: ^11.0.0
         version: 11.0.0
-      pdf-parse:
-        specifier: ^1.1.1
-        version: 1.1.4
       pino:
         specifier: ^9.6.0
         version: 9.14.0
@@ -2766,7 +2763,7 @@ packages:
 
   '@expo/bunyan@4.0.1':
     resolution: {integrity: sha512-+Lla7nYSiHZirgK+U/uYzsLv/X+HaJienbD5AKX1UQZHYfWaP+9uuQluRB4GrEVWF0GZ7vEVp/jzaOT9k/SQlg==}
-    engines: {'0': node >=0.10.0}
+    engines: {node: '>=0.10.0'}
 
   '@expo/cli@0.22.28':
     resolution: {integrity: sha512-lvt72KNitGuixYD2l3SZmRKVu2G4zJpmg5V7WfUBNpmUU5oODBw/6qmiJ6kSLAlfDozscUk+BBGknBBzxUrwrA==}
@@ -8222,9 +8219,6 @@ packages:
     resolution: {integrity: sha512-tmPX422rYgofd4epzrNoOXiE8XFZYOcCq1vD7MAXCDO+O+zndlA2ztdKKMa+EeuBG5tHETpr4ml4RGgpqDCCAg==}
     engines: {node: '>= 0.10.5'}
 
-  node-ensure@0.0.0:
-    resolution: {integrity: sha512-DRI60hzo2oKN1ma0ckc6nQWlHU69RH6xN0sjQTjMpChPfTYvKZdcQFfdYK2RWbJcKyUizSIy/l8OTGxMAM1QDw==}
-
   node-fetch@2.7.0:
     resolution: {integrity: sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A==}
     engines: {node: 4.x || >=6.0.0}
@@ -8450,10 +8444,6 @@ packages:
   pathval@2.0.1:
     resolution: {integrity: sha512-//nshmD55c46FuFw26xV/xFAaB5HF9Xdap7HJBBnrKdAd6/GxDBaNA1870O79+9ueg61cZLSVc+OaFlfmObYVQ==}
     engines: {node: '>= 14.16'}
-
-  pdf-parse@1.1.4:
-    resolution: {integrity: sha512-XRIRcLgk6ZnUbsHsYXExMw+krrPE81hJ6FQPLdBNhhBefqIQKXu/WeTgNBGSwPrfU0v+UCEwn7AoAUOsVKHFvQ==}
-    engines: {node: '>=6.8.1'}
 
   pg-cloudflare@1.3.0:
     resolution: {integrity: sha512-6lswVVSztmHiRtD6I8hw4qP/nDm1EJbKMRhf3HCYaqud7frGysPv7FYJ5noZQdhQtN2xJnimfMtvQq21pdbzyQ==}
@@ -19338,8 +19328,6 @@ snapshots:
     dependencies:
       minimatch: 3.1.5
 
-  node-ensure@0.0.0: {}
-
   node-fetch@2.7.0(encoding@0.1.13):
     dependencies:
       whatwg-url: 5.0.0
@@ -19567,10 +19555,6 @@ snapshots:
   pathe@2.0.3: {}
 
   pathval@2.0.1: {}
-
-  pdf-parse@1.1.4:
-    dependencies:
-      node-ensure: 0.0.0
 
   pg-cloudflare@1.3.0:
     optional: true
