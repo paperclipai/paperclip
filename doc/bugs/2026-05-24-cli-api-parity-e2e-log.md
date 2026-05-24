@@ -619,6 +619,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Artifacts are under `tmp/cli-api-parity/artifacts/routine-secret-cleanup-fix`.
 - Follow-up: Commit BUG-011 fix, then rerun final inventory/status sweep.
 
+### 2026-05-24T13:48:40+02:00 - Final clean inventory sweep
+
+- Command: `health --json`; `openapi --json`; `token board list --json`; `token agent list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --agent 1dd601a1-031a-4225-b005-419427fd059f --json`; `plugin list --json`; `routine list --company-id ... --json`; `secrets list --company-id ... --json`; `environment list --company-id ... --json`; `project-workspace list d32032ce-d95e-4c4e-a942-dd98498025fb --json`; `git status --short --branch`; `lsof -nP -iTCP:3197 -sTCP:LISTEN`; `lsof -nP -iTCP:3199 -sTCP:LISTEN`; environment echo for required isolation variables and unset database variables.
+- Purpose: Confirm the disposable instance is healthy, isolated, cleaned up, and ready for manual continuation.
+- Prerequisites/IDs used: Same scratch env and company/agent IDs.
+- Expected result: Health and OpenAPI pass; all required env vars point under `tmp/cli-api-parity`; `DATABASE_URL` and `DATABASE_MIGRATION_URL` are unset; no active board/agent tokens, plugins, secrets, non-default environments, project workspaces, or active routines remain; only the scratch server listens on `127.0.0.1:3197`; fake cloud port `3199` is stopped; git is clean before this final log update.
+- Actual result: Summary was `{health:"ok", openapi:"3.0.0", pathCount:247, activeBoardTokens:0, activeAgentTokens:0, plugins:0, routines:2, activeRoutines:0, secrets:0, environments:1, projectWorkspaces:0}`. `PAPERCLIP_HOME`, `PAPERCLIP_CONFIG`, `PAPERCLIP_CONTEXT`, `PAPERCLIP_AUTH_STORE`, `CODEX_HOME`, and `CLAUDE_HOME` all point under the scratch path. `DATABASE_URL` and `DATABASE_MIGRATION_URL` were `UNSET`. `node` PID `70429` is listening on `127.0.0.1:3197`; no process is listening on `3199`; git status was clean before this log update.
+- Status: PASS.
+- Output summary: Final clean artifacts are under `tmp/cli-api-parity/artifacts/final-clean-sweep`.
+- Follow-up: Leave the scratch instance running for manual testing.
+
 ## Bugs And Mismatches
 
 ### BUG-011 - Deleting a webhook routine trigger left its managed secret active
