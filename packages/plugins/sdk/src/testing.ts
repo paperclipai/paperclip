@@ -1423,6 +1423,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           completedAt: null,
           cancelledAt: null,
           hiddenAt: null,
+          productivityReviewSnoozedUntil: null,
           createdAt: now,
           updatedAt: now,
         };
