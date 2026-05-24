@@ -231,6 +231,8 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+export const PROCESS_LOST_BUDGET_EXHAUSTED_REASON = "harness_process_lost_budget_exhausted";
+export const PROCESS_LOST_PER_ISSUE_RETRY_BUDGET = 5;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -6561,6 +6563,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function incrementIssueProcessLostBudget(
+    companyId: string,
+    issueId: string,
+  ): Promise<{ count: number; exhausted: boolean }> {
+    const [updated] = await db
+      .update(issues)
+      .set({
+        consecutiveProcessLostCount: sql`${issues.consecutiveProcessLostCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+      .returning({ count: issues.consecutiveProcessLostCount });
+    if (!updated) return { count: 0, exhausted: false };
+    return {
+      count: updated.count,
+      exhausted: updated.count >= PROCESS_LOST_PER_ISSUE_RETRY_BUDGET,
+    };
+  }
+
+  async function blockIssueForProcessLostBudgetExhaustion(
+    companyId: string,
+    issueId: string,
+    consecutiveCount: number,
+  ): Promise<void> {
+    await db
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date() })
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueId),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+    logger.warn(
+      { companyId, issueId, consecutiveCount, reason: PROCESS_LOST_BUDGET_EXHAUSTED_REASON },
+      "issue blocked: process_lost retry budget exhausted",
+    );
+  }
+
+  async function resetIssueProcessLostBudget(companyId: string, issueId: string): Promise<void> {
+    await db
+      .update(issues)
+      .set({ consecutiveProcessLostCount: 0, updatedAt: new Date() })
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueId),
+          gt(issues.consecutiveProcessLostCount, 0),
+        ),
+      );
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -6621,11 +6676,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const runContext = parseObject(run.contextSnapshot);
+      const contextIssueId = readNonEmptyString(runContext.issueId);
+      let budgetCount = 0;
+      let budgetExhausted = false;
+      if (contextIssueId) {
+        const budget = await incrementIssueProcessLostBudget(run.companyId, contextIssueId);
+        budgetCount = budget.count;
+        budgetExhausted = budget.exhausted;
+      }
+      const shouldRetry =
+        !budgetExhausted &&
+        tracksLocalChild &&
+        (!!run.processPid || !!run.processGroupId) &&
+        (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const budgetSuffix = budgetExhausted
+        ? `; issue blocked after ${budgetCount} consecutive process_lost failures (budget=${PROCESS_LOST_PER_ISSUE_RETRY_BUDGET})`
+        : "";
 
+      const finalErrorMessage = shouldRetry
+        ? `${baseMessage}; retrying once`
+        : `${baseMessage}${budgetSuffix}`;
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalErrorMessage,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
@@ -6634,13 +6708,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           {
             resultJson: parseObject(run.resultJson),
             errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            errorMessage: finalErrorMessage,
           },
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalErrorMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -6660,6 +6734,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
         }
       } else {
+        if (budgetExhausted && contextIssueId) {
+          await blockIssueForProcessLostBudgetExhaustion(run.companyId, contextIssueId, budgetCount);
+        }
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -6669,12 +6746,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "error",
         message: shouldRetry
           ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+          : `${baseMessage}${budgetSuffix}`,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(contextIssueId ? { consecutiveProcessLostCount: budgetCount } : {}),
+          ...(budgetExhausted ? { processLostBudgetExhausted: true, reason: PROCESS_LOST_BUDGET_EXHAUSTED_REASON } : {}),
         },
       });
 
@@ -7977,6 +8056,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+      }
+      if (outcome === "succeeded" && issueId) {
+        await resetIssueProcessLostBudget(run.companyId, issueId);
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
