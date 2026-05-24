@@ -79,7 +79,16 @@ COPY packages/services/webflow-bot/src /app/src
 # the runtime versions live in this Dockerfile. This image has already
 # copied the source into /app, so a normal wheel install avoids requiring
 # editable-install support from the build backend.
-RUN pip install --no-cache-dir --no-deps /app
+#
+# Upgrade pip + setuptools first — the playwright base ships Ubuntu jammy's
+# python3-setuptools 59.6, which predates PEP 621 `[project]` table support
+# and silently builds an empty `UNKNOWN-0.0.0` wheel. Pip's build-isolation
+# is supposed to honor `[build-system].requires = ["setuptools>=68"]` but
+# does not reliably with pip 22.0.2 when the system setuptools also provides
+# `setuptools.build_meta`. Upgrading the system pip+setuptools is the
+# durable fix.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir --no-deps /app
 
 # The bot is launched by the wrapper command in the Deployment manifest
 # (Xvfb + x11vnc + websockify orchestration is a manifest concern, not
