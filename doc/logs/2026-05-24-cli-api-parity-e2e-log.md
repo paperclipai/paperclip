@@ -769,6 +769,17 @@ pnpm paperclipai health --json
 - Output summary: Detached server log is `tmp/cli-api-parity/artifacts/caveat-followup/server-screen.log`.
 - Follow-up: Manual continuation can use the same env block and `screen -r paperclip-cli-parity` to inspect the server session.
 
+### 2026-05-24T14:27:44+02:00 - Rename bug log directory to logs
+
+- Command: `git mv doc/bugs doc/logs`; appended this entry in `doc/logs/2026-05-24-cli-api-parity-e2e-log.md`; `git status --short --branch`; `git diff --check`.
+- Purpose: Rename the living test/bug log directory from `doc/bugs` to `doc/logs` while preserving the existing audit trail.
+- Prerequisites/IDs used: Existing clean branch `improvement/cli-api-parity`; single log file `2026-05-24-cli-api-parity-e2e-log.md`.
+- Expected result: Git records the file as moved from `doc/bugs/` to `doc/logs/`; historical command strings inside the log remain unchanged because they record what was run at the time.
+- Actual result: Directory rename is staged as a path move with this follow-up log entry.
+- Status: PASS.
+- Output summary: New log path is `doc/logs/2026-05-24-cli-api-parity-e2e-log.md`.
+- Follow-up: Commit the directory rename.
+
 ## Bugs And Mismatches
 
 ### BUG-011 - Deleting a webhook routine trigger left its managed secret active
