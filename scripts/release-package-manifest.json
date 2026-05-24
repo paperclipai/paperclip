@@ -2,72 +2,72 @@
   {
     "dir": "packages/adapter-utils",
     "name": "@valadrien-os/adapter-utils",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/acpx-local",
     "name": "@valadrien-os/adapter-acpx-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/claude-local",
     "name": "@valadrien-os/adapter-claude-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/codex-local",
     "name": "@valadrien-os/adapter-codex-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/cursor-cloud",
     "name": "@valadrien-os/adapter-cursor-cloud",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/cursor-local",
     "name": "@valadrien-os/adapter-cursor-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/gemini-local",
     "name": "@valadrien-os/adapter-gemini-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/grok-local",
     "name": "@valadrien-os/adapter-grok-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/opencode-local",
     "name": "@valadrien-os/adapter-opencode-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/pi-local",
     "name": "@valadrien-os/adapter-pi-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/openclaw-gateway",
     "name": "@valadrien-os/adapter-openclaw-gateway",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/shared",
     "name": "@valadrien-os/shared",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/db",
     "name": "@valadrien-os/db",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sdk",
     "name": "@valadrien-os/plugin-sdk",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/plugin-workspace-diff",
@@ -77,51 +77,51 @@
   {
     "dir": "server",
     "name": "@valadrien-os/server",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "cli",
     "name": "valadrien-os",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/mcp-server",
     "name": "@valadrien-os/mcp-server",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/create-valadrien-os-plugin",
     "name": "@valadrien-os/create-valadrien-os-plugin",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/cloudflare",
     "name": "@valadrien-os/plugin-cloudflare-sandbox",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/daytona",
     "name": "@valadrien-os/plugin-daytona",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/exe-dev",
     "name": "@valadrien-os/plugin-exe-dev",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/e2b",
     "name": "@valadrien-os/plugin-e2b",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/modal",
     "name": "@valadrien-os/plugin-modal",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "ui",
     "name": "@valadrien-os/ui",
-    "publishFromCi": true
+    "publishFromCi": false
   }
 ]

@@ -15,7 +15,9 @@ test("release package manifest covers all public packages with explicit CI enrol
 
 test("release package list only contains CI-enrolled packages", () => {
   const enabledPackages = getReleasePackages();
-  assert.ok(enabledPackages.length > 0);
+  // During the fork's @valadrien-os/* publishing-deferred transition the
+  // enabled list can legitimately be empty; once any package is bootstrapped
+  // on npm and re-enrolled, this list will be non-empty again.
   assert.ok(enabledPackages.every((pkg) => pkg.publishFromCi === true));
 });
 
