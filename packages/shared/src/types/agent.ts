@@ -93,8 +93,19 @@ export interface Agent {
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
   credentialId: string | null;
+  credentials?: AgentCredentialSummary[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AgentCredentialSummary {
+  id: string;
+  companyId: string;
+  name: string;
+  type: string;
+  isDefault: boolean;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 export interface AgentDetail extends Agent {

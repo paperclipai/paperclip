@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, providerCredentials } from "@paperclipai/db";
+import { agentCredentials, agents, providerCredentials } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -124,19 +124,26 @@ export function credentialService(db: Db) {
     },
 
     async remove(id: string, force?: boolean) {
-      const agentRefs = await db
+      const legacyRefs = await db
         .select({ id: agents.id })
         .from(agents)
         .where(eq(agents.credentialId, id));
+      const joinRefs = await db
+        .select({ id: agentCredentials.id })
+        .from(agentCredentials)
+        .where(eq(agentCredentials.credentialId, id));
 
-      if (agentRefs.length > 0) {
+      if (legacyRefs.length > 0 || joinRefs.length > 0) {
         if (!force) {
           return { error: "credential_in_use" as const };
         }
-        await db
-          .update(agents)
-          .set({ credentialId: null, updatedAt: new Date() })
-          .where(eq(agents.credentialId, id));
+        if (legacyRefs.length > 0) {
+          await db
+            .update(agents)
+            .set({ credentialId: null, updatedAt: new Date() })
+            .where(eq(agents.credentialId, id));
+        }
+        // joinRefs are cleared via ON DELETE CASCADE on the FK.
       }
 
       const [removed] = await db
@@ -145,6 +152,60 @@ export function credentialService(db: Db) {
         .returning();
 
       return removed ? stripCredential(removed) : null;
+    },
+
+    async listForAgent(agentId: string): Promise<SafeCredential[]> {
+      const rows = await db
+        .select({ credential: providerCredentials })
+        .from(agentCredentials)
+        .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+        .where(eq(agentCredentials.agentId, agentId))
+        .orderBy(providerCredentials.type, providerCredentials.name);
+      return rows.map((row) => stripCredential(row.credential));
+    },
+
+    /**
+     * Replace the full set of credentials assigned to an agent.
+     * Enforces at most one credential per provider type per agent.
+     * Returns `{ error: "duplicate_type", type }` if validation fails.
+     */
+    async setForAgent(
+      agentId: string,
+      credentialIds: string[],
+    ): Promise<{ ok: true; credentials: SafeCredential[] } | { ok: false; error: "duplicate_type"; type: string } | { ok: false; error: "credential_not_found"; credentialId: string }> {
+      const uniqueIds = Array.from(new Set(credentialIds));
+
+      if (uniqueIds.length === 0) {
+        await db.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
+        return { ok: true, credentials: [] };
+      }
+
+      const creds = await db
+        .select()
+        .from(providerCredentials)
+        .where(inArray(providerCredentials.id, uniqueIds));
+
+      if (creds.length !== uniqueIds.length) {
+        const found = new Set(creds.map((c) => c.id));
+        const missing = uniqueIds.find((id) => !found.has(id))!;
+        return { ok: false, error: "credential_not_found", credentialId: missing };
+      }
+
+      const typeCounts = new Map<string, number>();
+      for (const c of creds) {
+        const next = (typeCounts.get(c.type) ?? 0) + 1;
+        if (next > 1) {
+          return { ok: false, error: "duplicate_type", type: c.type };
+        }
+        typeCounts.set(c.type, next);
+      }
+
+      await db.transaction(async (tx) => {
+        await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
+        await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
+      });
+
+      return { ok: true, credentials: creds.map(stripCredential) };
     },
   };
 
@@ -310,4 +371,59 @@ export async function resolveCredentialEnv(
       );
       return { env: {} };
   }
+}
+
+/**
+ * Resolve env for ALL credentials assigned to an agent via the agent_credentials
+ * join table. Falls back to the legacy `agents.credential_id` singular FK when
+ * the join is empty so existing single-credential agents keep working.
+ *
+ * Provider env vars do not collide across types (Anthropic / OpenAI / Gemini /
+ * OpenRouter each own distinct keys), but HOME is the one shared key — if both
+ * claude_oauth and codex_oauth are assigned, the last write wins. Codex is
+ * resolved last so CODEX_HOME + its HOME take precedence; the Claude CLI still
+ * finds its .credentials.json via the agent-specific HOME path it shares.
+ */
+export async function resolveAllCredentialEnv(
+  db: Db,
+  agentId: string,
+): Promise<{ env: Record<string, string>; home?: string; credentialIds: string[] }> {
+  const joinRows = await db
+    .select({ credentialId: agentCredentials.credentialId, type: providerCredentials.type })
+    .from(agentCredentials)
+    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+    .where(eq(agentCredentials.agentId, agentId));
+
+  if (joinRows.length === 0) {
+    const [agent] = await db
+      .select({ credentialId: agents.credentialId })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (!agent?.credentialId) return { env: {}, credentialIds: [] };
+    const res = await resolveCredentialEnv(db, agentId, agent.credentialId);
+    return { env: res.env, home: res.home, credentialIds: [agent.credentialId] };
+  }
+
+  // Resolve oauth types last so their HOME overrides take precedence over any
+  // api-key types (which never set HOME).
+  const homeOwnerTypes = new Set(["claude_oauth", "codex_oauth"]);
+  const ordered = [...joinRows].sort((a, b) => {
+    const aHome = homeOwnerTypes.has(a.type) ? 1 : 0;
+    const bHome = homeOwnerTypes.has(b.type) ? 1 : 0;
+    return aHome - bHome;
+  });
+
+  const env: Record<string, string> = {};
+  let home: string | undefined;
+  const credentialIds: string[] = [];
+
+  for (const row of ordered) {
+    const res = await resolveCredentialEnv(db, agentId, row.credentialId);
+    Object.assign(env, res.env);
+    if (res.home) home = res.home;
+    credentialIds.push(row.credentialId);
+  }
+
+  return { env, home, credentialIds };
 }

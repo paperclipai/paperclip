@@ -551,15 +551,17 @@ export function agentRoutes(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
   ) {
-    const [chainOfCommand, accessState] = await Promise.all([
+    const [chainOfCommand, accessState, credentials] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
+      credentialsSvc.listForAgent(agent.id),
     ]);
 
     return {
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
+      credentials,
     };
   }
 
@@ -2185,6 +2187,7 @@ export function agentRoutes(
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
+      credentialIds: requestedCredentialIds,
       ...createInput
     } = req.body;
     createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
@@ -2280,7 +2283,28 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    if (Array.isArray(requestedCredentialIds) && requestedCredentialIds.length > 0) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+      if (!setResult.ok) {
+        if (setResult.error === "duplicate_type") {
+          res.status(422).json({
+            error: "duplicate_credential_type",
+            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
+          });
+          return;
+        }
+        if (setResult.error === "credential_not_found") {
+          res.status(404).json({
+            error: "credential_not_found",
+            credentialId: setResult.credentialId,
+          });
+          return;
+        }
+      }
+    }
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+
+    res.status(201).json({ ...agent, credentials });
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -2602,6 +2626,13 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // credentialIds is a virtual field — owned by the agent_credentials join,
+    // not a column on agents. Extract before passing patchData to svc.update.
+    const hasCredentialIdsPatch = hasOwn(patchData, "credentialIds");
+    const requestedCredentialIds = hasCredentialIdsPatch
+      ? (Array.isArray(patchData.credentialIds) ? (patchData.credentialIds as string[]) : [])
+      : null;
+    if (hasCredentialIdsPatch) delete patchData.credentialIds;
     if (hasOwn(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -2724,6 +2755,28 @@ export function agentRoutes(
       );
     }
 
+    if (requestedCredentialIds !== null) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+      if (!setResult.ok) {
+        if (setResult.error === "duplicate_type") {
+          res.status(422).json({
+            error: "duplicate_credential_type",
+            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
+          });
+          return;
+        }
+        if (setResult.error === "credential_not_found") {
+          res.status(404).json({
+            error: "credential_not_found",
+            credentialId: setResult.credentialId,
+          });
+          return;
+        }
+      }
+    }
+
+    const credentials = await credentialsSvc.listForAgent(agent.id);
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,
@@ -2736,7 +2789,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json({ ...agent, credentials });
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
