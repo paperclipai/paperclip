@@ -1,4 +1,4 @@
-name: Set HubSpot Env Vars in Railway
+name: Set HubSpot Env Vars on Hostinger VPS
 
 on:
   workflow_dispatch:
@@ -17,24 +17,40 @@ jobs:
   set-env-vars:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Set Railway env vars
+      - name: Set HubSpot env vars on VPS
         run: |
           TOKEN="${{ inputs.hubspot_access_token || secrets.CREWBRIEF_HUBSPOT_ACCESS_TOKEN }}"
           if [ -z "$TOKEN" ]; then
             echo "Error: No CREWBRIEF_HUBSPOT_ACCESS_TOKEN provided. Pass as input or set as GitHub secret."
             exit 1
           fi
-          railway variables set CREWBRIEF_HUBSPOT_ACCESS_TOKEN="$TOKEN" --service crewbrief-api
-          railway variables set CREWBRIEF_HUBSPOT_EMAIL_SENDING="${{ inputs.hubspot_email_sending }}" --service crewbrief-api
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
-      - name: Redeploy CrewBrief API
-        run: railway up --service crewbrief-api --detach
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            cd /opt/paperclip
+            if grep -q "^CREWBRIEF_HUBSPOT_ACCESS_TOKEN=" .env; then
+              sed -i "s|^CREWBRIEF_HUBSPOT_ACCESS_TOKEN=.*|CREWBRIEF_HUBSPOT_ACCESS_TOKEN=$TOKEN|" .env
+            else
+              echo "CREWBRIEF_HUBSPOT_ACCESS_TOKEN=$TOKEN" >> .env
+            fi
+            if grep -q "^CREWBRIEF_HUBSPOT_EMAIL_SENDING=" .env; then
+              sed -i "s|^CREWBRIEF_HUBSPOT_EMAIL_SENDING=.*|CREWBRIEF_HUBSPOT_EMAIL_SENDING=$SENDING|" .env
+            else
+              echo "CREWBRIEF_HUBSPOT_EMAIL_SENDING=$SENDING" >> .env
+            fi
+            docker compose -f docker/docker-compose.yml up -d server
+          EOF
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          TOKEN: ${{ inputs.hubspot_access_token || secrets.CREWBRIEF_HUBSPOT_ACCESS_TOKEN }}
+          SENDING: ${{ inputs.hubspot_email_sending }}
+
+      - name: Verify deployment
+        run: |
+          echo "HubSpot env vars set on Hostinger VPS. Server container restarted."
+          echo "Next: verify by checking https://crewbrief.avva.aero/api/crewbrief/health"

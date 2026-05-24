@@ -1,10 +1,14 @@
-# ADR-001: CrewBrief Backend Architecture
+# ADR-001: CrewBrief Backend Architecture (Original Proposal)
 
 **Date:** 2026-05-17
-**Status:** Pending Confirmation (confirmation ccb16224 expired 2026-05-18; fresh confirmation created)
+**Status:** Superseded by ADR-002
 **Author:** Hunter (CTO)
 
-## Context
+> **Note:** This ADR proposed deploying CrewBrief as a standalone Express API on Railway.
+> In practice, the decision was made to deploy CrewBrief as a co-located service within
+> the existing Paperclip server on the Hostinger VPS. See ADR-002 for the actual architecture.
+
+## Context (Historical)
 
 CrewBrief is a permanent production application for aviation crew briefing delivery. It currently exists as a set of Express API routes and services within the existing Paperclip monorepo server package, plus an Expo/React Native iOS app.
 
@@ -185,3 +189,11 @@ This phased approach avoids premature separation while keeping the option open.
 | Database size exceeds Railway plan | PostgreSQL is standard; can migrate to RDS, Supabase, or any PostgreSQL provider. Drizzle ORM abstracts the connection. |
 | Need to scale beyond single container | Docker image can run behind any load balancer. Express is stateless (auth tokens in JWTs). |
 | Secrets management | Railway encrypted secrets store + existing Secrets provider abstraction supports migration to AWS Secrets Manager. |
+
+---
+
+## Actual Outcome (Supersedes Above)
+
+The separation to a standalone Railway service was **never implemented**. In production, CrewBrief runs as a co-located service within the main Paperclip server on the Hostinger VPS. The `Dockerfile.crewbrief` and `railway.json` remain in the repo as reference but are unused.
+
+See **ADR-002** (`doc/adr/crewbrief-deployment-architecture.md`) for the full production architecture documentation.

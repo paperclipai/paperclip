@@ -11,6 +11,10 @@ import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { healthRoutes } from "./routes/health.js";
 import { crewbriefRoutes } from "./routes/crewbrief.js";
+import { briefingFeedbackRoutes } from "./routes/briefing-feedback.js";
+import { briefingQualityRoutes } from "./routes/briefing-quality.js";
+import { crewbriefBriefingRoutes } from "./routes/crewbrief-briefing.js";
+import { crewbriefIntakeRoutes } from "./routes/crewbrief-intake.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -328,6 +332,10 @@ export async function createApp(
   const cbNurture = crewbriefNurtureService(db, crewbriefCfg, cbHubspot, cbPosthog, cbEmail);
   const cbWebhooks = crewbriefWebhookService(cbPosthog, cbNurture);
   api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture, cbHubspot, cbWebhooks));
+  api.use("/feedback", briefingFeedbackRoutes(db));
+  api.use("/briefing-quality", briefingQualityRoutes(db));
+  api.use("/briefings", crewbriefBriefingRoutes(db));
+  api.use("/crewbrief/intake", crewbriefIntakeRoutes(db));
 
   if (process.env.NODE_ENV === "production" || process.env.CREWBRIEF_ENABLE_NURTURE === "true") {
     const NURTURE_POLL_MS = 60_000;

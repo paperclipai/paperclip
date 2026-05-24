@@ -18,6 +18,7 @@ import { validate } from "../middleware/validate.js";
 import type { CrewbriefNurtureService } from "../services/crewbrief-nurture.js";
 import type { CrewbriefHubspotService } from "../services/crewbrief-hubspot.js";
 import type { CrewbriefWebhookService } from "../services/crewbrief-webhooks.js";
+import { renderBriefingHtml, generateMondayBriefing } from "../services/crewbrief-briefing.js";
 
 function generateReferralCode(): string {
   return randomBytes(6).toString("base64url").slice(0, 8);
@@ -495,6 +496,11 @@ export function crewbriefRoutes(
       return;
     }
     res.status(200).json({ status: "properties_created" });
+  });
+
+  router.get("/briefings/:tripId/:dutyDayId", (req, res) => {
+    const { tripId, dutyDayId } = req.params;
+    res.json(generateMondayBriefing(tripId, dutyDayId));
   });
 
   return router;

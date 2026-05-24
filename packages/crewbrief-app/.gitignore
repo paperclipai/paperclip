@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+dist/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+ios/Pods/
+ios/build/
+android/.gradle/
+android/app/build/
+android/build/

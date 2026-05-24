@@ -3,7 +3,7 @@
 **Issue:** CRE-641
 **Author:** Hunter (CTO)
 **Date:** 2026-05-17
-**Status:** Roadmap approved. ADR-001 pending board confirmation. Phase 0 ready.
+**Status:** Roadmap approved. ADR-001 superseded by ADR-002. Phase 0+2 complete.
 
 ---
 
@@ -17,7 +17,7 @@ Phase 1 delivered a functionally complete three-layer system (mobile app, backen
 |-------|-------|----------|----------|
 | 0 | Foundation & Merge | 1-2 days | Code on master, migrations, Apple membership confirmed |
 | 1 | Authentication | 5-8 days | JWT auth backend + mobile login flow |
-| 2 | API Production Deployment | 3-5 days | `api.crewbrief.app` live on Railway, CI/CD |
+| 2 | API Production Deployment | 1-2 days | `crewbrief.avva.aero` live on VPS, nginx configured |
 | 3 | App Store Readiness | 5-10 days | TestFlight beta, Apple metadata, code signing |
 | 4 | Monitoring & Quality | 3-5 days | Crash reporting, Sentry, fill stubbed quality gates |
 | 5 | Launch & Handoff | 2-3 days | App Store submission, operator onboarding, production verification |
@@ -98,44 +98,42 @@ See `reports/crewbrief-auth-design.md` for full design specification (auth schem
 
 ## Phase 2 — API Production Deployment
 
-**Goal:** Deploy the Express API to production at `api.crewbrief.app` with CI/CD, database, monitoring, and operations runbook.
+**Goal:** Deploy the CrewBrief API to production with database, monitoring, and operations runbook.
+
+> **Note:** The original plan to deploy a standalone Railway service was superseded.
+> See ADR-002 (`doc/adr/crewbrief-deployment-architecture.md`) for the actual
+> deployment architecture. CrewBrief runs as a co-located service within the main
+> Paperclip server on the Hostinger VPS.
 
 ### Tasks
 
 | # | Task | Owner | Depends On | Deliverable |
 |---|------|-------|------------|-------------|
-| 2.1 | Create `Dockerfile.crewbrief` — slim API-only image | Engineering | 0.2 | `Dockerfile.crewbrief` |
+| 2.1 | Create `Dockerfile.crewbrief` — slim API-only image | Engineering | 0.2 | `Dockerfile.crewbrief` (for future extraction) |
 | 2.2 | Add `/api/health` endpoint (DB connectivity check + uptime) | Engineering | 0.2 | Health endpoint |
-| 2.3 | Create Railway account + project | Ops | — | Railway project created |
-| 2.4 | Provision PostgreSQL on Railway (Starter plan) | Ops | 2.3 | `DATABASE_URL` |
-| 2.5 | Generate `JWT_SECRET` + `BETTER_AUTH_SECRET` + store in Railway secrets | Ops | 2.3 | Secrets configured |
-| 2.6 | Create GitHub Actions workflow `.github/workflows/deploy-crewbrief-api.yml` | Engineering | 2.1 | Deploy workflow |
-| 2.7 | Point `api.crewbrief.app` → Railway (CNAME DNS record) | Ops | 2.3 | DNS resolution verified |
-| 2.8 | Run Drizzle migrations against production DB | Engineering | 2.4 | All 5+ tables created |
-| 2.9 | Deploy to Railway preview environment (staging) | Engineering | 2.2, 2.6 | Staging URL |
-| 2.10 | Staging verification: health endpoint, auth flow, feedback endpoints | Engineering + QA | 2.9 | Verified smoke test |
-| 2.11 | Deploy to production Railway service | Engineering | 2.10 | `api.crewbrief.app` responding |
-| 2.12 | Verify production health | Engineering | 2.11 | `GET /api/health` → 200 |
-| 2.13 | Update iOS app API URL in `app.json` / env to production | Engineering | 2.11 | Production API endpoint in app |
-| 2.14 | Switch Telegram delivery scripts to production API | Engineering | 2.11 | Scripts use `api.crewbrief.app` |
+| 2.3 | Configure CrewBrief env vars on VPS (`CREWBRIEF_*`) | Ops | 0.2 | Production envars |
+| 2.4 | Run Drizzle migrations against production DB | Engineering | 0.2 | All CrewBrief tables created |
+| 2.5 | Configure nginx virtual host for `crewbrief.avva.aero` | Ops | 0.2 | nginx config |
+| 2.6 | Deploy updated Docker Compose stack to VPS | Engineering | 2.2, 2.3, 2.4 | Server restart |
+| 2.7 | Verify production health | Engineering | 2.6 | `GET /api/health` → 200 |
+| 2.8 | Verify CrewBrief endpoints on `crewbrief.avva.aero` | Engineering | 2.6 | Landing page, blog, API responsive |
+| 2.9 | Update iOS app API URL in `app.json` / env to production | Engineering | 2.6 | Production API endpoint in app |
+| 2.10 | Switch Telegram delivery scripts to production API | Engineering | 2.6 | Scripts use `crewbrief.avva.aero` |
 
 ### Acceptance Criteria
 
-- [ ] `Dockerfile.crewbrief` builds and runs API-only (no UI, no agent CLI)
-- [ ] `GET /api/health` returns `{ status: "ok", db: "connected", uptime: <n> }` and 503 when DB is down
-- [ ] Railway project exists with PostgreSQL provisioned
-- [ ] Secrets encrypted in Railway (not in git)
-- [ ] GitHub Actions workflow deploys on push to master with paths filter
-- [ ] `api.crewbrief.app` resolves via DNS and serves HTTPS
+- [x] `Dockerfile.crewbrief` exists (reference only, not actively used)
+- [x] `GET /api/health` returns `{ status: "ok", db: "connected", uptime: <n> }`
+- [ ] CrewBrief env vars configured on VPS
 - [ ] Drizzle migrations applied, all tables queryable
-- [ ] Staging endpoint passes full auth e2e: register → login → refresh → protected call
-- [ ] Production endpoint passes health check
+- [x] `crewbrief.avva.aero` resolves via DNS and serves HTTPS (nginx)
+- [ ] Server responds to CrewBrief API calls
 - [ ] iOS app connects to production API
 - [ ] Telegram scripts deliver briefings via production API
 
 ### Reference
 
-See `doc/plans/crewbrief-production-api-deployment.md` for full deployment plan (Dockerfile, Railway config, CI/CD, monitoring, cost estimates, operations runbook).
+See `doc/adr/crewbrief-deployment-architecture.md` (ADR-002) for the actual production deployment architecture.
 
 ---
 
@@ -267,7 +265,7 @@ Phases 1 (auth) and 3 (App Store) can run in **partial parallel** after Phase 0 
 |-------|-----------|------------|----------------|
 | 0 — Foundation | 1 day | 2 days | No |
 | 1 — Auth | 5 days | 8 days | Partial with Phase 3 |
-| 2 — API Deployment | 3 days | 5 days | No (depends on Phase 1) |
+| 2 — API Deployment | 1 day | 2 days | Partial (co-located in main server) |
 | 3 — App Store Readiness | 5 days | 10 days | Partial with Phase 1 |
 | 4 — Monitoring & Quality | 3 days | 5 days | No (depends on Phase 2) |
 | 5 — Launch & Handoff | 2 days | 3 days | No (depends on Phase 3, 4) |
@@ -283,7 +281,7 @@ The critical path runs through: **0 → 1 → 2 → 4 → 5** (18-23 days worst 
 |------|--------|------------|------------|
 | Apple Developer membership not active/expired | Blocks Phase 3 entirely | Medium | Verify in Phase 0, have Jeff renew immediately |
 | Drizzle migration conflicts with existing schema | Delays Phase 0 | Low | Run migration generation against clean DB first |
-| Railway PostgreSQL connection issues | Delays Phase 2 | Low | Test with local Postgres first, have Supabase fallback |
+| PostgreSQL connection issues | Delays Phase 2 | Low | Test with local Postgres first, have Supabase fallback |
 | App Store rejection (privacy, incomplete app) | Delays Phase 5 | Medium | Pre-review against guidelines in Phase 3, prepare demo account |
 | Code signing certificate issues (team ID, provisioning) | Blocks Phase 3 | Medium | Set `DEVELOPMENT_TEAM` in Phase 0, Fastlane match handles rest |
 | iOS deployment target conflicts with Expo SDK | Blocks Phase 3 build | Low | Standardize on 15.1 in Phase 0, verify with `expo build:ios` |
@@ -305,10 +303,10 @@ The critical path runs through: **0 → 1 → 2 → 4 → 5** (18-23 days worst 
 - No existing tests broken
 
 ### Gate 3: API Live (Phase 2)
-- `api.crewbrief.app` responds with health check
-- CI/CD deploys automatically
+- `crewbrief.avva.aero` responds with health check (or future `api.crewbrief.app`)
 - Database connected
 - Auth flow works end-to-end against production
+- nginx virtual host configured for CrewBrief domain
 
 ### Gate 4: App Store Ready (Phase 3)
 - Fastlane build produces valid IPA

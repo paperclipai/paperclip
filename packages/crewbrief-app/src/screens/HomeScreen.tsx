@@ -14,11 +14,12 @@ import type { RootStackParamList } from "../../App";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
-const DEFAULT_API_URL = __DEV__
-  ? Platform.OS === "android"
-    ? "http://10.0.2.2:3100"
-    : "http://localhost:3100"
-  : "https://api.crewbrief.app";
+const DEFAULT_API_URL = process.env.EXPO_PUBLIC_CREWBRIEF_API_URL
+  || (__DEV__
+    ? Platform.OS === "android"
+      ? "http://10.0.2.2:3100"
+      : "http://localhost:3100"
+    : "https://crewbrief.avva.aero");
 
 export function HomeScreen({ navigation }: Props) {
   const [tripId, setTripId] = useState("demo-trip-001");

@@ -1,0 +1,27 @@
+{
+  "name": "@paperclipai/react-native-hooks",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./screens": "./src/screens/index.ts",
+    "./screens/*": "./src/screens/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-native": "^0.73.0",
+    "react": "^18.2.0",
+    "react-native": "^0.85.3",
+    "typescript": "^5.7.3"
+  }
+}

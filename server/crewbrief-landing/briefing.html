@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>__TITLE__ — CrewBrief</title>
+<meta name="description" content="Flight crew briefing for __FLIGHT_NUMBER__ — __ORIGIN__ to __DESTINATION__" />
+<link rel="canonical" href="https://crewbrief.avva.aero/briefing" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        brand: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#2563eb', 600: '#1d4ed8', 700: '#1e40af', 800: '#1e3a8a', 900: '#172554' },
+      },
+      fontFamily: { sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'] },
+    }
+  }
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .no-print { display: none !important; }
+    .page-break { page-break-before: always; }
+  }
+  .risk-green { background-color: #16a34a; color: white; }
+  .risk-amber { background-color: #d97706; color: white; }
+  .risk-red { background-color: #dc2626; color: white; }
+</style>
+</head>
+<body class="bg-gray-50 font-sans text-gray-900 antialiased">
+  <div class="max-w-4xl mx-auto px-4 py-6">
+    <div class="no-print flex justify-between items-center mb-6">
+      <a href="https://crewbrief.avva.aero" class="text-brand-600 hover:text-brand-700 font-semibold text-sm">&larr; CrewBrief</a>
+      <button onclick="window.print()" class="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Print Briefing</button>
+    </div>
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+      <div class="bg-gradient-to-r from-brand-700 to-brand-900 px-8 py-6 text-white">
+        <div class="flex justify-between items-start">
+          <div>
+            <h1 class="text-2xl font-bold tracking-tight">__TITLE__</h1>
+            <p class="text-brand-200 text-sm mt-1">Generated: __GENERATED_AT__</p>
+          </div>
+          <div class="text-right">
+            <div class="text-3xl font-bold">__FLIGHT_NUMBER__</div>
+            <div class="text-brand-200 text-sm">__ORIGIN__ &rarr; __DESTINATION__</div>
+          </div>
+        </div>
+        <div class="flex gap-6 mt-4 text-sm text-brand-100">
+          <div><span class="text-brand-300">Aircraft:</span> __AIRCRAFT_TYPE__ (__AIRCRAFT_REG__)</div>
+          <div><span class="text-brand-300">Departure:</span> __SCHEDULED_DEPARTURE__</div>
+          <div><span class="text-brand-300">Arrival:</span> __SCHEDULED_ARRIVAL__</div>
+          <div><span class="text-brand-300">Config:</span> __AIRCRAFT_CONFIG__</div>
+        </div>
+      </div>
+      <div class="p-8 space-y-8">
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">Crew</h2>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-gray-500 uppercase tracking-wide">Captain</div><div class="font-semibold">__CREW_CAPTAIN__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-gray-500 uppercase tracking-wide">First Officer</div><div class="font-semibold">__CREW_FO__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-gray-500 uppercase tracking-wide">Purser</div><div class="font-semibold">__CREW_PURSER__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3"><div class="text-xs text-gray-500 uppercase tracking-wide">Cabin Crew</div><div class="font-semibold">__CREW_CABIN__</div></div>
+          </div>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">Weather Brief</h2>
+          <div class="space-y-4">
+            <div class="border border-gray-200 rounded-lg p-4">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-sm font-bold text-brand-700 bg-brand-50 px-2 py-0.5 rounded">__WX_DEP_STATION__</span>
+                <span class="text-xs font-medium text-gray-500">Departure</span>
+                <span class="ml-auto text-xs font-semibold px-2 py-0.5 rounded __WX_DEP_COND_CLASS__">__WX_DEP_CONDITIONS__</span>
+              </div>
+              <div class="grid md:grid-cols-2 gap-4 text-sm">
+                <div><span class="text-gray-500 text-xs font-medium uppercase">METAR</span><pre class="font-mono text-xs mt-1 bg-gray-50 p-2 rounded overflow-x-auto">__WX_DEP_METAR__</pre></div>
+                <div><span class="text-gray-500 text-xs font-medium uppercase">TAF</span><pre class="font-mono text-xs mt-1 bg-gray-50 p-2 rounded overflow-x-auto">__WX_DEP_TAF__</pre></div>
+              </div>
+              __WX_DEP_WARNINGS__
+            </div>
+            <div class="border border-gray-200 rounded-lg p-4">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-sm font-bold text-brand-700 bg-brand-50 px-2 py-0.5 rounded">__WX_ARR_STATION__</span>
+                <span class="text-xs font-medium text-gray-500">Arrival</span>
+                <span class="ml-auto text-xs font-semibold px-2 py-0.5 rounded __WX_ARR_COND_CLASS__">__WX_ARR_CONDITIONS__</span>
+              </div>
+              <div class="grid md:grid-cols-2 gap-4 text-sm">
+                <div><span class="text-gray-500 text-xs font-medium uppercase">METAR</span><pre class="font-mono text-xs mt-1 bg-gray-50 p-2 rounded overflow-x-auto">__WX_ARR_METAR__</pre></div>
+                <div><span class="text-gray-500 text-xs font-medium uppercase">TAF</span><pre class="font-mono text-xs mt-1 bg-gray-50 p-2 rounded overflow-x-auto">__WX_ARR_TAF__</pre></div>
+              </div>
+              __WX_ARR_WARNINGS__
+            </div>
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-sm font-bold text-brand-700 mb-3">Enroute</h3>
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div><span class="text-gray-500 text-xs font-medium uppercase">Winds</span><div class="font-mono text-xs mt-1">__WX_ENR_WINDS__</div></div>
+                <div><span class="text-gray-500 text-xs font-medium uppercase">Turbulence</span><div class="font-mono text-xs mt-1">__WX_ENR_TURB__</div></div>
+                <div><span class="text-gray-500 text-xs font-medium uppercase">Icing</span><div class="font-mono text-xs mt-1">__WX_ENR_ICING__</div></div>
+                <div><span class="text-gray-500 text-xs font-medium uppercase">SIGWX</span><div class="font-mono text-xs mt-1">__WX_ENR_SIGWX__</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">NOTAMs</h2>
+          __NOTAMS__
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">Fuel</h2>
+          <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Plan</div><div class="font-bold text-lg">__FUEL_PLAN__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Taxi</div><div class="font-bold text-lg">__FUEL_TAXI__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Trip</div><div class="font-bold text-lg">__FUEL_TRIP__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Contingency</div><div class="font-bold text-lg">__FUEL_CONT__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Alternate</div><div class="font-bold text-lg">__FUEL_ALT__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center"><div class="text-xs text-gray-500 uppercase">Final Reserve</div><div class="font-bold text-lg">__FUEL_RESERVE__</div><div class="text-xs text-gray-400">__FUEL_UNIT__</div></div>
+          </div>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">Route</h2>
+          <pre class="font-mono text-sm bg-gray-50 p-4 rounded-lg border border-gray-200 overflow-x-auto">__ROUTE__</pre>
+          <div class="mt-2 text-sm text-gray-600">Alternate: <span class="font-semibold">__ALTERNATE__</span></div>
+        </div>
+        <div>
+          <h2 class="text-lg font-semibold text-brand-800 border-b border-gray-200 pb-2 mb-4">Risk Assessment</h2>
+          <div class="flex items-center gap-3 mb-4">
+            <span class="text-sm text-gray-500 uppercase tracking-wide font-medium">Overall:</span>
+            <span class="text-lg font-bold px-3 py-1 rounded __RISK_OVERALL_CLASS__">__RISK_OVERALL__</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            __RISK_CATEGORIES__
+          </div>
+        </div>
+      </div>
+      <div class="bg-gray-50 border-t border-gray-200 px-8 py-4 text-center text-xs text-gray-400">
+        CrewBrief &mdash; Generated briefing for flight __FLIGHT_NUMBER__ &bull; <a href="https://crewbrief.avva.aero" class="text-brand-600 hover:text-brand-700">crewbrief.avva.aero</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
