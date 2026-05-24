@@ -367,9 +367,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(event?.message).toContain("Source-resolved watchdog fold");
   });
 
-  it("still escalates terminal source issues without same-run terminal evidence", async () => {
+  it("folds orphaned runs when source is terminal and run produced no same-run activity evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, issueId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
@@ -378,18 +378,20 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    expect(result).toMatchObject({ created: 0, folded: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("cancelled");
+    expect(run?.resultJson).toMatchObject({
+      orphanedWatchdogFold: { sourceIssueId: issueId, sourceIssueStatus: "done", reason: "source_resolved_via_other_path" },
+    });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
   });
 
-  it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
+  it("folds orphaned runs when source was marked terminal by another actor even if run had prior output", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, issueId, runId, issuePrefix } = await seedRunningRun({
       now,
@@ -422,15 +424,19 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    // latestSameRunSourceTerminalEvidence only matches activity_log rows authored by this runId;
+    // the board-user entry (runId: null) does not satisfy that predicate, so this is an orphaned run.
+    expect(result).toMatchObject({ created: 0, folded: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("cancelled");
+    expect(run?.resultJson).toMatchObject({
+      orphanedWatchdogFold: { sourceIssueId: issueId, sourceIssueStatus: "done", reason: "source_resolved_via_other_path" },
+    });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
   });
 
   it("folds existing evaluation and active watchdog recovery action idempotently", async () => {
@@ -797,5 +803,71 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("folds orphaned runs when source resolved via another path", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+      // no sameRunTerminalEvidence — this run produced no activity log entry updating the source
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, folded: 1, skipped: 0 });
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBeNull();
+    expect(run?.finishedAt?.toISOString()).toBe(now.toISOString());
+    expect(run?.resultJson).toMatchObject({
+      orphanedWatchdogFold: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+        evaluationIssueId: null,
+        cleanup: { outcome: "no_process_metadata" },
+        reason: "source_resolved_via_other_path",
+      },
+    });
+
+    const decisions = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(eq(heartbeatRunWatchdogDecisions.runId, runId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]?.decision).toBe("dismissed_false_positive");
+    expect(decisions[0]?.reason).toContain("Orphaned run");
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.runId, runId), eq(activityLog.action, "heartbeat.output_stale_orphaned_run_cleaned")));
+    expect(activityRows).toHaveLength(1);
+  });
+
+  it("re-scan does not re-fire after orphan fold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const second = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(first).toMatchObject({ folded: 1, created: 0 });
+    // cancelled run no longer satisfies status=running predicate — second scan sees nothing
+    expect(second).toMatchObject({ scanned: 0, created: 0, folded: 0 });
   });
 });

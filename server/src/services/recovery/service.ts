@@ -1122,6 +1122,140 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
 
+  async function foldOrphanedStaleRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+    existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
+    silenceStartedAt: Date | null;
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
+    const resultJson = {
+      ...parseObject(input.run.resultJson),
+      orphanedWatchdogFold: {
+        sourceIssueId: input.sourceIssue.id,
+        sourceIssueIdentifier: input.sourceIssue.identifier,
+        sourceIssueStatus: input.sourceIssue.status,
+        silenceStartedAt: input.silenceStartedAt?.toISOString() ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        cleanup,
+        reason: "source_resolved_via_other_path",
+      },
+    };
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: input.now,
+          error: null,
+          errorCode: null,
+          resultJson,
+          updatedAt: input.now,
+        })
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.status, "running")))
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: input.now,
+            error: null,
+            updatedAt: input.now,
+          })
+          .where(and(eq(agentWakeupRequests.id, input.run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.run.companyId)));
+      }
+
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.sourceIssue.id),
+            eq(issues.companyId, input.run.companyId),
+            eq(issues.executionRunId, input.run.id),
+          ),
+        );
+
+      return updatedRun;
+    });
+    if (!finalizedRun) return { kind: "skipped" as const };
+
+    if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Orphaned-run watchdog fold.",
+        "",
+        `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
+        `- Run: \`${input.run.id}\``,
+        "- Outcome: false positive; the source issue already reached a terminal disposition through a different run. This run produced no same-run terminal evidence of its own.",
+      ].join("\n"), { runId: input.run.id });
+    }
+
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.run.companyId, input.sourceIssue.id);
+    if (activeRecoveryAction?.kind === "active_run_watchdog") {
+      await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: input.run.companyId,
+        sourceIssueId: input.sourceIssue.id,
+        actionId: activeRecoveryAction.id,
+        status: "resolved",
+        outcome: "false_positive",
+        resolutionNote: "Source issue reached a terminal disposition through a different run; this run produced no same-run terminal evidence. Watchdog folded as orphaned run.",
+      });
+    }
+
+    const [decision] = await db
+      .insert(heartbeatRunWatchdogDecisions)
+      .values({
+        companyId: input.run.companyId,
+        runId: input.run.id,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        decision: "dismissed_false_positive",
+        reason: "Orphaned run: source issue reached a terminal disposition through a different run; this run produced no terminal evidence of its own.",
+        createdByRunId: input.run.id,
+      })
+      .returning();
+
+    await appendRecoveryRunEvent(finalizedRun, {
+      level: cleanup.outcome === "failed" ? "warn" : "info",
+      message: "Orphaned-run watchdog fold finalized stale active run",
+      payload: resultJson.orphanedWatchdogFold,
+    });
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_orphaned_run_cleaned",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        sourceIssueId: input.sourceIssue.id,
+        sourceIssueIdentifier: input.sourceIssue.identifier,
+        sourceIssueStatus: input.sourceIssue.status,
+        evaluationIssueId: input.existingEvaluation?.id ?? null,
+        watchdogDecisionId: decision.id,
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    });
+    await finalizeAgentAfterSourceResolvedRun(finalizedRun, "cancelled");
+    return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
   async function resolveStaleRunOwnerAgentId(input: {
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
@@ -1394,6 +1528,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           now: input.now,
         });
       }
+      return foldOrphanedStaleRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        existingEvaluation: existing,
+        silenceStartedAt,
+        silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+        now: input.now,
+      });
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
