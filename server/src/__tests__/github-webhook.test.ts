@@ -19,8 +19,11 @@ import {
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import {
+  __test_buildPrReviewerWakeIdempotencyKey,
   __test_extractPaperclipIdentifiers,
+  __test_hasPrReviewerRequestMention,
   __test_resolveEventContext,
+  __test_shouldFirePrReviewerWake,
   __test_verifyGithubSignature,
   githubWebhookRoutes,
 } from "../routes/github-webhook.ts";
@@ -119,6 +122,69 @@ describe("github-webhook pure helpers", () => {
     });
   });
 
+  it("treats @ally in a PR comment as an explicit reviewer wake request", () => {
+    expect(__test_hasPrReviewerRequestMention("@ally re-review please")).toBe(true);
+    expect(__test_hasPrReviewerRequestMention("cc @Ally after the fix")).toBe(true);
+    expect(__test_hasPrReviewerRequestMention("@blockcast-ci-packages re-review please")).toBe(true);
+    expect(__test_hasPrReviewerRequestMention("ally should not match without the tag")).toBe(false);
+    expect(__test_hasPrReviewerRequestMention("email me at ops@ally.example")).toBe(false);
+
+    const ctx = __test_resolveEventContext("issue_comment", {
+      action: "created",
+      issue: {
+        number: 47,
+        title: "BLO-6000 migrate auth",
+        body: null,
+        pull_request: { url: "https://api.github.com/repos/Blockcast/Network-Operator-Portal/pulls/47" },
+      },
+      comment: {
+        id: 123456,
+        body: "@ally re-review requested. Auth branch is refreshed and Docker builder passed.",
+        user: { login: "kkroo" },
+      },
+      repository: { full_name: "Blockcast/Network-Operator-Portal" },
+    });
+
+    expect(ctx).toMatchObject({
+      identifiers: ["BLO-6000"],
+      wakeReason: "github_pr_review_requested",
+      prNumber: 47,
+      repoFullName: "Blockcast/Network-Operator-Portal",
+      commentId: 123456,
+      commentAuthorLogin: "kkroo",
+      commentBody: "@ally re-review requested. Auth branch is refreshed and Docker builder passed.",
+    });
+    if (!__test_shouldFirePrReviewerWake(ctx)) {
+      throw new Error("expected @ally PR comment to fire a reviewer wake");
+    }
+    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-1")).toBe(
+      "pr_review:Blockcast/Network-Operator-Portal:47:github_pr_review_requested:comment:123456",
+    );
+  });
+
+  it("ignores issue comments that are not PR @ally review requests", () => {
+    expect(
+      __test_resolveEventContext("issue_comment", {
+        action: "created",
+        issue: {
+          number: 47,
+          title: "BLO-6000 migrate auth",
+          pull_request: { url: "https://api.github.com/repos/Blockcast/Network-Operator-Portal/pulls/47" },
+        },
+        comment: { id: 123456, body: "Looks good to me", user: { login: "kkroo" } },
+        repository: { full_name: "Blockcast/Network-Operator-Portal" },
+      }),
+    ).toBeNull();
+    expect(
+      __test_resolveEventContext("issue_comment", {
+        action: "created",
+        issue: { number: 47, title: "BLO-6000 not a PR" },
+        comment: { id: 123456, body: "@ally re-review please", user: { login: "kkroo" } },
+        repository: { full_name: "Blockcast/Network-Operator-Portal" },
+      }),
+    ).toBeNull();
+  });
+
   it("extracts review body / state / author from pull_request_review.submitted so the assignee wake can render it inline (BLO-6300)", () => {
     const ctx = __test_resolveEventContext("pull_request_review", {
       action: "submitted",
@@ -144,6 +210,7 @@ describe("github-webhook pure helpers", () => {
       reviewState: "commented",
       reviewAuthorLogin: "ally",
     });
+    expect(__test_shouldFirePrReviewerWake(ctx)).toBe(true);
   });
 
   it("truncates oversize review bodies to ~4KB with a marker so the contextSnapshot row stays small (BLO-6300)", () => {
@@ -319,12 +386,12 @@ describeEmbeddedPostgres("github-webhook route", () => {
     const { body, signature } = signedRequest(payload);
     const res = await request(app)
       .post("/api/webhooks/github")
-      .set("x-github-event", "issue_comment")
+      .set("x-github-event", "push")
       .set("x-hub-signature-256", signature)
       .set("content-type", "application/json")
       .send(body);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ ignored: "issue_comment" });
+    expect(res.body).toMatchObject({ ignored: "push" });
   });
 
   it("skips terminal-status issues -- a stale CI ping shouldn't reopen done work", async () => {

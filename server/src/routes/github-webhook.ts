@@ -1,6 +1,6 @@
 /**
  * GitHub webhook receiver — drives paperclip issue wakes from GitHub
- * events so a long-running CI cycle, PR review, or PR/branch event
+ * events so a long-running CI cycle, PR review, PR comment, or PR/branch event
  * doesn't sit silently while the agent that owns the linked issue
  * waits for its next 5-min heartbeat-timer tick.
  *
@@ -62,10 +62,22 @@ const PAPERCLIP_IDENTIFIER_PATTERN = /\b([A-Z]{2,10}-\d{1,6})\b/g;
 const WAKE_DRIVING_EVENTS = new Set([
   "check_run",
   "check_suite",
+  "issue_comment",
   "workflow_run",
   "pull_request_review",
   "pull_request",
 ]);
+
+// Operators use this as a Paperclip-level reviewer alias in GitHub PR
+// comments. It is intentionally parsed from the comment body instead of
+// relying on GitHub account mention resolution; there may not be a real
+// GitHub user named "ally".
+const PR_REVIEWER_COMMENT_MENTION_PATTERN =
+  /(^|[^\w])@(?:ally|blockcast-ci-packages)(?![-\w])/i;
+
+function hasPrReviewerRequestMention(body: string | null | undefined): boolean {
+  return typeof body === "string" && PR_REVIEWER_COMMENT_MENTION_PATTERN.test(body);
+}
 
 function timingSafeStringEq(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -106,6 +118,11 @@ interface ResolvedEventContext {
   reviewBody?: string | null;
   reviewState?: string | null;
   reviewAuthorLogin?: string | null;
+  // issue_comment.created only -- drives reviewer reruns requested by
+  // an operator via "@ally" in a PR comment.
+  commentId?: number | null;
+  commentBody?: string | null;
+  commentAuthorLogin?: string | null;
 }
 
 // Cap review body in contextSnapshot so the heartbeat-run row stays small.
@@ -215,6 +232,32 @@ function resolveEventContext(
         repoFullName,
       };
     }
+    case "issue_comment": {
+      const action = payload.action as string | undefined;
+      if (action !== "created") return null;
+      const issue = payload.issue as Record<string, unknown> | undefined;
+      const pullRequestMarker = issue?.pull_request as Record<string, unknown> | undefined;
+      // GitHub sends issue_comment for both issues and PRs. Only PR comments
+      // can request Ally PR review.
+      if (!issue || !pullRequestMarker) return null;
+      const comment = payload.comment as Record<string, unknown> | undefined;
+      const commentBody = comment?.body as string | undefined;
+      if (!hasPrReviewerRequestMention(commentBody)) return null;
+      const commentUser = comment?.user as Record<string, unknown> | undefined;
+      return {
+        identifiers: extractPaperclipIdentifiers(
+          issue.title as string | undefined,
+          issue.body as string | undefined,
+          commentBody,
+        ),
+        wakeReason: "github_pr_review_requested",
+        prNumber: (issue.number as number | undefined) ?? null,
+        repoFullName,
+        commentId: (comment?.id as number | undefined) ?? null,
+        commentBody: clampReviewBody(commentBody),
+        commentAuthorLogin: (commentUser?.login as string | undefined) ?? null,
+      };
+    }
     case "pull_request_review": {
       const action = payload.action as string | undefined;
       // Only "submitted" advances state; "edited"/"dismissed" don't usually
@@ -263,6 +306,28 @@ function resolveEventContext(
   }
 }
 
+function shouldFirePrReviewerWake(context: ResolvedEventContext | null): context is ResolvedEventContext & { prNumber: number } {
+  if (!context || !context.wakeReason || !context.prNumber) return false;
+  return new Set([
+    "github_pr_opened",
+    "github_pr_ready_for_review",
+    "github_pr_review_requested",
+    "github_pr_review_submitted",
+  ]).has(context.wakeReason);
+}
+
+function buildPrReviewerWakeIdempotencyKey(
+  context: ResolvedEventContext & { prNumber: number },
+  deliveryId: string | null,
+) {
+  const repo = context.repoFullName ?? "unknown";
+  const commentScopedSuffix =
+    context.wakeReason === "github_pr_review_requested"
+      ? `${context.wakeReason}:comment:${context.commentId ?? deliveryId ?? "unknown"}`
+      : context.wakeReason;
+  return `pr_review:${repo}:${context.prNumber}:${commentScopedSuffix}`;
+}
+
 export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
   const router = Router();
 
@@ -309,19 +374,13 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     // that should drive a review:
     //   - pull_request.opened          — new PR ready for first review
     //   - pull_request.ready_for_review — draft promoted to ready
+    //   - issue_comment.created with @ally — explicit operator re-review request
     //   - pull_request_review.submitted — request a counter-review pass
     // (We deliberately skip pull_request.closed/synchronize and check_run/
     //  workflow_run — those are post-merge signals or per-push thrash.)
-    const prReviewWakeReasons = new Set([
-      "github_pr_opened",
-      "github_pr_ready_for_review",
-      "github_pr_review",
-    ]);
     const reviewerWakeFired = await (async () => {
       if (!config.prReviewerAgentId) return false;
-      if (!context || !context.wakeReason) return false;
-      if (!prReviewWakeReasons.has(context.wakeReason)) return false;
-      if (!context.prNumber) return false;
+      if (!shouldFirePrReviewerWake(context)) return false;
       try {
         const heartbeat = heartbeatService(db, {
           pluginWorkerManager: config.pluginWorkerManager,
@@ -336,6 +395,8 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             deliveryId,
             prNumber: context.prNumber,
             repoFullName: context.repoFullName,
+            commentId: context.commentId,
+            commentAuthorLogin: context.commentAuthorLogin,
             reviewKind: "pr_review",
           },
           contextSnapshot: {
@@ -347,12 +408,18 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             githubDeliveryId: deliveryId,
             githubPrNumber: context.prNumber,
             githubRepoFullName: context.repoFullName,
+            ...(context.commentId ? { githubCommentId: context.commentId } : {}),
+            ...(context.commentAuthorLogin
+              ? { githubPrReviewRequestAuthorLogin: context.commentAuthorLogin }
+              : {}),
+            ...(context.commentBody ? { githubPrReviewRequestBody: context.commentBody } : {}),
             reviewKind: "pr_review",
             prRole: "reviewer",
           },
-          // One wake per PR per event so a flurry of check_run/synchronize
-          // bursts on the same PR don't trigger N reviews.
-          idempotencyKey: `pr_review:${context.repoFullName ?? "unknown"}:${context.prNumber}:${context.wakeReason}`,
+          // Open/ready/review-submitted events stay one wake per PR+reason.
+          // @ally comment requests are scoped to the GitHub comment id so a
+          // later explicit re-review comment can wake Ally again.
+          idempotencyKey: buildPrReviewerWakeIdempotencyKey(context, deliveryId),
         });
         return true;
       } catch (err) {
@@ -508,5 +575,8 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
 
 // Test-only re-exports.
 export const __test_extractPaperclipIdentifiers = extractPaperclipIdentifiers;
+export const __test_hasPrReviewerRequestMention = hasPrReviewerRequestMention;
 export const __test_verifyGithubSignature = verifyGithubSignature;
 export const __test_resolveEventContext = resolveEventContext;
+export const __test_shouldFirePrReviewerWake = shouldFirePrReviewerWake;
+export const __test_buildPrReviewerWakeIdempotencyKey = buildPrReviewerWakeIdempotencyKey;

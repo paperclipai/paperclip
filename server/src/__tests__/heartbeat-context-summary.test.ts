@@ -88,10 +88,14 @@ describe("buildPaperclipTaskMarkdown", () => {
         repoFullName: "Blockcast/paperclip",
         event: "pull_request",
         prRole: "reviewer",
+        requestCommentBody: "@ally re-review requested after the fix.",
+        requestCommentAuthorLogin: "kkroo",
       },
     });
     expect(reviewerMarkdown).toContain("GitHub PR review directive:");
     expect(reviewerMarkdown).toContain("Follow your AGENTS.md PR-review workflow");
+    expect(reviewerMarkdown).toContain("kkroo requested this review:");
+    expect(reviewerMarkdown).toContain("@ally re-review requested after the fix.");
     expect(reviewerMarkdown).not.toContain("GitHub PR review feedback directive:");
   });
 
@@ -196,6 +200,8 @@ describe("derivePaperclipPrReview", () => {
       reviewBody: null,
       reviewState: null,
       reviewAuthorLogin: null,
+      requestCommentBody: null,
+      requestCommentAuthorLogin: null,
     });
   });
 
@@ -220,14 +226,17 @@ describe("derivePaperclipPrReview", () => {
   });
 
   it("surfaces prRole='reviewer' on the reviewer wake", () => {
-    expect(
-      derivePaperclipPrReview({
-        wakeReason: "github_pr_opened",
-        githubPrNumber: 35,
-        githubRepoFullName: "Blockcast/paperclip",
-        prRole: "reviewer",
-      })?.prRole,
-    ).toBe("reviewer");
+    const review = derivePaperclipPrReview({
+      wakeReason: "github_pr_opened",
+      githubPrNumber: 35,
+      githubRepoFullName: "Blockcast/paperclip",
+      prRole: "reviewer",
+      githubPrReviewRequestBody: "@ally re-review requested after the fix.",
+      githubPrReviewRequestAuthorLogin: "kkroo",
+    });
+    expect(review?.prRole).toBe("reviewer");
+    expect(review?.requestCommentBody).toBe("@ally re-review requested after the fix.");
+    expect(review?.requestCommentAuthorLogin).toBe("kkroo");
   });
 
   it("rejects unknown prRole values (defends against contextSnapshot drift)", () => {

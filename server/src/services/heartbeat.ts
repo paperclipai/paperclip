@@ -2370,6 +2370,8 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
     reviewBody: readNonEmptyString(contextSnapshot.githubPrReviewBody),
     reviewState: readNonEmptyString(contextSnapshot.githubPrReviewState),
     reviewAuthorLogin: readNonEmptyString(contextSnapshot.githubPrReviewAuthorLogin),
+    requestCommentBody: readNonEmptyString(contextSnapshot.githubPrReviewRequestBody),
+    requestCommentAuthorLogin: readNonEmptyString(contextSnapshot.githubPrReviewRequestAuthorLogin),
   };
 }
 
@@ -2400,6 +2402,8 @@ export function buildPaperclipTaskMarkdown(input: {
     reviewBody?: string | null;
     reviewState?: string | null;
     reviewAuthorLogin?: string | null;
+    requestCommentBody?: string | null;
+    requestCommentAuthorLogin?: string | null;
   } | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
@@ -2454,6 +2458,10 @@ export function buildPaperclipTaskMarkdown(input: {
         "GitHub PR review directive:",
         "A GitHub webhook woke you to review this pull request. Follow your AGENTS.md PR-review workflow against the PR above. Do not short-circuit to an inbox check — the PR IS your assignment for this run.",
       );
+      if (prReview.requestCommentBody) {
+        const requesterLabel = prReview.requestCommentAuthorLogin ?? "An operator";
+        lines.push("", `${requesterLabel} requested this review:`, fenceTaskText(prReview.requestCommentBody));
+      }
     }
     if (issue || wakeComment) {
       lines.push("");
