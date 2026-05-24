@@ -465,6 +465,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: No active API tokens created by this run remain. Scratch instance remains running on `http://127.0.0.1:3197`.
 - Follow-up: Final report should call out `openapi` as unfixed and explain that implementing it needs a real OpenAPI generator/route rather than a small CLI wrapper correction.
 
+### 2026-05-24T12:45:40+02:00 - Root setup and local maintenance command coverage
+
+- Command: `pnpm paperclipai doctor --config <scratch-config>`; `pnpm paperclipai doctor --config <scratch-config> --repair --yes`; `pnpm paperclipai env --config <scratch-config>`; `pnpm paperclipai db:backup --config <scratch-config> --dir tmp/cli-api-parity/artifacts/root-setup/backups --retention-days 1 --filename-prefix cli-parity --json`; `pnpm paperclipai allowed-hostname cli-parity.test --config <scratch-config>`; `pnpm paperclipai auth bootstrap-ceo --config <scratch-config> --force --base-url http://127.0.0.1:3197`; `pnpm paperclipai auth whoami --json`; `pnpm paperclipai routines disable-all --config <scratch-config> --company-id 12e9db4b-f66c-459b-959e-d645002240fb --json`; `pnpm paperclipai env-lab doctor --instance cli-api-parity --json`; `pnpm paperclipai env-lab status --instance cli-api-parity --json`
+- Purpose: Cover root/setup commands and local maintenance utilities against the disposable instance without touching real home state.
+- Prerequisites/IDs used: Scratch config `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/config.json`; company `12e9db4b-f66c-459b-959e-d645002240fb`.
+- Expected result: Doctor and env introspection use scratch config; DB backup writes under scratch artifacts; allowed-hostname mutates only scratch config; bootstrap CEO is a no-op in `local_trusted`; routines disable-all is harmless with no routines; env-lab reports host capability/status without starting services.
+- Actual result: All commands passed. `doctor` and `doctor --repair --yes` completed. `env` printed scratch deployment variables; the generated agent JWT secret is not copied here. `db:backup` created a one-off backup under `tmp/cli-api-parity/artifacts/root-setup/backups`. `allowed-hostname` added `cli-parity.test` to the scratch config and noted a restart is required for it to take effect. `auth bootstrap-ceo` correctly reported that bootstrap CEO invites are only required in authenticated mode. `auth whoami` returned the local implicit board identity. `routines disable-all` reported zero routines. `env-lab doctor` reported SSH env-lab is disabled on macOS unless explicitly opted in, and `env-lab status` reported no running fixture.
+- Status: PASS.
+- Output summary: This batch covered root setup/maintenance command surfaces that were previously only indirectly covered. Some artifact output files under `tmp/cli-api-parity/artifacts/root-setup` contain command output from the disposable instance.
+- Follow-up: Continue remaining untested command families, especially cloud/worktree surfaces and any server-backed command gaps discovered by targeted help/source review.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
