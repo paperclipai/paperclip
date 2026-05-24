@@ -1603,6 +1603,110 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(loserWakeup?.status).toBe("skipped");
   });
 
+  it("cancels a queued stale routine duplicate when another open issue owns the execution lock", async () => {
+    const { companyId, agentId, issueId: duplicateIssueId } = await seedAssignedTodoNoRunFixture();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const ownerIssueId = randomUUID();
+    const ownerRunId = randomUUID();
+    const duplicateRunId = randomUUID();
+    const duplicateWakeupId = randomUUID();
+    const routineId = randomUUID();
+    const dispatchFingerprint = "routine-dispatch-fingerprint";
+
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "owner",
+      status: "queued",
+      contextSnapshot: { issueId: ownerIssueId, wakeReason: "issue_assigned" },
+    });
+
+    await db.insert(issues).values({
+      id: ownerIssueId,
+      companyId,
+      title: "Owner routine execution",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: ownerRunId,
+      originKind: "routine_execution",
+      originId: routineId,
+      originFingerprint: dispatchFingerprint,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        title: "Stale duplicate routine execution",
+        status: "todo",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: dispatchFingerprint,
+        executionRunId: null,
+      })
+      .where(eq(issues.id, duplicateIssueId));
+
+    await db.insert(agentWakeupRequests).values({
+      id: duplicateWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "duplicate",
+      reason: "issue_assigned",
+      payload: { issueId: duplicateIssueId },
+      status: "queued",
+      runId: duplicateRunId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: duplicateRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "duplicate",
+      status: "queued",
+      wakeupRequestId: duplicateWakeupId,
+      contextSnapshot: { issueId: duplicateIssueId, wakeReason: "issue_assigned" },
+    });
+
+    await heartbeat.__test_executeRunForTesting(duplicateRunId);
+
+    const duplicateRun = await heartbeat.getRun(duplicateRunId);
+    expect(duplicateRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "routine_execution_duplicate_suppressed",
+    });
+    expect(duplicateRun?.resultJson).toMatchObject({
+      stopReason: "routine_execution_duplicate_suppressed",
+      timeoutSource: "routine_execution_duplicate_gate",
+    });
+
+    const duplicateWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, duplicateWakeupId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicateWakeup?.status).toBe("skipped");
+
+    const duplicateIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, duplicateIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicateIssue?.executionRunId).toBeNull();
+
+    const ownerIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, ownerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(ownerIssue?.executionRunId).toBe(ownerRunId);
+  });
+
   it("skips budget-blocked assigned todo work with no prior run and continues the sweep", async () => {
     const blocked = await seedAssignedTodoNoRunFixture();
     const unblocked = await seedAssignedTodoNoRunFixture();

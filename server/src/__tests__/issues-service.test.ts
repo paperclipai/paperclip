@@ -3616,4 +3616,88 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
+
+  it("rejects checkout of a stale routine duplicate when another open issue owns the execution lock", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerIssueId = randomUUID();
+    const duplicateIssueId = randomUUID();
+    const ownerRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const routineId = randomUUID();
+    const dispatchFingerprint = "routine-dispatch-fingerprint";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+    });
+    await db.insert(issues).values([
+      {
+        id: ownerIssueId,
+        companyId,
+        title: "Owner routine execution",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: ownerRunId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: dispatchFingerprint,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: duplicateIssueId,
+        companyId,
+        title: "Stale duplicate routine execution",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: dispatchFingerprint,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await expect(
+      svc.checkout(duplicateIssueId, agentId, ["todo"], checkoutRunId),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        issueId: duplicateIssueId,
+        ownerIssueId,
+        ownerExecutionRunId: ownerRunId,
+      },
+    });
+
+    const duplicateIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, duplicateIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicateIssue?.executionRunId).toBeNull();
+  });
 });

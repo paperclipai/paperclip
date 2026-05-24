@@ -83,6 +83,7 @@ import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -123,6 +124,45 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function findOpenRoutineExecutionLockOwnerForIssue(db: Db, companyId: string, issueId: string) {
+  const target = await db
+    .select({
+      id: issues.id,
+      originKind: issues.originKind,
+      originId: issues.originId,
+      originFingerprint: issues.originFingerprint,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  if (!target || target.originKind !== "routine_execution" || !target.originId) return null;
+
+  return db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      executionRunId: issues.executionRunId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "routine_execution"),
+        eq(issues.originId, target.originId),
+        eq(issues.originFingerprint, target.originFingerprint),
+        inArray(issues.status, OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES),
+        isNull(issues.hiddenAt),
+        isNotNull(issues.executionRunId),
+        ne(issues.id, issueId),
+      ),
+    )
+    .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -5156,6 +5196,18 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
+
+      if (checkoutRunId) {
+        const routineLockOwner = await findOpenRoutineExecutionLockOwnerForIssue(db, issueCompany.companyId, id);
+        if (routineLockOwner) {
+          throw conflict("Routine execution already locked by another open issue", {
+            issueId: id,
+            ownerIssueId: routineLockOwner.id,
+            ownerIdentifier: routineLockOwner.identifier,
+            ownerExecutionRunId: routineLockOwner.executionRunId,
+          });
+        }
+      }
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];

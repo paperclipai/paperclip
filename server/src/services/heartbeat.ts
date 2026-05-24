@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -235,6 +235,7 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -6355,25 +6356,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      const routineLockOwner = await findOpenRoutineExecutionLockOwnerForIssue(claimed.companyId, claimedIssueId);
+      if (routineLockOwner) {
+        await cancelClaimedRunForRoutineExecutionDuplicate({
+          run: claimed,
+          issueId: claimedIssueId,
+          lockOwner: routineLockOwner,
+        });
+        logger.info(
+          {
+            runId: claimed.id,
+            issueId: claimedIssueId,
+            ownerIssueId: routineLockOwner.id,
+            ownerExecutionRunId: routineLockOwner.executionRunId,
+          },
+          "claimQueuedRun: cancelled duplicate routine execution run",
         );
+        return null;
+      }
+
+      const claimedAgent = await getAgent(claimed.agentId);
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        if (!isOpenRoutineExecutionUniqueViolation(error)) throw error;
+        const racedLockOwner = await findOpenRoutineExecutionLockOwnerForIssue(claimed.companyId, claimedIssueId);
+        if (!racedLockOwner) throw error;
+        await cancelClaimedRunForRoutineExecutionDuplicate({
+          run: claimed,
+          issueId: claimedIssueId,
+          lockOwner: racedLockOwner,
+        });
+        logger.info(
+          {
+            runId: claimed.id,
+            issueId: claimedIssueId,
+            ownerIssueId: racedLockOwner.id,
+            ownerExecutionRunId: racedLockOwner.executionRunId,
+          },
+          "claimQueuedRun: cancelled duplicate routine execution run after lock race",
+        );
+        return null;
+      }
     }
 
     return claimed;
@@ -6635,6 +6676,100 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       level: "warn",
       message: staleness.reason,
       payload: staleness.details,
+    });
+
+    return cancelled;
+  }
+
+  function isOpenRoutineExecutionUniqueViolation(error: unknown) {
+    return Boolean(
+      error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: string }).code === "23505" &&
+        "constraint" in error &&
+        (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq",
+    );
+  }
+
+  async function findOpenRoutineExecutionLockOwnerForIssue(companyId: string, issueId: string) {
+    const target = await db
+      .select({
+        id: issues.id,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        originFingerprint: issues.originFingerprint,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!target || target.originKind !== "routine_execution" || !target.originId) return null;
+
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, target.originId),
+          eq(issues.originFingerprint, target.originFingerprint),
+          inArray(issues.status, OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          ne(issues.id, issueId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function cancelClaimedRunForRoutineExecutionDuplicate(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string;
+    lockOwner: NonNullable<Awaited<ReturnType<typeof findOpenRoutineExecutionLockOwnerForIssue>>>;
+  }) {
+    const now = new Date();
+    const reason =
+      "Cancelled because another open routine execution issue already owns this dispatch lock; the owner run will continue the work";
+    const cancelled = await setRunStatus(input.run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "routine_execution_duplicate_suppressed",
+      resultJson: {
+        ...parseObject(input.run.resultJson),
+        stopReason: "routine_execution_duplicate_suppressed",
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "routine_execution_duplicate_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(input.run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: reason,
+      payload: {
+        issueId: input.issueId,
+        ownerIssueId: input.lockOwner.id,
+        ownerIdentifier: input.lockOwner.identifier,
+        ownerExecutionRunId: input.lockOwner.executionRunId,
+      },
     });
 
     return cancelled;
