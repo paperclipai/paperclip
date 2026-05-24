@@ -171,6 +171,7 @@ jobs:
 
       - name: Upload recovery logs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v3
         with:
           name: recovery-monitor-logs
