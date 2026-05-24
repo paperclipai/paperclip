@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 760" preserveAspectRatio="xMidYMid meet" role="img" aria-label="ValAdrien.DEV - ValAdrien OS">
+  <title>ValAdrien.DEV wordmark</title>
+  <rect width="1024" height="760" fill="#ffffff"/>
+
+  <!-- Glitch disintegration trailing off to the left -->
+  <g fill="#000000" aria-hidden="true">
+    <rect x="42" y="172" width="44" height="32"/>
+    <rect x="100" y="148" width="22" height="18"/>
+    <rect x="138" y="190" width="14" height="14"/>
+    <rect x="74" y="232" width="34" height="22"/>
+    <rect x="128" y="266" width="42" height="20"/>
+    <rect x="46" y="312" width="24" height="28"/>
+    <rect x="98" y="346" width="36" height="18"/>
+    <rect x="58" y="400" width="20" height="20"/>
+    <rect x="124" y="424" width="46" height="14"/>
+    <rect x="170" y="382" width="18" height="22"/>
+    <rect x="32" y="244" width="14" height="10"/>
+    <rect x="92" y="200" width="10" height="14"/>
+    <rect x="184" y="236" width="24" height="18"/>
+    <rect x="196" y="318" width="14" height="14"/>
+    <rect x="28" y="358" width="18" height="20"/>
+    <rect x="212" y="284" width="14" height="16"/>
+    <rect x="158" y="466" width="26" height="20"/>
+    <rect x="80" y="460" width="14" height="14"/>
+    <rect x="22" y="288" width="10" height="10"/>
+    <rect x="60" y="376" width="10" height="14"/>
+    <rect x="148" y="158" width="10" height="10"/>
+    <rect x="210" y="206" width="14" height="10"/>
+  </g>
+
+  <!-- VA / A mark -->
+  <g fill="none" stroke="#000000" stroke-width="78" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M 240 540 L 512 80 L 784 540"/>
+    <path d="M 366 380 L 658 380"/>
+  </g>
+
+  <!-- Code brackets in lower-right negative space of the A -->
+  <text x="612" y="512" font-family="ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="76" font-weight="800" fill="#000000" letter-spacing="-2">&lt;/&gt;</text>
+
+  <!-- Caption: ValAdrien in black, .DEV in dev-green (slightly darker emerald for AA contrast on white) -->
+  <g font-family="'Inter', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-weight="800" font-size="84" letter-spacing="2" text-anchor="middle">
+    <text x="464" y="700" fill="#000000">ValAdrien</text>
+    <text x="685" y="700" fill="#089E37">.DEV</text>
+  </g>
+</svg>
