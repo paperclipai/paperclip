@@ -68,6 +68,7 @@ import {
 } from "../dispatch/guild-run-sandbox.js";
 import {
   ingestGuildLearnings,
+  parseVideoStageCompletedEvent,
   type IngestGuildLearningsResult,
 } from "../dispatch/ingest-guild-learnings.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
@@ -6806,6 +6807,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: { id: string };
     guildSandboxDir: string | null;
     baseResultJson: Record<string, unknown> | null;
+    /** Phase 2 Task 2.2: issue title for the video-stage emit. When the
+     * agent is a guild + title matches `video-<stage>/<request_id>` +
+     * runStatus='succeeded', a second activity_log row is written with
+     * action='video.stage.completed'. Null/undefined disables the emit. */
+    issueTitle?: string | null;
+    /** Phase 2 Task 2.2: terminal run status as computed by the caller
+     * (succeeded|failed|cancelled|timed_out). Only 'succeeded' triggers
+     * the video.stage.completed emit; the path is otherwise a no-op. */
+    runStatus?: string;
   }): Promise<{
     resultJson: Record<string, unknown> | null;
     cleanedSandbox: boolean;
@@ -6939,6 +6949,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { err: telemetryErr, runId: args.run.id, agentId: args.agent.id },
         "guild dispatch: failed to write activity_log(guild.worker.skills_ingested)",
       );
+    }
+    // Phase 2 Task 2.2: video-stage completion telemetry. When the
+    // closing run was a clean exit (runStatus='succeeded') against a
+    // video-stage issue (title `video-<stage>/<request_id>`), emit a
+    // second activity_log row so the video-ad orchestrator can react.
+    // Wrapped in try/catch for the same reason as the skills_ingested
+    // emit above: observability never blocks the run.
+    if (args.runStatus !== undefined) {
+      const videoEvent = parseVideoStageCompletedEvent({
+        agent: args.agent,
+        issueTitle: args.issueTitle,
+        runStatus: args.runStatus,
+      });
+      if (videoEvent) {
+        try {
+          await logActivity(db, {
+            companyId: args.agent.companyId,
+            actorType: "agent",
+            actorId: args.agent.id,
+            action: "video.stage.completed",
+            entityType: "heartbeat_run",
+            entityId: args.run.id,
+            agentId: args.agent.id,
+            runId: args.run.id,
+            details: {
+              stage: videoEvent.stage,
+              request_id: videoEvent.requestId,
+              guildId: args.agent.id,
+              guildSlug: args.agent.name,
+            },
+          });
+        } catch (telemetryErr) {
+          logger.warn(
+            { err: telemetryErr, runId: args.run.id, agentId: args.agent.id },
+            "guild dispatch: failed to write activity_log(video.stage.completed)",
+          );
+        }
+      }
     }
     const resultJson: Record<string, unknown> = {
       ...(args.baseResultJson ?? {}),
@@ -8387,6 +8435,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run,
         guildSandboxDir,
         baseResultJson: persistedResultJson,
+        // Phase 2 Task 2.2: feed the video-stage emit. issueContext is
+        // captured at the start of executeRun and is the same record
+        // the worker was dispatched against; status is the heartbeat
+        // run terminal status ('succeeded' is the clean-exit value).
+        issueTitle: issueContext?.title ?? null,
+        runStatus: status,
       });
       if (persistedResultJsonWithGuild.cleanedSandbox) {
         guildLearningsIngested = true;
@@ -8573,6 +8627,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run,
         guildSandboxDir,
         baseResultJson: baseFailureResultJson,
+        // Phase 2 Task 2.2: pass issueTitle for completeness; runStatus
+        // is hard-coded 'failed' here so the helper short-circuits and
+        // never emits video.stage.completed on the failure path.
+        issueTitle: issueContext?.title ?? null,
+        runStatus: "failed",
       });
       if (failureResultWithGuild.cleanedSandbox) {
         guildLearningsIngested = true;

@@ -35,6 +35,50 @@ import { guildSkillCreateSchema, truncateGuildSkillBody } from "@paperclipai/sha
 import { guildSkillService } from "../services/guild-skills.js";
 import { GUILD_WORKER_LEARNINGS_FILE } from "./guild-worker-env.js";
 
+/**
+ * Phase 2 Task 2.2 -- video.stage.completed activity_log emission.
+ *
+ * Pure parser: given a closing run's agent, issue title, and terminal
+ * status, decide whether the dispatcher should emit a
+ * `video.stage.completed` activity_log row. Returns `{stage, requestId}`
+ * when the title matches `video-<stage>/<request_id>` AND the run
+ * closed clean AND the agent is a guild; null otherwise.
+ *
+ * Mirrors the regex used in `buildGuildWorkerEnv` (`[^/]+` request_id
+ * segment, exact stage list) so the entry and exit hooks agree on what
+ * counts as a video-stage run. Defense-in-depth: rejects non-guild
+ * agents even if a future caller forgot to gate, matching the same
+ * pattern used elsewhere in this module.
+ */
+const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/([^/]+)$/;
+
+export interface VideoStageCompletedEventInput {
+  agent: Pick<AgentRow, "kind">;
+  issueTitle?: string | null;
+  /** Terminal run status as written by `setRunStatus`. Only
+   * 'succeeded' (the heartbeat-run vocabulary for a clean exit) emits;
+   * 'failed' / 'cancelled' / 'timed_out' / anything else suppresses.
+   * The plan refers to this state as 'done'; the dispatcher uses
+   * 'succeeded' for runs and reserves 'done' for the issue table. */
+  runStatus: string;
+}
+
+export interface VideoStageCompletedEvent {
+  stage: string;
+  requestId: string;
+}
+
+export function parseVideoStageCompletedEvent(
+  input: VideoStageCompletedEventInput,
+): VideoStageCompletedEvent | null {
+  if (input.agent.kind !== "guild") return null;
+  if (input.runStatus !== "succeeded") return null;
+  if (typeof input.issueTitle !== "string") return null;
+  const match = input.issueTitle.match(VIDEO_ISSUE_TITLE_PATTERN);
+  if (!match) return null;
+  return { stage: match[1], requestId: match[2] };
+}
+
 type AgentRow = typeof agentsTable.$inferSelect;
 
 export interface IngestGuildLearningsInput {
