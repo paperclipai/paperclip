@@ -101,18 +101,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const instructionsFilePath = asString(config.instructionsFilePath, "");
 
-  // Resolve the Python CLI by probing candidates. Multi-candidate probing
-  // exists because the build assertion confirmed cli.py was in the image at
-  // /app/packages/adapters/claude-tui/python/cli.py, yet runtime still saw it
-  // as missing — most likely a pnpm/tsx resolution quirk where import.meta.url
-  // pointed inside the .pnpm virtual store rather than the realpath.
   const resolvedPython = PYTHON_CLI_CANDIDATES.find(pathExistsSync) ?? null;
   if (!resolvedPython) {
     const moduleUrl = import.meta.url;
+    // Dump a structured view of the runtime filesystem state so we can see
+    // why probes failed even when the build asserts the file is present.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    const probe = (p: string): string => {
+      try {
+        const st = fs.statSync(p);
+        return `${p} OK ${st.isDirectory() ? "dir" : st.isFile() ? `file ${st.size}b` : "other"} mode=${(st.mode & 0o777).toString(8)}`;
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code ?? "?";
+        return `${p} MISSING ${code}`;
+      }
+    };
+    const lsDir = (p: string): string => {
+      try {
+        return `${p}: ${fs.readdirSync(p).join(",")}`;
+      } catch (err: unknown) {
+        return `${p}: <${(err as NodeJS.ErrnoException).code ?? "err"}>`;
+      }
+    };
+    const diagnostics = [
+      probe("/app/packages/adapters/claude-tui"),
+      probe("/app/packages/adapters/claude-tui/python"),
+      probe("/app/packages/adapters/claude-tui/python/cli.py"),
+      probe("/app/packages/adapters/claude-tui/dist/python/cli.py"),
+      probe("/app/Dockerfile"),
+      probe("/app/server/dist/index.js"),
+      lsDir("/app/packages/adapters/claude-tui"),
+      lsDir("/app/packages/adapters/claude-tui/dist"),
+    ].join(" | ");
     const message =
       `claude_tui adapter: Python TUI CLI not found. ` +
       `Tried [${PYTHON_CLI_CANDIDATES.join(", ")}]. ` +
       `import.meta.url=${moduleUrl}. ` +
+      `Diagnostics: ${diagnostics}. ` +
       `Set PYTHON_TUI_CLI_PATH to point at cli.py.`;
     await onLog("stderr", `${message}\n`);
     return {
