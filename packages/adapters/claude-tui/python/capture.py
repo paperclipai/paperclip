@@ -56,9 +56,6 @@ class ReadResult:
 # ---------------------------------------------------------------------------
 
 _STRIP_EXACT = {
-    "CLAUDE_CONFIG_DIR",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_PROJECT_DIR",
 }
 
