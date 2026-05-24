@@ -2,8 +2,8 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
-import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { agents as agentsTable, companies, costEvents, heartbeatRuns, issueComments, issues as issuesTable, tokenCapResets } from "@paperclipai/db";
+import { and, desc, eq, gte, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -3431,6 +3431,235 @@ export function agentRoutes(
       agentName: agent.name,
       adapterType: agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
+    });
+  });
+
+  // POST /agents/:agentId/token-cap/reset
+  // Dual-path auth: (a) CEO agent or (b) board user with owner-level company permission.
+  // Five ordered validation steps; first failure short-circuits with 422.
+  router.post("/agents/:agentId/token-cap/reset", async (req, res) => {
+    const targetAgentId = req.params.agentId;
+    const { recoverIssueId } = req.body as { recoverIssueId?: unknown };
+
+    if (typeof recoverIssueId !== "string" || !recoverIssueId) {
+      res.status(422).json({ error: "recoverIssueId is required" });
+      return;
+    }
+
+    const targetAgent = await svc.getById(targetAgentId);
+    if (!targetAgent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const companyId = targetAgent.companyId;
+    assertCompanyAccess(req, companyId);
+
+    // Dual-path auth check
+    let authorizedByAgentId: string | null = null;
+    let authorizedByUserId: string | null = null;
+    let authorizerName = "unknown";
+
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId ?? null;
+      const actorAgent = actorAgentId ? await svc.getById(actorAgentId) : null;
+      if (!actorAgent || actorAgent.companyId !== companyId || actorAgent.role !== "ceo") {
+        res.status(403).json({ error: "Only CEO agents or company owners can reset token caps" });
+        return;
+      }
+      authorizedByAgentId = actorAgentId;
+      authorizerName = actorAgent.name ?? actorAgentId;
+    } else if (req.actor.type === "board") {
+      const userId = req.actor.userId ?? null;
+      if (!userId) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      const isLocalOrAdmin = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+      if (!isLocalOrAdmin) {
+        const membership = await access.getMembership(companyId, "user", userId);
+        if (!membership || membership.status !== "active" || membership.membershipRole !== "owner") {
+          res.status(403).json({ error: "Only company owners can reset token caps" });
+          return;
+        }
+      }
+      authorizedByUserId = userId;
+      authorizerName = userId;
+    } else {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    // Reuse issue service lookup helper (includes labels)
+    const issueSvc = issueService(db);
+
+    // Validation 1: recoverIssueId exists, belongs to company, and is open
+    const recoverIssue = await issueSvc.getById(recoverIssueId);
+    if (!recoverIssue) {
+      res.status(422).json({ error: "Recover issue not found" });
+      return;
+    }
+    if (recoverIssue.companyId !== companyId) {
+      res.status(422).json({ error: "Recover issue does not belong to this company" });
+      return;
+    }
+    if (recoverIssue.status === "done" || recoverIssue.status === "cancelled") {
+      res.status(422).json({ error: "Recover issue must be open (not done or cancelled)" });
+      return;
+    }
+
+    // Validation 2: authored by CEO-role agent OR by company owner
+    let authoredByCeo = false;
+    if (recoverIssue.createdByAgentId) {
+      const authorAgent = await svc.getById(recoverIssue.createdByAgentId);
+      if (authorAgent?.role === "ceo") authoredByCeo = true;
+    }
+    let authoredByOwner = false;
+    if (!authoredByCeo && recoverIssue.createdByUserId) {
+      const membership = await access.getMembership(companyId, "user", recoverIssue.createdByUserId);
+      if (membership?.status === "active" && membership.membershipRole === "owner") {
+        authoredByOwner = true;
+      }
+    }
+    if (!authoredByCeo && !authoredByOwner) {
+      res.status(422).json({ error: "Recover issue must be authored by a CEO agent or company owner" });
+      return;
+    }
+
+    // Validation 3: title is 'Recover' (case-insensitive) OR has 'recover' label
+    const titleIsRecover = recoverIssue.title.toLowerCase() === "recover";
+    const hasRecoverLabel = recoverIssue.labels.some((l) => l.name.toLowerCase() === "recover");
+    if (!titleIsRecover && !hasRecoverLabel) {
+      res.status(422).json({ error: "Recover issue must have title 'Recover' or carry the 'recover' label" });
+      return;
+    }
+
+    // Validation 4: budget report comment from the target agent on the recover ticket
+    const budgetReportComment = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, recoverIssueId),
+          eq(issueComments.authorAgentId, targetAgentId),
+          sql`${issueComments.body} ~* '(?m)^## Budget Report'`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!budgetReportComment) {
+      res.status(422).json({ error: "Recover issue must have a '## Budget Report' comment from the target agent" });
+      return;
+    }
+
+    // Validation 5: agent is at ≥80% cap or hard-stopped
+    const capRow = await db
+      .select({ monthlyTokenCapTokens: agentsTable.monthlyTokenCapTokens })
+      .from(agentsTable)
+      .where(eq(agentsTable.id, targetAgentId))
+      .then((rows) => rows[0] ?? null);
+
+    const cap = capRow?.monthlyTokenCapTokens ?? null;
+    if (cap === null) {
+      res.status(422).json({ error: "Agent has no token cap configured; reset not applicable" });
+      return;
+    }
+
+    const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+
+    const [rawRow] = await db
+      .select({
+        rawUsage: sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)`,
+      })
+      .from(costEvents)
+      .where(and(eq(costEvents.agentId, targetAgentId), gte(costEvents.occurredAt, monthStart)));
+
+    const [existingResetRow] = await db
+      .select({
+        resetOffset: sql<number>`coalesce(sum(${tokenCapResets.offsetTokens}), 0)`,
+      })
+      .from(tokenCapResets)
+      .where(and(eq(tokenCapResets.agentId, targetAgentId), eq(tokenCapResets.month, monthDate)));
+
+    const rawUsage = Number(rawRow?.rawUsage ?? 0);
+    const existingOffset = Number(existingResetRow?.resetOffset ?? 0);
+    const netUsage = rawUsage - existingOffset;
+
+    if (netUsage < 0.8 * cap) {
+      res.status(422).json({ error: "Agent usage is below 80% of cap; no reset needed" });
+      return;
+    }
+
+    const offsetTokens = netUsage;
+
+    // Find agent's current in_progress issue for the reset notification comment
+    const activeIssue = await db
+      .select({ id: issuesTable.id, identifier: issuesTable.identifier })
+      .from(issuesTable)
+      .where(
+        and(
+          eq(issuesTable.companyId, companyId),
+          eq(issuesTable.assigneeAgentId, targetAgentId),
+          eq(issuesTable.status, "in_progress"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const prefix = recoverIssue.identifier?.split("-")[0] ?? "";
+    const recoverLink = recoverIssue.identifier
+      ? `[${recoverIssue.identifier}](/${prefix}/issues/${recoverIssue.identifier})`
+      : "the recover ticket";
+
+    // All writes in one transaction so no stranded token_cap_resets row on partial failure
+    const resetRecord = await db.transaction(async (trx) => {
+      const trxIssueSvc = issueService(trx as unknown as typeof db);
+
+      const [reset] = await trx
+        .insert(tokenCapResets)
+        .values({
+          companyId,
+          agentId: targetAgentId,
+          month: monthDate,
+          offsetTokens,
+          resetAt: now,
+          authorizedByAgentId,
+          authorizedByUserId,
+          recoverIssueId,
+        })
+        .returning();
+
+      await trxIssueSvc.addComment(
+        recoverIssueId,
+        `Reset applied at ${now.toISOString()}. Offset tokens: ${offsetTokens}.`,
+        {},
+      );
+
+      await trx
+        .update(issuesTable)
+        .set({ status: "done", updatedAt: now })
+        .where(eq(issuesTable.id, recoverIssueId));
+
+      if (activeIssue) {
+        await trxIssueSvc.addComment(
+          activeIssue.id,
+          `Token cap reset approved. Recover ticket: ${recoverLink}. Authorized by: ${authorizerName}.`,
+          {},
+        );
+      }
+
+      return reset!;
+    });
+
+    res.json({
+      resetId: resetRecord.id,
+      agentId: targetAgentId,
+      month: monthDate,
+      offsetTokens,
+      netUsageAfter: 0,
     });
   });
 
