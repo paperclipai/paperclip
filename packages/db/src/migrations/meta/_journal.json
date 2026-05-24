@@ -636,6 +636,13 @@
       "when": 1779588000000,
       "tag": "0091_crewbrief_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1779639652000,
+      "tag": "0092_crewbrief_weight_balance",
+      "breakpoints": true
     }
   ]
 }
