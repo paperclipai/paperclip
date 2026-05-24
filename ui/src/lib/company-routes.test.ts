@@ -35,4 +35,23 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/search?q=hello%20world", "PAP")).toBe("/PAP/search?q=hello%20world");
     expect(toCompanyRelativePath("/PAP/search?q=foo")).toBe("/search?q=foo");
   });
+
+  it("rewrites company package paths with the active prefix", () => {
+    expect(applyCompanyPrefix("/company/export", "NEU")).toBe("/NEU/company/export");
+    expect(applyCompanyPrefix("/company/import", "NEU")).toBe("/NEU/company/import");
+    expect(applyCompanyPrefix("/company/settings/cloud-upstream", "NEU")).toBe(
+      "/NEU/company/settings/cloud-upstream",
+    );
+    expect(applyCompanyPrefix("/org", "NEU")).toBe("/NEU/org");
+  });
+
+  it("does not double-apply the company prefix", () => {
+    expect(applyCompanyPrefix("/NEU/company/export", "NEU")).toBe("/NEU/company/export");
+  });
+
+  it("normalizes prefixed company export file URLs for parsing", () => {
+    expect(toCompanyRelativePath("/NEU/company/export/files/agents/ceo/AGENTS.md")).toBe(
+      "/company/export/files/agents/ceo/AGENTS.md",
+    );
+  });
 });
