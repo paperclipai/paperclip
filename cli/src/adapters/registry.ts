@@ -1,84 +1,99 @@
 import type { CLIAdapterModule } from "@paperclipai/adapter-utils";
-import { printAcpxStreamEvent } from "@paperclipai/adapter-acpx-local/cli";
-import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
-import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
-import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
-import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
-import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
-import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
-import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
-import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
-import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
 
-const claudeLocalCLIAdapter: CLIAdapterModule = {
-  type: "claude_local",
-  formatStdoutEvent: printClaudeStreamEvent,
-};
+type CLIAdapterLoader = () => Promise<CLIAdapterModule>;
 
-const acpxLocalCLIAdapter: CLIAdapterModule = {
-  type: "acpx_local",
-  formatStdoutEvent: printAcpxStreamEvent,
-};
+function createCLIAdapter(
+  type: string,
+  formatStdoutEvent: CLIAdapterModule["formatStdoutEvent"],
+): CLIAdapterModule {
+  return { type, formatStdoutEvent };
+}
 
-const codexLocalCLIAdapter: CLIAdapterModule = {
-  type: "codex_local",
-  formatStdoutEvent: printCodexStreamEvent,
-};
-
-const openCodeLocalCLIAdapter: CLIAdapterModule = {
-  type: "opencode_local",
-  formatStdoutEvent: printOpenCodeStreamEvent,
-};
-
-const piLocalCLIAdapter: CLIAdapterModule = {
-  type: "pi_local",
-  formatStdoutEvent: printPiStreamEvent,
-};
-
-const cursorLocalCLIAdapter: CLIAdapterModule = {
-  type: "cursor",
-  formatStdoutEvent: printCursorStreamEvent,
-};
-
-const cursorCloudCLIAdapter: CLIAdapterModule = {
-  type: "cursor_cloud",
-  formatStdoutEvent: printCursorCloudEvent,
-};
-
-const geminiLocalCLIAdapter: CLIAdapterModule = {
-  type: "gemini_local",
-  formatStdoutEvent: printGeminiStreamEvent,
-};
-
-const grokLocalCLIAdapter: CLIAdapterModule = {
-  type: "grok_local",
-  formatStdoutEvent: printGrokStreamEvent,
-};
-
-const openclawGatewayCLIAdapter: CLIAdapterModule = {
-  type: "openclaw_gateway",
-  formatStdoutEvent: printOpenClawGatewayStreamEvent,
-};
-
-const adaptersByType = new Map<string, CLIAdapterModule>(
+const adapterLoaders = new Map<string, CLIAdapterLoader>([
   [
-    acpxLocalCLIAdapter,
-    claudeLocalCLIAdapter,
-    codexLocalCLIAdapter,
-    openCodeLocalCLIAdapter,
-    piLocalCLIAdapter,
-    cursorLocalCLIAdapter,
-    cursorCloudCLIAdapter,
-    geminiLocalCLIAdapter,
-    grokLocalCLIAdapter,
-    openclawGatewayCLIAdapter,
-    processCLIAdapter,
-    httpCLIAdapter,
-  ].map((a) => [a.type, a]),
-);
+    "acpx_local",
+    async () => {
+      const { printAcpxStreamEvent } = await import("@paperclipai/adapter-acpx-local/cli");
+      return createCLIAdapter("acpx_local", printAcpxStreamEvent);
+    },
+  ],
+  [
+    "claude_local",
+    async () => {
+      const { printClaudeStreamEvent } = await import("@paperclipai/adapter-claude-local/cli");
+      return createCLIAdapter("claude_local", printClaudeStreamEvent);
+    },
+  ],
+  [
+    "codex_local",
+    async () => {
+      const { printCodexStreamEvent } = await import("@paperclipai/adapter-codex-local/cli");
+      return createCLIAdapter("codex_local", printCodexStreamEvent);
+    },
+  ],
+  [
+    "opencode_local",
+    async () => {
+      const { printOpenCodeStreamEvent } = await import("@paperclipai/adapter-opencode-local/cli");
+      return createCLIAdapter("opencode_local", printOpenCodeStreamEvent);
+    },
+  ],
+  [
+    "pi_local",
+    async () => {
+      const { printPiStreamEvent } = await import("@paperclipai/adapter-pi-local/cli");
+      return createCLIAdapter("pi_local", printPiStreamEvent);
+    },
+  ],
+  [
+    "cursor",
+    async () => {
+      const { printCursorStreamEvent } = await import("@paperclipai/adapter-cursor-local/cli");
+      return createCLIAdapter("cursor", printCursorStreamEvent);
+    },
+  ],
+  [
+    "cursor_cloud",
+    async () => {
+      const { printCursorCloudEvent } = await import("@paperclipai/adapter-cursor-cloud/cli");
+      return createCLIAdapter("cursor_cloud", printCursorCloudEvent);
+    },
+  ],
+  [
+    "gemini_local",
+    async () => {
+      const { printGeminiStreamEvent } = await import("@paperclipai/adapter-gemini-local/cli");
+      return createCLIAdapter("gemini_local", printGeminiStreamEvent);
+    },
+  ],
+  [
+    "grok_local",
+    async () => {
+      const { printGrokStreamEvent } = await import("@paperclipai/adapter-grok-local/cli");
+      return createCLIAdapter("grok_local", printGrokStreamEvent);
+    },
+  ],
+  [
+    "openclaw_gateway",
+    async () => {
+      const { printOpenClawGatewayStreamEvent } = await import("@paperclipai/adapter-openclaw-gateway/cli");
+      return createCLIAdapter("openclaw_gateway", printOpenClawGatewayStreamEvent);
+    },
+  ],
+  ["process", async () => processCLIAdapter],
+  ["http", async () => httpCLIAdapter],
+]);
 
-export function getCLIAdapter(type: string): CLIAdapterModule {
-  return adaptersByType.get(type) ?? processCLIAdapter;
+const loadedAdapters = new Map<string, CLIAdapterModule>();
+
+export async function getCLIAdapter(type: string): Promise<CLIAdapterModule> {
+  const cached = loadedAdapters.get(type);
+  if (cached) return cached;
+  const loader = adapterLoaders.get(type);
+  if (!loader) return processCLIAdapter;
+  const adapter = await loader();
+  loadedAdapters.set(type, adapter);
+  return adapter;
 }
