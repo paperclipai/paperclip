@@ -271,9 +271,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Give the driver a per-turn timeout slightly shorter than the watchdog so
   // the Python side can emit turn_end (with exit_reason=timeout) and shut
   // down cleanly before the Node-side watchdog SIGTERMs the process group.
-  // Floor at 60s so very small adapter timeoutSec values still produce a
-  // positive driver timeout.
-  const driverTurnTimeoutSec = Math.max(60, timeoutSec - 30);
+  // timeoutSec=0 conventionally means "no watchdog" — in that case there's
+  // no Node-side ceiling to dodge, so just use the default budget. Floor at
+  // 60s so very small adapter timeoutSec values still produce a positive
+  // driver timeout.
+  const driverTurnTimeoutSec =
+    timeoutSec > 0 ? Math.max(60, timeoutSec - 30) : DEFAULT_TIMEOUT_SEC;
 
   const cliArgs = [
     PYTHON_TUI_CLI_PATH,
