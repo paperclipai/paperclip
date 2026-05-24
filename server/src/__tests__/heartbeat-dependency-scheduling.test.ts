@@ -25,7 +25,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, mergeCoalescedContextSnapshot } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -84,6 +84,31 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   }
   return fn();
 }
+
+describe("mergeCoalescedContextSnapshot — issue_blockers_resolved preservation", () => {
+  it("preserves issue_blockers_resolved wakeReason when coalesced with a lower-priority wake", () => {
+    const existing = { issueId: "abc", wakeReason: "issue_blockers_resolved", resolvedBlockerIssueId: "blocker-1" };
+    const incoming = { issueId: "abc", wakeReason: "issue_comment_mentioned", commentId: "comment-1" };
+    const merged = mergeCoalescedContextSnapshot(existing, incoming);
+    expect(merged.wakeReason).toBe("issue_blockers_resolved");
+    // Comment context is still merged in.
+    expect(merged.commentId).toBe("comment-1");
+  });
+
+  it("does not override issue_blockers_resolved with another issue_blockers_resolved", () => {
+    const existing = { issueId: "abc", wakeReason: "issue_blockers_resolved", resolvedBlockerIssueId: "blocker-1" };
+    const incoming = { issueId: "abc", wakeReason: "issue_blockers_resolved", resolvedBlockerIssueId: "blocker-2" };
+    const merged = mergeCoalescedContextSnapshot(existing, incoming);
+    expect(merged.wakeReason).toBe("issue_blockers_resolved");
+  });
+
+  it("allows a lower-priority existing reason to be overwritten by incoming", () => {
+    const existing = { issueId: "abc", wakeReason: "issue_comment_mentioned", commentId: "c1" };
+    const incoming = { issueId: "abc", wakeReason: "issue_assigned" };
+    const merged = mergeCoalescedContextSnapshot(existing, incoming);
+    expect(merged.wakeReason).toBe("issue_assigned");
+  });
+});
 
 describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () => {
   let db!: ReturnType<typeof createDb>;
@@ -870,6 +895,145 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         interaction: true,
       },
     });
+  });
+
+  it("wakes every sibling dependent when a shared blocker reaches done (N=5)", async () => {
+    const N = 5;
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const siblingIds = Array.from({ length: N }, () => randomUUID());
+
+    // Block the first adapter call so run[0] stays running while runs[1..4] queue.
+    let resolveFirstRun!: () => void;
+    const firstRunGate = new Promise<void>((resolve) => { resolveFirstRun = resolve; });
+    let adapterCallCount = 0;
+    mockAdapterExecute.mockImplementation(async () => {
+      if (adapterCallCount++ === 0) await firstRunGate;
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "test", provider: "test", model: "test-model" };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SiblingCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    // Blocker already done; siblings in blocked status with the blocker relation.
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "done", priority: "high" },
+      ...siblingIds.map((id, i) => ({
+        id,
+        companyId,
+        title: `Sibling ${i}`,
+        status: "blocked" as const,
+        priority: "medium" as const,
+        assigneeAgentId: agentId,
+      })),
+    ]);
+    await db.insert(issueRelations).values(
+      siblingIds.map((siblingId) => ({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: siblingId,
+        type: "blocks",
+      })),
+    );
+
+    // Fire all N issue_blockers_resolved wakes in sequence (matching fan-out behavior).
+    const wakes = [];
+    for (const siblingId of siblingIds) {
+      const w = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_blockers_resolved",
+        payload: { issueId: siblingId, resolvedBlockerIssueId: blockerId },
+        contextSnapshot: { issueId: siblingId, wakeReason: "issue_blockers_resolved", resolvedBlockerIssueId: blockerId },
+      });
+      wakes.push(w);
+    }
+
+    // All N wakes must produce runs (non-null = not skipped).
+    expect(wakes.filter((w) => w === null)).toHaveLength(0);
+
+    // Zero issue_dependencies_blocked skips.
+    const depBlockedSkips = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(depBlockedSkips).toBe(0);
+
+    // Zero issue_blockers_resolved_skipped_stale_readiness rows.
+    const staleSkips = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "issue_blockers_resolved_skipped_stale_readiness"),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(staleSkips).toBe(0);
+
+    // Sibling[1] run is queued (run[0] is blocking). Coalesce a comment-mention into it.
+    // After the fix, the merged run's context must still say issue_blockers_resolved.
+    const sibling1Id = siblingIds[1];
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId: sibling1Id,
+      authorUserId: "board-user",
+      body: "Progress check.",
+    });
+    await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_comment_mentioned",
+      payload: { issueId: sibling1Id, commentId },
+      contextSnapshot: {
+        issueId: sibling1Id,
+        wakeReason: "issue_comment_mentioned",
+        commentId,
+        wakeCommentId: commentId,
+      },
+    });
+
+    // Sibling[1]'s run context must preserve issue_blockers_resolved.
+    const sibling1Run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${sibling1Id}`,
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(sibling1Run).not.toBeNull();
+    expect((sibling1Run!.contextSnapshot as Record<string, unknown>).wakeReason).toBe("issue_blockers_resolved");
+
+    resolveFirstRun();
   });
 
   it("allows comment interaction wakes when a legacy hold has a full_pause note", async () => {
