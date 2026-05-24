@@ -309,7 +309,14 @@ export function deterministicParse(text: string): ParsedItinerary | null {
 
     if (inCrewSection && currentCrew) {
       const empVal = extractValue(line, "Employee ID:") || extractValue(line, "Employee Id:") || extractValue(line, "ID:") || extractValue(line, "Employee:");
-      if (empVal) { currentCrew.employeeId = empVal; continue; }
+      if (empVal) {
+        if (currentCrew.employeeId) {
+          crewAssignments.push(currentCrew as ParsedItinerary["crewAssignments"][number]);
+          currentCrew = {};
+        }
+        currentCrew.employeeId = empVal;
+        continue;
+      }
 
       const posVal = extractValue(line, "Position:") || extractValue(line, "Position :") || extractValue(line, "Role:");
       if (posVal) { currentCrew.position = posVal; continue; }
