@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
+  resolveOpenCodeModelConfig,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
@@ -25,6 +26,18 @@ describe("openCode models", () => {
 
   it("accepts a provider/model id without running discovery", () => {
     expect(requireOpenCodeModelId("openai/gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
+  });
+
+  it("normalizes provider aliases in configured model ids", () => {
+    expect(resolveOpenCodeModelConfig({ configuredModel: "oai/gpt-5.4", fallbackModel: "azure/gpt-5.3-codex" })).toBe(
+      "openai/gpt-5.4",
+    );
+  });
+
+  it("falls back to baseline azure model when configured model is missing", () => {
+    expect(resolveOpenCodeModelConfig({ configuredModel: "", fallbackModel: "azure/gpt-5.3-codex" })).toBe(
+      "azure/gpt-5.3-codex",
+    );
   });
 
   it("rejects malformed provider/model ids before discovery", () => {

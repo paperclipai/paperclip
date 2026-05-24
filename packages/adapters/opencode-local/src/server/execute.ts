@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -49,10 +49,15 @@ import {
   ensureOpenCodeModelConfiguredAndAvailable,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
+  resolveOpenCodeModelConfig,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  negotiateProviderCapabilities,
+  resolveOpenCodeProvider,
+} from "../runtime/provider-adapters.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,17 +68,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function parseModelProvider(model: string | null): string | null {
-  if (!model) return null;
-  const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
-}
-
-function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
-  return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -207,7 +201,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "opencode");
-  const model = asString(config.model, "").trim();
+  const model = resolveOpenCodeModelConfig({
+    configuredModel: config.model,
+    fallbackModel: "azure/gpt-5.3-codex",
+  });
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -634,6 +631,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
+      const providerMetadata = resolveOpenCodeProvider({
+        modelId,
+        env: runtimeEnv,
+      });
+      const capabilityNegotiation = negotiateProviderCapabilities({
+        provider: providerMetadata.provider,
+        required: ["model_discovery", "session_resume", "usage_accounting"],
+      });
 
       return {
         exitCode: synthesizedExitCode,
@@ -648,14 +653,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
-        provider: parseModelProvider(modelId),
-        biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
-        model: modelId,
+        provider: providerMetadata.provider,
+        biller: providerMetadata.biller,
+        model: providerMetadata.modelId,
         billingType: "unknown",
         costUsd: attempt.parsed.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          runtimeContractVersion: providerMetadata.contractVersion,
+          providerCapabilities: capabilityNegotiation.satisfied,
+          missingProviderCapabilities: capabilityNegotiation.missing,
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

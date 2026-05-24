@@ -71,3 +71,11 @@ export {
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+export {
+  OPENCODE_RUNTIME_CONTRACT_VERSION,
+  listOpenCodeProviderRegistry,
+  negotiateProviderCapabilities,
+  normalizeProviderModelId,
+  parseProviderModelId,
+  resolveOpenCodeProvider,
+} from "../runtime/provider-adapters.js";

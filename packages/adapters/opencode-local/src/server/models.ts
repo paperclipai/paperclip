@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import { normalizeProviderModelId, parseProviderModelId } from "../runtime/provider-adapters.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -65,13 +66,23 @@ export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
     const line = raw.trim();
     if (!line) continue;
     const firstToken = line.split(/\s+/)[0]?.trim() ?? "";
-    if (!firstToken.includes("/")) continue;
-    const provider = firstToken.slice(0, firstToken.indexOf("/")).trim();
-    const model = firstToken.slice(firstToken.indexOf("/") + 1).trim();
-    if (!provider || !model) continue;
-    parsed.push({ id: `${provider}/${model}`, label: `${provider}/${model}` });
+    const parsedModel = parseProviderModelId(firstToken);
+    if (!parsedModel) continue;
+    const modelId = `${parsedModel.provider}/${parsedModel.model}`;
+    parsed.push({ id: modelId, label: modelId });
   }
   return dedupeModels(parsed);
+}
+
+export function resolveOpenCodeModelConfig(input: {
+  configuredModel: unknown;
+  fallbackModel: string;
+}): string {
+  const configuredModel = asString(input.configuredModel, "").trim();
+  const normalizedConfigured = normalizeProviderModelId(configuredModel);
+  if (normalizedConfigured) return normalizedConfigured;
+  const normalizedFallback = normalizeProviderModelId(input.fallbackModel);
+  return normalizedFallback ?? input.fallbackModel;
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
