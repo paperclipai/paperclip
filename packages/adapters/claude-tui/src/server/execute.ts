@@ -15,6 +15,10 @@ import {
   ensurePathInEnv,
   parseObject,
   sanitizeChildEnv,
+  renderTemplate,
+  renderPaperclipWakePrompt,
+  joinPromptSections,
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   cleanupPerRunClaudeConfigDir,
@@ -190,10 +194,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Resolve the user's prompt. The TUI driver is multi-turn-capable but
   // Paperclip's adapter contract calls execute() once per run, so we send one
   // turn per invocation (matching claude_local behavior).
-  const prompt = asString(context.paperclipWakePrompt, "")
-    || asString(context.userPrompt, "")
-    || asString(config.promptTemplate, "")
-    || "";
+  //
+  // Prompt assembly mirrors claude_local: render the wake payload (if any),
+  // render the configured promptTemplate against templateData, then join. We
+  // never want to send an empty turn — the TUI just sits idle and the
+  // heartbeat watchdog kills it as `process_lost`.
+  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const templateData = {
+    agentId: agent.id,
+    companyId: agent.companyId,
+    runId,
+    company: { id: agent.companyId },
+    agent,
+    run: { id: runId, source: "on_demand" },
+    context,
+  };
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake);
+  const renderedPrompt = renderTemplate(promptTemplate, templateData);
+  const explicitUserPrompt = asString(context.paperclipWakePrompt, "")
+    || asString(context.userPrompt, "");
+  const prompt = joinPromptSections([
+    explicitUserPrompt,
+    wakePrompt,
+    renderedPrompt,
+  ]);
 
   const cliArgs = [
     PYTHON_TUI_CLI_PATH,
