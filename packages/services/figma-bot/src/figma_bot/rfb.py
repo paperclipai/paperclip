@@ -14,6 +14,7 @@ import socket
 import struct
 import time
 
+from . import state
 from .config import _RFB_BUTTON_HOLD_S
 
 
@@ -57,10 +58,17 @@ def rfb_click(
     the full 30min TTL.
     """
     sock: socket.socket | None = None
+    t0 = time.monotonic()
+
+    def _dt() -> str:
+        return f"{time.monotonic() - t0:.2f}s"
+
+    state.log(f"rfb_click: begin xy=({x},{y}) op_timeout={op_timeout}s")
     try:
         nonce = base64.b64encode(os.urandom(16)).decode("ascii")
         sock = socket.create_connection((host, port), timeout=connect_timeout)
         sock.settimeout(op_timeout)
+        state.log(f"rfb_click: connected to {host}:{port} (t={_dt()})")
         req = (
             f"GET / HTTP/1.1\r\n"
             f"Host: {host}:{port}\r\n"
@@ -76,21 +84,22 @@ def rfb_click(
         while b"\r\n\r\n" not in buf:
             chunk = sock.recv(4096)
             if not chunk:
-                raise RFBConnectFailed("ws handshake: closed before headers")
+                raise RFBConnectFailed(f"ws handshake: closed before headers (t={_dt()})")
             buf += chunk
             if len(buf) > 65536:
-                raise RFBConnectFailed("ws handshake: oversized response")
+                raise RFBConnectFailed(f"ws handshake: oversized response (t={_dt()})")
         if b"101" not in buf.split(b"\r\n", 1)[0]:
             raise RFBConnectFailed(
-                f"ws handshake: bad status {buf.split(b' ')[1] if b' ' in buf else b'?'}"
+                f"ws handshake: bad status {buf.split(b' ')[1] if b' ' in buf else b'?'} (t={_dt()})"
             )
+        state.log(f"rfb_click: ws upgrade ok (t={_dt()})")
 
         def _sock_recv_exact(n: int) -> bytes:
             out = bytearray()
             while len(out) < n:
                 chunk = sock.recv(n - len(out))
                 if not chunk:
-                    raise RFBConnectFailed("ws recv: socket closed mid-frame")
+                    raise RFBConnectFailed(f"ws recv: socket closed mid-frame (t={_dt()})")
                 out += chunk
             return bytes(out)
 
@@ -124,45 +133,54 @@ def rfb_click(
                 while len(payload) < length:
                     chunk = sock.recv(length - len(payload))
                     if not chunk:
-                        raise RFBConnectFailed("ws recv: short payload")
+                        raise RFBConnectFailed(f"ws recv: short payload (t={_dt()})")
                     payload += chunk
                 if opcode == 0x8:
-                    raise RFBConnectFailed("ws recv: server close frame")
+                    raise RFBConnectFailed(f"ws recv: server close frame (t={_dt()})")
                 out += payload
             return bytes(out[:n])
 
         proto = _ws_recv_exact(12)
         if not proto.startswith(b"RFB "):
-            raise RFBConnectFailed(f"RFB version: got {proto!r}")
+            raise RFBConnectFailed(f"RFB version: got {proto!r} (t={_dt()})")
+        state.log(f"rfb_click: RFB ProtocolVersion ok (t={_dt()})")
         _ws_send(b"RFB 003.008\n")
         nsec = _ws_recv_exact(1)[0]
         if nsec == 0:
             n = int.from_bytes(_ws_recv_exact(4), "big")
             reason = _ws_recv_exact(n).decode("utf-8", "replace")
-            raise RFBConnectFailed(f"RFB security: {reason}")
+            raise RFBConnectFailed(f"RFB security: {reason} (t={_dt()})")
         sec_types = _ws_recv_exact(nsec)
         if 1 not in sec_types:
-            raise RFBConnectFailed(f"RFB security: no None type: {list(sec_types)}")
+            raise RFBConnectFailed(f"RFB security: no None type: {list(sec_types)} (t={_dt()})")
         _ws_send(bytes([1]))
         sec_result = int.from_bytes(_ws_recv_exact(4), "big")
         if sec_result != 0:
-            raise RFBConnectFailed(f"RFB security: handshake failed result={sec_result}")
+            raise RFBConnectFailed(f"RFB security: handshake failed result={sec_result} (t={_dt()})")
+        state.log(f"rfb_click: RFB security ok (t={_dt()})")
         _ws_send(bytes([1]))  # ClientInit shared=1
         si = _ws_recv_exact(24)
         name_len = int.from_bytes(si[20:24], "big")
         if name_len > 0:
             _ = _ws_recv_exact(name_len)
+        state.log(f"rfb_click: ServerInit ok (t={_dt()})")
         x16 = max(0, min(int(x), 65535))
         y16 = max(0, min(int(y), 65535))
         _ws_send(struct.pack(">BBHH", 5, 1, x16, y16))  # button down
         time.sleep(_RFB_BUTTON_HOLD_S)
         _ws_send(struct.pack(">BBHH", 5, 0, x16, y16))  # button up
-    except RFBConnectFailed:
+        state.log(f"rfb_click: pointer events sent ok (t={_dt()})")
+    except RFBConnectFailed as e:
+        state.log(f"rfb_click: FAIL RFBConnectFailed: {e} (t={_dt()})")
         raise
     except (TimeoutError, OSError) as e:
-        raise RFBConnectFailed(f"socket error: {type(e).__name__}: {str(e)[:160]}")
+        msg = f"socket error: {type(e).__name__}: {str(e)[:160]} (t={_dt()})"
+        state.log(f"rfb_click: FAIL {msg}")
+        raise RFBConnectFailed(msg)
     except Exception as e:
-        raise RFBConnectFailed(f"unexpected: {type(e).__name__}: {str(e)[:160]}")
+        msg = f"unexpected: {type(e).__name__}: {str(e)[:160]} (t={_dt()})"
+        state.log(f"rfb_click: FAIL {msg}")
+        raise RFBConnectFailed(msg)
     finally:
         if sock is not None:
             try:

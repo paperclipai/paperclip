@@ -141,9 +141,14 @@ def main() -> None:
                 try:
                     auto_login(pm)  # added in T5
                     li, reason = is_logged_in(pm.page)
-                except RFBConnectFailed:
+                except RFBConnectFailed as e:
+                    state.log(f"auto_login[{pm.identity}]: RFBConnectFailed: {e}")
                     li, reason = False, "rfb_unreachable"
                 except Exception as e:
+                    state.log(
+                        f"auto_login[{pm.identity}]: {type(e).__name__}: "
+                        f"{str(e)[:300]}"
+                    )
                     li, reason = False, f"login_error:{type(e).__name__}"
             if li:
                 record_login_success(pm.identity)
