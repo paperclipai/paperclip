@@ -381,8 +381,15 @@ spec:
                 #   - prometheus  — pab1it0/prometheus-mcp-server, pointed at
                 #                    in-cluster prometheus.monitoring.
                 #   - tempo       — Tempo 2.10's built-in MCP at /api/mcp.
-                #   - kubernetes  — containers/kubernetes-mcp-server, readonly
-                #                    tier (cluster-wide get/list/watch).
+                #   - k8s-ro      — containers/kubernetes-mcp-server, READONLY
+                #                    tier (cluster-wide get/list/watch, no
+                #                    secrets). Direct in-cluster reach via the
+                #                    `-readonly` Service; bypasses the public
+                #                    paperclip-mcp-gateway hop. Named to match
+                #                    the public path convention (/k8s-ro/mcp,
+                #                    /k8s-rw/mcp, /k8s-admin/mcp) so escalations
+                #                    layered in by claude_k8s adapterConfig
+                #                    (k8s-rw, k8s-admin) read consistently.
                 #   - github      — github/github-mcp-server bundled in this
                 #                    image (see Dockerfile github-mcp stage).
                 #                    Stdio mode reads GITHUB_PERSONAL_ACCESS_TOKEN
@@ -409,9 +416,9 @@ spec:
                     "type": "http",
                     "url": "http://tempo.monitoring.svc.cluster.local:3200/api/mcp"
                   },
-                  "kubernetes": {
+                  "k8s-ro": {
                     "type": "sse",
-                    "url": "http://kubernetes-mcp-server-admin.paperclip.svc.cluster.local:8080/sse"
+                    "url": "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/sse"
                   },
                   "github": {
                     "command": "/usr/local/bin/github-mcp-server",
@@ -426,7 +433,7 @@ spec:
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear + gbrain MCP servers"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + k8s-ro + github + linear + gbrain MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
