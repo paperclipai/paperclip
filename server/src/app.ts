@@ -340,7 +340,7 @@ export async function createApp(
   api.use("/quality", qualityRoutes(db));
   api.use("/briefings", crewbriefBriefingRoutes(db));
   api.use("/crewbrief/intake", crewbriefIntakeRoutes(db));
-  api.use("/crewbrief/jetinsight", crewbriefJetinsightRoutes(db));
+  api.use("/crewbrief/jetinsight", crewbriefJetinsightRoutes(db, opts.storageService));
 
   if (process.env.NODE_ENV === "production" || process.env.CREWBRIEF_ENABLE_NURTURE === "true") {
     const NURTURE_POLL_MS = 60_000;

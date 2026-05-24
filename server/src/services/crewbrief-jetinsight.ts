@@ -1,4 +1,8 @@
+import { createRequire } from "node:module";
 import { readConfigFile } from "../config-file.js";
+
+const require = createRequire(import.meta.url);
+const pdfParse: (dataBuffer: Buffer) => Promise<{ text: string; numpages: number }> = require("pdf-parse");
 
 export interface ParsedItinerary {
   tripId: string;
@@ -28,6 +32,14 @@ export interface ParsedItinerary {
     reportTime?: string;
     releaseTime?: string;
   }[];
+}
+
+export interface ExtractionCounts {
+  trips: number;
+  legs: number;
+  crewMembers: number;
+  aircraft: number;
+  airports: number;
 }
 
 const SYSTEM_PROMPT = `You are JetInsight, an aviation crew itinerary parser. Extract structured itinerary data from the provided raw text (email, schedule, manifest, or free-form notes).
@@ -201,4 +213,9 @@ export async function parseItinerary(text: string): Promise<ParsedItinerary> {
     return callOpenAI(text);
   }
   return callClaude(text);
+}
+
+export async function extractPdfText(pdfBuffer: Buffer): Promise<string> {
+  const data = await pdfParse(pdfBuffer);
+  return data.text;
 }

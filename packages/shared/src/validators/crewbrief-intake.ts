@@ -83,4 +83,13 @@ export type CrewMemberInput = z.infer<typeof crewMemberSchema>;
 export type BatchAirportInput = z.infer<typeof batchAirportSchema>;
 export type BatchAircraftInput = z.infer<typeof batchAircraftSchema>;
 export type BatchCrewMemberInput = z.infer<typeof batchCrewMemberSchema>;
+export const documentUploadSchema = z.object({
+  tripId: z.string().min(1),
+  dutyDayId: z.string().optional(),
+  aircraftTail: z.string().optional(),
+  documentType: z.string().default("crew_itinerary"),
+});
+
+export type DocumentUploadInput = z.infer<typeof documentUploadSchema>;
+
 export type BatchTripCreateInput = z.infer<typeof batchTripCreateSchema>;

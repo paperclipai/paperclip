@@ -1147,6 +1147,7 @@ export {
   batchAircraftSchema,
   batchCrewMemberSchema,
   batchTripCreateSchema,
+  documentUploadSchema,
 } from "./validators/crewbrief-intake.js";
 export type {
   AirportInput,
@@ -1157,6 +1158,7 @@ export type {
   BatchAircraftInput,
   BatchCrewMemberInput,
   BatchTripCreateInput,
+  DocumentUploadInput,
 } from "./validators/crewbrief-intake.js";
 export {
   triggerBriefingQualityClassificationSchema,
