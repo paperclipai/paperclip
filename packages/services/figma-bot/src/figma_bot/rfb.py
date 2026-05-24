@@ -29,7 +29,7 @@ def rfb_click(
     host: str = "127.0.0.1",
     port: int = 6080,
     connect_timeout: float = 10.0,
-    op_timeout: float = 15.0,
+    op_timeout: float = 30.0,
 ) -> None:
     """Inject a real X PointerEvent at (x,y) via websockify → x11vnc.
 
@@ -47,6 +47,14 @@ def rfb_click(
     failure mode with op_timeout=3.0 was the bot's RFB connection
     being killed mid-handshake by its own socket timeout, surfacing
     as `rfb_unreachable` (RFBConnectFailed("socket error: timeout")).
+
+    PR #156 bumped 3.0s → 15.0s. Live observation 2026-05-24 22:56:11
+    showed the 15s budget still firing under Camoufox cold-boot +
+    figma.com/login render — RFB-click 22:56:11 → ProfileManager
+    closed 22:56:26 (15s later, exactly at the boundary). Bumped to
+    30.0s to absorb cold-boot variance. The 30s ceiling still bounds
+    the worst case so a truly hung x11vnc can't strand the lease for
+    the full 30min TTL.
     """
     sock: socket.socket | None = None
     try:
