@@ -8493,23 +8493,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // The helper treats EITHER signal matching the assignee as
         // "self-authored". See `heartbeat-self-comment-wake.ts` for the
         // full mechanism writeup.
-        const deferredCommentAuthors = deferredCommentIds.length > 0
-          ? await tx
-              .select({
-                id: issueComments.id,
-                authorAgentId: issueComments.authorAgentId,
-                createdByRunAgentId: heartbeatRuns.agentId,
-              })
-              .from(issueComments)
-              .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
-              .where(inArray(issueComments.id, deferredCommentIds))
-          : [];
-        const deferredWakeIsExclusivelySelfAuthored =
-          isExclusivelySelfAuthoredDeferredCommentWake({
-            deferredCommentIds,
-            assigneeAgentId: issue.assigneeAgentId,
-            deferredCommentAuthors,
-          });
+        // The self-comment guard only matters when the issue is in a terminal
+        // state (done/cancelled) — that's the only condition under which the
+        // predicate below would otherwise fire a reopen. Skip the DB roundtrip
+        // for in-progress / todo / blocked / in_review issues, which is the
+        // common case on every heartbeat tick (per Greptile review on #6576).
+        const issueIsTerminalForReopen =
+          issue.status === "done" || issue.status === "cancelled";
+        const deferredCommentAuthors =
+          issueIsTerminalForReopen && deferredCommentIds.length > 0
+            ? await tx
+                .select({
+                  id: issueComments.id,
+                  authorAgentId: issueComments.authorAgentId,
+                  createdByRunAgentId: heartbeatRuns.agentId,
+                })
+                .from(issueComments)
+                .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
+                .where(inArray(issueComments.id, deferredCommentIds))
+            : [];
+        const deferredWakeIsExclusivelySelfAuthored = issueIsTerminalForReopen
+          ? isExclusivelySelfAuthoredDeferredCommentWake({
+              deferredCommentIds,
+              assigneeAgentId: issue.assigneeAgentId,
+              deferredCommentAuthors,
+            })
+          : false;
 
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
