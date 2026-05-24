@@ -8,9 +8,14 @@ const mockBriefingFeedbackService = vi.hoisted(() => ({
   getTrends: vi.fn(),
 }));
 
+const mockScoreAdjustmentEngine = vi.hoisted(() => ({
+  processRating: vi.fn(),
+}));
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     briefingFeedbackService: () => mockBriefingFeedbackService,
+    scoreAdjustmentEngine: () => mockScoreAdjustmentEngine,
   }));
 }
 
@@ -58,7 +63,7 @@ describe("briefing feedback routes", () => {
       });
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({
+    expect(res.body.feedback).toMatchObject({
       id: "fb-1",
       briefingId: "briefing-1",
       rating: "yes",
