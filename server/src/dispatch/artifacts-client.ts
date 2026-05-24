@@ -141,6 +141,12 @@ export function httpArtifactUploadClient(
         ? `${base}/artifacts/${encodedPath}`
         : `${base}/artifacts/${encodedPath}/binary`;
 
+      // 30-second per-request timeout. Without this, an unresponsive
+      // agent-fs will hang the worker exit hook indefinitely, blocking
+      // run finalization. The timeout covers both the JSON and binary
+      // routes; 30s is generous for a LAN/container hop but bounded.
+      const signal = AbortSignal.timeout(30_000);
+
       let res: Response;
       if (isJson) {
         // Parse and re-serialise so the agent-fs JSON route receives a
@@ -153,6 +159,7 @@ export function httpArtifactUploadClient(
             "Content-Type": "application/json",
           },
           body: JSON.stringify(parsed),
+          signal,
         });
       } else {
         // Convert Buffer to Uint8Array so the fetch BodyInit type is
@@ -165,6 +172,7 @@ export function httpArtifactUploadClient(
             "Content-Type": "application/octet-stream",
           },
           body: new Uint8Array(body),
+          signal,
         });
       }
 

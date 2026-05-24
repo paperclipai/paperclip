@@ -6895,6 +6895,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       uploaded: string[];
       failed: Array<{ filename: string; reason: string }>;
       skipped: { reason: "no-artifacts-dir" } | null;
+      artifactsOutCleaned: boolean;
     } | null = null;
     try {
       const videoTitleMatch =

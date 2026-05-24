@@ -178,4 +178,31 @@ describe("httpArtifactUploadClient", () => {
       client.uploadArtifact("req-5", "edit", "final.mp4", Buffer.from([0x01])),
     ).rejects.toThrow(/PUT http:\/\/agent-fs:8080\/artifacts\/req-5\/edit\/final\.mp4\/binary/);
   });
+
+  // ---------------------------------------------------------------------------
+  // Fix 1: fetch timeout -- AbortSignal.timeout(30_000) is forwarded
+  // ---------------------------------------------------------------------------
+
+  it("[Fix 1] passes an AbortSignal to every fetch call (30s timeout)", async () => {
+    // Capture the init object passed to fetch and verify that signal is present.
+    const captured: { signal: unknown }[] = [];
+    const mockFetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      captured.push({ signal: init?.signal });
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const client = httpArtifactUploadClient(env);
+
+    // JSON route.
+    await client.uploadArtifact("req-sig-json", "research", "data.json", Buffer.from("{}"));
+    // Binary route.
+    await client.uploadArtifact("req-sig-bin", "edit", "clip.mp4", Buffer.from([0x00]));
+
+    expect(captured).toHaveLength(2);
+    for (const { signal } of captured) {
+      // AbortSignal.timeout() returns an AbortSignal instance.
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });
