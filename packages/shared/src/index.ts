@@ -1143,12 +1143,20 @@ export {
   aircraftSchema,
   crewMemberSchema,
   tripCreateSchema,
+  batchAirportSchema,
+  batchAircraftSchema,
+  batchCrewMemberSchema,
+  batchTripCreateSchema,
 } from "./validators/crewbrief-intake.js";
 export type {
   AirportInput,
   AircraftInput,
   CrewMemberInput,
   TripCreateInput,
+  BatchAirportInput,
+  BatchAircraftInput,
+  BatchCrewMemberInput,
+  BatchTripCreateInput,
 } from "./validators/crewbrief-intake.js";
 export {
   triggerBriefingQualityClassificationSchema,

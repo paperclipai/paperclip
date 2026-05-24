@@ -16,6 +16,7 @@ import { briefingQualityRoutes } from "./routes/briefing-quality.js";
 import { qualityRoutes } from "./routes/quality.js";
 import { crewbriefBriefingRoutes } from "./routes/crewbrief-briefing.js";
 import { crewbriefIntakeRoutes } from "./routes/crewbrief-intake.js";
+import { crewbriefJetinsightRoutes } from "./routes/crewbrief-jetinsight.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -74,7 +75,7 @@ import {
   crewbriefWebhookService,
 } from "./services/index.js";
 import { createBlogService } from "./services/crewbrief-blog.js";
-import { generateMondayBriefing, renderBriefingHtml } from "./services/crewbrief-briefing.js";
+import { generateMondayBriefing, renderBriefingHtml } from "./services/index.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -339,6 +340,7 @@ export async function createApp(
   api.use("/quality", qualityRoutes(db));
   api.use("/briefings", crewbriefBriefingRoutes(db));
   api.use("/crewbrief/intake", crewbriefIntakeRoutes(db));
+  api.use("/crewbrief/jetinsight", crewbriefJetinsightRoutes(db));
 
   if (process.env.NODE_ENV === "production" || process.env.CREWBRIEF_ENABLE_NURTURE === "true") {
     const NURTURE_POLL_MS = 60_000;

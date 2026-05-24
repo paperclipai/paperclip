@@ -18,7 +18,7 @@ import { validate } from "../middleware/validate.js";
 import type { CrewbriefNurtureService } from "../services/crewbrief-nurture.js";
 import type { CrewbriefHubspotService } from "../services/crewbrief-hubspot.js";
 import type { CrewbriefWebhookService } from "../services/crewbrief-webhooks.js";
-import { renderBriefingHtml, generateMondayBriefing } from "../services/crewbrief-briefing.js";
+import { getBriefing, getBriefingHtml } from "../services/index.js";
 
 function generateReferralCode(): string {
   return randomBytes(6).toString("base64url").slice(0, 8);
@@ -498,9 +498,14 @@ export function crewbriefRoutes(
     res.status(200).json({ status: "properties_created" });
   });
 
-  router.get("/briefings/:tripId/:dutyDayId", (req, res) => {
+  router.get("/briefings/:tripId/:dutyDayId", async (req, res) => {
     const { tripId, dutyDayId } = req.params;
-    res.json(generateMondayBriefing(tripId, dutyDayId));
+    const briefing = await getBriefing(db, tripId, dutyDayId);
+    if (!briefing) {
+      res.status(404).json({ error: "Briefing not found" });
+      return;
+    }
+    res.json(briefing);
   });
 
   return router;

@@ -60,7 +60,27 @@ export const tripCreateSchema = z.object({
   })).optional(),
 });
 
+export const batchAirportSchema = z.object({
+  airports: z.array(airportSchema).min(1).max(1000),
+});
+
+export const batchAircraftSchema = z.object({
+  aircraft: z.array(aircraftSchema).min(1).max(1000),
+});
+
+export const batchCrewMemberSchema = z.object({
+  crewMembers: z.array(crewMemberSchema).min(1).max(1000),
+});
+
+export const batchTripCreateSchema = z.object({
+  trips: z.array(tripCreateSchema).min(1).max(100),
+});
+
 export type TripCreateInput = z.infer<typeof tripCreateSchema>;
 export type AirportInput = z.infer<typeof airportSchema>;
 export type AircraftInput = z.infer<typeof aircraftSchema>;
 export type CrewMemberInput = z.infer<typeof crewMemberSchema>;
+export type BatchAirportInput = z.infer<typeof batchAirportSchema>;
+export type BatchAircraftInput = z.infer<typeof batchAircraftSchema>;
+export type BatchCrewMemberInput = z.infer<typeof batchCrewMemberSchema>;
+export type BatchTripCreateInput = z.infer<typeof batchTripCreateSchema>;

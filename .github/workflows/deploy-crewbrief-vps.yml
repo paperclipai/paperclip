@@ -56,9 +56,10 @@ jobs:
           echo "=== Verifying endpoints ==="
           for ep in \
             "https://crewbrief.avva.aero/api/health" \
-            "https://crewbrief.avva.aero/api/crewbrief/intake/airports" \
             "https://crewbrief.avva.aero/api/briefings/demo-trip-001/demo-duty-001" \
-            "https://crewbrief.avva.aero/api/briefing/monday"; do
+            "https://crewbrief.avva.aero/api/crewbrief/intake/airports" \
+            "https://crewbrief.avva.aero/api/crewbrief/intake/batch/airports" \
+            "https://crewbrief.avva.aero/briefing/monday"; do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ep")
             echo "$ep -> HTTP $CODE"
             if [ "$CODE" = "000" ] || [ "$CODE" = "502" ] || [ "$CODE" = "503" ]; then

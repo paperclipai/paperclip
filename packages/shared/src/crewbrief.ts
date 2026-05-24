@@ -96,6 +96,7 @@ export const crewbriefEnvSchema = z.object({
   CREWBRIEF_SMTP_USER: z.string().optional(),
   CREWBRIEF_SMTP_PASS: z.string().optional(),
   CREWBRIEF_RESEND_API_KEY: z.string().optional(),
+  CREWBRIEF_INTAKE_API_KEY: z.string().optional(),
 });
 
 export const webhookEventSchema = z.object({
