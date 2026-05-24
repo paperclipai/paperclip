@@ -948,7 +948,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
       params: {
-        companyId: companyA,
+        companyId: companyB,
         reviewerUserId: "spoofed-user",
       },
       actorContext: {
@@ -1008,7 +1008,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
       params: {
-        companyId: companyA,
+        companyId: companyB,
         reviewerAgentId: "spoofed-agent",
       },
       actorContext: {
