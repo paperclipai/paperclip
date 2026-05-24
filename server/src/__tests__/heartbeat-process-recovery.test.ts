@@ -73,6 +73,8 @@ vi.mock("../adapters/index.ts", async () => {
 
 import {
   heartbeatService,
+  PROCESS_LOST_BUDGET_EXHAUSTED_REASON,
+  PROCESS_LOST_PER_ISSUE_RETRY_BUDGET,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
@@ -973,6 +975,120 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("increments the per-issue consecutive_process_lost_count on each reaped process_lost run", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.consecutiveProcessLostCount).toBe(1);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.status).toBe("queued");
+  });
+
+  it("flips the issue to blocked once the per-issue process_lost retry budget is exhausted", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    await db
+      .update(issues)
+      .set({ consecutiveProcessLostCount: PROCESS_LOST_PER_ISSUE_RETRY_BUDGET - 1 })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const failedRun = runs[0];
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("per-issue");
+    expect(failedRun?.error).toContain("budget exhausted");
+
+    const blockedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssue?.status).toBe("blocked");
+    expect(blockedIssue?.consecutiveProcessLostCount).toBe(PROCESS_LOST_PER_ISSUE_RETRY_BUDGET);
+    expect(blockedIssue?.executionRunId).toBeNull();
+    expect(blockedIssue?.checkoutRunId).toBeNull();
+
+    const budgetComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    const budgetComment = budgetComments.find((row) => row.body.includes(PROCESS_LOST_BUDGET_EXHAUSTED_REASON));
+    expect(budgetComment).toBeTruthy();
+    expect(budgetComment?.body).toContain(`${PROCESS_LOST_PER_ISSUE_RETRY_BUDGET} consecutive`);
+    expect(budgetComment?.body).toContain(`Final failed run: \`${runId}\``);
+
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, issueId)));
+    const budgetAudit = auditRows.find((row) => row.action === "issue.harness_process_lost_budget_exhausted");
+    expect(budgetAudit).toBeTruthy();
+    expect(budgetAudit?.details).toMatchObject({
+      reason: PROCESS_LOST_BUDGET_EXHAUSTED_REASON,
+      consecutiveProcessLostCount: PROCESS_LOST_PER_ISSUE_RETRY_BUDGET,
+      budget: PROCESS_LOST_PER_ISSUE_RETRY_BUDGET,
+      runId,
+      agentId,
+    });
+  });
+
+  it("resets the per-issue process_lost counter after a successful run completes", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(issues)
+      .set({ consecutiveProcessLostCount: 3 })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const succeededRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(succeededRun?.status).toBe("succeeded");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.consecutiveProcessLostCount).toBe(0);
+    expect(agentId).toBeTruthy();
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

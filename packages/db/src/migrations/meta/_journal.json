@@ -631,6 +631,13 @@
       "when": 1779129600000,
       "tag": "0089_cloud_upstreams",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1779662400000,
+      "tag": "0090_issue_process_lost_budget",
+      "breakpoints": true
     }
   ]
 }
