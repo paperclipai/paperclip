@@ -673,7 +673,7 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
   - `c811bf07` Add OpenAPI CLI route
 - Remaining caveats:
   - Positive interactive `connect` was not run because the CLI intentionally rejects non-TTY use; equivalent scriptable context/token/auth flows were covered.
-  - Positive `board-claim claim` was not run because there was no live valid board claim challenge; invalid/gated paths were covered.
+  - Positive `board-claim claim` was initially not run because the live scratch server was `local_trusted`; this was resolved in the follow-up with an isolated authenticated-mode service test.
   - OpenAPI initially worked only at route/operation inventory level; this was resolved in the follow-up with a schema-backed generator.
 - Tokens and cleanup: All created board and agent tokens were revoked. Plugins were uninstalled. Temporary secrets are gone. Temporary non-default environments and project workspaces are gone. Two routines remain archived in the disposable instance.
 - Verification run:
@@ -724,6 +724,17 @@ pnpm paperclipai health --json
 - Status: PASS after OpenAPI caveat fix.
 - Output summary: Live schema-backed OpenAPI artifact is `tmp/cli-api-parity/artifacts/caveat-followup/openapi-live-schema-backed.json`.
 - Follow-up: Commit the OpenAPI fix, then continue positive board-claim and interactive connect follow-up testing.
+
+### 2026-05-24T14:16:10+02:00 - Positive board-claim claim verification
+
+- Command: Added `server/src/__tests__/board-claim.test.ts`; ran `pnpm exec vitest run server/src/__tests__/board-claim.test.ts`; ran `pnpm --dir server typecheck`.
+- Purpose: Resolve the board-claim caveat with positive coverage for the authenticated-mode claim path without mutating the long-running `local_trusted` scratch instance.
+- Prerequisites/IDs used: Fresh embedded-postgres test database; seeded one company, a real auth user, and `local-board` as the only `instance_admin`; initialized board-claim challenge with `deploymentMode: "authenticated"`.
+- Expected result: A claim warning URL is generated; `inspectBoardClaimChallenge(token, code)` returns `available`; claiming as the signed-in user returns `claimed`; `local-board` loses instance admin; the signed-in user gains instance admin and active owner membership for the existing company; subsequent inspect returns `claimed`.
+- Actual result: Initial test attempt exposed cleanup ordering only because the claim path creates `principal_permission_grants`; cleanup was fixed to delete grants before companies. The rerun passed. Server typecheck passed.
+- Status: PASS.
+- Output summary: Positive board-claim behavior is now covered by a focused authenticated-mode regression test. The live scratch instance remains `local_trusted`, which is correct for the main parity harness.
+- Follow-up: Commit the board-claim positive coverage, then evaluate whether interactive `connect` can be PTY-tested or should remain classified as lower-risk because its side effects were exercised through scriptable paths.
 
 ## Bugs And Mismatches
 
