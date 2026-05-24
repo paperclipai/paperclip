@@ -476,6 +476,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: This batch covered root setup/maintenance command surfaces that were previously only indirectly covered. Some artifact output files under `tmp/cli-api-parity/artifacts/root-setup` contain command output from the disposable instance.
 - Follow-up: Continue remaining untested command families, especially cloud/worktree surfaces and any server-backed command gaps discovered by targeted help/source review.
 
+### 2026-05-24T12:47:54+02:00 - Worktree and cloud command gated coverage
+
+- Command: `PAPERCLIP_WORKTREES_DIR=tmp/cli-api-parity/worktrees-home pnpm paperclipai worktree:list --json`; `pnpm paperclipai worktree env --config <scratch-config> --json`; `pnpm paperclipai worktree:merge-history --from current --to current --company CLI --dry`; `pnpm paperclipai cloud push --company 12e9db4b-f66c-459b-959e-d645002240fb --dry-run --json`
+- Purpose: Start worktree/cloud parity coverage with read-only or dry-run commands before attempting any lifecycle command that creates branches, worktrees, or external cloud connections.
+- Prerequisites/IDs used: Scratch config `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/config.json`; scratch worktree root `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/worktrees-home`; company `12e9db4b-f66c-459b-959e-d645002240fb`.
+- Expected result: Worktree list and env introspection should use scratch config/environment; merge-history should reject identical source/target configs without mutating state; cloud push should fail safely if cloud sync is not enabled/configured.
+- Actual result: `worktree:list` passed and showed the current repo branch `improvement/cli-api-parity` with no Paperclip worktree config. `worktree env --config <scratch-config> --json` passed and printed the scratch `PAPERCLIP_CONFIG` plus generated env values; the generated JWT secret is intentionally not copied into this log. `worktree:merge-history --from current --to current --company CLI --dry` failed as expected with `Source and target Paperclip configs are the same. Choose different --from/--to worktrees.` `cloud push --dry-run` failed as expected with `Cloud sync is disabled. Enable the cloud sync experimental setting before running paperclipai cloud push.`
+- Status: PASS for safe/gated coverage.
+- Output summary: Worktree read-only/dry-run paths behaved safely. Cloud push was not attempted against a real upstream and remained blocked by scratch instance settings.
+- Follow-up: Continue with a scratch-only worktree lifecycle test. Cloud requires an experimental setting plus a configured upstream; keep it gated unless a disposable fake upstream can be wired without touching the real install.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
