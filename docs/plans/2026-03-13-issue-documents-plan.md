@@ -7,7 +7,7 @@ Primary issue: `PAP-448`
 
 ## Summary
 
-Add first-class **documents** to Valadrien OS as editable, revisioned, company-scoped text artifacts that can be linked to issues.
+Add first-class **documents** to ValAdrien OS as editable, revisioned, company-scoped text artifacts that can be linked to issues.
 
 The first required convention is a document with key `plan`.
 
@@ -72,7 +72,7 @@ Key rules:
 - machine-oriented and stable
 - title is separate and user-facing
 
-The `plan` key is conventional and reserved by Valadrien OS workflow/docs.
+The `plan` key is conventional and reserved by ValAdrien OS workflow/docs.
 
 ### 2. Text-first v1
 
@@ -370,7 +370,7 @@ If there is no stored `plan` document but legacy `<plan>` exists:
 
 ## Agent Protocol and Skills
 
-Update the Valadrien OS agent workflow so planning no longer edits the issue description.
+Update the ValAdrien OS agent workflow so planning no longer edits the issue description.
 
 Required changes:
 

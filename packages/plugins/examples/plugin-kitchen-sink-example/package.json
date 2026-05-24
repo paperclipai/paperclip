@@ -1,7 +1,7 @@
 {
   "name": "@valadrien-os/plugin-kitchen-sink-example",
   "version": "0.1.0",
-  "description": "Reference plugin that demonstrates the full Valadrien OS plugin surface area in one package",
+  "description": "Reference plugin that demonstrates the full ValAdrien OS plugin surface area in one package",
   "type": "module",
   "private": true,
   "exports": {

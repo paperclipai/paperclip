@@ -142,7 +142,7 @@ if [[ -z "$OPENCLAW_WEBHOOK_URL" ]]; then
   fail "OPENCLAW_WEBHOOK_URL must be set when USE_DOCKER_RECEIVER=0"
 fi
 
-log "checking Valadrien OS health"
+log "checking ValAdrien OS health"
 api_request "GET" "/health"
 assert_status "200"
 DEPLOYMENT_MODE="$(jq -r '.deploymentMode // "unknown"' <<<"$RESPONSE_BODY")"
@@ -179,7 +179,7 @@ if [[ -z "$ONBOARDING_TEXT_PATH" ]]; then
 fi
 api_request "GET" "/invites/${INVITE_TOKEN}/onboarding.txt"
 assert_status "200"
-if ! grep -q "Valadrien OS OpenClaw Gateway Onboarding" <<<"$RESPONSE_BODY"; then
+if ! grep -q "ValAdrien OS OpenClaw Gateway Onboarding" <<<"$RESPONSE_BODY"; then
   fail "onboarding.txt response missing expected header"
 fi
 

@@ -1,9 +1,9 @@
 ---
 title: Quickstart
-summary: Get Valadrien OS running in minutes
+summary: Get ValAdrien OS running in minutes
 ---
 
-Get Valadrien OS running locally in under 5 minutes.
+Get ValAdrien OS running locally in under 5 minutes.
 
 ## Quick Start (Recommended)
 
@@ -11,21 +11,21 @@ Get Valadrien OS running locally in under 5 minutes.
 npx valadrien-os onboard --yes
 ```
 
-This walks you through setup, configures your environment, and gets Valadrien OS running.
+This walks you through setup, configures your environment, and gets ValAdrien OS running.
 
-If you already have a Valadrien OS install, rerunning `onboard` keeps your current config and data paths intact. Use `valadrien-os configure` if you want to edit settings.
+If you already have a ValAdrien OS install, rerunning `onboard` keeps your current config and data paths intact. Use `valadrien-os configure` if you want to edit settings.
 
-To start Valadrien OS again later:
+To start ValAdrien OS again later:
 
 ```sh
 npx valadrien-os run
 ```
 
-> **Note:** If you used `npx` for setup, always use `npx valadrien-os` to run commands. The `pnpm valadrien-os` form only works inside a cloned copy of the Valadrien OS repository (see Local Development below).
+> **Note:** If you used `npx` for setup, always use `npx valadrien-os` to run commands. The `pnpm valadrien-os` form only works inside a cloned copy of the ValAdrien OS repository (see Local Development below).
 
 ## Local Development
 
-For contributors working on Valadrien OS itself. Prerequisites: Node.js 20+ and pnpm 9+.
+For contributors working on ValAdrien OS itself. Prerequisites: Node.js 20+ and pnpm 9+.
 
 Clone the repository, then:
 
@@ -36,7 +36,7 @@ pnpm dev
 
 This starts the API server and UI at [http://localhost:3100](http://localhost:3100).
 
-No external database required — Valadrien OS uses an embedded PostgreSQL instance by default.
+No external database required — ValAdrien OS uses an embedded PostgreSQL instance by default.
 
 When working from the cloned repo, you can also use:
 
@@ -48,7 +48,7 @@ This auto-onboards if config is missing, runs health checks with auto-repair, an
 
 ## What's Next
 
-Once Valadrien OS is running:
+Once ValAdrien OS is running:
 
 1. Create your first company in the web UI
 2. Define a company goal
@@ -58,5 +58,5 @@ Once Valadrien OS is running:
 6. Hit go — agents start their heartbeats and the company runs
 
 <Card title="Core Concepts" href="/start/core-concepts">
-  Learn the key concepts behind Valadrien OS
+  Learn the key concepts behind ValAdrien OS
 </Card>

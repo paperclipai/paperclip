@@ -1,5 +1,5 @@
 [Unit]
-Description=PostgreSQL for Valadrien OS
+Description=PostgreSQL for ValAdrien OS
 
 [Container]
 Image=docker.io/library/postgres:17-alpine

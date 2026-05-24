@@ -1,7 +1,7 @@
 {
   "name": "valadrien-os",
   "version": "0.3.1",
-  "description": "Valadrien OS CLI — orchestrate AI agent teams to run a business",
+  "description": "ValAdrien OS CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
     "valadrien-os": "./dist/index.js"

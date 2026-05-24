@@ -10,18 +10,18 @@ Related:
 
 ## 1. Purpose
 
-This document defines the rollout plan for adapter-wide skill support in Valadrien OS.
+This document defines the rollout plan for adapter-wide skill support in ValAdrien OS.
 
 The goal is not just “show a skills tab.” The goal is:
 
 - every adapter has a deliberate skill-sync truth model
 - the UI tells the truth for that adapter
-- Valadrien OS stores desired skill state consistently even when the adapter cannot fully reconcile it
+- ValAdrien OS stores desired skill state consistently even when the adapter cannot fully reconcile it
 - unsupported adapters degrade clearly and safely
 
 ## 2. Current Adapter Matrix
 
-Valadrien OS currently has these adapters:
+ValAdrien OS currently has these adapters:
 
 - `claude_local`
 - `codex_local`
@@ -49,7 +49,7 @@ Current implementation state:
 
 ## 3. Product Principles
 
-1. Desired skills live in Valadrien OS for every adapter.
+1. Desired skills live in ValAdrien OS for every adapter.
 2. Adapters may expose different truth models, and the UI must reflect that honestly.
 3. Persistent adapters should read and reconcile actual installed state.
 4. Ephemeral adapters should report effective runtime state, not pretend they own a persistent install.
@@ -60,7 +60,7 @@ Current implementation state:
 
 ### 4.1 Persistent local-home adapters
 
-These adapters have a stable local skills directory that Valadrien OS can read and manage.
+These adapters have a stable local skills directory that ValAdrien OS can read and manage.
 
 Candidates:
 
@@ -80,7 +80,7 @@ Expected UX:
 
 ### 4.2 Ephemeral mount adapters
 
-These adapters do not have a meaningful Valadrien OS-owned persistent install state.
+These adapters do not have a meaningful ValAdrien OS-owned persistent install state.
 
 Current adapter:
 
@@ -88,7 +88,7 @@ Current adapter:
 
 Expected UX:
 
-- show desired Valadrien OS skills
+- show desired ValAdrien OS skills
 - show any discoverable external dirs if available
 - say “mounted on next run” instead of “installed”
 - do not imply a persistent adapter-owned install state
@@ -150,7 +150,7 @@ Requirements to finish:
 
 Success criteria:
 
-- desired skills stored in Valadrien OS
+- desired skills stored in ValAdrien OS
 - selected skills mounted per run
 - no misleading “installed” language
 
@@ -162,7 +162,7 @@ Target mode:
 
 Technical basis:
 
-- runtime already injects Valadrien OS skills into `~/.cursor/skills`
+- runtime already injects ValAdrien OS skills into `~/.cursor/skills`
 
 Implementation work:
 
@@ -170,7 +170,7 @@ Implementation work:
 2. Add `syncSkills` for Cursor.
 3. Reuse the same managed-symlink pattern as Codex.
 4. Distinguish:
-   - managed Valadrien OS skills
+   - managed ValAdrien OS skills
    - external skills already present
    - missing desired skills
    - stale managed skills
@@ -194,7 +194,7 @@ Target mode:
 
 Technical basis:
 
-- runtime already injects Valadrien OS skills into `~/.gemini/skills`
+- runtime already injects ValAdrien OS skills into `~/.gemini/skills`
 
 Implementation work:
 
@@ -219,7 +219,7 @@ Target mode:
 
 Technical basis:
 
-- runtime already injects Valadrien OS skills into `~/.pi/agent/skills`
+- runtime already injects ValAdrien OS skills into `~/.pi/agent/skills`
 
 Implementation work:
 
@@ -231,7 +231,7 @@ Implementation work:
 Success criteria:
 
 - Pi agents expose actual installed skill state
-- Valadrien OS can sync desired skills into Pi’s persistent home
+- ValAdrien OS can sync desired skills into Pi’s persistent home
 
 ### 5.6 OpenCode Local
 
@@ -241,12 +241,12 @@ Target mode:
 
 Special case:
 
-- OpenCode currently injects Valadrien OS skills into `~/.claude/skills`
+- OpenCode currently injects ValAdrien OS skills into `~/.claude/skills`
 
 This is product-risky because:
 
 - it shares state with Claude
-- Valadrien OS may accidentally imply the skills belong only to OpenCode when the home is shared
+- ValAdrien OS may accidentally imply the skills belong only to OpenCode when the home is shared
 
 Plan:
 
@@ -255,7 +255,7 @@ Phase 1:
 - implement `listSkills` and `syncSkills`
 - treat it as `persistent`
 - explicitly label the home as shared in UI copy
-- only remove stale managed Valadrien OS skills that are clearly marked as Valadrien OS-managed
+- only remove stale managed ValAdrien OS skills that are clearly marked as ValAdrien OS-managed
 
 Phase 2:
 
@@ -281,7 +281,7 @@ Required external work:
 
 Until then:
 
-- Valadrien OS stores desired skills only
+- ValAdrien OS stores desired skills only
 - UI shows unsupported actual state
 - no fake sync implementation
 
@@ -325,7 +325,7 @@ The agent-level Skills tab must become adapter-aware by copy and status:
 Additional UI requirement for shared-home adapters:
 
 - show a small warning that the adapter uses a shared user skills home
-- avoid destructive wording unless Valadrien OS can prove a skill is Valadrien OS-managed
+- avoid destructive wording unless ValAdrien OS can prove a skill is ValAdrien OS-managed
 
 ## 8. Rollout Phases
 
@@ -396,4 +396,4 @@ The recommended immediate order is:
 4. `opencode_local`
 5. defer `openclaw_gateway`
 
-That gets Valadrien OS from “skills work for Codex and Claude” to “skills work for the whole local-adapter family,” which is the meaningful V1 milestone.
+That gets ValAdrien OS from “skills work for Codex and Claude” to “skills work for the whole local-adapter family,” which is the meaningful V1 milestone.

@@ -12,7 +12,7 @@ This adapter always uses WebSocket gateway transport.
 2. send `req connect` (protocol/client/auth/device payload)
 3. send `req agent`
 4. wait for completion via `req agent.wait`
-5. stream `event agent` frames into Valadrien OS logs/transcript parsing
+5. stream `event agent` frames into ValAdrien OS logs/transcript parsing
 
 ## Auth Modes
 
@@ -49,7 +49,7 @@ The agent request is built as:
 
 - required fields:
   - `message` (wake text plus optional `payloadTemplate.message`/`payloadTemplate.text` prefix)
-  - `idempotencyKey` (Valadrien OS `runId`)
+  - `idempotencyKey` (ValAdrien OS `runId`)
   - `sessionKey` (resolved strategy)
 - optional additions:
   - all `payloadTemplate` fields merged in

@@ -9,11 +9,11 @@ Supersedes for package-format direction:
 
 ## 1. Purpose
 
-This document defines the next-stage plan for Valadrien OS company import/export.
+This document defines the next-stage plan for ValAdrien OS company import/export.
 
 The core shift is:
 
-- move from a Valadrien OS-specific JSON-first portability package toward a markdown-first package format
+- move from a ValAdrien OS-specific JSON-first portability package toward a markdown-first package format
 - make GitHub repositories first-class package sources
 - treat the company package model as an extension of the existing Agent Skills ecosystem instead of inventing a separate skill format
 - support company, team, agent, and skill reuse without requiring a central registry
@@ -22,7 +22,7 @@ The normative package format draft lives in:
 
 - `docs/companies/companies-spec.md`
 
-This plan is about implementation and rollout inside Valadrien OS.
+This plan is about implementation and rollout inside ValAdrien OS.
 
 Adapter-wide skill rollout details live in:
 
@@ -30,7 +30,7 @@ Adapter-wide skill rollout details live in:
 
 ## 2. Executive Summary
 
-Valadrien OS already has portability primitives in the repo:
+ValAdrien OS already has portability primitives in the repo:
 
 - server import/export/preview APIs
 - CLI import/export commands
@@ -42,21 +42,21 @@ The new direction is:
 
 1. markdown-first package authoring
 2. GitHub repo or local folder as the default source of truth
-3. a vendor-neutral base package spec for agent-company runtimes, not just Valadrien OS
+3. a vendor-neutral base package spec for agent-company runtimes, not just ValAdrien OS
 4. the company package model is explicitly an extension of Agent Skills
 5. no future dependency on `valadrien-os.manifest.json`
 6. implicit folder discovery by convention for the common case
-7. an always-emitted `.valadrien-os.yaml` sidecar for high-fidelity Valadrien OS-specific details
+7. an always-emitted `.valadrien-os.yaml` sidecar for high-fidelity ValAdrien OS-specific details
 8. package graph resolution at import time
 9. entity-level import UI with dependency-aware tree selection
 10. `skills.sh` compatibility is a V1 requirement for skill packages and skill installation flows
-11. adapter-aware skill sync surfaces so Valadrien OS can read, diff, enable, disable, and reconcile skills where the adapter supports it
+11. adapter-aware skill sync surfaces so ValAdrien OS can read, diff, enable, disable, and reconcile skills where the adapter supports it
 
 ## 3. Product Goals
 
 ### 3.1 Goals
 
-- A user can point Valadrien OS at a local folder or GitHub repo and import a company package without any registry.
+- A user can point ValAdrien OS at a local folder or GitHub repo and import a company package without any registry.
 - A package is readable and writable by humans with normal git workflows.
 - A package can contain:
   - company definition
@@ -75,7 +75,7 @@ The new direction is:
   - what is referenced externally
   - what needs secrets or approvals
 - Export preserves attribution, licensing, and pinned upstream references.
-- Export produces a clean vendor-neutral package plus a Valadrien OS sidecar.
+- Export produces a clean vendor-neutral package plus a ValAdrien OS sidecar.
 - `companies.sh` can later act as a discovery/index layer over repos implementing this format.
 
 ### 3.2 Non-Goals
@@ -127,15 +127,15 @@ The normative draft is:
 
 ### 5.2 Relationship To Agent Skills
 
-Valadrien OS must not redefine `SKILL.md`.
+ValAdrien OS must not redefine `SKILL.md`.
 
 Rules:
 
 - `SKILL.md` stays Agent Skills compatible
 - the company package model is an extension of Agent Skills
 - the base package is vendor-neutral and intended for any agent-company runtime
-- Valadrien OS-specific fidelity lives in `.valadrien-os.yaml`
-- Valadrien OS may resolve and install `SKILL.md` packages, but it must not require a Valadrien OS-only skill format
+- ValAdrien OS-specific fidelity lives in `.valadrien-os.yaml`
+- ValAdrien OS may resolve and install `SKILL.md` packages, but it must not require a ValAdrien OS-only skill format
 - `skills.sh` compatibility is a V1 requirement, not a future nice-to-have
 
 ### 5.3 Agent-To-Skill Association
@@ -152,18 +152,18 @@ Resolution model:
 - if the skill is external or referenced, the skill package owns that complexity
 - exporters should prefer shortname-based associations in `AGENTS.md`
 - importers should resolve the shortname against local package skills first, then referenced or installed company skills
-### 5.4 Base Package Vs Valadrien OS Extension
+### 5.4 Base Package Vs ValAdrien OS Extension
 
 The repo format should have two layers:
 
 - base package:
   - minimal, readable, social, vendor-neutral
   - implicit folder discovery by convention
-  - no Valadrien OS-only runtime fields by default
-- Valadrien OS extension:
+  - no ValAdrien OS-only runtime fields by default
+- ValAdrien OS extension:
   - `.valadrien-os.yaml`
   - adapter/runtime/permissions/budget/workspace fidelity
-  - emitted by Valadrien OS tools as a sidecar while the base package stays readable
+  - emitted by ValAdrien OS tools as a sidecar while the base package stays readable
 
 ### 5.5 Relationship To Current V1 Manifest
 
@@ -179,7 +179,7 @@ This should be treated as a hard cutover in product direction.
 
 ### 6.1 Entity Kinds
 
-Valadrien OS import/export should support these entity kinds:
+ValAdrien OS import/export should support these entity kinds:
 
 - company
 - team
@@ -192,7 +192,7 @@ Valadrien OS import/export should support these entity kinds:
 
 `team` is a package concept first, not a database-table requirement.
 
-In Valadrien OS V2 portability:
+In ValAdrien OS V2 portability:
 
 - a team is an importable org subtree
 - it is rooted at a manager agent
@@ -203,7 +203,7 @@ This avoids blocking portability on a future runtime `teams` model.
 Imported-team tracking should initially be package/provenance-based:
 
 - if a team package was imported, the imported agents should carry enough provenance to reconstruct that grouping
-- Valadrien OS can treat “this set of agents came from team package X” as the imported-team model
+- ValAdrien OS can treat “this set of agents came from team package X” as the imported-team model
 - provenance grouping is the intended near- and medium-term team model for import/export
 - only add a first-class runtime `teams` table later if product needs move beyond what provenance grouping can express
 
@@ -232,7 +232,7 @@ Some packages will:
 
 ### 7.2 Policy
 
-Valadrien OS should support source references in package metadata with:
+ValAdrien OS should support source references in package metadata with:
 
 - repo
 - path
@@ -320,7 +320,7 @@ People want skill management in the UI, but skills are adapter-dependent.
 
 That means portability and UI planning must include an adapter capability model for skills.
 
-Valadrien OS should define a new adapter surface area around skills:
+ValAdrien OS should define a new adapter surface area around skills:
 
 - list currently enabled skills for an agent
 - report how those skills are represented by the adapter
@@ -349,11 +349,11 @@ Baseline adapter interface:
 - `removeSkill(agent, skillId)` optional
 - `getSkillSyncState(agent, desiredSkills)` optional
 
-Planned Valadrien OS behavior:
+Planned ValAdrien OS behavior:
 
-- if an adapter supports read, Valadrien OS should show current skills in the UI
-- if an adapter supports write, Valadrien OS should let the user enable/disable imported skills
-- if an adapter supports sync, Valadrien OS should compute desired vs actual state and offer reconcile actions
+- if an adapter supports read, ValAdrien OS should show current skills in the UI
+- if an adapter supports write, ValAdrien OS should let the user enable/disable imported skills
+- if an adapter supports sync, ValAdrien OS should compute desired vs actual state and offer reconcile actions
 - if an adapter does not support these capabilities, the UI should still show the package-level desired skills but mark them unmanaged
 
 ## 9. Export Behavior
@@ -409,7 +409,7 @@ Later optional units:
 - skill pack export
 - seed projects/tasks bundle
 
-## 10. Storage Model Inside Valadrien OS
+## 10. Storage Model Inside ValAdrien OS
 
 ### 10.1 Short-Term
 
@@ -422,7 +422,7 @@ In the first phase, imported entities can continue mapping onto current runtime 
 
 ### 10.2 Medium-Term
 
-Valadrien OS should add managed package/provenance records so imports are not anonymous one-off copies.
+ValAdrien OS should add managed package/provenance records so imports are not anonymous one-off copies.
 
 Needed capabilities:
 
@@ -614,11 +614,11 @@ Docs to update later as implementation lands:
 
 ## 16. Open Questions
 
-1. Should imported skill packages be stored as managed package files in Valadrien OS storage, or only referenced at import time?
+1. Should imported skill packages be stored as managed package files in ValAdrien OS storage, or only referenced at import time?
    Decision: managed package files should support both company-scoped reuse and agent-scoped attachment.
 2. What is the minimum adapter skill interface needed to make the UI useful across Claude Code, Codex, OpenClaw, and future adapters?
    Decision: use the baseline interface in section 8.5.
-3. Should Valadrien OS support direct local folder selection in the web UI, or keep that CLI-only initially?
+3. Should ValAdrien OS support direct local folder selection in the web UI, or keep that CLI-only initially?
 4. Do we want optional generated lock files in phase 2, or defer them until provenance work?
 5. How strict should pinning be by default for GitHub references:
    - warn on unpinned
@@ -637,7 +637,7 @@ Immediate next steps:
 3. build phase 2 markdown-first package reader before expanding ClipHub or `companies.sh`
 4. treat the old manifest-based format as deprecated and not part of the future surface
 
-This keeps Valadrien OS aligned with:
+This keeps ValAdrien OS aligned with:
 
 - GitHub-native distribution
 - Agent Skills compatibility

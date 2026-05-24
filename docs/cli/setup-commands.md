@@ -33,7 +33,7 @@ Interactive first-time setup:
 pnpm valadrien-os onboard
 ```
 
-If Valadrien OS is already configured, rerunning `onboard` keeps the existing config in place. Use `valadrien-os configure` to change settings on an existing install.
+If ValAdrien OS is already configured, rerunning `onboard` keeps the existing config in place. Use `valadrien-os configure` to change settings on an existing install.
 
 First prompt:
 
@@ -52,7 +52,7 @@ Non-interactive defaults + immediate start (opens browser on server listen):
 pnpm valadrien-os onboard --yes
 ```
 
-On an existing install, `--yes` now preserves the current config and just starts Valadrien OS with that setup.
+On an existing install, `--yes` now preserves the current config and just starts ValAdrien OS with that setup.
 
 ## `valadrien-os doctor`
 

@@ -1,4 +1,4 @@
-# Valadrien OS Create Agent API Reference
+# ValAdrien OS Create Agent API Reference
 
 ## Core Endpoints
 

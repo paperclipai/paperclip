@@ -1,4 +1,4 @@
-# Valadrien OS Routines
+# ValAdrien OS Routines
 
 Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
 
@@ -118,7 +118,7 @@ POST /api/routines/{routineId}/triggers
 - Response includes the webhook URL (`publicId`-based) and the signing secret
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`
   - Bearer: `Authorization: Bearer <secret>`
-  - HMAC: `X-Valadrien OS-Signature` + `X-Valadrien OS-Timestamp` headers
+  - HMAC: `X-ValAdrien OS-Signature` + `X-ValAdrien OS-Timestamp` headers
 
 ### API (manual only)
 

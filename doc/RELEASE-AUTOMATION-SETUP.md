@@ -1,6 +1,6 @@
 # Release Automation Setup
 
-This document covers the GitHub and npm setup required for the current Valadrien OS release model:
+This document covers the GitHub and npm setup required for the current ValAdrien OS release model:
 
 - automatic canaries from `master`
 - manual stable promotion from a chosen source ref
@@ -29,7 +29,7 @@ Required files:
 
 ## 2. Configure npm Trusted Publishing
 
-Do this for every public package that Valadrien OS publishes.
+Do this for every public package that ValAdrien OS publishes.
 
 At minimum that includes:
 
@@ -104,7 +104,7 @@ Only after that should you remove old token-based access.
 After trusted publishing works:
 
 1. revoke any repository or organization `NPM_TOKEN` secrets used for publish
-2. revoke any personal automation token that used to publish Valadrien OS
+2. revoke any personal automation token that used to publish ValAdrien OS
 3. if npm offers a package-level setting to restrict publishing to trusted publishers, enable it
 
 Goal:

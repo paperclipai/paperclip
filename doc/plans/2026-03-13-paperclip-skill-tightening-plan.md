@@ -1,4 +1,4 @@
-# Valadrien OS Skill Tightening Plan
+# ValAdrien OS Skill Tightening Plan
 
 ## Status
 
@@ -31,14 +31,14 @@ That structure is safe but expensive.
 ## Goals
 
 - reduce first-run instruction tokens without weakening agent safety
-- preserve all current Valadrien OS control-plane capabilities
+- preserve all current ValAdrien OS control-plane capabilities
 - keep common heartbeat behavior explicit and easy for agents to follow
 - move rare workflows and reference material out of the hot path
 - create a structure that can later be evaluated systematically
 
 ## Non-Goals
 
-- changing Valadrien OS API semantics
+- changing ValAdrien OS API semantics
 - removing required governance rules
 - deleting rare workflows
 - changing agent defaults in the current PR
@@ -175,12 +175,12 @@ Do not change this loading policy without validation.
 ## Preconditions Before Implementation
 
 - define acceptance scenarios for control-plane correctness
-- add at least lightweight eval or scripted scenario coverage for key Valadrien OS flows
+- add at least lightweight eval or scripted scenario coverage for key ValAdrien OS flows
 - confirm how adapter/bootstrap layering should load skill content versus references
 
 ## Success Criteria
 
-- materially lower first-run input tokens for Valadrien OS-coordinated agents
+- materially lower first-run input tokens for ValAdrien OS-coordinated agents
 - no regression in checkout discipline, issue updates, blocked handling, or delegation
 - no increase in malformed API usage or ownership mistakes
 - agents still complete rare workflows correctly when explicitly asked

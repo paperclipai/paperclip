@@ -4,7 +4,7 @@ Date: 2026-03-13
 
 ## Context
 
-We need evals for the thing Valadrien OS actually ships:
+We need evals for the thing ValAdrien OS actually ships:
 
 - agent behavior produced by adapter config
 - prompt templates and bootstrap prompts
@@ -18,7 +18,7 @@ We need a regression framework that can answer:
 - if we change prompts or skills, do agents still do the right thing?
 - if we switch models, what got better, worse, or more expensive?
 - if we optimize tokens, did we preserve task outcomes?
-- can we grow the suite over time from real Valadrien OS usage?
+- can we grow the suite over time from real ValAdrien OS usage?
 
 This plan is based on:
 
@@ -35,10 +35,10 @@ This plan is based on:
 
 ## Recommendation
 
-Valadrien OS should take a **two-stage approach**:
+ValAdrien OS should take a **two-stage approach**:
 
 1. **Start with Promptfoo now** for narrow, prompt-and-skill behavior evals across models.
-2. **Grow toward a first-party, repo-local eval harness in TypeScript** for full Valadrien OS scenario evals.
+2. **Grow toward a first-party, repo-local eval harness in TypeScript** for full ValAdrien OS scenario evals.
 
 So the recommendation is no longer “skip Promptfoo.” It is:
 
@@ -50,7 +50,7 @@ More specifically:
 
 1. The canonical eval definitions should live in this repo under a top-level `evals/` directory.
 2. `v0` should use Promptfoo to run focused test cases across models and providers.
-3. The longer-term harness should run **real Valadrien OS scenarios** against seeded companies/issues/agents, not just raw prompt completions.
+3. The longer-term harness should run **real ValAdrien OS scenarios** against seeded companies/issues/agents, not just raw prompt completions.
 4. The scoring model should combine:
    - deterministic checks
    - structured rubric scoring
@@ -67,13 +67,13 @@ A bundle is:
 - skill allowlist / skill content version
 - relevant runtime flags
 
-That is the right unit because that is what actually changes behavior in Valadrien OS.
+That is the right unit because that is what actually changes behavior in ValAdrien OS.
 
 ## Why This Is The Right Shape
 
 ### 1. We need to evaluate system behavior, not only prompt output
 
-Prompt-only tools are useful, but Valadrien OS’s real failure modes are often:
+Prompt-only tools are useful, but ValAdrien OS’s real failure modes are often:
 
 - wrong issue chosen
 - wrong API call sequence
@@ -107,7 +107,7 @@ OpenAI’s guidance is directionally right:
 - log everything
 - prefer pairwise/comparison-style judging over open-ended scoring
 
-But OpenAI’s Evals API is not the right control plane for Valadrien OS as the primary system because our target is explicitly multi-model and multi-provider.
+But OpenAI’s Evals API is not the right control plane for ValAdrien OS as the primary system because our target is explicitly multi-model and multi-provider.
 
 ### 4. Hosted eval products are useful, and Promptfoo is the right bootstrap tool
 
@@ -127,13 +127,13 @@ The community suggestion is directionally right:
 
 That makes it the best `v0` tool for “did this prompt/skill/model change obviously regress?”
 
-But Valadrien OS should still avoid making a hosted platform or a third-party config format the core abstraction before we have our own stable eval model.
+But ValAdrien OS should still avoid making a hosted platform or a third-party config format the core abstraction before we have our own stable eval model.
 
 The right move is:
 
 - start with Promptfoo for quick wins
 - keep the data portable and repo-owned
-- build a thin first-party harness around Valadrien OS concepts as the system grows
+- build a thin first-party harness around ValAdrien OS concepts as the system grows
 - optionally export to or integrate with other tools later if useful
 
 ## What We Should Evaluate
@@ -168,7 +168,7 @@ Examples:
 - delegates to the correct report
 - recognizes blocked state and reports it clearly
 
-These are the closest thing to prompt evals, but still framed in Valadrien OS terms.
+These are the closest thing to prompt evals, but still framed in ValAdrien OS terms.
 
 ### Layer 3: End-to-end scenario evals
 
@@ -235,7 +235,7 @@ type EvalCase = {
 };
 ```
 
-The important part is that the case is about a Valadrien OS scenario, not a standalone prompt string.
+The important part is that the case is about a ValAdrien OS scenario, not a standalone prompt string.
 
 ## 2. Canonical object: `EvalBundle`
 
@@ -375,7 +375,7 @@ These are small, clear, and stable.
 
 Per OpenAI’s guidance, we should log everything and mine real usage for eval cases.
 
-Valadrien OS should grow eval coverage by promoting real runs into cases when we see:
+ValAdrien OS should grow eval coverage by promoting real runs into cases when we see:
 
 - regressions
 - interesting failures
@@ -518,7 +518,7 @@ Nightly behavior:
 
 ## Promptfoo
 
-Best use for Valadrien OS:
+Best use for ValAdrien OS:
 
 - prompt-level micro-evals
 - provider/model comparison
@@ -534,14 +534,14 @@ What changed in this recommendation:
 Why it still should not be the only long-term system:
 
 - its primary abstraction is still prompt/provider/test-case oriented
-- Valadrien OS needs scenario setup, control-plane state inspection, and multi-step traces as first-class concepts
+- ValAdrien OS needs scenario setup, control-plane state inspection, and multi-step traces as first-class concepts
 
 Recommendation:
 
 - use Promptfoo first
 - store Promptfoo config and cases in-repo under `evals/promptfoo/`
-- use custom JS/TS assertions and, if needed later, a custom provider that calls Valadrien OS scenario runners
-- do not make Promptfoo YAML the only canonical Valadrien OS eval format once we outgrow prompt-level evals
+- use custom JS/TS assertions and, if needed later, a custom provider that calls ValAdrien OS scenario runners
+- do not make Promptfoo YAML the only canonical ValAdrien OS eval format once we outgrow prompt-level evals
 
 ## LangSmith
 
@@ -590,13 +590,13 @@ What it gets right:
 
 Why not the primary system:
 
-- Valadrien OS must compare across models/providers
+- ValAdrien OS must compare across models/providers
 - we do not want our primary eval runner coupled to one model vendor
 
 Recommendation:
 
 - use the guidance
-- do not use it as the core Valadrien OS eval runtime
+- do not use it as the core ValAdrien OS eval runtime
 
 ## First Implementation Slice
 
@@ -727,7 +727,7 @@ The suite must keep growing from real runs, otherwise it will become a toy bench
 
 Trajectory matters for agents:
 
-- did they call the right Valadrien OS APIs?
+- did they call the right ValAdrien OS APIs?
 - did they ask for approval?
 - did they communicate progress?
 - did they choose the right issue?
@@ -757,7 +757,7 @@ Our eval model should survive changes in:
 
 ## Final Recommendation
 
-Start with Promptfoo for immediate, narrow model-and-prompt comparisons, then grow into a first-party `evals/` framework in TypeScript that evaluates **Valadrien OS scenarios and bundles**, not just prompts.
+Start with Promptfoo for immediate, narrow model-and-prompt comparisons, then grow into a first-party `evals/` framework in TypeScript that evaluates **ValAdrien OS scenarios and bundles**, not just prompts.
 
 Use this structure:
 
@@ -772,4 +772,4 @@ Use external tools selectively:
 - Promptfoo as the initial path for narrow prompt/provider tests
 - Braintrust or LangSmith later if we want hosted experiment management
 
-But keep the canonical eval model inside the Valadrien OS repo and aligned to Valadrien OS’s actual control-plane behaviors.
+But keep the canonical eval model inside the ValAdrien OS repo and aligned to ValAdrien OS’s actual control-plane behaviors.

@@ -3,7 +3,7 @@ title: Companies
 summary: Company CRUD endpoints
 ---
 
-Manage companies within your Valadrien OS instance.
+Manage companies within your ValAdrien OS instance.
 
 ## List Companies
 
@@ -61,7 +61,7 @@ Valid image content types:
 - `image/gif`
 - `image/svg+xml`
 
-Company logo uploads use the normal Valadrien OS attachment size limit.
+Company logo uploads use the normal ValAdrien OS attachment size limit.
 
 Then set the company logo by PATCHing the returned `assetId` into `logoAssetId`.
 
@@ -82,7 +82,7 @@ Archives a company. Archived companies are hidden from default listings.
 | `description` | string | Company description |
 | `status` | string | `active`, `paused`, `archived` |
 | `logoAssetId` | string | Optional asset id for the stored logo image |
-| `logoUrl` | string | Optional Valadrien OS asset content path for the stored logo image |
+| `logoUrl` | string | Optional ValAdrien OS asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |

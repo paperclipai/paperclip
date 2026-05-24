@@ -1,22 +1,22 @@
 ---
 name: terminal-bench-loop
 description: >
-  Run a single Terminal-Bench problem through Valadrien OS in a bounded,
+  Run a single Terminal-Bench problem through ValAdrien OS in a bounded,
   human-in-the-loop improvement cycle until the smoke passes, the board
   rejects the next fix, the iteration budget is exhausted, or a real
   blocker is named. Each iteration runs a bounded smoke against an
-  isolated Valadrien OS App worktree, captures artifacts, diagnoses the
+  isolated ValAdrien OS App worktree, captures artifacts, diagnoses the
   exact stop point with `/diagnose-why-work-stopped`, requests board
   confirmation before any product fix, then reruns against the same
   worktree. Use whenever an issue asks to "run Terminal-Bench in a
   loop", "drive Terminal-Bench until it passes", "loop fix-git through
-  Valadrien OS", or otherwise points at a Terminal-Bench task and asks for
+  ValAdrien OS", or otherwise points at a Terminal-Bench task and asks for
   bounded iteration with diagnosis.
 ---
 
 # Terminal-Bench Loop
 
-A repeatable operating skill for driving one Terminal-Bench problem to a passing smoke through Valadrien OS, with explicit issue topology, bounded runs, board-gated product fixes, and worktree continuity.
+A repeatable operating skill for driving one Terminal-Bench problem to a passing smoke through ValAdrien OS, with explicit issue topology, bounded runs, board-gated product fixes, and worktree continuity.
 
 This skill is **operational + diagnostic**, not engineering. It coordinates issues, artifacts, and approvals around a Terminal-Bench loop. It does not authorize code changes — every accepted product fix lands as a separate implementation child issue after a board confirmation.
 
@@ -26,7 +26,7 @@ Canonical execution model: read `doc/execution-semantics.md` before starting a l
 
 Trigger on an assignment whose title or body matches any of:
 
-- "run Terminal-Bench in a loop", "loop \<task-name\> through Valadrien OS"
+- "run Terminal-Bench in a loop", "loop \<task-name\> through ValAdrien OS"
 - "drive Terminal-Bench fix-git", "iterate on Terminal-Bench until it passes"
 - "Terminal-Bench smoke loop", "bench loop", "smoke loop on \<task-name\>"
 - An attached link to a Terminal-Bench loop parent issue, plus a request to do another iteration
@@ -37,7 +37,7 @@ Also use when the user hands you an existing top-level loop issue and asks for t
 
 - The assignment is to build or change `valadrien-os-bench` itself (Harbor adapter, wrapper, telemetry). Use normal engineering flow on that repo.
 - The assignment is to submit a benchmark result for ranking. This skill produces smoke/non-comparable runs by design — escalate full-suite or comparable runs to BenchmarkQualityManager.
-- The assignment is a normal Valadrien OS product bug not surfaced by a Terminal-Bench loop. Use normal investigation.
+- The assignment is a normal ValAdrien OS product bug not surfaced by a Terminal-Bench loop. Use normal investigation.
 - You have not been granted permission to install or assign company skills, and the asker actually wants library mutation. Hand that step to an authorized skill-library owner.
 
 ## Three invariants you must preserve
@@ -54,12 +54,12 @@ If a proposed iteration violates any of the three, drop it or rework it. State e
 
 Collect these on the top-level loop issue before iteration 1. Any input that cannot be supplied is a blocker — name the unblock owner and stop.
 
-- **Source issue.** The Valadrien OS issue that asked for the loop. The loop parent links back to it.
+- **Source issue.** The ValAdrien OS issue that asked for the loop. The loop parent links back to it.
 - **Terminal-Bench task name.** Single-task identifier (e.g. `terminal-bench/fix-git`). Multi-task suites are out of scope for this skill.
 - **Iteration budget.** Maximum number of iterations before the loop must stop without further fixes (typical: 3–5). Also record a per-iteration wall-clock cap.
-- **Valadrien OS App worktree issue.** The implementation-side issue under the Valadrien OS App project whose execution workspace owns the isolated worktree. First iteration creates it; later iterations reuse it via `inheritExecutionWorkspaceFromIssueId` or equivalent.
-- **Benchmark command.** The exact `valadrien-os-bench` invocation, including the `VALADRIEN OS_CMD` (or equivalent) binding pinned to the Valadrien OS App worktree under test. Record verbatim on the loop issue.
-- **Dispatch runner config.** The exact Harbor/Valadrien OS runner dispatch config required for the smoke to actually start a Valadrien OS heartbeat. For the current Harbor wrapper, record the `VALADRIEN_OS_HARBOR_RUNNER_CONFIG` JSON (or equivalent config file) verbatim enough to preserve: `assignee`, `heartbeat_strategy`, `agent_adapter` / `agent_adapters`, `reuse_host_home` when local credentials are intentionally needed, and the stop budget. A bare Harbor command that creates `BEN-1` as unassigned `todo` with zero heartbeat-enabled agents is a harness/setup failure, not a valid product diagnosis.
+- **ValAdrien OS App worktree issue.** The implementation-side issue under the ValAdrien OS App project whose execution workspace owns the isolated worktree. First iteration creates it; later iterations reuse it via `inheritExecutionWorkspaceFromIssueId` or equivalent.
+- **Benchmark command.** The exact `valadrien-os-bench` invocation, including the `VALADRIEN OS_CMD` (or equivalent) binding pinned to the ValAdrien OS App worktree under test. Record verbatim on the loop issue.
+- **Dispatch runner config.** The exact Harbor/ValAdrien OS runner dispatch config required for the smoke to actually start a ValAdrien OS heartbeat. For the current Harbor wrapper, record the `VALADRIEN_OS_HARBOR_RUNNER_CONFIG` JSON (or equivalent config file) verbatim enough to preserve: `assignee`, `heartbeat_strategy`, `agent_adapter` / `agent_adapters`, `reuse_host_home` when local credentials are intentionally needed, and the stop budget. A bare Harbor command that creates `BEN-1` as unassigned `todo` with zero heartbeat-enabled agents is a harness/setup failure, not a valid product diagnosis.
 - **Latest artifact root.** Filesystem or storage path under which `valadrien-os-bench` writes run artifacts (manifest, `results.jsonl`, Harbor raw job folders, redacted telemetry). Each iteration appends; nothing is overwritten.
 - **Approval policy.** Who must accept a proposed product fix before implementation (default: board via `request_confirmation`; CTO if delegated; never the loop driver alone).
 
@@ -71,7 +71,7 @@ The loop must be representable as a tree, not as prose in comments:
 
 - **Top-level loop issue.** Long-lived. Holds inputs, iteration counter, current state, links to every iteration child, and the product-rule history. Rests in `in_progress` while an iteration is running, `in_review` only when a typed waiter sits directly on the loop parent (execution-policy participant, `request_confirmation` / `ask_user_questions` / `suggest_tasks` interaction, approval, or named human owner), `blocked` with `blockedByIssueIds` while a child issue is the gating work (iteration child holding the fix-proposal `request_confirmation`, or implementation, QA, or CTO review children), `done` on pass, or `cancelled` on board-rejection / budget exhaustion.
 - **Iteration child issues.** One per iteration. Each carries: a bounded run issue (smoke), a diagnosis issue (applies `/diagnose-why-work-stopped`), a fix-proposal document with a `request_confirmation` interaction, and — only after acceptance — implementation, QA, CTO review, and rerun children. Iteration children are blocked by their predecessors so the executor wakes them in order.
-- **Valadrien OS App implementation issue.** The first iteration creates a fresh Valadrien OS App child whose project policy spawns an isolated worktree. Every later iteration's implementation/rerun child references that same execution workspace via `inheritExecutionWorkspaceFromIssueId` so the same worktree is amended and tested.
+- **ValAdrien OS App implementation issue.** The first iteration creates a fresh ValAdrien OS App child whose project policy spawns an isolated worktree. Every later iteration's implementation/rerun child references that same execution workspace via `inheritExecutionWorkspaceFromIssueId` so the same worktree is amended and tested.
 
 Wire dependencies with `blockedByIssueIds`, never with prose like "blocked by X". When a dependent child is `done`, the executor auto-wakes the next.
 
@@ -83,9 +83,9 @@ Before opening or advancing a loop, read `doc/execution-semantics.md`. Use that 
 
 ### 1. Open or reuse the top-level loop issue
 
-- If an existing loop issue is supplied, read it: inputs, iteration counter, last iteration's stop reason, current Valadrien OS App worktree pointer, latest benchmark command.
-- If no loop issue exists, create one under the Valadrien OS App project (or the project the source issue points at). Title: `Terminal-Bench loop: <task-name>`. Description captures the inputs above, the iteration budget, and a link to the source issue.
-- Verify the worktree pointer still resolves. If the recorded execution workspace was discarded (worktree pruned, project changed), the loop is blocked — name the unblock owner (CodexCoder or the Valadrien OS App owner) and stop.
+- If an existing loop issue is supplied, read it: inputs, iteration counter, last iteration's stop reason, current ValAdrien OS App worktree pointer, latest benchmark command.
+- If no loop issue exists, create one under the ValAdrien OS App project (or the project the source issue points at). Title: `Terminal-Bench loop: <task-name>`. Description captures the inputs above, the iteration budget, and a link to the source issue.
+- Verify the worktree pointer still resolves. If the recorded execution workspace was discarded (worktree pruned, project changed), the loop is blocked — name the unblock owner (CodexCoder or the ValAdrien OS App owner) and stop.
 
 ### 2. Open the iteration child
 
@@ -95,16 +95,16 @@ Before opening or advancing a loop, read `doc/execution-semantics.md`. Use that 
 
 ### 3. Run the bounded smoke
 
-- The benchmark command must use the Valadrien OS App worktree under test. Set `VALADRIEN OS_CMD` (or the equivalent command binding) to the CLI entrypoint inside that worktree. Never let the smoke run against the operator's current Valadrien OS checkout.
+- The benchmark command must use the ValAdrien OS App worktree under test. Set `VALADRIEN OS_CMD` (or the equivalent command binding) to the CLI entrypoint inside that worktree. Never let the smoke run against the operator's current ValAdrien OS checkout.
 - The same command block must include the runner dispatch config that makes the benchmark issue actionable. For the current Harbor wrapper, export `VALADRIEN_OS_HARBOR_RUNNER_CONFIG` with the intended assignee, heartbeat strategy, agent adapter, credential/home mode, and stop budget. Do not treat a bare `uvx harbor run ...` as the canonical smoke if it omits the dispatch config; record that as a harness/setup miss and rerun with the recorded config.
-- Bound the run by wall-clock and by Valadrien OS's run-budget controls. If the smoke would exceed the per-iteration cap, kill it and record the truncation reason.
+- Bound the run by wall-clock and by ValAdrien OS's run-budget controls. If the smoke would exceed the per-iteration cap, kill it and record the truncation reason.
 - Capture, in the iteration child or a dedicated `run` document:
-  - Valadrien OS run id and heartbeat run ids
+  - ValAdrien OS run id and heartbeat run ids
   - benchmark run id, manifest, `results.jsonl` row, Harbor raw job folder
   - dispatch config used (`VALADRIEN_OS_HARBOR_RUNNER_CONFIG` or equivalent), including assignee and adapter type
   - the exact stop reason reported by the harness (pass, harness fail, verifier fail, timeout, agent gave up, infrastructure error)
-  - heartbeat-enabled and heartbeat-observed agent counts when Valadrien OS telemetry exports them
-  - failure taxonomy bucket (task/model, Valadrien OS product, harness/setup, verifier/infrastructure, security, unclear)
+  - heartbeat-enabled and heartbeat-observed agent counts when ValAdrien OS telemetry exports them
+  - failure taxonomy bucket (task/model, ValAdrien OS product, harness/setup, verifier/infrastructure, security, unclear)
   - artifact paths under the latest artifact root
 - Label the iteration as **smoke / non-comparable**. Comparable runs are out of scope for this skill.
 
@@ -112,10 +112,10 @@ Before opening or advancing a loop, read `doc/execution-semantics.md`. Use that 
 
 Apply the `/diagnose-why-work-stopped` pattern to the iteration's run, scoped to this loop only — do not pull in unrelated forensic boilerplate. Specifically:
 
-- Walk the Valadrien OS issue tree the smoke produced under the Valadrien OS App worktree, node by node, and find the exact `(issue, status)` combination that stopped progress. Quote evidence: run ids, comment timestamps, status transitions.
+- Walk the ValAdrien OS issue tree the smoke produced under the ValAdrien OS App worktree, node by node, and find the exact `(issue, status)` combination that stopped progress. Quote evidence: run ids, comment timestamps, status transitions.
 - Classify every non-progressing issue in that subtree as **truly needs human/board intervention**, **agent-actionable but not currently routed**, or **already covered**.
-- State whether the failure is task/model, Valadrien OS product, harness/setup, verifier/infrastructure, security, or unclear. Be explicit when evidence is inferred (e.g. cross-company API boundary blocks direct reads).
-- If the failure is a Valadrien OS product gap, frame the fix as a **general product rule** stated as a contract, and check it against the three invariants above. If the rule would have blocked a recent productive run, narrow it.
+- State whether the failure is task/model, ValAdrien OS product, harness/setup, verifier/infrastructure, security, or unclear. Be explicit when evidence is inferred (e.g. cross-company API boundary blocks direct reads).
+- If the failure is a ValAdrien OS product gap, frame the fix as a **general product rule** stated as a contract, and check it against the three invariants above. If the rule would have blocked a recent productive run, narrow it.
 
 Record the diagnosis on the iteration child as a `diagnosis` document. Do not propose code yet.
 
@@ -124,7 +124,7 @@ Record the diagnosis on the iteration child as a `diagnosis` document. Do not pr
 Based on the diagnosis, the iteration ends in exactly one of these terminal-for-iteration states:
 
 - **Pass.** Smoke verifier reports pass. Move the iteration child and the loop parent toward QA/CTO review (Step 8).
-- **Product fix proposed.** A Valadrien OS product gap was identified. Write the fix proposal as a `plan` document on the iteration child, then go to Step 6.
+- **Product fix proposed.** A ValAdrien OS product gap was identified. Write the fix proposal as a `plan` document on the iteration child, then go to Step 6.
 - **Non-product failure with retry.** Failure is harness/setup/infrastructure or model flakiness, the iteration budget is not exhausted, and the loop driver believes a rerun without code changes has signal (e.g. transient infra). Record the rationale on the iteration child and go to Step 7 with no implementation step.
 - **Real blocker.** Named external blocker (credentials, quota, third-party outage, security review). Move the loop issue to `blocked`, set `blockedByIssueIds` to the blocker issue (creating one if needed), and name the unblock owner. Stop.
 - **Budget or board stop.** Iteration budget reached, or the board has rejected the next fix proposal. Move the loop issue to `cancelled` with a comment that summarizes the run history and the reason for stopping.
@@ -133,17 +133,17 @@ Based on the diagnosis, the iteration ends in exactly one of these terminal-for-
 
 When the iteration ends in **product fix proposed**:
 
-- Update the iteration child's `plan` document with the proposed contract, the three-invariant check, the affected Valadrien OS surfaces, and the phased subtasks (implementation, QA, CTO review, rerun) — but do not create those subtasks.
+- Update the iteration child's `plan` document with the proposed contract, the three-invariant check, the affected ValAdrien OS surfaces, and the phased subtasks (implementation, QA, CTO review, rerun) — but do not create those subtasks.
 - Open the `request_confirmation` interaction on the **iteration child** (the same issue that owns the `plan` document), targeting the latest plan revision. Idempotency key: `confirmation:{iterationIssueId}:plan:{revisionId}`. Set `continuationPolicy` to `wake_assignee`.
 - Move the **iteration child** to `in_review`. The typed waiter — the `request_confirmation` interaction — sits directly on it, so its `in_review` is healthy. Comment links the plan document and names the pending confirmation.
 - Move the **loop parent** to `blocked` with `blockedByIssueIds: [iterationChildId]` and a comment naming the board (or whichever approver the approval policy designates) as the unblock owner. Do not move the loop parent to `in_review` here: the typed waiter lives on the iteration child, not on the parent, so the parent's wait path is the child blocker. This matches the topology rule that the loop parent only sits in `in_review` when a typed waiter is attached directly to the parent.
 - Wait for acceptance. If the board posts a superseding comment that changes the plan, revise the document, then open a fresh confirmation tied to the new revision on the iteration child — the prior one is invalidated. The loop parent's `blockedByIssueIds` already points at the iteration child, so it does not need to change.
 - On rejection, end the loop per the **Budget or board stop** rule; do not silently retry the same proposal.
-- On acceptance, create the implementation, QA, CTO review, and rerun child issues with `blockedByIssueIds` wired in order, and update the loop parent's `blockedByIssueIds` to point at the new gating child (typically the implementation child) so the parent stays `blocked` against real downstream work. The implementation child must inherit the Valadrien OS App execution workspace (`inheritExecutionWorkspaceFromIssueId` to the worktree-owning issue) so the fix lands in the same isolated worktree the smoke ran against.
+- On acceptance, create the implementation, QA, CTO review, and rerun child issues with `blockedByIssueIds` wired in order, and update the loop parent's `blockedByIssueIds` to point at the new gating child (typically the implementation child) so the parent stays `blocked` against real downstream work. The implementation child must inherit the ValAdrien OS App execution workspace (`inheritExecutionWorkspaceFromIssueId` to the worktree-owning issue) so the fix lands in the same isolated worktree the smoke ran against.
 
 ### 7. Rerun against the same worktree
 
-After implementation and QA complete (or immediately, in the **non-product failure with retry** case), the rerun child runs the same `valadrien-os-bench` invocation with `VALADRIEN OS_CMD` still pinned to the Valadrien OS App worktree under test.
+After implementation and QA complete (or immediately, in the **non-product failure with retry** case), the rerun child runs the same `valadrien-os-bench` invocation with `VALADRIEN OS_CMD` still pinned to the ValAdrien OS App worktree under test.
 
 - The rerun must use the same worktree the fix landed in. If the workspace was reset between iterations, the loop is invalid — open a blocker on the loop issue and stop.
 - On completion, the rerun child becomes the next iteration's run record. If the smoke now passes, jump to Step 8. Otherwise return to Step 4 with a new iteration child (subject to the iteration budget).
@@ -171,13 +171,13 @@ A loop must never end on a prose comment alone. Every stop is a status transitio
 
 ## Worktree rule
 
-The loop must not test whatever Valadrien OS checkout happens to be current for the heartbeat. It must test the same isolated Valadrien OS App worktree where proposed fixes are applied.
+The loop must not test whatever ValAdrien OS checkout happens to be current for the heartbeat. It must test the same isolated ValAdrien OS App worktree where proposed fixes are applied.
 
-- The first iteration creates the Valadrien OS App implementation child; that project's git-worktree policy spawns a fresh worktree.
+- The first iteration creates the ValAdrien OS App implementation child; that project's git-worktree policy spawns a fresh worktree.
 - The loop issue records the worktree-owning issue id and the workspace path (or workspace id).
 - Every later implementation, QA, and rerun child sets `inheritExecutionWorkspaceFromIssueId` to that worktree-owning issue, so all subsequent loop work shares one workspace.
 - The benchmark command always sets `VALADRIEN OS_CMD` (or the equivalent command binding) to the CLI entrypoint inside that worktree, and it carries the recorded dispatch runner config (`VALADRIEN_OS_HARBOR_RUNNER_CONFIG` or equivalent) needed to assign the benchmark issue and start the heartbeat. The benchmark command stored on the loop issue is the source of truth — if a heartbeat needs to run the smoke from a different shell, it copies the recorded command block verbatim, not only the Harbor invocation line.
-- If the workspace is pruned or the worktree path no longer resolves, the loop is invalid until rebuilt. Mark the loop `blocked` and name the unblock owner (typically CodexCoder or the Valadrien OS App owner).
+- If the workspace is pruned or the worktree path no longer resolves, the loop is invalid until rebuilt. Mark the loop `blocked` and name the unblock owner (typically CodexCoder or the ValAdrien OS App owner).
 
 ## Liveness rule
 
@@ -192,10 +192,10 @@ If a loop issue does not fit one of these on exit, the heartbeat is not done. Fi
 
 ## Pitfalls
 
-- **Running the smoke against the operator's Valadrien OS checkout.** The whole point of the worktree rule is that the bench tests the worktree the fix lands in. Always set `VALADRIEN OS_CMD` and verify the path before launching the run.
-- **Dropping the dispatch config.** A Harbor run that omits `VALADRIEN_OS_HARBOR_RUNNER_CONFIG` (or equivalent) may boot Valadrien OS and create `BEN-1`, but leave it unassigned with zero heartbeat-enabled agents. That is not a Terminal-Bench product signal. Preserve and rerun the full command block, including assignee and adapter config.
+- **Running the smoke against the operator's ValAdrien OS checkout.** The whole point of the worktree rule is that the bench tests the worktree the fix lands in. Always set `VALADRIEN OS_CMD` and verify the path before launching the run.
+- **Dropping the dispatch config.** A Harbor run that omits `VALADRIEN_OS_HARBOR_RUNNER_CONFIG` (or equivalent) may boot ValAdrien OS and create `BEN-1`, but leave it unassigned with zero heartbeat-enabled agents. That is not a Terminal-Bench product signal. Preserve and rerun the full command block, including assignee and adapter config.
 - **Coding before approval.** No implementation child exists until a board confirmation accepts the iteration's `plan` document. Do not push code in the diagnostic phase.
-- **Skipping the recent-work survey.** When proposing a Valadrien OS product rule, check what already shipped in the affected liveness/execution area in the last few days. A rule that contradicts last-week's accepted contract is rework.
+- **Skipping the recent-work survey.** When proposing a ValAdrien OS product rule, check what already shipped in the affected liveness/execution area in the last few days. A rule that contradicts last-week's accepted contract is rework.
 - **Letting `in_review` mean done.** A loop or iteration child sitting in `in_review` with no participant, no interaction, no approval, and no human owner is a stop, not progress. Treat it as a liveness violation and route it.
 - **Silent iteration N+1.** If the iteration budget is reached, never start another iteration without an explicit budget extension recorded on the loop issue.
 - **Comparable-run drift.** This skill produces smoke runs only. If the asker wants a comparable benchmark submission, hand off to BenchmarkQualityManager and BenchmarkForensics — do not relabel a smoke as comparable.
@@ -207,9 +207,9 @@ If a loop issue does not fit one of these on exit, the heartbeat is not done. Fi
 
 - [ ] All inputs are recorded on the top-level loop issue, including the exact benchmark command, `VALADRIEN OS_CMD` binding, and dispatch runner config.
 - [ ] Iteration counter is up to date and within budget.
-- [ ] The Valadrien OS App worktree pointer still resolves, and the iteration's run/implementation/rerun children share that workspace.
+- [ ] The ValAdrien OS App worktree pointer still resolves, and the iteration's run/implementation/rerun children share that workspace.
 - [ ] The smoke run is captured with run ids, manifest, `results.jsonl`, Harbor raw job folder, and stop reason.
-- [ ] Valadrien OS telemetry shows the benchmark issue was assigned and a heartbeat was enabled/observed, or the iteration is explicitly classified as harness/setup no-dispatch.
+- [ ] ValAdrien OS telemetry shows the benchmark issue was assigned and a heartbeat was enabled/observed, or the iteration is explicitly classified as harness/setup no-dispatch.
 - [ ] Diagnosis applies the `/diagnose-why-work-stopped` pattern, classifies every non-progressing issue, and checks the three invariants.
 - [ ] No implementation child exists for an unapproved fix proposal; if one was proposed, a `request_confirmation` is open against the latest plan revision.
 - [ ] Every loop and iteration issue rests in a terminal, explicitly-live, explicitly-waiting, or named-blocker state.
@@ -224,7 +224,7 @@ Run this smoke after installing or changing the skill, before treating it as ope
 pnpm smoke:terminal-bench-loop-skill
 ```
 
-The command uses the current Valadrien OS API token and company from `VALADRIEN_OS_API_URL`, `VALADRIEN_OS_API_KEY`, and `VALADRIEN_OS_COMPANY_ID`. When `VALADRIEN_OS_TASK_ID` is set, it attaches the smoke issues under that source issue and inherits its project/goal context. By default it cancels the short-lived smoke issues after verification; pass `-- --keep` to leave the verified `blocked` loop parent, `in_review` iteration child, and pending confirmation available for manual inspection.
+The command uses the current ValAdrien OS API token and company from `VALADRIEN_OS_API_URL`, `VALADRIEN_OS_API_KEY`, and `VALADRIEN_OS_COMPANY_ID`. When `VALADRIEN_OS_TASK_ID` is set, it attaches the smoke issues under that source issue and inherits its project/goal context. By default it cancels the short-lived smoke issues after verification; pass `-- --keep` to leave the verified `blocked` loop parent, `in_review` iteration child, and pending confirmation available for manual inspection.
 
 The smoke is deterministic and intentionally non-comparable. It does not start Terminal-Bench, Harbor, an agent model, or a provider runtime. It verifies only the control-plane shape:
 

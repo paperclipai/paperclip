@@ -2,19 +2,19 @@
 name: valadrien-os-dev
 required: false
 description: >
-  Develop and operate a local Valadrien OS instance — start and stop servers,
+  Develop and operate a local ValAdrien OS instance — start and stop servers,
   pull updates from master, run builds and tests, manage worktrees, back up
   databases, and diagnose problems. Use whenever you need to work on the
-  Valadrien OS codebase itself or keep a running instance healthy.
+  ValAdrien OS codebase itself or keep a running instance healthy.
 ---
 
-# Valadrien OS Dev
+# ValAdrien OS Dev
 
-This skill covers the day-to-day workflows for developing and operating a local Valadrien OS instance. It assumes you are working inside the Valadrien OS repo checkout with `origin` pointing to `git@github.com:ValDola-stack/valadrien-os.git`.
+This skill covers the day-to-day workflows for developing and operating a local ValAdrien OS instance. It assumes you are working inside the ValAdrien OS repo checkout with `origin` pointing to `git@github.com:ValDola-stack/valadrien-os.git`.
 
 > **OPEN SOURCE HYGIENE:** This repository is public-facing. Treat anything you push to `origin` as publishable. Never commit or push secrets, API keys, tokens, private logs, PII, customer data, or machine-local configuration that should stay private. Keep git history tidy as well: avoid pushing throwaway branches, noisy checkpoint commits, or speculative work that does not need to be shared upstream.
 
-> **MANDATORY:** Before running any CLI command, building, testing, or managing worktrees, you MUST read `doc/DEVELOPING.md` in the Valadrien OS repo. It is the canonical reference for all `valadrien-os` CLI commands, their options, build/test workflows, database operations, worktree management, and diagnostics. Do NOT guess at flags or options — read the doc first.
+> **MANDATORY:** Before running any CLI command, building, testing, or managing worktrees, you MUST read `doc/DEVELOPING.md` in the ValAdrien OS repo. It is the canonical reference for all `valadrien-os` CLI commands, their options, build/test workflows, database operations, worktree management, and diagnostics. Do NOT guess at flags or options — read the doc first.
 
 ## Quick Command Reference
 
@@ -47,15 +47,15 @@ If schema changes landed, also run `pnpm db:generate && pnpm db:migrate`.
 
 ## Worktrees
 
-Valadrien OS worktrees combine git worktrees with isolated Valadrien OS instances — each gets its own database, server port, and environment seeded from the primary instance.
+ValAdrien OS worktrees combine git worktrees with isolated ValAdrien OS instances — each gets its own database, server port, and environment seeded from the primary instance.
 
 > **MANDATORY:** Before creating or managing worktrees, you MUST read the "Worktree-local Instances" and "Worktree CLI Reference" sections in `doc/DEVELOPING.md`. That is the canonical reference for all worktree commands, their options, seed modes, and environment variables.
 
 ### When to Use Worktrees
 
-- Starting a feature branch that needs its own Valadrien OS environment
+- Starting a feature branch that needs its own ValAdrien OS environment
 - Running parallel agent work without cross-contaminating the primary instance
-- Testing Valadrien OS changes in isolation before merging
+- Testing ValAdrien OS changes in isolation before merging
 
 ### Command Overview
 
@@ -64,7 +64,7 @@ The CLI has two tiers (see `doc/DEVELOPING.md` for full option tables):
 | Command | Purpose |
 |---------|---------|
 | `worktree:make <name>` | Create worktree + isolated instance in one step |
-| `worktree:list` | List worktrees and their Valadrien OS status |
+| `worktree:list` | List worktrees and their ValAdrien OS status |
 | `worktree:merge-history` | Preview/import issue history between worktrees |
 | `worktree:cleanup <name>` | Remove worktree, branch, and instance data |
 | `worktree init` | Bootstrap instance inside existing worktree |
@@ -82,7 +82,7 @@ npx valadrien-os worktree:make my-feature --start-point origin/main
 cd <worktree-path>
 eval "$(npx valadrien-os worktree env)"
 
-# 3. Start the isolated Valadrien OS server
+# 3. Start the isolated ValAdrien OS server
 npx valadrien-os run
 
 # 4. Do your work

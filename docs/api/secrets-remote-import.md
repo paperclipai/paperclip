@@ -4,8 +4,8 @@ summary: AWS Secrets Manager metadata-only remote import API
 ---
 
 Remote import lets the board link existing AWS Secrets Manager entries as
-Valadrien OS `external_reference` secrets without copying plaintext into
-Valadrien OS.
+ValAdrien OS `external_reference` secrets without copying plaintext into
+ValAdrien OS.
 
 Both routes are board-only and company-scoped. The selected provider vault must
 belong to the company, use `aws_secrets_manager`, and have a selectable status
@@ -13,10 +13,10 @@ belong to the company, use `aws_secrets_manager`, and have a selectable status
 rejected.
 
 Remote import is an inventory and metadata workflow. Preview calls AWS
-`ListSecrets` only and import stores a Valadrien OS external reference plus
+`ListSecrets` only and import stores a ValAdrien OS external reference plus
 fingerprint/version metadata. Neither route calls `GetSecretValue` or
 `BatchGetSecretValue`, requests `SecretString`, requires KMS decrypt, logs raw
-remote metadata, or copies secret plaintext into Valadrien OS.
+remote metadata, or copies secret plaintext into ValAdrien OS.
 
 ## Preview Remote AWS Secrets
 
@@ -65,12 +65,12 @@ Candidate `status` values:
 
 - `ready`: no existing exact external reference and no name/key collision.
 - `duplicate`: an existing secret already has the exact provider `externalRef`.
-- `conflict`: the suggested Valadrien OS `name` or `key` is already in use.
+- `conflict`: the suggested ValAdrien OS `name` or `key` is already in use.
 
 Conflict `type` values are `exact_reference`, `name`, `key`, and
-`provider_guardrail`. AWS refs under Valadrien OS's own managed namespace are
+`provider_guardrail`. AWS refs under ValAdrien OS's own managed namespace are
 blocked as external references so one company cannot import another company's
-Valadrien OS-managed AWS secret through a broad runtime role.
+ValAdrien OS-managed AWS secret through a broad runtime role.
 
 ## Import Remote AWS Secret References
 
@@ -99,7 +99,7 @@ The import response is row-level. Ready rows become active
 duplicates and name/key conflicts are skipped without failing the whole request.
 The `secrets` array accepts 1-100 rows, and the backend re-checks duplicates and
 conflicts at submit time.
-Each row may include an optional Valadrien OS `description` entered during review;
+Each row may include an optional ValAdrien OS `description` entered during review;
 blank descriptions are stored as `null`. AWS provider descriptions are not
 copied into this field.
 
@@ -128,6 +128,6 @@ Activity logs record aggregate counts and provider/vault ids only, not remote
 secret names, ARNs, tags, or values.
 
 Imported references may still fail during a future bound runtime resolution if
-the Valadrien OS runtime role can list the AWS secret but lacks
+the ValAdrien OS runtime role can list the AWS secret but lacks
 `secretsmanager:GetSecretValue` or required KMS decrypt permission for that
 specific secret.

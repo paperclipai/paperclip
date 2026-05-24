@@ -266,7 +266,7 @@ Model:
   ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
 State:
   OPENCLAW_RESET_STATE=$OPENCLAW_RESET_STATE
-Valadrien OS URL for OpenClaw container:
+ValAdrien OS URL for OpenClaw container:
 EOF
   if [[ -n "$valadrien_os_base_url" ]]; then
     cat <<EOF
@@ -277,9 +277,9 @@ EOF
     cat <<EOF
   Auto-detect failed. Try: http://host.docker.internal:${VALADRIEN_OS_HOST_PORT}
   (Do not use http://127.0.0.1:${VALADRIEN_OS_HOST_PORT} inside the container.)
-  If Valadrien OS rejects the host, run on host machine:
+  If ValAdrien OS rejects the host, run on host machine:
     pnpm valadrien-os allowed-hostname host.docker.internal
-  Then restart Valadrien OS and re-run this script.
+  Then restart ValAdrien OS and re-run this script.
 EOF
   fi
   cat <<EOF
@@ -299,7 +299,7 @@ Model:
   ${OPENCLAW_MODEL_PRIMARY} (fallback: ${OPENCLAW_MODEL_FALLBACK})
 State:
   OPENCLAW_RESET_STATE=$OPENCLAW_RESET_STATE
-Valadrien OS URL for OpenClaw container:
+ValAdrien OS URL for OpenClaw container:
 EOF
   if [[ -n "$valadrien_os_base_url" ]]; then
     cat <<EOF
@@ -310,9 +310,9 @@ EOF
     cat <<EOF
   Auto-detect failed. Try: http://host.docker.internal:${VALADRIEN_OS_HOST_PORT}
   (Do not use http://127.0.0.1:${VALADRIEN_OS_HOST_PORT} inside the container.)
-  If Valadrien OS rejects the host, run on host machine:
+  If ValAdrien OS rejects the host, run on host machine:
     pnpm valadrien-os allowed-hostname host.docker.internal
-  Then restart Valadrien OS and re-run this script.
+  Then restart ValAdrien OS and re-run this script.
 EOF
   fi
   cat <<EOF

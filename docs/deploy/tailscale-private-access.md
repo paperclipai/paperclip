@@ -1,11 +1,11 @@
 ---
 title: Tailscale Private Access
-summary: Run Valadrien OS with Tailscale-friendly bind presets and connect from other devices
+summary: Run ValAdrien OS with Tailscale-friendly bind presets and connect from other devices
 ---
 
-Use this when you want to access Valadrien OS over Tailscale (or a private LAN/VPN) instead of only `localhost`.
+Use this when you want to access ValAdrien OS over Tailscale (or a private LAN/VPN) instead of only `localhost`.
 
-## 1. Start Valadrien OS in private authenticated mode
+## 1. Start ValAdrien OS in private authenticated mode
 
 ```sh
 pnpm dev --bind tailnet
@@ -31,7 +31,7 @@ pnpm dev --tailscale-auth
 
 ## 2. Find your reachable Tailscale address
 
-From the machine running Valadrien OS:
+From the machine running ValAdrien OS:
 
 ```sh
 tailscale ip -4
@@ -39,9 +39,9 @@ tailscale ip -4
 
 You can also use your Tailscale MagicDNS hostname (for example `my-macbook.tailnet.ts.net`).
 
-## 3. Open Valadrien OS from another device
+## 3. Open ValAdrien OS from another device
 
-Use the Tailscale IP or MagicDNS host with the Valadrien OS port:
+Use the Tailscale IP or MagicDNS host with the ValAdrien OS port:
 
 ```txt
 http://<tailscale-host-or-ip>:3100
@@ -55,7 +55,7 @@ http://my-macbook.tailnet.ts.net:3100
 
 ## 4. Allow custom private hostnames when needed
 
-If you access Valadrien OS with a custom private hostname, add it to the allowlist:
+If you access ValAdrien OS with a custom private hostname, add it to the allowlist:
 
 ```sh
 pnpm valadrien-os allowed-hostname my-macbook.tailnet.ts.net

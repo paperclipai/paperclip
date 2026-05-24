@@ -1,16 +1,16 @@
 ---
 name: create-agent-adapter
 description: >
-  Technical guide for creating a new Valadrien OS agent adapter. Use when building
+  Technical guide for creating a new ValAdrien OS agent adapter. Use when building
   a new adapter package, adding support for a new AI coding tool (e.g. a new
   CLI agent, API-based agent, or custom process), or when modifying the adapter
   system. Covers the required interfaces, module structure, registration points,
   and conventions derived from the existing claude-local and codex-local adapters.
 ---
 
-# Creating a Valadrien OS Agent Adapter
+# Creating a ValAdrien OS Agent Adapter
 
-An adapter bridges Valadrien OS's orchestration layer to a specific AI agent runtime (Claude Code, Codex CLI, a custom process, an HTTP endpoint, etc.). Each adapter is a self-contained package that provides implementations for **three consumers**: the server, the UI, and the CLI.
+An adapter bridges ValAdrien OS's orchestration layer to a specific AI agent runtime (Claude Code, Codex CLI, a custom process, an HTTP endpoint, etc.). Each adapter is a self-contained package that provides implementations for **three consumers**: the server, the UI, and the CLI.
 
 ---
 
@@ -78,7 +78,7 @@ interface AdapterExecutionResult {
   costUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   summary?: string | null;        // Human-readable summary of what the agent did
-  clearSession?: boolean;         // true = tell Valadrien OS to forget the stored session
+  clearSession?: boolean;         // true = tell ValAdrien OS to forget the stored session
 }
 
 interface AdapterSessionCodec {
@@ -232,7 +232,7 @@ export const agentConfigurationDoc = `# my_agent agent configuration
 
 **Writing `agentConfigurationDoc` as routing logic:**
 
-The `agentConfigurationDoc` is read by LLM agents (including Valadrien OS agents that create other agents). Write it as **routing logic**, not marketing copy. Include concrete "use when" and "don't use when" guidance so an LLM can decide whether this adapter is appropriate for a given task.
+The `agentConfigurationDoc` is read by LLM agents (including ValAdrien OS agents that create other agents). Write it as **routing logic**, not marketing copy. Include concrete "use when" and "don't use when" guidance so an LLM can decide whether this adapter is appropriate for a given task.
 
 ```ts
 export const agentConfigurationDoc = `# my_agent agent configuration
@@ -266,7 +266,7 @@ This is the most important file. It receives an `AdapterExecutionContext` and mu
 **Required behavior:**
 
 1. **Read config** — extract typed values from `ctx.config` using helpers (`asString`, `asNumber`, `asBoolean`, `asStringArray`, `parseObject` from `@valadrien-os/adapter-utils/server-utils`)
-2. **Build environment** — call `buildValadrien OSEnv(agent)` then layer in `VALADRIEN_OS_RUN_ID`, context vars (`VALADRIEN_OS_TASK_ID`, `VALADRIEN_OS_WAKE_REASON`, `VALADRIEN_OS_WAKE_COMMENT_ID`, `VALADRIEN_OS_APPROVAL_ID`, `VALADRIEN_OS_APPROVAL_STATUS`, `VALADRIEN_OS_LINKED_ISSUE_IDS`), user env overrides, and auth token
+2. **Build environment** — call `buildValAdrien OSEnv(agent)` then layer in `VALADRIEN_OS_RUN_ID`, context vars (`VALADRIEN_OS_TASK_ID`, `VALADRIEN_OS_WAKE_REASON`, `VALADRIEN_OS_WAKE_COMMENT_ID`, `VALADRIEN_OS_APPROVAL_ID`, `VALADRIEN_OS_APPROVAL_STATUS`, `VALADRIEN_OS_LINKED_ISSUE_IDS`), user env overrides, and auth token
 3. **Resolve session** — check `runtime.sessionParams` / `runtime.sessionId` for an existing session; validate it's compatible (e.g. same cwd); decide whether to resume or start fresh
 4. **Render prompt** — use `renderTemplate(template, data)` with the template variables: `agentId`, `companyId`, `runId`, `company`, `agent`, `run`, `context`
 5. **Call onMeta** — emit adapter invocation metadata before spawning the process
@@ -424,7 +424,7 @@ const myAgentAdapter: ServerAdapterModule = {
   execute: myExecute,
   sessionCodec: mySessionCodec,
   models: myModels,
-  supportsLocalAgentJwt: true,  // true if agent can use Valadrien OS API
+  supportsLocalAgentJwt: true,  // true if agent can use ValAdrien OS API
   agentConfigurationDoc: myDoc,
 };
 
@@ -488,7 +488,7 @@ Sessions allow agents to maintain conversation context across runs. The system i
 - `sessionCodec.deserialize()` converts stored params back for the next run
 - `sessionCodec.getDisplayId()` extracts a human-readable session ID for the UI
 - **cwd-aware resume**: if the session was created in a different cwd than the current config, skip resuming (prevents cross-project session contamination)
-- **Unknown session retry**: if resume fails with a "session not found" error, retry with a fresh session and return `clearSession: true` so Valadrien OS wipes the stale session
+- **Unknown session retry**: if resume fails with a "session not found" error, retry with a fresh session and return `clearSession: true` so ValAdrien OS wipes the stale session
 
 If the agent runtime supports any form of context compaction or conversation compression (e.g. Claude Code's automatic context management, or Codex's `previous_response_id` chaining), lean on it. Adapters that support session resume get compaction for free — the agent runtime handles context window management internally across resumes.
 
@@ -524,7 +524,7 @@ Import from `@valadrien-os/adapter-utils/server-utils`:
 | `parseObject(val)` | Safe `Record<string, unknown>` extraction |
 | `parseJson(str)` | Safe JSON.parse returning `Record` or null |
 | `renderTemplate(tmpl, data)` | `{{path.to.value}}` template rendering |
-| `buildValadrien OSEnv(agent)` | Standard `VALADRIEN_OS_*` env vars |
+| `buildValAdrien OSEnv(agent)` | Standard `VALADRIEN_OS_*` env vars |
 | `redactEnvForLogs(env)` | Redact sensitive keys for onMeta |
 | `ensureAbsoluteDirectory(cwd)` | Validate cwd exists and is absolute |
 | `ensureCommandResolvable(cmd, cwd, env)` | Validate command is in PATH |
@@ -548,7 +548,7 @@ Import from `@valadrien-os/adapter-utils/server-utils`:
 ### Prompt Templates
 - Support `promptTemplate` for every run
 - Use `renderTemplate()` with the standard variable set
-- Default prompt should use `DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE` from `@valadrien-os/adapter-utils/server-utils` so local adapters share Valadrien OS's execution contract: act in the same heartbeat, avoid planning-only exits unless requested, leave durable progress and a next action, use child issues instead of polling, mark blockers with owner/action, and respect governance boundaries.
+- Default prompt should use `DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE` from `@valadrien-os/adapter-utils/server-utils` so local adapters share ValAdrien OS's execution contract: act in the same heartbeat, avoid planning-only exits unless requested, leave durable progress and a next action, use child issues instead of polling, mark blockers with owner/action, and respect governance boundaries.
 
 ### Error Handling
 - Differentiate timeout vs process error vs parse failure
@@ -561,11 +561,11 @@ Import from `@valadrien-os/adapter-utils/server-utils`:
 - Call `onMeta(...)` before spawning to record invocation details
 - Use `redactEnvForLogs()` when including env in meta
 
-### Valadrien OS Skills Injection
+### ValAdrien OS Skills Injection
 
-Valadrien OS ships shared skills (in the repo's top-level `skills/` directory) that agents need at runtime — things like the `valadrien-os` API skill and the `valadrien-os-create-agent` workflow skill. Each adapter is responsible for making these skills discoverable by its agent runtime **without polluting the agent's working directory**.
+ValAdrien OS ships shared skills (in the repo's top-level `skills/` directory) that agents need at runtime — things like the `valadrien-os` API skill and the `valadrien-os-create-agent` workflow skill. Each adapter is responsible for making these skills discoverable by its agent runtime **without polluting the agent's working directory**.
 
-**The constraint:** never copy or symlink skills into the agent's `cwd`. The cwd is the user's project checkout — writing `.claude/skills/` or any other files into it would contaminate the repo with Valadrien OS internals, break git status, and potentially leak into commits.
+**The constraint:** never copy or symlink skills into the agent's `cwd`. The cwd is the user's project checkout — writing `.claude/skills/` or any other files into it would contaminate the repo with ValAdrien OS internals, break git status, and potentially leak into commits.
 
 **The pattern:** create a clean, isolated location for skills and tell the agent runtime to look there.
 
@@ -604,7 +604,7 @@ args.push("--add-dir", skillsDir);
 
 **How codex-local does it:**
 
-Codex has a global personal skills directory (`$CODEX_HOME/skills` or `~/.codex/skills`). The adapter symlinks Valadrien OS skills there if they don't already exist. This is acceptable because it's the agent tool's own config directory, not the user's project.
+Codex has a global personal skills directory (`$CODEX_HOME/skills` or `~/.codex/skills`). The adapter symlinks ValAdrien OS skills there if they don't already exist. This is acceptable because it's the agent tool's own config directory, not the user's project.
 
 ```ts
 // From codex-local execute.ts
@@ -627,15 +627,15 @@ async function ensureCodexSkillsInjected(onLog) {
 3. **Acceptable: env var** — if the runtime reads a skills/plugin path from an environment variable, point it at the repo's `skills/` directory directly.
 4. **Last resort: prompt injection** — if the runtime has no plugin system, include skill content in the prompt template itself. This uses tokens but avoids filesystem side effects entirely.
 
-**Skills as loaded procedures, not prompt bloat.** The Valadrien OS skills (like `valadrien-os` and `valadrien-os-create-agent`) are designed as on-demand procedures: the agent sees skill metadata (name + description) in its context, but only loads the full SKILL.md content when it decides to invoke a skill. This keeps the base prompt small. When writing `agentConfigurationDoc` or prompt templates for your adapter, do not inline skill content — let the agent runtime's skill discovery do the work. The descriptions in each SKILL.md frontmatter act as routing logic: they tell the agent when to load the full skill, not what the skill contains.
+**Skills as loaded procedures, not prompt bloat.** The ValAdrien OS skills (like `valadrien-os` and `valadrien-os-create-agent`) are designed as on-demand procedures: the agent sees skill metadata (name + description) in its context, but only loads the full SKILL.md content when it decides to invoke a skill. This keeps the base prompt small. When writing `agentConfigurationDoc` or prompt templates for your adapter, do not inline skill content — let the agent runtime's skill discovery do the work. The descriptions in each SKILL.md frontmatter act as routing logic: they tell the agent when to load the full skill, not what the skill contains.
 
-**Explicit vs. fuzzy skill invocation.** For production workflows where reliability matters (e.g. an agent that must always call the Valadrien OS API to report status), use explicit instructions in the prompt template: "Use the valadrien-os skill to report your progress." Fuzzy routing (letting the model decide based on description matching) is fine for exploratory tasks but unreliable for mandatory procedures.
+**Explicit vs. fuzzy skill invocation.** For production workflows where reliability matters (e.g. an agent that must always call the ValAdrien OS API to report status), use explicit instructions in the prompt template: "Use the valadrien-os skill to report your progress." Fuzzy routing (letting the model decide based on description matching) is fine for exploratory tasks but unreliable for mandatory procedures.
 
 ---
 
 ## 8. Security Considerations
 
-Adapters sit at the boundary between Valadrien OS's orchestration layer and arbitrary agent execution. This is a high-risk surface.
+Adapters sit at the boundary between ValAdrien OS's orchestration layer and arbitrary agent execution. This is a high-risk surface.
 
 ### Treat Agent Output as Untrusted
 
@@ -655,7 +655,7 @@ This follows the "sidecar injection" pattern: the model never sees the real secr
 
 If your agent runtime supports network access controls (sandboxing, allowlists), configure them in the adapter:
 
-- Prefer minimal allowlists over open internet access. An agent that only needs to call the Valadrien OS API and GitHub should not have access to arbitrary hosts.
+- Prefer minimal allowlists over open internet access. An agent that only needs to call the ValAdrien OS API and GitHub should not have access to arbitrary hosts.
 - Skills + network = amplified risk. A skill that teaches the agent to make HTTP requests combined with unrestricted network access creates an exfiltration path. Constrain one or the other.
 - If the runtime supports layered policies (org-level defaults + per-request overrides), wire the org-level policy into the adapter config and let per-agent config narrow further.
 

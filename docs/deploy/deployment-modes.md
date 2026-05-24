@@ -3,7 +3,7 @@ title: Deployment Modes
 summary: local_trusted vs authenticated (private/public)
 ---
 
-Valadrien OS supports two runtime modes with different security profiles. Reachability is configured separately with `bind`.
+ValAdrien OS supports two runtime modes with different security profiles. Reachability is configured separately with `bind`.
 
 ## `local_trusted`
 
@@ -61,7 +61,7 @@ pnpm valadrien-os onboard
 
 ## Board Claim Flow
 
-When migrating from `local_trusted` to `authenticated`, Valadrien OS emits a one-time claim URL at startup:
+When migrating from `local_trusted` to `authenticated`, ValAdrien OS emits a one-time claim URL at startup:
 
 ```
 /board-claim/<token>?code=<code>

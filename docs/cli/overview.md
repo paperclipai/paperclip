@@ -3,7 +3,7 @@ title: CLI Overview
 summary: CLI installation and setup
 ---
 
-The Valadrien OS CLI handles instance setup, diagnostics, and control-plane operations.
+The ValAdrien OS CLI handles instance setup, diagnostics, and control-plane operations.
 
 ## Usage
 
@@ -17,7 +17,7 @@ All commands support:
 
 | Flag | Description |
 |------|-------------|
-| `--data-dir <path>` | Local Valadrien OS data root (isolates from `~/.valadrien-os`) |
+| `--data-dir <path>` | Local ValAdrien OS data root (isolates from `~/.valadrien-os`) |
 | `--api-base <url>` | API base URL |
 | `--api-key <token>` | API authentication token |
 | `--context <path>` | Context file path |

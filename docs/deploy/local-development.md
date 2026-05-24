@@ -1,9 +1,9 @@
 ---
 title: Local Development
-summary: Set up Valadrien OS for local development
+summary: Set up ValAdrien OS for local development
 ---
 
-Run Valadrien OS locally with zero external dependencies.
+Run ValAdrien OS locally with zero external dependencies.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ This starts:
 - **API server** at `http://localhost:3100`
 - **UI** served by the API server in dev middleware mode (same origin)
 
-No Docker or external database required. Valadrien OS uses embedded PostgreSQL automatically.
+No Docker or external database required. ValAdrien OS uses embedded PostgreSQL automatically.
 
 ## One-Command Bootstrap
 
@@ -42,7 +42,7 @@ This does:
 
 Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
 
-To open Valadrien OS to a private network with login enabled:
+To open ValAdrien OS to a private network with login enabled:
 
 ```sh
 pnpm dev --bind lan

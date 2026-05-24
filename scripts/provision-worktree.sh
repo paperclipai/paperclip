@@ -333,7 +333,7 @@ EOF
 }
 
 if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
-  echo "Reusing existing isolated Valadrien OS worktree config at $worktree_config_path" >&2
+  echo "Reusing existing isolated ValAdrien OS worktree config at $worktree_config_path" >&2
 else
   if valadrien_os_command_available; then
     run_isolated_worktree_init

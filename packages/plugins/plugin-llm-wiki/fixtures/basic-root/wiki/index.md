@@ -1,6 +1,6 @@
 # Index
 
-Catalog of durable wiki pages and linked project standups. Updated on every ingest or Valadrien OS distill.
+Catalog of durable wiki pages and linked project standups. Updated on every ingest or ValAdrien OS distill.
 
 ## Sources
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Valadrien OS Agent Orchestrator
+Description=ValAdrien OS Agent Orchestrator
 Requires=valadrien-os-db.service
 After=valadrien-os-db.service
 

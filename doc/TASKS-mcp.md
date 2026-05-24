@@ -1,6 +1,6 @@
 # Task Management MCP Interface
 
-Function contracts for the Valadrien OS task management system. Defines the
+Function contracts for the ValAdrien OS task management system. Defines the
 operations available to agents (and external tools) via MCP. Refer to
 [TASKS.md](./TASKS.md) for the underlying data model.
 

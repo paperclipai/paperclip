@@ -1,7 +1,7 @@
 {
   "name": "@valadrien-os/ui",
   "version": "0.3.1",
-  "description": "Prebuilt Valadrien OS board UI assets.",
+  "description": "Prebuilt ValAdrien OS board UI assets.",
   "license": "MIT",
   "homepage": "https://github.com/ValDola-stack/valadrien-os",
   "bugs": {

@@ -1,6 +1,6 @@
 # Docker Quickstart
 
-Run Valadrien OS in Docker without installing Node or pnpm locally.
+Run ValAdrien OS in Docker without installing Node or pnpm locally.
 
 All commands below assume you are in the **project root** (the directory containing `package.json`), not inside `docker/`.
 
@@ -79,14 +79,14 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 
 ### Full stack (with PostgreSQL)
 
-Valadrien OS server + PostgreSQL 17. The database is health-checked before the server starts.
+ValAdrien OS server + PostgreSQL 17. The database is health-checked before the server starts.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   docker compose -f docker/docker-compose.yml up --build
 ```
 
-PostgreSQL data persists in a named Docker volume (`pgdata`). Valadrien OS data persists in `valadrien-os-data`.
+PostgreSQL data persists in a named Docker volume (`pgdata`). ValAdrien OS data persists in `valadrien-os-data`.
 
 ### Untrusted PR review
 
@@ -99,7 +99,7 @@ docker compose -f docker/docker-compose.untrusted-review.yml run --rm --service-
 
 ## Authenticated Compose (Single Public URL)
 
-For authenticated deployments, set one canonical public URL and let Valadrien OS derive auth/callback defaults:
+For authenticated deployments, set one canonical public URL and let ValAdrien OS derive auth/callback defaults:
 
 ```yaml
 services:
@@ -144,16 +144,16 @@ docker run --name valadrien-os \
 Notes:
 
 - Without API keys, the app still runs normally.
-- Adapter environment checks in Valadrien OS will surface missing auth/CLI prerequisites.
+- Adapter environment checks in ValAdrien OS will surface missing auth/CLI prerequisites.
 
 ## Podman Quadlet (systemd)
 
-The `docker/quadlet/` directory contains unit files to run Valadrien OS + PostgreSQL as systemd services via Podman Quadlet.
+The `docker/quadlet/` directory contains unit files to run ValAdrien OS + PostgreSQL as systemd services via Podman Quadlet.
 
 | File | Purpose |
 |------|---------|
 | `docker/quadlet/valadrien-os.pod` | Pod definition — groups containers into a shared network namespace |
-| `docker/quadlet/valadrien-os.container` | Valadrien OS server — joins the pod, connects to Postgres at `127.0.0.1` |
+| `docker/quadlet/valadrien-os.container` | ValAdrien OS server — joins the pod, connects to Postgres at `127.0.0.1` |
 | `docker/quadlet/valadrien-os-db.container` | PostgreSQL 17 — joins the pod, health-checked |
 
 ### Setup
@@ -207,9 +207,9 @@ systemctl --user stop valadrien-os-pod      # Stop all
 ### Quadlet notes
 
 - **First boot**: Unlike Docker Compose's `condition: service_healthy`, Quadlet's `After=` only waits for the DB unit to *start*, not for PostgreSQL to be ready. On a cold first boot you may see one or two restart attempts in `journalctl --user -u valadrien-os` while PostgreSQL initialises — this is expected and resolves automatically via `Restart=on-failure`.
-- Containers in a pod share `localhost`, so Valadrien OS reaches Postgres at `127.0.0.1:5432`.
+- Containers in a pod share `localhost`, so ValAdrien OS reaches Postgres at `127.0.0.1:5432`.
 - PostgreSQL data persists in the `valadrien-os-pgdata` named volume.
-- Valadrien OS data persists at `~/.local/share/valadrien-os`.
+- ValAdrien OS data persists at `~/.local/share/valadrien-os`.
 - For rootful quadlet deployment, remove `%h` prefixes and use absolute paths.
 
 ## Onboard Smoke Test (Ubuntu + npm only)
@@ -241,7 +241,7 @@ Notes:
 - Persistent data is mounted at `./data/docker-onboard-smoke` by default.
 - Container runtime user id defaults to your local `id -u` so the mounted data dir stays writable while avoiding root runtime.
 - Smoke script defaults to `authenticated/private` mode so `HOST=0.0.0.0` can be exposed to the host.
-- Smoke script defaults host port to `3131` to avoid conflicts with local Valadrien OS on `3100`.
+- Smoke script defaults host port to `3131` to avoid conflicts with local ValAdrien OS on `3100`.
 - Smoke script also defaults `VALADRIEN_OS_PUBLIC_URL` to `http://localhost:<HOST_PORT>` so bootstrap invite URLs and auth callbacks use the reachable host port instead of the container's internal `3100`.
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `valadrien-os auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
@@ -251,4 +251,4 @@ Notes:
 ## General Notes
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
-- Valadrien OS data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/valadrien-os` (quadlet).
+- ValAdrien OS data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/valadrien-os` (quadlet).

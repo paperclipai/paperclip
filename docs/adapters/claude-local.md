@@ -45,7 +45,7 @@ If resume fails with an unknown session error, the adapter automatically retries
 
 ## Skills Injection
 
-The adapter creates a temporary directory with symlinks to Valadrien OS skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+The adapter creates a temporary directory with symlinks to ValAdrien OS skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
@@ -53,7 +53,7 @@ For manual local CLI usage outside heartbeat runs (for example running as `claud
 pnpm valadrien-os agent local-cli claudecoder --company-id <company-id>
 ```
 
-This installs Valadrien OS skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
+This installs ValAdrien OS skills in `~/.claude/skills`, creates an agent API key, and prints shell exports to run as that agent.
 
 ## Environment Test
 

@@ -1,6 +1,6 @@
 # Publishing to npm
 
-Low-level reference for how Valadrien OS packages are prepared and published to npm.
+Low-level reference for how ValAdrien OS packages are prepared and published to npm.
 
 For the maintainer workflow, use [doc/RELEASING.md](RELEASING.md). This document focuses on packaging internals.
 
@@ -13,7 +13,7 @@ Use these scripts:
 - [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest`
 - [`scripts/build-npm.sh`](../scripts/build-npm.sh) for the CLI packaging build
 
-Valadrien OS no longer uses release branches or Changesets for publishing.
+ValAdrien OS no longer uses release branches or Changesets for publishing.
 
 ## Why the CLI needs special packaging
 
@@ -117,7 +117,7 @@ If the first real publish returns npm `E404`, check npm-side prerequisites befor
 
 ## Version formats
 
-Valadrien OS uses calendar versions:
+ValAdrien OS uses calendar versions:
 
 - stable: `YYYY.MDD.P`
 - canary: `YYYY.MDD.P-canary.N`
@@ -178,7 +178,7 @@ See [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) for the GitHu
 
 ## Release enrollment for new public packages
 
-Valadrien OS does not auto-publish every non-private workspace package anymore.
+ValAdrien OS does not auto-publish every non-private workspace package anymore.
 CI publishing is controlled by [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json).
 
 When you add a new public package:

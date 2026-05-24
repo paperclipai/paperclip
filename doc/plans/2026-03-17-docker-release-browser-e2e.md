@@ -2,7 +2,7 @@
 
 ## Context
 
-Today release smoke testing for published Valadrien OS packages is manual and shell-driven:
+Today release smoke testing for published ValAdrien OS packages is manual and shell-driven:
 
 ```sh
 HOST_PORT=3232 DATA_DIR=./data/release-smoke-canary VALADRIEN OS_VERSION=canary ./scripts/docker-onboard-smoke.sh

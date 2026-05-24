@@ -1,17 +1,17 @@
 ---
 name: release-changelog
 description: >
-  Generate the stable Valadrien OS release changelog at releases/vYYYY.MDD.P.md by
+  Generate the stable ValAdrien OS release changelog at releases/vYYYY.MDD.P.md by
   reading commits, changesets, and merged PR context since the last stable tag.
 ---
 
 # Release Changelog Skill
 
-Generate the user-facing changelog for the **stable** Valadrien OS release.
+Generate the user-facing changelog for the **stable** ValAdrien OS release.
 
 ## Versioning Model
 
-Valadrien OS uses **calendar versioning (calver)**:
+ValAdrien OS uses **calendar versioning (calver)**:
 
 - Stable releases: `YYYY.MDD.P` (e.g. `2026.318.0`)
 - Canary releases: `YYYY.MDD.P-canary.N` (e.g. `2026.318.1-canary.0`)
@@ -178,7 +178,7 @@ real name or email). To find GitHub usernames:
 **Never expose contributor email addresses.** Use `@username` only.
 
 Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list.
-Exclude Valadrien OS founders from the list (e.g. `cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`)
+Exclude ValAdrien OS founders from the list (e.g. `cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`)
 
 List contributors in alphabetical order by GitHub username (case-insensitive).
 

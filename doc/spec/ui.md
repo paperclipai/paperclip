@@ -1,11 +1,11 @@
-# Valadrien OS UI Spec
+# ValAdrien OS UI Spec
 
 Status: Draft
 Date: 2026-02-17
 
 ## 1. Design Philosophy
 
-Valadrien OS's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
+ValAdrien OS's UI is a professional-grade control plane, not a toy dashboard. It should feel like the kind of tool you live in all day — fast, keyboard-driven, information-dense without being cluttered, dark-themed by default. Every pixel should earn its place.
 
 Design principles:
 
@@ -192,7 +192,7 @@ The breadcrumb bar sits above the main content and properties panel. It serves a
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Projects › Valadrien OS › Issues › CLIP-42  [⭐] [···]     [🔔] [⬜] │
+│ Projects › ValAdrien OS › Issues › CLIP-42  [⭐] [···]     [🔔] [⬜] │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -475,7 +475,7 @@ Similar to the issue list but for projects.
 ┌─────────────────────────────────────────────────────────┐
 │ Projects                                [+ New project] │
 ├─────────────────────────────────────────────────────────┤
-│ [icon] Valadrien OS Auth     Backlog     CTO     Feb 20   │
+│ [icon] ValAdrien OS Auth     Backlog     CTO     Feb 20   │
 │ [icon] Marketing Site     In Progress CMO     Mar 01   │
 │ [icon] API v2             Planned     CTO     Mar 15   │
 └─────────────────────────────────────────────────────────┘

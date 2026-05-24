@@ -7,7 +7,7 @@ The main behavior changes are:
 - Heartbeat telemetry now normalizes sessioned local adapter usage as per-run deltas instead of blindly trusting cumulative session totals.
 - Timer and manual wakes now preserve task sessions by default; fresh sessions are forced only for explicit `forceFreshSession` wakes or new issue assignment wakes.
 - Heartbeat session rotation is now policy-driven in the control plane, with a handoff note injected when a session is compacted and restarted.
-- Valadrien OS issue context now has incremental APIs: `GET /api/agents/me/inbox-lite`, `GET /api/issues/:id/heartbeat-context`, and comment delta queries via `GET /api/issues/:id/comments?after=...&order=asc`.
+- ValAdrien OS issue context now has incremental APIs: `GET /api/agents/me/inbox-lite`, `GET /api/issues/:id/heartbeat-context`, and comment delta queries via `GET /api/issues/:id/comments?after=...&order=asc`.
 - The `valadrien-os` skill now teaches agents to use those compact/incremental APIs first, while keeping full-thread fetches as a cold-start fallback.
 - All local adapters now separate first-session bootstrap prompts from per-heartbeat prompt templates, and emit prompt size metrics in invocation metadata.
 - Adapter create flows now persist `bootstrapPromptTemplate` correctly.
@@ -16,8 +16,8 @@ The main behavior changes are:
 
 Important follow-up finding from real-run review:
 
-- `codex_local` currently injects Valadrien OS skills into the shared Codex skills home (`$CODEX_HOME/skills` or `~/.codex/skills`) rather than mounting a worktree-local skill directory.
-- If a Valadrien OS-owned skill symlink already points at another live checkout, the adapter currently skips it instead of repointing it.
+- `codex_local` currently injects ValAdrien OS skills into the shared Codex skills home (`$CODEX_HOME/skills` or `~/.codex/skills`) rather than mounting a worktree-local skill directory.
+- If a ValAdrien OS-owned skill symlink already points at another live checkout, the adapter currently skips it instead of repointing it.
 - In practice, this means a worktree can contain newer `skills/valadrien-os/SKILL.md` guidance while Codex still follows an older checkout's skill content.
 - That likely explains why PAP-507 still showed full issue/comment reload behavior even though the incremental context work was already implemented in this branch.
 - This should be treated as a separate follow-up item for `codex_local` skill isolation or symlink repair.

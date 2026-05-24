@@ -2,7 +2,7 @@
 
 ## Context
 
-Valadrien OS's current release flow is documented in `doc/RELEASING.md` and implemented through:
+ValAdrien OS's current release flow is documented in `doc/RELEASING.md` and implemented through:
 
 - `.github/workflows/release.yml`
 - `scripts/release-lib.sh`
@@ -39,13 +39,13 @@ The target state from this discussion is simpler:
 
 ## Recommendation In One Sentence
 
-Move Valadrien OS to semver-compatible calendar versioning, auto-publish canaries from `master`, promote stable from a chosen tested commit, and use npm trusted publishing plus GitHub environments so no long-lived npm or LLM token needs to live in Actions.
+Move ValAdrien OS to semver-compatible calendar versioning, auto-publish canaries from `master`, promote stable from a chosen tested commit, and use npm trusted publishing plus GitHub environments so no long-lived npm or LLM token needs to live in Actions.
 
 ## Core Decisions
 
 ### 1. Use calendar versions, but keep semver syntax
 
-The repo and npm tooling still assume semver-shaped version strings in many places. That does not mean Valadrien OS must keep semver as a product policy. It does mean the version format should remain semver-valid.
+The repo and npm tooling still assume semver-shaped version strings in many places. That does not mean ValAdrien OS must keep semver as a product policy. It does mean the version format should remain semver-valid.
 
 Recommended format:
 
@@ -79,7 +79,7 @@ This is effectively CalVer on semver rails.
 
 This is not semver in spirit anymore. It is semver in syntax only.
 
-That tradeoff is probably acceptable for Valadrien OS, but it should be explicit:
+That tradeoff is probably acceptable for ValAdrien OS, but it should be explicit:
 
 - consumers no longer infer compatibility from `major/minor/patch`
 - release notes become the compatibility signal
@@ -365,7 +365,7 @@ Recommended implementation order:
 2. replace version computation with a small explicit versioning script
 3. if Changesets keeps fighting the model, remove it from release publishing entirely
 
-Valadrien OS's release problem is now "publish the whole fixed package set at one explicit version", not "derive the next semantic bump from human intent".
+ValAdrien OS's release problem is now "publish the whole fixed package set at one explicit version", not "derive the next semantic bump from human intent".
 
 ### 4. Add a dedicated versioning script
 
@@ -464,7 +464,7 @@ That is acceptable if canaries stay clearly separate:
 
 ## Concrete Recommendation
 
-Valadrien OS should adopt this model:
+ValAdrien OS should adopt this model:
 
 - stable versions: `YYYY.MDD.P`
 - canary versions: `YYYY.MDD.P-canary.N`

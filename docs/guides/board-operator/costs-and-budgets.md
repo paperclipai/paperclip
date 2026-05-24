@@ -3,7 +3,7 @@ title: Costs and Budgets
 summary: Budget caps, cost tracking, and auto-pause enforcement
 ---
 
-Valadrien OS tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
+ValAdrien OS tracks every token spent by every agent and enforces budget limits to prevent runaway costs.
 
 ## How Cost Tracking Works
 
@@ -39,7 +39,7 @@ PATCH /api/agents/{agentId}
 
 ## Budget Enforcement
 
-Valadrien OS enforces budgets automatically:
+ValAdrien OS enforces budgets automatically:
 
 | Threshold | Action |
 |-----------|--------|

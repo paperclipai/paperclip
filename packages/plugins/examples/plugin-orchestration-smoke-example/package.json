@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "First-party smoke plugin for orchestration-grade Valadrien OS plugin APIs",
+  "description": "First-party smoke plugin for orchestration-grade ValAdrien OS plugin APIs",
   "scripts": {
     "prebuild": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
@@ -23,7 +23,7 @@
     "plugin",
     "connector"
   ],
-  "author": "Valadrien OS",
+  "author": "ValAdrien OS",
   "license": "MIT",
   "dependencies": {
     "@valadrien-os/plugin-sdk": "workspace:*"

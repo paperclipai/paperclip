@@ -1,7 +1,7 @@
 {
   "name": "@valadrien-os/plugin-sdk",
   "version": "1.0.0",
-  "description": "Stable public API for Valadrien OS plugins — worker-side context and UI bridge hooks",
+  "description": "Stable public API for ValAdrien OS plugins — worker-side context and UI bridge hooks",
   "license": "MIT",
   "homepage": "https://github.com/ValDola-stack/valadrien-os",
   "bugs": {

@@ -2,15 +2,15 @@
 
 **Download a company.**
 
-ClipHub is the public registry where people share, discover, and download Valadrien OS company configurations. A company template is a portable artifact containing an entire org — agents, reporting structure, adapter configs, role definitions, seed tasks — ready to spin up with one command.
+ClipHub is the public registry where people share, discover, and download ValAdrien OS company configurations. A company template is a portable artifact containing an entire org — agents, reporting structure, adapter configs, role definitions, seed tasks — ready to spin up with one command.
 
 ---
 
 ## What It Is
 
-ClipHub is to Valadrien OS what a package registry is to a programming language. Valadrien OS already supports exportable org configs (see [SPEC.md](./SPEC.md) §2). ClipHub is the public directory where those exports live.
+ClipHub is to ValAdrien OS what a package registry is to a programming language. ValAdrien OS already supports exportable org configs (see [SPEC.md](./SPEC.md) §2). ClipHub is the public directory where those exports live.
 
-A user builds a working company in Valadrien OS — a dev shop, a marketing agency, a research lab, a content studio — exports the template, and publishes it to ClipHub. Anyone can browse, search, download, and spin up that company on their own Valadrien OS instance.
+A user builds a working company in ValAdrien OS — a dev shop, a marketing agency, a research lab, a content studio — exports the template, and publishes it to ClipHub. Anyone can browse, search, download, and spin up that company on their own ValAdrien OS instance.
 
 The tagline: **you can literally download a company.**
 
@@ -18,7 +18,7 @@ The tagline: **you can literally download a company.**
 
 ## What Gets Published
 
-A ClipHub package is a **company template export** — the portable artifact format defined in the Valadrien OS spec. It contains:
+A ClipHub package is a **company template export** — the portable artifact format defined in the ValAdrien OS spec. It contains:
 
 | Component | Description |
 |---|---|
@@ -87,7 +87,7 @@ Two ways to use a template:
 ```
 valadrien-os install cliphub:<publisher>/<company-slug>
 ```
-Downloads the template and creates a new company in your local Valadrien OS instance. You add your own API keys, set budgets, customize agents, and hit go.
+Downloads the template and creates a new company in your local ValAdrien OS instance. You add your own API keys, set budgets, customize agents, and hit go.
 
 **Fork:**
 Forking creates a copy of the template under your own ClipHub account. You can modify it, republish it as your own variant, and the fork lineage is tracked. This enables evolutionary improvement — someone publishes a marketing agency, you fork it, add a social media team, republish.
@@ -118,7 +118,7 @@ Anyone with a GitHub account can publish to ClipHub. Authentication is via GitHu
 
 ### How to Publish
 
-From within Valadrien OS, export your company as a template, then publish:
+From within ValAdrien OS, export your company as a template, then publish:
 
 ```
 valadrien-os export --template my-company
@@ -201,7 +201,7 @@ New accounts have a waiting period before they can publish. This prevents drive-
 
 ## Architecture
 
-ClipHub is a **separate service** from Valadrien OS itself. Valadrien OS is self-hosted; ClipHub is a hosted registry that Valadrien OS instances talk to.
+ClipHub is a **separate service** from ValAdrien OS itself. ValAdrien OS is self-hosted; ClipHub is a hosted registry that ValAdrien OS instances talk to.
 
 ### Integration Points
 
@@ -209,15 +209,15 @@ ClipHub is a **separate service** from Valadrien OS itself. Valadrien OS is self
 |---|---|
 | **ClipHub Web** | Browse, search, discover, comment, star — the website |
 | **ClipHub API** | Registry API for publishing, downloading, searching programmatically |
-| **Valadrien OS CLI** | `valadrien-os install`, `valadrien-os publish`, `valadrien-os cliphub sync` — built into Valadrien OS |
-| **Valadrien OS UI** | "Browse ClipHub" panel in the Valadrien OS web UI for discovering templates without leaving the app |
+| **ValAdrien OS CLI** | `valadrien-os install`, `valadrien-os publish`, `valadrien-os cliphub sync` — built into ValAdrien OS |
+| **ValAdrien OS UI** | "Browse ClipHub" panel in the ValAdrien OS web UI for discovering templates without leaving the app |
 
 ### Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React + Vite (consistent with Valadrien OS) |
-| Backend | TypeScript + Hono (consistent with Valadrien OS) |
+| Frontend | React + Vite (consistent with ValAdrien OS) |
+| Backend | TypeScript + Hono (consistent with ValAdrien OS) |
 | Database | PostgreSQL |
 | Search | Vector embeddings for semantic search |
 | Auth | GitHub OAuth |
@@ -261,13 +261,13 @@ Report
 2. Find a template that fits — "Lean SaaS Dev Shop (CEO + CTO + 3 Engineers)"
 3. Read the description, inspect the org chart, check the comments
 4. Run `valadrien-os install cliphub:acme/lean-saas-shop`
-5. Valadrien OS creates the company locally with all agents pre-configured
+5. ValAdrien OS creates the company locally with all agents pre-configured
 6. Set your API keys, adjust budgets, add your initial tasks
 7. Hit go
 
 ### "I built something great and want to share it"
 
-1. Build and iterate on a company in Valadrien OS until it works well
+1. Build and iterate on a company in ValAdrien OS until it works well
 2. Export: `valadrien-os export --template my-agency`
 3. Publish: `valadrien-os publish cliphub my-agency`
 4. Fill in description, category, tags on the web UI
@@ -291,15 +291,15 @@ Report
 
 ---
 
-## Relationship to Valadrien OS
+## Relationship to ValAdrien OS
 
-ClipHub is **not required** to use Valadrien OS. You can build companies entirely from scratch without ever touching ClipHub. But ClipHub dramatically lowers the barrier to entry:
+ClipHub is **not required** to use ValAdrien OS. You can build companies entirely from scratch without ever touching ClipHub. But ClipHub dramatically lowers the barrier to entry:
 
 - **New users** get a working company in minutes instead of hours
 - **Experienced users** share proven configurations with the community
 - **The ecosystem** compounds — every good template makes the next company easier to build
 
-ClipHub is to Valadrien OS what a package registry is to a language runtime: optional, but transformative.
+ClipHub is to ValAdrien OS what a package registry is to a language runtime: optional, but transformative.
 
 ---
 
@@ -325,7 +325,7 @@ ClipHub is to Valadrien OS what a package registry is to a language runtime: opt
 - [ ] Agent and team sub-packages
 - [ ] Verified publisher badges
 - [ ] Automated security scanning of adapter configs
-- [ ] "Browse ClipHub" panel in Valadrien OS web UI
+- [ ] "Browse ClipHub" panel in ValAdrien OS web UI
 - [ ] `valadrien-os cliphub sync` for bulk publishing
 - [ ] Publisher profiles and portfolios
 
@@ -333,4 +333,4 @@ ClipHub is to Valadrien OS what a package registry is to a language runtime: opt
 
 - Paid / premium templates (everything is free and public, at least initially)
 - Private registries (may be a future enterprise feature)
-- Running companies on ClipHub (it's a registry, not a runtime — consistent with Valadrien OS's own philosophy)
+- Running companies on ClipHub (it's a registry, not a runtime — consistent with ValAdrien OS's own philosophy)

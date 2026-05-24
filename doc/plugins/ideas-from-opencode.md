@@ -2,9 +2,9 @@
 
 Status: design report, not a V1 commitment
 
-Valadrien OS V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a Valadrien OS-shaped design.
+ValAdrien OS V1 explicitly excludes a plugin framework in [doc/SPEC-implementation.md](../SPEC-implementation.md), but the long-horizon spec says the architecture should leave room for extensions. This report studies the `opencode` plugin system and translates the useful patterns into a ValAdrien OS-shaped design.
 
-Assumption for this document: Valadrien OS is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class Valadrien OS objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
+Assumption for this document: ValAdrien OS is a single-tenant operator-controlled instance. Plugin installation should therefore be global across the instance. "Companies" are still first-class ValAdrien OS objects, but they are organizational records, not tenant-isolation boundaries for plugin trust or installation.
 
 ## Executive Summary
 
@@ -17,20 +17,20 @@ Assumption for this document: Valadrien OS is a single-tenant operator-controlle
 - they can extend provider auth flows
 - they run in-process and can mutate runtime behavior directly
 
-That model works well for a local coding tool. It should not be copied literally into Valadrien OS.
+That model works well for a local coding tool. It should not be copied literally into ValAdrien OS.
 
 The main conclusion is:
 
-- Valadrien OS should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
-- Valadrien OS should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
-- Valadrien OS should use multiple extension classes instead of one generic plugin bag:
+- ValAdrien OS should copy `opencode`'s typed SDK, deterministic loading, low authoring friction, and clear extension surfaces.
+- ValAdrien OS should not copy `opencode`'s trust model, project-local plugin loading, "override by name collision" behavior, or arbitrary in-process mutation hooks for core business logic.
+- ValAdrien OS should use multiple extension classes instead of one generic plugin bag:
   - trusted in-process modules for low-level platform concerns like agent adapters, storage providers, secret providers, and possibly run-log backends
   - out-of-process plugins for most third-party integrations like Linear, GitHub Issues, Grafana, Stripe, and schedulers
   - plugin-contributed agent tools (namespaced, not override-by-collision)
   - plugin-shipped React UI loaded into host extension slots via a typed bridge
   - a typed event bus with server-side filtering and plugin-to-plugin events, plus scheduled jobs for automation
 
-If Valadrien OS does this well, the examples you listed become straightforward:
+If ValAdrien OS does this well, the examples you listed become straightforward:
 
 - file browser / terminal / git workflow / child process tracking become workspace plugins that resolve paths from the host and handle OS operations directly
 - Linear / GitHub / Grafana / Stripe become connector plugins
@@ -54,7 +54,7 @@ Primary files reviewed:
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/custom-tools.mdx`
 - `https://github.com/anomalyco/opencode/blob/a965a062595403a8e0083e85770315d5dc9628ab/packages/web/src/content/docs/ecosystem.mdx`
 
-Relevant Valadrien OS files reviewed for current extension seams:
+Relevant ValAdrien OS files reviewed for current extension seams:
 
 - [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -192,9 +192,9 @@ The most aggressive part of the design:
 - custom tools can override built-in tools by name
 
 That is very powerful for a local coding assistant.
-It is too dangerous for Valadrien OS core actions.
+It is too dangerous for ValAdrien OS core actions.
 
-However, the concept of plugins contributing agent-usable tools is very valuable for Valadrien OS — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
+However, the concept of plugins contributing agent-usable tools is very valuable for ValAdrien OS — as long as plugin tools are namespaced (cannot shadow core tools) and capability-gated.
 
 ## 7. Auth is also a plugin surface
 
@@ -237,7 +237,7 @@ This is one of the best parts of the design.
 - host internals can evolve behind the loader
 - runtime code and plugin code have a clean contract boundary
 
-Valadrien OS should absolutely do this.
+ValAdrien OS should absolutely do this.
 
 ## 2. Deterministic loading and precedence
 
@@ -247,7 +247,7 @@ Valadrien OS should absolutely do this.
 - how config merges
 - what order wins
 
-Valadrien OS should copy this discipline.
+ValAdrien OS should copy this discipline.
 
 ## 3. Low-ceremony authoring
 
@@ -268,29 +268,29 @@ The `tool()` helper is excellent:
 - easy to document
 - easy for runtime validation
 
-Valadrien OS should adopt this style for plugin actions, automations, and UI schemas.
+ValAdrien OS should adopt this style for plugin actions, automations, and UI schemas.
 
 ## 5. Built-in features and plugins use similar shapes
 
 `opencode` uses the same hook system for internal and external plugin-style behavior in several places.
 That reduces special cases.
 
-Valadrien OS can benefit from that with adapters, secret backends, storage providers, and connector modules.
+ValAdrien OS can benefit from that with adapters, secret backends, storage providers, and connector modules.
 
 ## 6. Incremental extension, not giant abstraction upfront
 
 `opencode` did not design a giant marketplace platform first.
 It added concrete extension points that real features needed.
 
-That is the correct mindset for Valadrien OS too.
+That is the correct mindset for ValAdrien OS too.
 
-## What Valadrien OS Should Not Copy Directly
+## What ValAdrien OS Should Not Copy Directly
 
 ## 1. In-process arbitrary plugin code as the default
 
 `opencode` is basically a local agent runtime, so unsandboxed plugin execution is acceptable for its audience.
 
-Valadrien OS is a control plane for an operator-managed instance with company objects.
+ValAdrien OS is a control plane for an operator-managed instance with company objects.
 The risk profile is different:
 
 - secrets matter
@@ -304,12 +304,12 @@ Default third-party plugins should not run with unrestricted in-process access t
 
 `opencode` has project-local plugin folders because the tool is centered around a codebase.
 
-Valadrien OS is not project-scoped. It is instance-scoped.
+ValAdrien OS is not project-scoped. It is instance-scoped.
 The comparable unit is:
 
 - instance-installed plugin package
 
-Valadrien OS should not auto-load arbitrary code from a workspace repo like `.valadrien-os/plugins` or project directories.
+ValAdrien OS should not auto-load arbitrary code from a workspace repo like `.valadrien-os/plugins` or project directories.
 
 ## 3. Arbitrary mutation hooks on core business decisions
 
@@ -322,7 +322,7 @@ Hooks like:
 
 make sense in `opencode`.
 
-For Valadrien OS, equivalent hooks into:
+For ValAdrien OS, equivalent hooks into:
 
 - approval decisions
 - issue checkout semantics
@@ -337,7 +337,7 @@ Core invariants should stay in core code, not become hook-rewritable.
 
 Allowing a plugin to replace a built-in tool by name is useful in a local agent product.
 
-Valadrien OS should not allow plugins to silently replace:
+ValAdrien OS should not allow plugins to silently replace:
 
 - core routes
 - core mutating actions
@@ -351,7 +351,7 @@ Extension should be additive or explicitly delegated, never accidental shadowing
 ## 5. Auto-install and execute from user config
 
 `opencode`'s "install dependencies at startup" flow is ergonomic.
-For Valadrien OS it would be risky because it combines:
+For ValAdrien OS it would be risky because it combines:
 
 - package installation
 - code loading
@@ -359,26 +359,26 @@ For Valadrien OS it would be risky because it combines:
 
 inside the control-plane server startup path.
 
-Valadrien OS should require an explicit operator install step.
+ValAdrien OS should require an explicit operator install step.
 
-## Why Valadrien OS Needs A Different Shape
+## Why ValAdrien OS Needs A Different Shape
 
 The products are solving different problems.
 
-| Topic | OpenCode | Valadrien OS |
+| Topic | OpenCode | ValAdrien OS |
 |---|---|---|
 | Primary unit | local project/worktree | single-tenant operator instance with company objects |
-| Trust assumption | local power user on own machine | operator managing one trusted Valadrien OS instance |
+| Trust assumption | local power user on own machine | operator managing one trusted ValAdrien OS instance |
 | Failure blast radius | local session/runtime | entire company control plane |
 | Extension style | mutate runtime behavior freely | preserve governance and auditability |
 | UI model | local app can load local behavior | board UI must stay coherent and safe |
 | Security model | host-trusted local plugins | needs capability boundaries and auditability |
 
-That means Valadrien OS should borrow the good ideas from `opencode` but use a stricter architecture.
+That means ValAdrien OS should borrow the good ideas from `opencode` but use a stricter architecture.
 
-## Valadrien OS Already Has Useful Pre-Plugin Seams
+## ValAdrien OS Already Has Useful Pre-Plugin Seams
 
-Valadrien OS has several extension-like seams already:
+ValAdrien OS has several extension-like seams already:
 
 - server adapter registry: [server/src/adapters/registry.ts](../../server/src/adapters/registry.ts)
 - UI adapter registry: [ui/src/adapters/registry.ts](../../ui/src/adapters/registry.ts)
@@ -388,10 +388,10 @@ Valadrien OS has several extension-like seams already:
 - activity log and live event emission: [server/src/services/activity-log.ts](../../server/src/services/activity-log.ts)
 
 This is good news.
-Valadrien OS does not need to invent extensibility from scratch.
+ValAdrien OS does not need to invent extensibility from scratch.
 It needs to unify and harden existing seams.
 
-## Recommended Valadrien OS Plugin Model
+## Recommended ValAdrien OS Plugin Model
 
 ## 1. Use multiple extension classes
 
@@ -411,7 +411,7 @@ This split is the most important design recommendation in this report.
 
 ## 2. Keep low-level modules separate from third-party plugins
 
-Valadrien OS already has this pattern implicitly:
+ValAdrien OS already has this pattern implicitly:
 
 - adapters are one thing
 - storage providers are another
@@ -422,7 +422,7 @@ Keep that separation.
 I would formalize it like this:
 
 - `module` means trusted code loaded by the host for low-level runtime services
-- `plugin` means integration code that talks to Valadrien OS through a typed plugin protocol and capability model
+- `plugin` means integration code that talks to ValAdrien OS through a typed plugin protocol and capability model
 
 This avoids trying to force Stripe, a PTY terminal, and a new agent adapter into the same abstraction.
 
@@ -438,7 +438,7 @@ For third-party plugins, the primary API should be:
 - contribute tools that agents can use during runs
 - write plugin-owned state
 - add additive UI surfaces
-- invoke explicit Valadrien OS actions through the API
+- invoke explicit ValAdrien OS actions through the API
 
 Do not make third-party plugins responsible for:
 
@@ -479,17 +479,17 @@ Later, if untrusted third-party plugins become common, the host can move to ifra
 ## 5. Make installation global and keep mappings/config separate
 
 `opencode` is mostly user-level local config.
-Valadrien OS should treat plugin installation as a global instance-level action.
+ValAdrien OS should treat plugin installation as a global instance-level action.
 
 Examples:
 
 - install `@valadrien-os/plugin-linear` once
 - make it available everywhere immediately
-- optionally store mappings over Valadrien OS objects if one company maps to a different Linear team than another
+- optionally store mappings over ValAdrien OS objects if one company maps to a different Linear team than another
 
 ## 6. Use project workspaces as the primary anchor for local tooling
 
-Valadrien OS already has a concrete workspace model for projects:
+ValAdrien OS already has a concrete workspace model for projects:
 
 - projects expose `workspaces` and `primaryWorkspace`
 - the database already has `project_workspaces`
@@ -514,7 +514,7 @@ In other words:
 
 ## 7. Let plugins contribute agent tools
 
-`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for Valadrien OS too.
+`opencode` makes tools a first-class extension point. This is one of the highest-value surfaces for ValAdrien OS too.
 
 A Linear plugin should be able to contribute a `search-linear-issues` tool that agents use during runs. A git plugin should contribute `create-branch` and `get-diff`. A file browser plugin should contribute `read-file` and `list-directory`.
 
@@ -572,15 +572,15 @@ This is critical for operators. Without observability, debugging plugin issues r
 
 ## 13. Ship a test harness and starter template
 
-A `@valadrien-os/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running Valadrien OS instance.
+A `@valadrien-os/plugin-test-harness` package should provide a mock host with in-memory stores, synthetic event emission, and `getData`/`performAction`/`executeTool` simulation. Plugin authors should be able to write unit tests without a running ValAdrien OS instance.
 
 A `create-valadrien-os-plugin` CLI should scaffold a working plugin with manifest, worker, UI bundle, test file, and build config.
 
-Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how Valadrien OS achieves the same.
+Low authoring friction was called out as one of `opencode`'s best qualities. The test harness and starter template are how ValAdrien OS achieves the same.
 
 ## 14. Support hot plugin lifecycle
 
-Plugin install, uninstall, upgrade, and config changes should take effect without restarting the Valadrien OS server. This is critical for developer workflow and operator experience.
+Plugin install, uninstall, upgrade, and config changes should take effect without restarting the ValAdrien OS server. This is critical for developer workflow and operator experience.
 
 The out-of-process worker architecture makes this natural:
 
@@ -595,7 +595,7 @@ Each worker process is independent — starting, stopping, or replacing one work
 
 ## 15. Define SDK versioning and compatibility
 
-`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. Valadrien OS's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
+`opencode` does not have a formal SDK versioning story because plugins run in-process and are effectively pinned to the current runtime. ValAdrien OS's out-of-process model means plugins may be built against one SDK version and run on a host that has moved forward. This needs explicit rules.
 
 Recommended approach:
 
@@ -608,7 +608,7 @@ Recommended approach:
 - **UI surface versioned with worker**: Both worker and UI surfaces are in the same package, so they version together. Breaking changes to shared UI components require a major version bump just like worker API changes.
 - **Published compatibility matrix**: The host publishes a matrix of supported API versions and SDK ranges, queryable via API.
 
-## A Concrete SDK Shape For Valadrien OS
+## A Concrete SDK Shape For ValAdrien OS
 
 An intentionally narrow first pass could look like this:
 
@@ -639,7 +639,7 @@ export default definePlugin({
   }),
   async register(ctx) {
     ctx.jobs.register("linear-pull", { cron: "*/5 * * * *" }, async (job) => {
-      // sync Linear issues into plugin-owned state or explicit Valadrien OS entities
+      // sync Linear issues into plugin-owned state or explicit ValAdrien OS entities
     });
 
     // subscribe with optional server-side filter
@@ -762,7 +762,7 @@ The host does not wrap or proxy these operations. This keeps the core lean — n
 
 ## Governance And Safety Requirements
 
-Any Valadrien OS plugin system has to preserve core control-plane invariants from the repo docs.
+Any ValAdrien OS plugin system has to preserve core control-plane invariants from the repo docs.
 
 That means:
 
@@ -799,7 +799,7 @@ The board/operator sees this before installation.
 ## 2. Global installation
 
 A plugin is installed once and becomes available across the instance.
-If it needs mappings over specific Valadrien OS objects, those are plugin data, not enable/disable boundaries.
+If it needs mappings over specific ValAdrien OS objects, those are plugin data, not enable/disable boundaries.
 
 ## 3. Activity logging
 
@@ -842,7 +842,7 @@ That is too much power too early.
 
 The right mental model is:
 
-- reuse core tables when the data is clearly part of Valadrien OS itself
+- reuse core tables when the data is clearly part of ValAdrien OS itself
 - use generic extension tables for most plugin-owned state
 - only allow plugin-specific tables later, and only for trusted platform modules or a tightly controlled migration workflow
 
@@ -850,11 +850,11 @@ The right mental model is:
 
 ### 1. Core tables stay core
 
-If a concept is becoming part of Valadrien OS's actual product model, it should get a normal first-party table.
+If a concept is becoming part of ValAdrien OS's actual product model, it should get a normal first-party table.
 
 Examples:
 
-- `project_workspaces` is already a core table because project workspaces are now part of Valadrien OS itself
+- `project_workspaces` is already a core table because project workspaces are now part of ValAdrien OS itself
 - if a future "project git state" becomes a core feature rather than plugin-owned metadata, that should also be a first-party table
 
 ### 2. Most plugins should start in generic extension tables
@@ -869,9 +869,9 @@ This keeps the system manageable:
 - easier operator review
 - fewer chances for plugin schema drift to break the instance
 
-### 3. Scope plugin data to Valadrien OS objects before adding custom schemas
+### 3. Scope plugin data to ValAdrien OS objects before adding custom schemas
 
-A lot of plugin data naturally hangs off existing Valadrien OS objects:
+A lot of plugin data naturally hangs off existing ValAdrien OS objects:
 
 - project workspace plugin state should often scope to `project` or `project_workspace`
 - issue sync state should scope to `issue`
@@ -882,7 +882,7 @@ That gives a good default keying model before introducing custom tables.
 
 ### 4. Add trusted module migrations later, not arbitrary plugin migrations now
 
-If Valadrien OS eventually needs extension-owned tables, I would only allow that for:
+If ValAdrien OS eventually needs extension-owned tables, I would only allow that for:
 
 - trusted first-party packages
 - trusted platform modules
@@ -1216,8 +1216,8 @@ Main screens and interactions:
 Core workflows:
 
 - Board creates a branch from an issue and ties it to the project's primary workspace.
-- Board opens a project page and reviews the diff for that project's workspace without leaving Valadrien OS.
-- Board reviews the diff after a run without leaving Valadrien OS.
+- Board opens a project page and reviews the diff for that project's workspace without leaving ValAdrien OS.
+- Board reviews the diff after a run without leaving ValAdrien OS.
 - Board opens a worktree list to understand parallel branches across agents.
 
 ### Hooks needed
@@ -1251,10 +1251,10 @@ Note: GitHub/GitLab PR creation should likely live in a separate connector plugi
 
 Package idea: `@valadrien-os/plugin-linear`
 
-This plugin syncs Valadrien OS work with Linear. It is useful for:
+This plugin syncs ValAdrien OS work with Linear. It is useful for:
 
 - importing backlog from Linear
-- linking Valadrien OS issues to Linear issues
+- linking ValAdrien OS issues to Linear issues
 - syncing status, comments, and assignees
 - mapping company goals/projects to external product planning
 - giving board operators a single place to see sync health
@@ -1272,7 +1272,7 @@ Main screens and interactions:
 - Plugin settings:
   - Linear API token secret ref
   - workspace/team/project mappings
-  - status mapping between Valadrien OS and Linear
+  - status mapping between ValAdrien OS and Linear
   - sync direction: import only, export only, bidirectional
   - comment sync toggle
 - Linear overview page:
@@ -1293,8 +1293,8 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board enables the plugin, maps a Linear team, and imports a backlog into Valadrien OS.
-- Valadrien OS issue status changes push to Linear and Linear comments arrive back through webhooks.
+- Board enables the plugin, maps a Linear team, and imports a backlog into ValAdrien OS.
+- ValAdrien OS issue status changes push to Linear and Linear comments arrive back through webhooks.
 - Board resolves mapping conflicts from the plugin page instead of silently drifting state.
 
 ### Hooks needed
@@ -1331,13 +1331,13 @@ Important constraint:
 
 Package idea: `@valadrien-os/plugin-github-issues`
 
-This plugin syncs Valadrien OS issues with GitHub Issues and optionally links PRs. It is useful for:
+This plugin syncs ValAdrien OS issues with GitHub Issues and optionally links PRs. It is useful for:
 
 - importing repo backlogs
 - mirroring issue status and comments
-- linking PRs to Valadrien OS issues
+- linking PRs to ValAdrien OS issues
 - tracking cross-repo work from inside one company view
-- bridging engineering workflow with Valadrien OS task governance
+- bridging engineering workflow with ValAdrien OS task governance
 
 ### UX
 
@@ -1354,7 +1354,7 @@ Main screens and interactions:
   - org/repo mappings
   - label/status mapping
   - whether PR linking is enabled
-  - whether new Valadrien OS issues should create GitHub issues automatically
+  - whether new ValAdrien OS issues should create GitHub issues automatically
 - GitHub overview page:
   - repo mapping list
   - sync health and recent webhook events
@@ -1365,15 +1365,15 @@ Main screens and interactions:
   - actions: create GitHub issue, link existing issue, unlink, resync
   - comment/status sync timeline
 - Dashboard widget:
-  - open PRs linked to active Valadrien OS issues
+  - open PRs linked to active ValAdrien OS issues
   - webhook failures
   - sync lag metrics
 
 Core workflows:
 
-- Board imports GitHub Issues for a repo into Valadrien OS.
-- GitHub webhooks update status/comment state in Valadrien OS.
-- A PR is linked back to the Valadrien OS issue so the board can follow delivery status.
+- Board imports GitHub Issues for a repo into ValAdrien OS.
+- GitHub webhooks update status/comment state in ValAdrien OS.
+- A PR is linked back to the ValAdrien OS issue so the board can follow delivery status.
 
 ### Hooks needed
 
@@ -1407,12 +1407,12 @@ Important constraint:
 
 Package idea: `@valadrien-os/plugin-grafana`
 
-This plugin surfaces external metrics and dashboards inside Valadrien OS. It is useful for:
+This plugin surfaces external metrics and dashboards inside ValAdrien OS. It is useful for:
 
 - company KPI visibility
 - infrastructure/incident monitoring
 - showing deploy, traffic, latency, or revenue charts next to work
-- creating Valadrien OS issues from anomalous metrics
+- creating ValAdrien OS issues from anomalous metrics
 
 ### UX
 
@@ -1432,7 +1432,7 @@ Main screens and interactions:
 - Dashboard widgets:
   - one or more metric cards on the main dashboard
   - quick trend view and last refresh time
-  - link out to Grafana and link in to the full Valadrien OS plugin page
+  - link out to Grafana and link in to the full ValAdrien OS plugin page
 - Full metrics page:
   - selected dashboard panels embedded or proxied
   - metric selector
@@ -1443,9 +1443,9 @@ Main screens and interactions:
 
 Core workflows:
 
-- Board sees service degradation or business KPI movement directly on the Valadrien OS dashboard.
+- Board sees service degradation or business KPI movement directly on the ValAdrien OS dashboard.
 - Board clicks into the full metrics page to inspect the relevant Grafana panels.
-- Board creates a Valadrien OS issue from a threshold breach with a metric snapshot attached.
+- Board creates a ValAdrien OS issue from a threshold breach with a metric snapshot attached.
 
 ### Hooks needed
 
@@ -1472,7 +1472,7 @@ Optional event subscriptions:
 Important constraint:
 
 - start read-only first
-- do not make Grafana alerting logic part of Valadrien OS core; keep it as additive signal and issue creation
+- do not make Grafana alerting logic part of ValAdrien OS core; keep it as additive signal and issue creation
 
 ## Child Process / Server Tracking
 
@@ -1551,7 +1551,7 @@ Optional event subscriptions:
 
 Package idea: `@valadrien-os/plugin-stripe`
 
-This plugin pulls Stripe revenue and subscription data into Valadrien OS. It is useful for:
+This plugin pulls Stripe revenue and subscription data into ValAdrien OS. It is useful for:
 
 - showing MRR and churn next to company goals
 - tracking trials, conversions, and failed payments
@@ -1590,7 +1590,7 @@ Core workflows:
 - Board enables the plugin and connects a Stripe account.
 - Webhooks and scheduled reconciliation keep plugin state current.
 - Revenue widgets appear on the main dashboard and can be linked to company goals.
-- Failed payment spikes or churn events can generate Valadrien OS issues for follow-up.
+- Failed payment spikes or churn events can generate ValAdrien OS issues for follow-up.
 
 ### Hooks needed
 
@@ -1611,7 +1611,7 @@ Recommended capabilities and extension points:
 
 Important constraint:
 
-- Stripe data should stay additive to Valadrien OS core
+- Stripe data should stay additive to ValAdrien OS core
 - it should not leak into core budgeting logic, which is specifically about model/token spend in V1
 
 ## Specific Patterns From OpenCode Worth Adopting
@@ -1707,8 +1707,8 @@ Only after Phase 1 is stable:
 
 If I had to collapse this report into one architectural decision, it would be:
 
-Valadrien OS should not implement "an OpenCode-style generic in-process hook system."
-Valadrien OS should implement "a plugin platform with multiple trust tiers":
+ValAdrien OS should not implement "an OpenCode-style generic in-process hook system."
+ValAdrien OS should implement "a plugin platform with multiple trust tiers":
 
 - trusted platform modules for low-level runtime integration
 - typed out-of-process plugins for instance-wide integrations and automation
@@ -1723,7 +1723,7 @@ Valadrien OS should implement "a plugin platform with multiple trust tiers":
 
 That gets the upside of `opencode`'s extensibility without importing the wrong threat model.
 
-## Concrete Next Steps I Would Take In Valadrien OS
+## Concrete Next Steps I Would Take In ValAdrien OS
 
 1. Write a short extension architecture RFC that formalizes the distinction between `platform modules` and `plugins`.
 2. Introduce a small plugin manifest type in `packages/shared` and a `plugins` install/config section in the instance config.

@@ -204,7 +204,7 @@ Add plain-text reflection routes:
 
 Index file includes:
 
-- installed adapter list for this Valadrien OS instance
+- installed adapter list for this ValAdrien OS instance
 - per-adapter doc URLs
 - brief "how to hire" API sequence links
 

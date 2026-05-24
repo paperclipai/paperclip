@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Backup the configured Valadrien OS database to the configured backup directory
+# Backup the configured ValAdrien OS database to the configured backup directory
 # (default: ~/.valadrien-os/instances/<instance-id>/data/backups)
 #
 # Usage:

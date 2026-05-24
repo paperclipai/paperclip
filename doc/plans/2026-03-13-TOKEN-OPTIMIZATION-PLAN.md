@@ -12,7 +12,7 @@ This plan is based on:
 - the current V1 control-plane design
 - the current adapter and heartbeat implementation
 - the linked user discussion
-- local runtime data from the default Valadrien OS instance on 2026-03-13
+- local runtime data from the default ValAdrien OS instance on 2026-03-13
 
 ## Executive Summary
 
@@ -121,9 +121,9 @@ Local adapters inject repo skills into runtime skill directories.
 Important `codex_local` nuance:
 
 - Codex does not read skills directly from the active worktree.
-- Valadrien OS discovers repo skills from the current checkout, then symlinks them into `$CODEX_HOME/skills` or `~/.codex/skills`.
-- If an existing Valadrien OS skill symlink already points at another live checkout, the current implementation skips it instead of repointing it.
-- This can leave Codex using stale skill content from a different worktree even after Valadrien OS-side skill changes land.
+- ValAdrien OS discovers repo skills from the current checkout, then symlinks them into `$CODEX_HOME/skills` or `~/.codex/skills`.
+- If an existing ValAdrien OS skill symlink already points at another live checkout, the current implementation skips it instead of repointing it.
+- This can leave Codex using stale skill content from a different worktree even after ValAdrien OS-side skill changes land.
 - That is both a correctness risk and a token-analysis risk, because runtime behavior may not reflect the instructions in the checkout being tested.
 
 Current repo skill sizes:
@@ -157,7 +157,7 @@ This should happen first.
 
 - Store both:
   - raw adapter-reported usage
-  - Valadrien OS-normalized per-run usage
+  - ValAdrien OS-normalized per-run usage
 - For sessioned adapters, compute normalized deltas against prior usage for the same persisted session.
 - Add explicit fields for:
   - `sessionReused`
@@ -223,7 +223,7 @@ This is the right version of the discussion’s bootstrap idea.
 
 Static instructions and dynamic wake context have different cache behavior and should be modeled separately.
 
-For `codex_local`, this also requires isolating the Codex skill home per worktree or teaching Valadrien OS to repoint its own skill symlinks when the source checkout changes. Otherwise prompt and skill improvements in the active worktree may not reach the running agent.
+For `codex_local`, this also requires isolating the Codex skill home per worktree or teaching ValAdrien OS to repoint its own skill symlinks when the source checkout changes. Otherwise prompt and skill improvements in the active worktree may not reach the running agent.
 
 ### Success criteria
 
@@ -317,7 +317,7 @@ Even when reuse is desirable, some sessions become too expensive to keep alive i
 - Expose active skill set in agent config and run metadata.
 - For `codex_local`, either:
   - run with a worktree-specific `CODEX_HOME`, or
-  - treat Valadrien OS-owned Codex skill symlinks as repairable when they point at a different checkout
+  - treat ValAdrien OS-owned Codex skill symlinks as repairable when they point at a different checkout
 
 ### Why
 

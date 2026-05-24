@@ -1,6 +1,6 @@
 Use this exact checklist.
 
-1. Start Valadrien OS in auth mode.
+1. Start ValAdrien OS in auth mode.
 ```bash
 cd <valadrien-os-repo-root>
 pnpm dev --bind lan
@@ -16,7 +16,7 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 
-3. In Valadrien OS UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
+3. In ValAdrien OS UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
 
 4. Use the OpenClaw invite prompt flow.
 - In the Invites section, click `Generate OpenClaw Invite Prompt`.
@@ -30,7 +30,7 @@ Security/control note:
   - board users with invite permission can call it
   - agent callers are limited to the company CEO agent
 
-5. Approve the join request in Valadrien OS UI, then confirm the OpenClaw agent appears in CLA agents.
+5. Approve the join request in ValAdrien OS UI, then confirm the OpenClaw agent appears in CLA agents.
 
 6. Gateway preflight (required before task tests).
 - Confirm the created agent uses `openclaw_gateway` (not `openclaw`).
@@ -51,7 +51,7 @@ Pairing handshake note:
 - Clean run expectation: first task should succeed without manual pairing commands.
 - The adapter attempts one automatic pairing approval + retry on first `pairing required` (when shared gateway auth token/password is valid).
 - If auto-pair cannot complete (for example token mismatch or no pending request), the first gateway run may still return `pairing required`.
-- This is a separate approval from Valadrien OS invite approval. You must approve the pending device in OpenClaw itself.
+- This is a separate approval from ValAdrien OS invite approval. You must approve the pending device in OpenClaw itself.
 - Approve it in OpenClaw, then retry the task.
 - For local docker smoke, you can approve from host:
 ```bash
@@ -76,8 +76,8 @@ docker exec openclaw-docker-openclaw-gateway-1 sh -lc 'TOK="$(node -e \"const fs
 
 9. Case C (new session memory/skills test).
 - In OpenClaw, start `/new` session.
-- Ask it to create a new CLA issue in Valadrien OS with unique title `OPENCLAW_CASE_C_CREATED_<timestamp>`.
-- Verify in Valadrien OS UI that new issue exists.
+- Ask it to create a new CLA issue in ValAdrien OS with unique title `OPENCLAW_CASE_C_CREATED_<timestamp>`.
+- Verify in ValAdrien OS UI that new issue exists.
 
 10. Watch logs during test (optional but helpful):
 ```bash

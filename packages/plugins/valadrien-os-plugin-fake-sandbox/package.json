@@ -1,7 +1,7 @@
 {
   "name": "@valadrien-os/plugin-fake-sandbox",
   "version": "0.1.0",
-  "description": "First-party deterministic fake sandbox provider plugin for Valadrien OS environments",
+  "description": "First-party deterministic fake sandbox provider plugin for ValAdrien OS environments",
   "type": "module",
   "private": true,
   "exports": {

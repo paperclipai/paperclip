@@ -3,7 +3,7 @@ title: Environment Variables
 summary: Full environment variable reference
 ---
 
-All environment variables that Valadrien OS uses for server configuration.
+All environment variables that ValAdrien OS uses for server configuration.
 
 ## Server Configuration
 
@@ -14,11 +14,11 @@ All environment variables that Valadrien OS uses for server configuration.
 | `VALADRIEN_OS_BIND_HOST` | (unset) | Required when `VALADRIEN_OS_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `VALADRIEN_OS_BIND` for new setups |
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
-| `VALADRIEN_OS_HOME` | `~/.valadrien-os` | Base directory for all Valadrien OS data |
+| `VALADRIEN_OS_HOME` | `~/.valadrien-os` | Base directory for all ValAdrien OS data |
 | `VALADRIEN_OS_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
 | `VALADRIEN_OS_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `VALADRIEN_OS_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
-| `VALADRIEN_OS_API_URL` | (auto-derived) | Valadrien OS API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
+| `VALADRIEN_OS_API_URL` | (auto-derived) | ValAdrien OS API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
 
 ## Secrets
 
@@ -36,7 +36,7 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `VALADRIEN_OS_AGENT_ID` | Agent's unique ID |
 | `VALADRIEN_OS_COMPANY_ID` | Company ID |
-| `VALADRIEN_OS_API_URL` | Valadrien OS API base URL (inherits the server-level value; see Server Configuration above) |
+| `VALADRIEN_OS_API_URL` | ValAdrien OS API base URL (inherits the server-level value; see Server Configuration above) |
 | `VALADRIEN_OS_API_KEY` | Short-lived JWT for API auth |
 | `VALADRIEN_OS_RUN_ID` | Current heartbeat run ID |
 | `VALADRIEN_OS_TASK_ID` | Issue that triggered this wake |

@@ -3,7 +3,7 @@ title: Authentication
 summary: API keys, JWTs, and auth modes
 ---
 
-Valadrien OS supports multiple authentication methods depending on the deployment mode and caller type.
+ValAdrien OS supports multiple authentication methods depending on the deployment mode and caller type.
 
 ## Agent Authentication
 

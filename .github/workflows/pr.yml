@@ -276,7 +276,7 @@ jobs:
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Generate Valadrien OS config
+      - name: Generate ValAdrien OS config
         run: |
           mkdir -p ~/.valadrien-os/instances/default
           cat > ~/.valadrien-os/instances/default/config.json << 'CONF'

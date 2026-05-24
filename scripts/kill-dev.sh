@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Kill all local Valadrien OS dev server processes (across all worktrees).
+# Kill all local ValAdrien OS dev server processes (across all worktrees).
 #
 # Usage:
 #   scripts/kill-dev.sh        # kill all valadrien-os dev processes
@@ -118,12 +118,12 @@ for pidfile in "${candidate_pidfiles[@]:-}"; do
 done
 
 if [[ ${#node_pids[@]} -eq 0 && ${#pg_pids[@]} -eq 0 && ${#browser_pids[@]} -eq 0 ]]; then
-  echo "No Valadrien OS dev processes found."
+  echo "No ValAdrien OS dev processes found."
   exit 0
 fi
 
 if [[ ${#node_pids[@]} -gt 0 ]]; then
-  echo "Found ${#node_pids[@]} Valadrien OS dev node process(es):"
+  echo "Found ${#node_pids[@]} ValAdrien OS dev node process(es):"
   echo ""
 
   for i in "${!node_pids[@]:-}"; do
@@ -176,7 +176,7 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 if [[ ${#node_pids[@]} -gt 0 ]]; then
-  echo "Sending SIGTERM to Valadrien OS node processes..."
+  echo "Sending SIGTERM to ValAdrien OS node processes..."
   for pid in "${node_pids[@]}"; do
     kill -TERM "$pid" 2>/dev/null && echo "  signaled $pid" || echo "  $pid already gone"
   done

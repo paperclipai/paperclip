@@ -1,7 +1,7 @@
 {
   "name": "@valadrien-os/plugin-e2b",
   "version": "0.1.0",
-  "description": "E2B sandbox provider plugin for Valadrien OS environments",
+  "description": "E2B sandbox provider plugin for ValAdrien OS environments",
   "license": "MIT",
   "homepage": "https://github.com/ValDola-stack/valadrien-os",
   "bugs": {

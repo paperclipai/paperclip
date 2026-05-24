@@ -53,7 +53,7 @@ We use [Greptile](https://greptile.com) for automated code review. Your PR must 
 
 ## Feature Contributions
 
-We actively manage the core Valadrien OS feature roadmap.
+We actively manage the core ValAdrien OS feature roadmap.
 
 Uncoordinated feature PRs against the core product may be closed, even when the implementation is thoughtful and high quality. That is about roadmap ownership, product coherence, and long-term maintenance commitment, not a judgment about the effort.
 
@@ -80,16 +80,16 @@ Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.
 
 ### Thinking Path Example 1:
 
-> - Valadrien OS orchestrates ai-agents for zero-human companies
+> - ValAdrien OS orchestrates ai-agents for zero-human companies
 > - There are many types of adapters for each LLM model provider
 > - But LLM's have a context limit and not all agents can automatically compact their context
 > - So we need to have an adapter-specific configuration for which adapters can and cannot automatically compact their context
 > - This pull request adds per-adapter configuration of compaction, either auto or valadrien-os managed
-> - That way we can get optimal performance from any adapter/provider in Valadrien OS
+> - That way we can get optimal performance from any adapter/provider in ValAdrien OS
 
 ### Thinking Path Example 2:
 
-> - Valadrien OS orchestrates ai-agents for zero-human companies
+> - ValAdrien OS orchestrates ai-agents for zero-human companies
 > - But humans want to watch the agents and oversee their work
 > - Human users also operate in teams and so they need their own logins, profiles, views etc.
 > - So we have a multi-user system for humans

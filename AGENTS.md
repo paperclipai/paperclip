@@ -4,7 +4,7 @@ Guidance for human and AI contributors working in this repository.
 
 ## 1. Purpose
 
-Valadrien OS is a control plane for AI-agent companies.
+ValAdrien OS is a control plane for AI-agent companies.
 The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
 
 ## 2. Read This First
@@ -82,7 +82,7 @@ If you change schema/API behavior, update all impacted layers:
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
 5. Keep repo plan docs dated and centralized.
-When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Valadrien OS issue planning: if a Valadrien OS issue asks for a plan, update the issue `plan` document per the `valadrien-os` skill instead of creating a repo markdown file.
+When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace ValAdrien OS issue planning: if a ValAdrien OS issue asks for a plan, update the issue `plan` document per the `valadrien-os` skill instead of creating a repo markdown file.
 
 ## 6. Database Change Workflow
 

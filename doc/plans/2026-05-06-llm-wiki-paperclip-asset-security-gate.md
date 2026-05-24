@@ -1,16 +1,16 @@
-# LLM Wiki Valadrien OS Asset And Work-Product Security Gate
+# LLM Wiki ValAdrien OS Asset And Work-Product Security Gate
 
 Status: accepted Phase 5 policy
 Date: 2026-05-06
 Owner: Security engineering
-Scope: Valadrien OS-derived ingestion into the LLM Wiki before any asset or work-product content indexing ships
+Scope: ValAdrien OS-derived ingestion into the LLM Wiki before any asset or work-product content indexing ships
 
 ## Decision
 
-Phase 5 remains **fail-closed** for Valadrien OS assets and work products.
+Phase 5 remains **fail-closed** for ValAdrien OS assets and work products.
 
-- Valadrien OS-derived **text extraction is allowed only** for issue titles/descriptions, issue comments, and issue documents.
-- Valadrien OS **assets/attachments** and **issue work products** are **metadata-only** in Phase 5.
+- ValAdrien OS-derived **text extraction is allowed only** for issue titles/descriptions, issue comments, and issue documents.
+- ValAdrien OS **assets/attachments** and **issue work products** are **metadata-only** in Phase 5.
 - **Linked summaries** and **content extraction** for assets/work products are **not approved** in Phase 5.
 - No implementation may fetch `/api/assets/:id/content`, dereference a work-product `url`, scrape preview pages, or embed binary/blob content into source bundles or source snapshots.
 
@@ -18,13 +18,13 @@ This keeps the secure path easier than the insecure one and avoids broadening th
 
 ## Allowed Source Kinds
 
-These source kinds may contribute body text to Valadrien OS-derived source bundles:
+These source kinds may contribute body text to ValAdrien OS-derived source bundles:
 
 | Source kind | Allowed body fields | Reason |
 | --- | --- | --- |
-| Issue | `title`, `description`, identifier/status metadata | First-party Valadrien OS text under company ACL |
-| Comment | `body` | First-party Valadrien OS text under company ACL |
-| Document | `body`, `title`, `key`, revision metadata | First-party Valadrien OS text under company ACL |
+| Issue | `title`, `description`, identifier/status metadata | First-party ValAdrien OS text under company ACL |
+| Comment | `body` | First-party ValAdrien OS text under company ACL |
+| Document | `body`, `title`, `key`, revision metadata | First-party ValAdrien OS text under company ACL |
 
 ## Assets And Work Products
 
@@ -32,7 +32,7 @@ These source kinds may contribute body text to Valadrien OS-derived source bundl
 
 Allowed in Phase 5:
 
-- metadata-only references built from allowlisted structured fields already stored in Valadrien OS
+- metadata-only references built from allowlisted structured fields already stored in ValAdrien OS
 - recommended fields: `issueId`, `issueCommentId`, `attachmentId`, `assetId`, `originalFilename`, `contentType`, `byteSize`, `sha256`, `createdAt`, `createdByAgentId`, `createdByUserId`
 
 Disallowed in Phase 5:
@@ -46,7 +46,7 @@ Disallowed in Phase 5:
 
 Allowed in Phase 5:
 
-- metadata-only references built from allowlisted structured fields already stored in Valadrien OS
+- metadata-only references built from allowlisted structured fields already stored in ValAdrien OS
 - recommended fields: `issueId`, `workProductId`, `type`, `provider`, `title`, `status`, `reviewState`, `healthStatus`, `externalId`, `isPrimary`, `createdAt`, `updatedAt`
 - optional boolean/derived metadata such as `hasUrl: true`
 
@@ -61,7 +61,7 @@ Disallowed in Phase 5:
 
 No MIME allowlist is approved for asset content extraction in Phase 5 because **no asset body extraction is approved at all**.
 
-- Every asset MIME type is treated as opaque for Valadrien OS-derived indexing.
+- Every asset MIME type is treated as opaque for ValAdrien OS-derived indexing.
 - Existing upload limits remain storage concerns, not ingestion approvals.
 - Work-product destinations are also opaque regardless of MIME type or size.
 
@@ -106,13 +106,13 @@ Human review **is required**, with a separate security sign-off issue, before en
 - work-product URL fetching
 - linked summaries generated from asset/work-product content
 - storing raw blob links or raw remote URLs in wiki source material
-- non-default-space routing for Valadrien OS-derived asset/work-product references
+- non-default-space routing for ValAdrien OS-derived asset/work-product references
 
 ## Security Rationale
 
 This gate exists because the current host surfaces have different trust properties:
 
-- issue/comment/document text is first-party Valadrien OS content already exposed through company-scoped issue/document APIs
+- issue/comment/document text is first-party ValAdrien OS content already exposed through company-scoped issue/document APIs
 - asset content is a blob download surface (`/api/assets/:id/content`) and can carry prompt-injection or parser-risk payloads
 - work products can point at arbitrary destinations through `url`, which reintroduces SSRF, token leakage, and prompt-injection risk if dereferenced automatically
 

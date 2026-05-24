@@ -22,7 +22,7 @@ Answer a question from what the wiki actually contains, with citations.
    - Then the supporting facts as bullet points, each with an inline citation: `(see [[wiki/concepts/managed-resources]])` or `(see raw/<filename>)`.
    - If you needed to read a raw source the wiki did not summarise, name that as a gap.
 5. **Decide whether the answer is durable.** If the question forced you to do real synthesis (a comparison, a tradeoff, a definition of something that isn't already a page), offer to file it under `wiki/synthesis/<slug>.md`. Do not write the synthesis page silently — it is opt-in. If the user accepts, write the page, link it from `wiki/index.md`, and append a `query | filed synthesis` log entry.
-6. **When the wiki cannot answer**, say so plainly. Suggest a source the user should ingest, a Valadrien OS project that would help if distilled, or a web lookup. Never bluff.
+6. **When the wiki cannot answer**, say so plainly. Suggest a source the user should ingest, a ValAdrien OS project that would help if distilled, or a web lookup. Never bluff.
 
 ## Voice
 

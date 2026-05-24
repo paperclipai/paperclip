@@ -1,18 +1,18 @@
-# ClipHub: Marketplace for Valadrien OS Team Configurations
+# ClipHub: Marketplace for ValAdrien OS Team Configurations
 
 > Supersession note: this marketplace plan predates the markdown-first company package direction. For the current package-format and import/export rollout plan, see `doc/plans/2026-03-13-company-import-export-v2.md` and `docs/companies/companies-spec.md`.
 
-> The "app store" for whole-company AI teams — pre-built Valadrien OS configurations, agent blueprints, skills, and governance templates that ship real work from day one.
+> The "app store" for whole-company AI teams — pre-built ValAdrien OS configurations, agent blueprints, skills, and governance templates that ship real work from day one.
 
 ## 1. Vision & Positioning
 
-**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for Valadrien OS-managed companies.
+**ClipHub** sells **entire team configurations** — org charts, agent roles, inter-agent workflows, governance rules, and project templates — for ValAdrien OS-managed companies.
 
 | Dimension | ClipHub |
 |---|---|
 | Unit of sale | Team blueprint (multi-agent org) |
 | Buyer | Founder / team lead spinning up an AI company |
-| Install target | Valadrien OS company (agents, projects, governance) |
+| Install target | ValAdrien OS company (agents, projects, governance) |
 | Value prop | "Skip org design — get a shipping team in minutes" |
 | Price range | $0–$499 per blueprint (+ individual add-ons) |
 
@@ -22,7 +22,7 @@
 
 ### 2.1 Team Blueprints (primary product)
 
-A complete Valadrien OS company configuration:
+A complete ValAdrien OS company configuration:
 
 - **Org chart**: Agents with roles, titles, reporting chains, capabilities
 - **Agent configs**: Adapter type, model, prompt templates, instructions paths
@@ -38,7 +38,7 @@ A complete Valadrien OS company configuration:
 
 ### 2.2 Agent Blueprints (individual agents within a team context)
 
-Single-agent configurations designed to plug into a Valadrien OS org:
+Single-agent configurations designed to plug into a ValAdrien OS org:
 
 - Role definition, prompt template, adapter config
 - Reporting chain expectations (who they report to)
@@ -52,11 +52,11 @@ Single-agent configurations designed to plug into a Valadrien OS org:
 
 ### 2.3 Skills (modular capabilities)
 
-Portable skill files that any Valadrien OS agent can use:
+Portable skill files that any ValAdrien OS agent can use:
 
 - Markdown skill files with instructions
 - Tool configurations and shell scripts
-- Compatible with Valadrien OS's skill loading system
+- Compatible with ValAdrien OS's skill loading system
 
 **Examples:**
 - "Git PR Workflow" — standardized PR creation and review (Free)
@@ -113,7 +113,7 @@ interface Listing {
   // Compatibility
   compatibleAdapters: string[];    // ['claude_local', 'codex_local', ...]
   requiredModels: string[];        // ['claude-opus-4-6', 'claude-sonnet-4-6']
-  valadrienOsVersionMin: string;     // Minimum Valadrien OS version
+  valadrienOsVersionMin: string;     // Minimum ValAdrien OS version
 
   // Social proof
   installCount: number;
@@ -218,7 +218,7 @@ interface Purchase {
   id: string;
   listingId: string;
   buyerUserId: string;
-  buyerCompanyId: string | null;    // Target Valadrien OS company
+  buyerCompanyId: string | null;    // Target ValAdrien OS company
   pricePaidCents: number;
   paymentIntentId: string | null;   // Stripe
   installedAt: string | null;       // When deployed to company
@@ -286,7 +286,7 @@ interface Review {
 | `PATCH` | `/api/listings/:id` | Update listing |
 | `DELETE` | `/api/listings/:id` | Archive listing |
 | `POST` | `/api/listings/:id/purchase` | Purchase listing (Stripe checkout) |
-| `POST` | `/api/listings/:id/install` | Install to Valadrien OS company |
+| `POST` | `/api/listings/:id/install` | Install to ValAdrien OS company |
 | `GET` | `/api/listings/:id/reviews` | Get reviews |
 | `POST` | `/api/listings/:id/reviews` | Submit review |
 | `GET` | `/api/creators/:slug` | Creator profile |
@@ -306,14 +306,14 @@ Homepage → Browse marketplace → Filter by type/category
   → Click listing → Read details, reviews, preview org chart
   → Click "Buy" → Stripe checkout (or free install)
   → Post-purchase: "Install to Company" button
-  → Select target Valadrien OS company (or create new)
-  → ClipHub API calls Valadrien OS API to:
+  → Select target ValAdrien OS company (or create new)
+  → ClipHub API calls ValAdrien OS API to:
       1. Create agents with configs from blueprint
       2. Set up reporting chains
       3. Create projects with workspace configs
       4. Apply governance rules
       5. Deploy skill files to agent instruction paths
-  → Redirect to Valadrien OS dashboard with new team running
+  → Redirect to ValAdrien OS dashboard with new team running
 ```
 
 ### 5.2 Creator: Build → Publish → Earn
@@ -331,11 +331,11 @@ Sign up as creator → Connect Stripe
   → Track installs, revenue, reviews on creator dashboard
 ```
 
-### 5.3 Creator: Export from Valadrien OS → Publish
+### 5.3 Creator: Export from ValAdrien OS → Publish
 
 ```
-Running Valadrien OS company → "Export as Blueprint" (CLI or UI)
-  → Valadrien OS exports:
+Running ValAdrien OS company → "Export as Blueprint" (CLI or UI)
+  → ValAdrien OS exports:
       - Agent configs (sanitized — no secrets)
       - Org chart / reporting chains
       - Governance rules
@@ -351,7 +351,7 @@ Running Valadrien OS company → "Export as Blueprint" (CLI or UI)
 
 ### 6.1 Visual Language
 
-- **Color palette**: Dark ink primary, warm sand backgrounds, accent color for CTAs (Valadrien OS brand blue/purple)
+- **Color palette**: Dark ink primary, warm sand backgrounds, accent color for CTAs (ValAdrien OS brand blue/purple)
 - **Typography**: Clean sans-serif, strong hierarchy, monospace for technical details
 - **Cards**: Rounded corners, subtle shadows, clear pricing badges
 - **Org chart visuals**: Interactive tree/graph showing agent relationships in team blueprints
@@ -362,7 +362,7 @@ Running Valadrien OS company → "Export as Blueprint" (CLI or UI)
 |---|---|
 | Product card | Org chart mini-preview + agent count badge |
 | Detail page | Interactive org chart + per-agent breakdown |
-| Install flow | One-click deploy to Valadrien OS company |
+| Install flow | One-click deploy to ValAdrien OS company |
 | Social proof | "X companies running this blueprint" |
 | Preview | Live demo sandbox (stretch goal) |
 
@@ -409,7 +409,7 @@ When a buyer clicks "Install to Company":
 ```
 POST /api/listings/:id/install
 {
-  "targetCompanyId": "uuid",         // Existing Valadrien OS company
+  "targetCompanyId": "uuid",         // Existing ValAdrien OS company
   "overrides": {                      // Optional customization
     "agentModel": "claude-sonnet-4-6", // Override default model
     "budgetScale": 0.5,               // Scale budgets
@@ -455,20 +455,20 @@ The install handler:
 
 ### 9.1 Stack
 
-- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as Valadrien OS
-- **Backend**: Node.js API (or extend Valadrien OS server)
-- **Database**: Postgres (can share Valadrien OS's DB or separate)
+- **Frontend**: Next.js (React), Tailwind CSS, same UI framework as ValAdrien OS
+- **Backend**: Node.js API (or extend ValAdrien OS server)
+- **Database**: Postgres (can share ValAdrien OS's DB or separate)
 - **Payments**: Stripe Connect (marketplace mode)
 - **Storage**: S3/R2 for listing bundles and images
-- **Auth**: Shared with Valadrien OS auth (or OAuth2)
+- **Auth**: Shared with ValAdrien OS auth (or OAuth2)
 
-### 9.2 Integration with Valadrien OS
+### 9.2 Integration with ValAdrien OS
 
 ClipHub can be:
-- **Option A**: A separate app that calls Valadrien OS's API to install blueprints
-- **Option B**: A built-in section of the Valadrien OS UI (`/marketplace` route)
+- **Option A**: A separate app that calls ValAdrien OS's API to install blueprints
+- **Option B**: A built-in section of the ValAdrien OS UI (`/marketplace` route)
 
-Option B is simpler for MVP — adds routes to the existing Valadrien OS UI and API.
+Option B is simpler for MVP — adds routes to the existing ValAdrien OS UI and API.
 
 ### 9.3 Bundle Format
 
@@ -508,14 +508,14 @@ blueprint/
 - [ ] Listing detail page with org chart visualization
 - [ ] Creator registration and listing creation wizard
 - [ ] Free installs only (no payments yet)
-- [ ] Install flow: blueprint → Valadrien OS company
+- [ ] Install flow: blueprint → ValAdrien OS company
 
 ### Phase 2: Payments & Social
 - [ ] Stripe Connect integration
 - [ ] Purchase flow
 - [ ] Review system
 - [ ] Creator analytics dashboard
-- [ ] "Export from Valadrien OS" CLI command
+- [ ] "Export from ValAdrien OS" CLI command
 
 ### Phase 3: Growth
 - [ ] Search with relevance ranking

@@ -1,6 +1,6 @@
 # @valadrien-os/plugin-kitchen-sink-example
 
-Kitchen Sink is the first-party reference plugin that demonstrates nearly the full currently implemented Valadrien OS plugin surface in one package.
+Kitchen Sink is the first-party reference plugin that demonstrates nearly the full currently implemented ValAdrien OS plugin surface in one package.
 
 It is intentionally broad:
 
@@ -24,10 +24,10 @@ pnpm --filter @valadrien-os/plugin-kitchen-sink-example build
 pnpm valadrien-os plugin install ./packages/plugins/examples/plugin-kitchen-sink-example
 ```
 
-Or install it from the Valadrien OS plugin manager as a bundled example once this repo is built.
+Or install it from the ValAdrien OS plugin manager as a bundled example once this repo is built.
 
 ## Notes
 
 - Local workspace and process demos are trusted-only and default to safe, curated commands.
 - The plugin settings page lets you toggle optional demo surfaces and local runtime behavior.
-- Some SDK-defined host surfaces still depend on the Valadrien OS host wiring them visibly; this package aims to exercise the currently mounted ones and make the rest obvious.
+- Some SDK-defined host surfaces still depend on the ValAdrien OS host wiring them visibly; this package aims to exercise the currently mounted ones and make the rest obvious.

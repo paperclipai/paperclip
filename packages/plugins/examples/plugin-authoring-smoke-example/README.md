@@ -1,6 +1,6 @@
 # Plugin Authoring Smoke Example
 
-A Valadrien OS plugin
+A ValAdrien OS plugin
 
 ## Development
 
@@ -11,7 +11,7 @@ pnpm dev:ui         # local dev server with hot-reload events
 pnpm test
 ```
 
-## Install Into Valadrien OS
+## Install Into ValAdrien OS
 
 ```bash
 pnpm valadrien-os plugin install ./

@@ -105,6 +105,6 @@ fi
 curl -sS -X PATCH \
   "$VALADRIEN_OS_API_URL/api/issues/$issue_id" \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-Valadrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H 'Content-Type: application/json' \
   --data-binary "$payload"

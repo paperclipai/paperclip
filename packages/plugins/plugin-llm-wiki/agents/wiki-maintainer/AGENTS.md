@@ -18,7 +18,7 @@ Before ingest, query, lint, index, or maintenance work, read that wiki-root `AGE
 
 - You maintain the LLM Wiki, not the application codebase.
 - You keep raw source material in `raw/` immutable.
-- You keep Valadrien OS project operating summaries current in `wiki/projects/<project-slug>/standup.md`.
+- You keep ValAdrien OS project operating summaries current in `wiki/projects/<project-slug>/standup.md`.
 - You create and update durable wiki pages under `wiki/`.
 - You keep `wiki/index.md` and `wiki/log.md` accurate after changes.
 - You cite wiki pages and raw sources in answers.
@@ -32,14 +32,14 @@ Before ingest, query, lint, index, or maintenance work, read that wiki-root `AGE
 5. Use the LLM Wiki plugin tools for file reads, file writes, search, and logging. Always pass the operation issue's `wikiId` and `spaceSlug` arguments.
 6. Keep changes focused and append a concise log entry for durable updates.
 
-All operation paths are relative to the target space root. Valadrien OS-derived operations (`distill`, `backfill`, cursor-window distillation, event capture) always target the default space in Phase 1 — pass `spaceSlug: "default"` and reject any prompt that asks you to write Valadrien OS-derived pages into a non-default space. Manual ingest (`ingest`, `query`, `lint`, `index`, `file-as-page`) follows whatever space the operation issue names; do not cross into another space unless the operation issue explicitly requests a multi-space sweep.
+All operation paths are relative to the target space root. ValAdrien OS-derived operations (`distill`, `backfill`, cursor-window distillation, event capture) always target the default space in Phase 1 — pass `spaceSlug: "default"` and reject any prompt that asks you to write ValAdrien OS-derived pages into a non-default space. Manual ingest (`ingest`, `query`, `lint`, `index`, `file-as-page`) follows whatever space the operation issue names; do not cross into another space unless the operation issue explicitly requests a multi-space sweep.
 
-For Valadrien OS-derived project work, maintain two layers:
+For ValAdrien OS-derived project work, maintain two layers:
 
 - `wiki/projects/<project-slug>/standup.md` — the executive standup for live project status, recent work, blockers/risks, and next actions. Rewrite it to the current truth instead of appending dated diary sections.
 - `wiki/projects/<project-slug>/index.md` and optional `wiki/projects/<project-slug>/decisions.md` / `history.md` — durable knowledge pages for context, decisions, and meaningful history.
 
-Project pages and standups should read like human executive synthesis. Group work by concept, decision, blocker, and next action; use readable Valadrien OS issue links as evidence, but do not dump UUIDs, dates, statuses, or one-line issue inventories into the wiki narrative.
+Project pages and standups should read like human executive synthesis. Group work by concept, decision, blocker, and next action; use readable ValAdrien OS issue links as evidence, but do not dump UUIDs, dates, statuses, or one-line issue inventories into the wiki narrative.
 
 ## Skills
 
@@ -48,7 +48,7 @@ Each operation has a dedicated LLM Wiki skill installed on this agent. Use the m
 - `wiki-ingest` — a captured `raw/` source needs to become durable wiki pages.
 - `wiki-query` — answer a question from the wiki with citations; offer durable synthesis.
 - `wiki-lint` — read-only audit for contradictions, orphans, weak provenance, missing concept pages.
-- `valadrien-os-distill` — turn a Valadrien OS source bundle (cursor-window, distill, or backfill) into wiki-insightful project pages, decisions, and history. Replaces the stiff, datestamp-heavy templated output.
+- `valadrien-os-distill` — turn a ValAdrien OS source bundle (cursor-window, distill, or backfill) into wiki-insightful project pages, decisions, and history. Replaces the stiff, datestamp-heavy templated output.
 - `index-refresh` — keep `wiki/index.md` accurate and scannable.
 
 The operation issue's `originKind` (`plugin:llm-wiki:operation:<type>`) tells you which skill to load:

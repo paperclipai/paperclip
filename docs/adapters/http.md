@@ -3,7 +3,7 @@ title: HTTP Adapter
 summary: HTTP webhook adapter
 ---
 
-The `http` adapter sends a webhook request to an external agent service. The agent runs externally and Valadrien OS just triggers it.
+The `http` adapter sends a webhook request to an external agent service. The agent runs externally and ValAdrien OS just triggers it.
 
 ## When to Use
 
@@ -26,9 +26,9 @@ The `http` adapter sends a webhook request to an external agent service. The age
 
 ## How It Works
 
-1. Valadrien OS sends a POST request to the configured URL
+1. ValAdrien OS sends a POST request to the configured URL
 2. The request body includes the execution context (agent ID, task info, wake reason)
-3. The external agent processes the request and calls back to the Valadrien OS API
+3. The external agent processes the request and calls back to the ValAdrien OS API
 4. Response from the webhook is captured as the run result
 
 ## Request Body
@@ -48,4 +48,4 @@ The webhook receives a JSON payload with:
 }
 ```
 
-The external agent uses `VALADRIEN_OS_API_URL` and an API key to call back to Valadrien OS.
+The external agent uses `VALADRIEN_OS_API_URL` and an API key to call back to ValAdrien OS.

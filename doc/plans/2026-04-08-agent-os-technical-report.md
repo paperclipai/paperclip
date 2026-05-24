@@ -1,24 +1,24 @@
-# Agent OS Technical Report for Valadrien OS
+# Agent OS Technical Report for ValAdrien OS
 
 Date: 2026-04-08
 Analyzed upstream: `rivet-dev/agent-os` at commit `0063cdccd1dcb1c8e211670cd05482d70d26a5c4` (`0063cdc`), dated 2026-04-06
 
 ## Executive summary
 
-`agent-os` is not a competitor to Valadrien OS's core product. It is an execution substrate: an embedded, VM-like runtime for agents, tools, filesystems, and session orchestration. Valadrien OS is a control plane: company scoping, task hierarchy, approvals, budgets, activity logs, workspaces, and governance.
+`agent-os` is not a competitor to ValAdrien OS's core product. It is an execution substrate: an embedded, VM-like runtime for agents, tools, filesystems, and session orchestration. ValAdrien OS is a control plane: company scoping, task hierarchy, approvals, budgets, activity logs, workspaces, and governance.
 
-The strongest takeaway is not "copy agent-os wholesale." The strongest takeaway is that Valadrien OS could selectively use its runtime ideas to improve local agent execution safety, reproducibility, and portability while keeping all company/task/governance logic in Valadrien OS.
+The strongest takeaway is not "copy agent-os wholesale." The strongest takeaway is that ValAdrien OS could selectively use its runtime ideas to improve local agent execution safety, reproducibility, and portability while keeping all company/task/governance logic in ValAdrien OS.
 
 My recommendation is:
 
-1. Do not merge agent-os concepts into the Valadrien OS core product model.
+1. Do not merge agent-os concepts into the ValAdrien OS core product model.
 2. Do evaluate an optional `agentos_local` execution adapter or internal runtime experiment.
 3. Borrow a few design patterns aggressively:
    - layered/snapshotted execution filesystems
    - explicit capability-based runtime permissions
    - a better host-tools bridge for controlled tool execution
    - a normalized session capability model for agent adapters
-4. Do not import its workflow/cron/queue abstractions into Valadrien OS core until they are reconciled with Valadrien OS's issue/comment/governance model.
+4. Do not import its workflow/cron/queue abstractions into ValAdrien OS core until they are reconciled with ValAdrien OS's issue/comment/governance model.
 
 ## What agent-os actually is
 
@@ -63,7 +63,7 @@ The kernel is implemented in Rust under `crates/kernel/src/`. It models:
 - permissioned filesystem access
 - network permission checks
 
-That gives `agent-os` a much stronger isolation story than Valadrien OS's current "launch a host CLI in a workspace" local adapter approach.
+That gives `agent-os` a much stronger isolation story than ValAdrien OS's current "launch a host CLI in a workspace" local adapter approach.
 
 ### 3. Layered filesystem and snapshots
 
@@ -101,11 +101,11 @@ The session model is more uniform than most agent wrappers. It includes:
 - sequenced session events
 - JSON-RPC transport through ACP adapters
 
-This is directly relevant to Valadrien OS because our adapter layer still normalizes each CLI agent in a fairly bespoke way.
+This is directly relevant to ValAdrien OS because our adapter layer still normalizes each CLI agent in a fairly bespoke way.
 
-## Valadrien OS anchor points
+## ValAdrien OS anchor points
 
-The most relevant current Valadrien OS surfaces for any future `agent-os` integration are:
+The most relevant current ValAdrien OS surfaces for any future `agent-os` integration are:
 
 - `packages/adapter-utils/src/types.ts`
   - shared adapter contract, session metadata, runtime service reporting, environment tests, and optional `detectModel()`
@@ -118,11 +118,11 @@ The most relevant current Valadrien OS surfaces for any future `agent-os` integr
 - local adapters such as `packages/adapters/codex-local/src/server/execute.ts` and peers
   - current host-CLI execution model that an `agent-os` runtime experiment would complement or replace for selected agents
 
-## What Valadrien OS can learn from it
+## What ValAdrien OS can learn from it
 
 ### 1. A safer local execution substrate
 
-Valadrien OS's local adapters currently run host CLIs in managed workspaces and rely on adapter-specific behavior plus process-level controls. That is pragmatic, but weakly isolated.
+ValAdrien OS's local adapters currently run host CLIs in managed workspaces and rely on adapter-specific behavior plus process-level controls. That is pragmatic, but weakly isolated.
 
 `agent-os` shows a path toward:
 
@@ -131,16 +131,16 @@ Valadrien OS's local adapters currently run host CLIs in managed workspaces and 
 - reducing accidental host leakage
 - making adapter behavior more portable across machines
 
-Best use in Valadrien OS:
+Best use in ValAdrien OS:
 
 - as an optional runtime beneath local adapters
 - or as a new adapter family for agents that can run inside ACP-compatible `agent-os` sessions
 
-This fits Valadrien OS because it improves execution safety without changing the control-plane model.
+This fits ValAdrien OS because it improves execution safety without changing the control-plane model.
 
 ### 2. Snapshotted execution roots instead of only mutable workspaces
 
-Valadrien OS already has strong execution-workspace concepts, but they are repo/worktree-centric. `agent-os` adds a stronger "start from known lower layers, write into a disposable upper layer" model.
+ValAdrien OS already has strong execution-workspace concepts, but they are repo/worktree-centric. `agent-os` adds a stronger "start from known lower layers, write into a disposable upper layer" model.
 
 That could improve:
 
@@ -154,7 +154,7 @@ This is especially interesting for tasks that do not need a full git worktree.
 
 ### 3. A capability vocabulary for runtime governance
 
-Valadrien OS has governance at the company/task level:
+ValAdrien OS has governance at the company/task level:
 
 - approvals
 - budgets
@@ -162,7 +162,7 @@ Valadrien OS has governance at the company/task level:
 - actor permissions
 - company scoping
 
-It has less structure at the runtime capability level. `agent-os` offers a clear vocabulary that Valadrien OS could adopt even without adopting the runtime itself:
+It has less structure at the runtime capability level. `agent-os` offers a clear vocabulary that ValAdrien OS could adopt even without adopting the runtime itself:
 
 - `fs.read`, `fs.write`, `fs.mount_sensitive`
 - `network.fetch`, `network.http`, `network.listen`, `network.dns`
@@ -178,20 +178,20 @@ That vocabulary would improve:
 
 ### 4. Typed host tools instead of shelling out for everything
 
-Valadrien OS's plugin system and adapters already have the beginnings of a controlled extension surface. `agent-os` reinforces the value of exposing capabilities as typed tools rather than raw shell access.
+ValAdrien OS's plugin system and adapters already have the beginnings of a controlled extension surface. `agent-os` reinforces the value of exposing capabilities as typed tools rather than raw shell access.
 
-Concrete Valadrien OS uses:
+Concrete ValAdrien OS uses:
 
 - board-approved toolkits for sensitive operations
 - company-scoped service tools
 - plugin-defined tools with explicit schemas
 - safer execution for common actions like git metadata inspection, preview lookups, deployment status checks, or document generation
 
-This aligns well with Valadrien OS's governance story.
+This aligns well with ValAdrien OS's governance story.
 
 ### 5. Better adapter normalization around sessions and capabilities
 
-Valadrien OS's adapter contract already supports execution results, session params, environment tests, skill syncing, quota windows, and optional `detectModel()`. But much of the per-agent behavior is still adapter-specific.
+ValAdrien OS's adapter contract already supports execution results, session params, environment tests, skill syncing, quota windows, and optional `detectModel()`. But much of the per-agent behavior is still adapter-specific.
 
 `agent-os` suggests a cleaner normalization target:
 
@@ -200,13 +200,13 @@ Valadrien OS's adapter contract already supports execution results, session para
 - explicit mode/config surfaces
 - explicit permission request semantics
 
-Valadrien OS does not need ACP everywhere, but it would benefit from a more formal internal session capability model inspired by this.
+ValAdrien OS does not need ACP everywhere, but it would benefit from a more formal internal session capability model inspired by this.
 
 ### 6. On-demand heavy sandbox escalation
 
 One of the best architectural choices in `agent-os` is that it does not pretend every workload fits the lightweight runtime. It has a sandbox extension for workloads that need a fuller environment.
 
-Valadrien OS can adopt that philosophy directly:
+ValAdrien OS can adopt that philosophy directly:
 
 - lightweight execution by default
 - escalate to full worktree / container / remote sandbox only when needed
@@ -214,11 +214,11 @@ Valadrien OS can adopt that philosophy directly:
 
 That is better than forcing all tasks into the heaviest environment up front.
 
-## What does not fit Valadrien OS well
+## What does not fit ValAdrien OS well
 
 ### 1. Its built-in orchestration primitives overlap the wrong layer
 
-`agent-os` includes cron/session/workflow style primitives inside the runtime package. Valadrien OS already has higher-level orchestration concepts:
+`agent-os` includes cron/session/workflow style primitives inside the runtime package. ValAdrien OS already has higher-level orchestration concepts:
 
 - issues/comments
 - heartbeat runs
@@ -227,9 +227,9 @@ That is better than forcing all tasks into the heaviest environment up front.
 - execution workspaces
 - budget enforcement
 
-If Valadrien OS copied `agent-os` cron/workflow/queue ideas directly into core, we would likely duplicate orchestration across two layers. That would blur ownership and make debugging harder.
+If ValAdrien OS copied `agent-os` cron/workflow/queue ideas directly into core, we would likely duplicate orchestration across two layers. That would blur ownership and make debugging harder.
 
-Valadrien OS should keep orchestration authoritative at the control-plane layer.
+ValAdrien OS should keep orchestration authoritative at the control-plane layer.
 
 ### 2. It is not company-scoped or governance-native
 
@@ -242,7 +242,7 @@ Valadrien OS should keep orchestration authoritative at the control-plane layer.
 - approval routing
 - budget hard-stop behavior
 
-Those are Valadrien OS's differentiators. They should not be displaced by runtime abstractions.
+Those are ValAdrien OS's differentiators. They should not be displaced by runtime abstractions.
 
 ### 3. It introduces meaningful implementation complexity
 
@@ -258,7 +258,7 @@ This is justified only if we want stronger local isolation or portability. It is
 
 ### 4. Its security model is not a drop-in governance solution
 
-The permission model is good, but it is low-level. Valadrien OS would still need to answer:
+The permission model is good, but it is low-level. ValAdrien OS would still need to answer:
 
 - who can authorize a capability
 - how approval decisions are logged
@@ -273,11 +273,11 @@ The repo is explicit that some runtimes are planned, partial, or still being ada
 
 - good ideas for ACP-native or compatible agents
 - less certainty for every CLI agent we support today
-- real integration work for Codex/Cursor/Gemini-style Valadrien OS adapters
+- real integration work for Codex/Cursor/Gemini-style ValAdrien OS adapters
 
 So the main near-term value is not universal replacement. It is selective use where compatibility is strong.
 
-## Concrete recommendations for Valadrien OS
+## Concrete recommendations for ValAdrien OS
 
 ### Recommendation A: prototype an optional `agentos_local` adapter
 
@@ -286,7 +286,7 @@ This is the highest-value experiment.
 Goal:
 
 - run one supported agent type inside `agent-os`
-- keep Valadrien OS heartbeat/task/workspace/budget logic unchanged
+- keep ValAdrien OS heartbeat/task/workspace/budget logic unchanged
 - evaluate startup time, isolation, transcript quality, and operational complexity
 
 Good first target:
@@ -295,19 +295,19 @@ Good first target:
 
 Why not start with Codex:
 
-- Valadrien OS's Codex adapter is already important and carries repo-specific behavior
+- ValAdrien OS's Codex adapter is already important and carries repo-specific behavior
 - `agent-os`'s Codex story is present in the registry/docs, but the safest path is to validate the runtime on a less central adapter first
 
 Success criteria:
 
 - heartbeat can invoke the adapter reliably
 - session resume works across heartbeats
-- Valadrien OS still records logs, summaries, cost metadata, and issue comments normally
+- ValAdrien OS still records logs, summaries, cost metadata, and issue comments normally
 - runtime permissions can be configured without breaking common tasks
 
 ### Recommendation B: adopt capability vocabulary into adapter configs
 
-Even without using `agent-os`, Valadrien OS should consider standardizing adapter/runtime permissions around a vocabulary like:
+Even without using `agent-os`, ValAdrien OS should consider standardizing adapter/runtime permissions around a vocabulary like:
 
 - filesystem
 - network
@@ -323,7 +323,7 @@ This would improve:
 
 ### Recommendation C: explore snapshot-backed execution workspaces
 
-Valadrien OS should evaluate whether some execution workspaces can be backed by:
+ValAdrien OS should evaluate whether some execution workspaces can be backed by:
 
 - a reusable lower snapshot
 - a disposable upper layer
@@ -340,7 +340,7 @@ It is less urgent for full repo editing flows that already benefit from git work
 
 ### Recommendation D: strengthen typed tool surfaces
 
-Valadrien OS plugins and adapters should continue moving toward explicit typed tools over ad hoc shell access. `agent-os` confirms that this is the right direction.
+ValAdrien OS plugins and adapters should continue moving toward explicit typed tools over ad hoc shell access. `agent-os` confirms that this is the right direction.
 
 This is a good fit for:
 
@@ -348,9 +348,9 @@ This is a good fit for:
 - workspace runtime services
 - governed operations that need approval or auditability
 
-### Recommendation E: do not import runtime-level workflows into Valadrien OS core
+### Recommendation E: do not import runtime-level workflows into ValAdrien OS core
 
-Valadrien OS should not copy `agent-os` cron/workflow/queue concepts into core orchestration yet.
+ValAdrien OS should not copy `agent-os` cron/workflow/queue concepts into core orchestration yet.
 
 If we want them later, they must map cleanly onto:
 
@@ -380,15 +380,15 @@ Without that mapping, they would create a second orchestration system inside the
 
 ### Poor fits right now
 
-- moving Valadrien OS orchestration into agent-os workflows
+- moving ValAdrien OS orchestration into agent-os workflows
 - replacing company/task/governance models with runtime constructs
 - making Rust sidecars a mandatory dependency for all local execution
 
 ## Bottom line
 
-`agent-os` is useful to Valadrien OS as an execution technology reference, not as a product model.
+`agent-os` is useful to ValAdrien OS as an execution technology reference, not as a product model.
 
-Valadrien OS should treat it the same way it treats sandboxes or agent CLIs:
+ValAdrien OS should treat it the same way it treats sandboxes or agent CLIs:
 
 - execution substrate underneath the control plane
 - optional where the tradeoff is worth it

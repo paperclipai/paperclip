@@ -1,7 +1,7 @@
 ---
 name: deal-with-security-advisory
 description: >
-  Handle a GitHub Security Advisory response for Valadrien OS, including
+  Handle a GitHub Security Advisory response for ValAdrien OS, including
   confidential fix development in a temporary private fork, human coordination
   on advisory-thread comments, CVE request, synchronized advisory publication,
   and immediate security release steps.

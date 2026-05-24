@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ValDola-stack/valadrien-os/master/doc/assets/header.png" alt="Valadrien OS — runs your business" width="720" />
+  <img src="https://raw.githubusercontent.com/ValDola-stack/valadrien-os/master/doc/assets/header.png" alt="ValAdrien OS — runs your business" width="720" />
 </p>
 
 <p align="center">
@@ -24,13 +24,13 @@
 
 <br/>
 
-## What is Valadrien OS?
+## What is ValAdrien OS?
 
 # Open-source orchestration for zero-human companies
 
-**If OpenClaw is an _employee_, Valadrien OS is the _company_**
+**If OpenClaw is an _employee_, ValAdrien OS is the _company_**
 
-Valadrien OS is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
+ValAdrien OS is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
 
 It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
 
@@ -44,7 +44,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 
 <br/>
 
-> **COMING SOON: Clipmart** — Download and run entire companies with one click. Browse pre-built company templates — full org structures, agent configs, and skills — and import them into your Valadrien OS instance in seconds.
+> **COMING SOON: Clipmart** — Download and run entire companies with one click. Browse pre-built company templates — full org structures, agent configs, and skills — and import them into your ValAdrien OS instance in seconds.
 
 <br/>
 
@@ -67,7 +67,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 
 <br/>
 
-## Valadrien OS is right for you if
+## ValAdrien OS is right for you if
 
 - ✅ You want to build **autonomous AI companies**
 - ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
@@ -128,28 +128,28 @@ Monitor and manage your autonomous businesses from anywhere.
 
 <br/>
 
-## Problems Valadrien OS solves
+## Problems ValAdrien OS solves
 
-| Without Valadrien OS                                                                                                                     | With Valadrien OS                                                                                                                         |
+| Without ValAdrien OS                                                                                                                     | With ValAdrien OS                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                |
 | ❌ You manually gather context from several places to remind your bot what you're actually doing.                                     | ✅ Context flows from the task up through the project and company goals — your agent always knows what to do and why.                  |
-| ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ Valadrien OS gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
+| ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ ValAdrien OS gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
 | ❌ Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                           | ✅ Cost tracking surfaces token budgets and throttles agents when they're out. Management prioritizes with budgets.                    |
 | ❌ You have recurring jobs (customer support, social, reports) and have to remember to manually kick them off.                        | ✅ Heartbeats handle regular work on a schedule. Management supervises.                                                                |
-| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in Valadrien OS. Your coding agent works on it until it's done. Management reviews their work.                              |
+| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in ValAdrien OS. Your coding agent works on it until it's done. Management reviews their work.                              |
 
 <br/>
 
-## Why Valadrien OS is special
+## Why ValAdrien OS is special
 
-Valadrien OS handles the hard orchestration details correctly.
+ValAdrien OS handles the hard orchestration details correctly.
 
 |                                   |                                                                                                               |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
-| **Runtime skill injection.**      | Agents can learn Valadrien OS workflows and project context at runtime, without retraining.                      |
+| **Runtime skill injection.**      | Agents can learn ValAdrien OS workflows and project context at runtime, without retraining.                      |
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
 | **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
 | **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
@@ -157,22 +157,22 @@ Valadrien OS handles the hard orchestration details correctly.
 
 <br/>
 
-## What Valadrien OS is not
+## What ValAdrien OS is not
 
 |                              |                                                                                                                      |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
 | **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. Valadrien OS models companies — with org charts, goals, budgets, and governance.            |
-| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Valadrien OS manages the organization they work in.               |
-| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Valadrien OS. If you have twenty — you definitely do. |
-| **Not a code review tool.**  | Valadrien OS orchestrates work, not pull requests. Bring your own review process.                                       |
+| **Not a workflow builder.**  | No drag-and-drop pipelines. ValAdrien OS models companies — with org charts, goals, budgets, and governance.            |
+| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. ValAdrien OS manages the organization they work in.               |
+| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need ValAdrien OS. If you have twenty — you definitely do. |
+| **Not a code review tool.**  | ValAdrien OS orchestrates work, not pull requests. Bring your own review process.                                       |
 
 <br/>
 
 ## Quickstart
 
-Open source. Self-hosted. No Valadrien OS account required.
+Open source. Self-hosted. No ValAdrien OS account required.
 
 ```bash
 npx valadrien-os onboard --yes
@@ -186,7 +186,7 @@ npx valadrien-os onboard --yes --bind lan
 npx valadrien-os onboard --yes --bind tailnet
 ```
 
-If you already have Valadrien OS configured, rerunning `onboard` keeps the existing config in place. Use `valadrien-os configure` to edit settings.
+If you already have ValAdrien OS configured, rerunning `onboard` keeps the existing config in place. Use `valadrien-os configure` to edit settings.
 
 Or manually:
 
@@ -208,25 +208,25 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
-If you're a solo-entreprenuer you can use Tailscale to access Valadrien OS on the go. Then later you can deploy to e.g. Vercel when you need it.
+If you're a solo-entreprenuer you can use Tailscale to access ValAdrien OS on the go. Then later you can deploy to e.g. Vercel when you need it.
 
 **Can I run multiple companies?**
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
-**How is Valadrien OS different from agents like OpenClaw or Claude Code?**
-Valadrien OS _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+**How is ValAdrien OS different from agents like OpenClaw or Claude Code?**
+ValAdrien OS _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
 
-**Why should I use Valadrien OS instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Valadrien OS does this for you.
+**Why should I use ValAdrien OS instead of just pointing my OpenClaw to Asana or Trello?**
+Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - ValAdrien OS does this for you.
 
 (Bring-your-own-ticket-system is on the Roadmap)
 
 **Do agents run continuously?**
-By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Valadrien OS coordinates.
+By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and ValAdrien OS coordinates.
 
 <br/>
 
-## Valadrien OS Cloud Sync
+## ValAdrien OS Cloud Sync
 
 Cloud upstream sync is behind the `Cloud Sync` experimental setting. Enable it in Instance Settings before pushing.
 
@@ -302,7 +302,7 @@ We welcome contributions. See the [contributing guide](https://github.com/ValDol
 
 ## License
 
-MIT &copy; 2026 Valadrien OS
+MIT &copy; 2026 ValAdrien OS
 
 ## Star History
 

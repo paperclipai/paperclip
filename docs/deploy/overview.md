@@ -3,7 +3,7 @@ title: Deployment Overview
 summary: Deployment modes at a glance
 ---
 
-Valadrien OS supports three deployment configurations, from zero-friction local to internet-facing production.
+ValAdrien OS supports three deployment configurations, from zero-friction local to internet-facing production.
 
 ## Deployment Modes
 
@@ -38,7 +38,7 @@ Valadrien OS supports three deployment configurations, from zero-friction local 
 
 ## Choosing a Mode
 
-- **Just trying Valadrien OS?** Use `local_trusted` (the default)
+- **Just trying ValAdrien OS?** Use `local_trusted` (the default)
 - **Sharing with a team on private network?** Use `authenticated` + `private`
 - **Deploying to the cloud?** Use `authenticated` + `public` — see [AWS ECS Fargate guide](aws-ecs.md)
 

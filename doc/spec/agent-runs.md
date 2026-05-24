@@ -7,7 +7,7 @@ Scope: Agent execution runtime, adapter protocol, wakeup orchestration, and live
 
 ## 1. Document Role
 
-This spec defines how Valadrien OS actually runs agents while staying runtime-agnostic.
+This spec defines how ValAdrien OS actually runs agents while staying runtime-agnostic.
 
 - `doc/SPEC-implementation.md` remains the V1 baseline contract.
 - This document adds concrete subsystem detail for agent execution, including local CLI adapters, runtime state persistence, wakeup scheduling, and browser live updates.
@@ -17,12 +17,12 @@ This spec defines how Valadrien OS actually runs agents while staying runtime-ag
 
 The following intentions are explicitly preserved in this spec:
 
-1. Valadrien OS is adapter-agnostic. The key is a protocol, not a specific runtime.
+1. ValAdrien OS is adapter-agnostic. The key is a protocol, not a specific runtime.
 2. We still need default built-ins to make the system useful immediately.
 3. First two built-ins are `claude-local` and `codex-local`.
 4. Those adapters run local CLIs directly on the host machine, unsandboxed.
 5. Agent config includes working directory and initial/default prompt.
-6. Heartbeats run the configured adapter process, Valadrien OS manages lifecycle, and on exit Valadrien OS parses JSON output and updates state.
+6. Heartbeats run the configured adapter process, ValAdrien OS manages lifecycle, and on exit ValAdrien OS parses JSON output and updates state.
 7. Session IDs and token usage must be persisted so later heartbeats can resume.
 8. Adapters should support status updates (short message + color) and optional streaming logs.
 9. UI should support prompt template "pills" for variable insertion.
@@ -561,7 +561,7 @@ Rules:
 - `run.source`
 - `run.startedAt`
 - `heartbeat.reason`
-- `valadrien-os.skill` (shared Valadrien OS skill text block)
+- `valadrien-os.skill` (shared ValAdrien OS skill text block)
 - `credentials.apiBaseUrl`
 - `credentials.apiKey` (optional, sensitive)
 

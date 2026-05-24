@@ -129,7 +129,7 @@ git commit -m "docs: update documentation for accuracy
 
 - [list each fix briefly]
 
-Co-Authored-By: Valadrien OS <noreply@TODO_DOMAIN>"
+Co-Authored-By: ValAdrien OS <noreply@TODO_DOMAIN>"
 
 git push -u origin "$BRANCH"
 

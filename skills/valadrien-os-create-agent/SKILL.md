@@ -1,12 +1,12 @@
 ---
 name: valadrien-os-create-agent
 description: >
-  Create new agents in Valadrien OS with governance-aware hiring. Use when you need
+  Create new agents in ValAdrien OS with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
 ---
 
-# Valadrien OS Create Agent Skill
+# ValAdrien OS Create Agent Skill
 
 Use this skill when you are asked to hire/create an agent.
 
@@ -28,7 +28,7 @@ curl -sS "$VALADRIEN_OS_API_URL/api/agents/me" \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY"
 ```
 
-### 2. Discover adapter configuration for this Valadrien OS instance
+### 2. Discover adapter configuration for this ValAdrien OS instance
 
 ```sh
 curl -sS "$VALADRIEN_OS_API_URL/llms/agent-configuration.txt" \
@@ -84,7 +84,7 @@ curl -sS "$VALADRIEN_OS_API_URL/llms/agent-icons.txt" \
 - if the role may handle private advisories or sensitive disclosures, confirm a confidential workflow exists first (dedicated skill or documented manual process)
 - capabilities
 - managed instructions bundle (`AGENTS.md`) for adapters that support it; avoid durable `promptTemplate` config
-- for coding or execution agents, include the Valadrien OS execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries
+- for coding or execution agents, include the ValAdrien OS execution contract: start actionable work in the same heartbeat; do not stop at a plan unless planning was requested; leave durable progress with a clear next action; use child issues for long or parallel delegated work instead of polling; mark blocked work with owner/action; respect budget, pause/cancel, approval gates, and company boundaries
 - instruction text such as `AGENTS.md` built from step 4; for local managed-bundle adapters, send this as top-level `instructionsBundle.files["AGENTS.md"]`. Do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate` for new agents.
 - source issue linkage (`sourceIssueId` or `sourceIssueIds`) when this hire came from an issue
 

@@ -33,7 +33,7 @@
     "wiki",
     "knowledge"
   ],
-  "author": "Valadrien OS",
+  "author": "ValAdrien OS",
   "license": "MIT",
   "devDependencies": {
     "@valadrien-os/plugin-sdk": "workspace:*",

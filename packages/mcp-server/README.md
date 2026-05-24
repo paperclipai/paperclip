@@ -1,15 +1,15 @@
-# Valadrien OS MCP Server
+# ValAdrien OS MCP Server
 
-Model Context Protocol server for Valadrien OS.
+Model Context Protocol server for ValAdrien OS.
 
-This package is a thin MCP wrapper over the existing Valadrien OS REST API. It does
+This package is a thin MCP wrapper over the existing ValAdrien OS REST API. It does
 not talk to the database directly and it does not reimplement business logic.
 
 ## Authentication
 
 The server reads its configuration from environment variables:
 
-- `VALADRIEN_OS_API_URL` - Valadrien OS base URL, for example `http://localhost:3100`
+- `VALADRIEN_OS_API_URL` - ValAdrien OS base URL, for example `http://localhost:3100`
 - `VALADRIEN_OS_API_KEY` - bearer token used for `/api` requests
 - `VALADRIEN_OS_COMPANY_ID` - optional default company for company-scoped tools
 - `VALADRIEN_OS_AGENT_ID` - optional default agent for checkout helpers

@@ -11,11 +11,11 @@ Explain why browser processes accumulate during local agent runs and define a cl
 
 ## Short answer
 
-Yes, there is a likely root cause in Valadrien OS's local execution model.
+Yes, there is a likely root cause in ValAdrien OS's local execution model.
 
 Today, heartbeat-run local adapters persist and manage only the top-level spawned PID. Their timeout/cancel path uses direct `child.kill()` semantics. That is weaker than the runtime-service path, which already tracks and terminates whole process groups.
 
-If Codex, Claude, Cursor, or a skill launched through them starts Chrome or Chromium helpers, Valadrien OS can lose ownership of those descendants even when it still believes it handled the run correctly.
+If Codex, Claude, Cursor, or a skill launched through them starts Chrome or Chromium helpers, ValAdrien OS can lose ownership of those descendants even when it still believes it handled the run correctly.
 
 ## Observed implementation facts
 
@@ -51,13 +51,13 @@ If Codex, Claude, Cursor, or a skill launched through them starts Chrome or Chro
 - `terminateLocalService()` prefers `process.kill(-processGroupId, signal)` on POSIX
 - it escalates from `SIGTERM` to `SIGKILL`
 
-This is the clearest internal comparison point: Valadrien OS already has one local-process subsystem that treats process-group ownership as the right abstraction.
+This is the clearest internal comparison point: ValAdrien OS already has one local-process subsystem that treats process-group ownership as the right abstraction.
 
 ### 3. The current recovery path explains why leaks would be visible but hard to reason about
 
 If the direct adapter process exits, hangs, or is cancelled after launching a browser subtree:
 
-- Valadrien OS may think it cancelled the run because the parent process is gone
+- ValAdrien OS may think it cancelled the run because the parent process is gone
 - descendant Chrome helpers may still be running
 - orphan recovery has no persisted process-group identity to reconcile or reap later
 
@@ -75,7 +75,7 @@ So `agent-browser` is probably not the root cause. It is the workload that expos
 
 ## Success condition
 
-This work is successful when Valadrien OS can:
+This work is successful when ValAdrien OS can:
 
 1. start a local adapter run and own the full descendant tree it created
 2. cancel, timeout, or recover that run without leaving Chrome descendants behind on POSIX
@@ -88,7 +88,7 @@ Do not:
 
 - special-case `agent-browser` only
 - depend on manual `pkill chrome` cleanup as the primary fix
-- require every skill author to add bespoke browser teardown logic before Valadrien OS can clean up correctly
+- require every skill author to add bespoke browser teardown logic before ValAdrien OS can clean up correctly
 - change remote/http adapter behavior as part of the first pass
 
 ## Proposed plan
@@ -97,7 +97,7 @@ Do not:
 
 Objective:
 
-- make the leak measurable from Valadrien OS's side before changing execution semantics
+- make the leak measurable from ValAdrien OS's side before changing execution semantics
 
 Work:
 
@@ -171,7 +171,7 @@ Objective:
 Work:
 
 - surface the tracked process metadata in run details or debug endpoints
-- add a control-plane cleanup action or CLI utility for stale local run processes owned by Valadrien OS
+- add a control-plane cleanup action or CLI utility for stale local run processes owned by ValAdrien OS
 - scope cleanup by run/agent/company instead of broad browser-name matching
 
 This should replace ad hoc scripts as the general-purpose escape hatch.
@@ -233,6 +233,6 @@ Mitigation:
 
 ## Recommendation
 
-Treat this as a Valadrien OS executor ownership bug, not an `agent-browser` bug.
+Treat this as a ValAdrien OS executor ownership bug, not an `agent-browser` bug.
 
 `agent-browser` should remain a useful repro case, but the implementation should be shared across all local child-process adapters so any descendant process tree spawned by Codex, Claude, Cursor, Gemini, Pi, or OpenCode is owned and cleaned up consistently.

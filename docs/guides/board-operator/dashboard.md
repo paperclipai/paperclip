@@ -1,6 +1,6 @@
 ---
 title: Dashboard
-summary: Understanding the Valadrien OS dashboard
+summary: Understanding the ValAdrien OS dashboard
 ---
 
 The dashboard gives you a real-time overview of your autonomous company's health.

@@ -133,7 +133,7 @@ const MANAGED_SKILLS = [
   { status: "resolved", skillId: "skl-llmw-ingest", resourceKey: "wiki-ingest", details: { name: "Wiki Ingest", key: "plugin/valadrien-os-plugin-llm-wiki/wiki-ingest", description: null } },
   { status: "resolved", skillId: "skl-llmw-query", resourceKey: "wiki-query", details: { name: "Wiki Query", key: "plugin/valadrien-os-plugin-llm-wiki/wiki-query", description: null } },
   { status: "resolved", skillId: "skl-llmw-lint", resourceKey: "wiki-lint", details: { name: "Wiki Lint", key: "plugin/valadrien-os-plugin-llm-wiki/wiki-lint", description: null } },
-  { status: "resolved", skillId: "skl-llmw-distill", resourceKey: "valadrien-os-distill", details: { name: "Valadrien OS Distill", key: "plugin/valadrien-os-plugin-llm-wiki/valadrien-os-distill", description: null } },
+  { status: "resolved", skillId: "skl-llmw-distill", resourceKey: "valadrien-os-distill", details: { name: "ValAdrien OS Distill", key: "plugin/valadrien-os-plugin-llm-wiki/valadrien-os-distill", description: null } },
   { status: "resolved", skillId: "skl-llmw-index", resourceKey: "index-refresh", details: { name: "Index Refresh", key: "plugin/valadrien-os-plugin-llm-wiki/index-refresh", description: null } },
 ];
 
@@ -195,7 +195,7 @@ const PAGES = {
   ],
   sources: [
     { rawPath: "raw/karpathy-llm-wiki.md", title: "Karpathy LLM Wiki gist", sourceType: "url", url: "https://gist.github.com/karpathy/.../llm-wiki", status: "captured", createdAt: "2026-05-01T19:00:00Z" },
-    { rawPath: "raw/valadrien-os-v1-spec.md", title: "Valadrien OS V1 spec", sourceType: "file", url: null, status: "captured", createdAt: "2026-05-01T18:30:00Z" },
+    { rawPath: "raw/valadrien-os-v1-spec.md", title: "ValAdrien OS V1 spec", sourceType: "file", url: null, status: "captured", createdAt: "2026-05-01T18:30:00Z" },
     { rawPath: "raw/design-doc-2026-04.md", title: "Design doc — April 2026", sourceType: "file", url: null, status: "captured", createdAt: "2026-04-28T14:00:00Z" },
   ],
 };
@@ -205,7 +205,7 @@ const PAGE_CONTENT = {
   path: "wiki/concepts/managed-resources.md",
   contents: `# Managed Resources
 
-A **plugin-managed resource** is a normal Valadrien OS resource (agent, routine, project) that a plugin has seeded with suggested defaults. The plugin marks ownership via a stable \`resourceKey\` so that installs, imports, and upgrades can find the resource even when UUIDs differ.
+A **plugin-managed resource** is a normal ValAdrien OS resource (agent, routine, project) that a plugin has seeded with suggested defaults. The plugin marks ownership via a stable \`resourceKey\` so that installs, imports, and upgrades can find the resource even when UUIDs differ.
 
 The host treats managed resources as fully editable. The operator can rename, change adapter config, edit instructions, change schedule, etc. The plugin can offer a *reset to plugin defaults* action that re-applies the suggested values.
 
@@ -259,7 +259,7 @@ const TEMPLATE_AGENTS = {
   hash: "def456",
   contents: `# LLM Wiki Maintainer
 
-You maintain this wiki through Valadrien OS plugin tools.
+You maintain this wiki through ValAdrien OS plugin tools.
 
 Before answering or editing:
 

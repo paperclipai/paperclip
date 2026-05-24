@@ -1,9 +1,9 @@
 ---
 title: External Adapters
-summary: Build, package, and distribute adapters as plugins without modifying Valadrien OS source
+summary: Build, package, and distribute adapters as plugins without modifying ValAdrien OS source
 ---
 
-Valadrien OS supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to Valadrien OS's source code.
+ValAdrien OS supports external adapter plugins that can be installed from npm packages or local directories. External adapters work exactly like built-in adapters — they execute agents, parse output, and render transcripts — but they live in their own package and don't require changes to ValAdrien OS's source code.
 
 ## Built-in vs External
 
@@ -12,8 +12,8 @@ Valadrien OS supports external adapter plugins that can be installed from npm pa
 | Source location | Inside `valadrien-os-fork/packages/adapters/` | Separate npm package or local directory |
 | Registration | Hardcoded in three registries | Loaded at startup via plugin system |
 | UI parser | Static import at build time | Dynamically loaded from API (see [UI Parser](/adapters/adapter-ui-parser)) |
-| Distribution | Ships with Valadrien OS | Published to npm or linked via `file:` |
-| Updates | Requires Valadrien OS release | Independent versioning |
+| Distribution | Ships with ValAdrien OS | Published to npm or linked via `file:` |
+| Updates | Requires ValAdrien OS release | Independent versioning |
 
 ## Quick Start
 
@@ -146,7 +146,7 @@ import type {
 
 import {
   runChildProcess,
-  buildValadrien OSEnv,
+  buildValAdrien OSEnv,
   renderTemplate,
 } from "@valadrien-os/adapter-utils/server-utils";
 
@@ -160,8 +160,8 @@ export async function execute(
   const command = String(config.command ?? "my-agent");
   const timeoutSec = Number(config.timeoutSec ?? 300);
 
-  // 2. Build environment with Valadrien OS vars injected
-  const env = buildValadrien OSEnv(agent);
+  // 2. Build environment with ValAdrien OS vars injected
+  const env = buildValAdrien OSEnv(agent);
 
   // 3. Render prompt template
   const prompt = config.promptTemplate
@@ -201,7 +201,7 @@ export async function execute(
 | Helper | Purpose |
 |--------|---------|
 | `runChildProcess(command, opts)` | Spawn a child process with timeout, grace period, and streaming callbacks |
-| `buildValadrien OSEnv(agent)` | Inject `VALADRIEN_OS_*` environment variables |
+| `buildValAdrien OSEnv(agent)` | Inject `VALADRIEN_OS_*` environment variables |
 | `renderTemplate(template, data)` | `{{variable}}` substitution in prompt templates |
 | `asString(v)`, `asNumber(v)`, `asBoolean(v)` | Safe config value extraction |
 
@@ -260,7 +260,7 @@ Check levels:
 ### From npm
 
 ```sh
-# Via the Valadrien OS UI
+# Via the ValAdrien OS UI
 # Settings → Adapters → Install from npm → "my-valadrien-os-adapter"
 
 # Or via API
@@ -279,7 +279,7 @@ curl -X POST http://localhost:3102/api/adapters \
   -d '{"localPath": "/home/user/my-adapter"}'
 ```
 
-Local adapters are symlinked into Valadrien OS's adapter directory. Changes to the source are picked up on server restart.
+Local adapters are symlinked into ValAdrien OS's adapter directory. Changes to the source are picked up on server restart.
 
 ### Via adapter-plugins.json
 
@@ -375,7 +375,7 @@ npm run build
 npm publish
 ```
 
-Other Valadrien OS users can then install your adapter by package name from the UI or API.
+Other ValAdrien OS users can then install your adapter by package name from the UI or API.
 
 ## Security
 

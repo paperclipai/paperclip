@@ -1,14 +1,14 @@
 ---
 name: release
 description: >
-  Coordinate a full Valadrien OS release across engineering verification, npm,
+  Coordinate a full ValAdrien OS release across engineering verification, npm,
   GitHub, smoke testing, and announcement follow-up. Use when leadership asks
   to ship a release, not merely to discuss versioning.
 ---
 
 # Release Coordination Skill
 
-Run the full Valadrien OS maintainer release workflow, not just an npm publish.
+Run the full ValAdrien OS maintainer release workflow, not just an npm publish.
 
 This skill coordinates:
 
@@ -38,7 +38,7 @@ Before proceeding, verify all of the following:
 4. The candidate SHA has passed the verification gate or is about to.
 5. If manifests changed, the CI-owned `pnpm-lock.yaml` refresh is already merged on `master`.
 6. npm publish rights are available through GitHub trusted publishing, or through local npm auth for emergency/manual use.
-7. If running through Valadrien OS, you have issue context for status updates and follow-up task creation.
+7. If running through ValAdrien OS, you have issue context for status updates and follow-up task creation.
 
 If any precondition fails, stop and report the blocker.
 
@@ -53,7 +53,7 @@ Collect these inputs up front:
 
 ## Step 0 — Release Model
 
-Valadrien OS now uses a commit-driven release model:
+ValAdrien OS now uses a commit-driven release model:
 
 1. every push to `master` publishes a canary automatically
 2. canaries use `YYYY.MDD.P-canary.N`
@@ -210,7 +210,7 @@ Create or verify follow-up work for:
 
 - website changelog publishing
 - launch post / social announcement
-- release summary in Valadrien OS issue context
+- release summary in ValAdrien OS issue context
 
 These should reference the stable release, not the canary.
 

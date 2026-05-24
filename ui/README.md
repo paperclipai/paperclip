@@ -1,6 +1,6 @@
 # @valadrien-os/ui
 
-Published static assets for the Valadrien OS board UI.
+Published static assets for the ValAdrien OS board UI.
 
 ## What gets published
 

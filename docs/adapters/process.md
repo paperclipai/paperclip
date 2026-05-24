@@ -7,7 +7,7 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## When to Use
 
-- Running a Python script that calls the Valadrien OS API
+- Running a Python script that calls the ValAdrien OS API
 - Executing a custom agent loop
 - Any runtime that can be invoked as a shell command
 
@@ -27,8 +27,8 @@ The `process` adapter executes arbitrary shell commands. Use it for simple scrip
 
 ## How It Works
 
-1. Valadrien OS spawns the configured command as a child process
-2. Standard Valadrien OS environment variables are injected (`VALADRIEN_OS_AGENT_ID`, `VALADRIEN_OS_API_KEY`, etc.)
+1. ValAdrien OS spawns the configured command as a child process
+2. Standard ValAdrien OS environment variables are injected (`VALADRIEN_OS_AGENT_ID`, `VALADRIEN_OS_API_KEY`, etc.)
 3. The process runs to completion
 4. Exit code determines success/failure
 
@@ -47,4 +47,4 @@ An agent that runs a Python script:
 }
 ```
 
-The script can use the injected environment variables to authenticate with the Valadrien OS API and perform work.
+The script can use the injected environment variables to authenticate with the ValAdrien OS API and perform work.

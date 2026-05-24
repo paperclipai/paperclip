@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       valadrien_os_version:
-        description: Published Valadrien OS dist-tag to test
+        description: Published ValAdrien OS dist-tag to test
         required: true
         default: canary
         type: choice

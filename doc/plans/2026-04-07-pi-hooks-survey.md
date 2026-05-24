@@ -5,24 +5,24 @@ Date: 2026-04-07
 
 ## Why this exists
 
-We were asked to find the hook surfaces exposed by `pi` and `pi-mono`, then decide which ideas transfer cleanly into Valadrien OS.
+We were asked to find the hook surfaces exposed by `pi` and `pi-mono`, then decide which ideas transfer cleanly into ValAdrien OS.
 
 This note is based on direct source inspection of:
 
 - `badlogic/pi` default branch and `pi2` branch
 - `badlogic/pi-mono` `packages/coding-agent`
-- current Valadrien OS plugin and adapter surfaces in this repo
+- current ValAdrien OS plugin and adapter surfaces in this repo
 
 ## Short answer
 
 - Current `pi` does not expose a comparable extension hook API. What it exposes today is a JSON event stream from `pi-agent`.
 - `pi-mono` does expose a real extension hook system. It is broad, typed, and intentionally allows mutation of agent/runtime behavior.
-- Valadrien OS should copy only the safe subset:
+- ValAdrien OS should copy only the safe subset:
   - typed event subscriptions
   - read-only run lifecycle events
   - explicit worker lifecycle hooks
   - plugin-to-plugin events
-- Valadrien OS should not copy the dangerous subset:
+- ValAdrien OS should not copy the dangerous subset:
   - arbitrary mutation hooks on core control-plane decisions
   - project-local plugin loading
   - built-in tool shadowing by name collision
@@ -109,9 +109,9 @@ Verified `pi.on(...)` hook names:
 
 That is a good fit for a local coding harness. It is not automatically a good fit for a company control plane.
 
-## What Valadrien OS already has
+## What ValAdrien OS already has
 
-Valadrien OS already has several hook-like surfaces, but they are much narrower and safer:
+ValAdrien OS already has several hook-like surfaces, but they are much narrower and safer:
 
 - plugin worker lifecycle hooks such as `setup()` and `onHealth()`
 - declared webhook endpoints for plugins
@@ -126,36 +126,36 @@ The plugin event bus is already pointed in the right direction:
 - plugin-emitted events are namespaced under `plugin.<pluginId>.*`
 - plugins do not override core behavior by name collision
 
-## What transfers well to Valadrien OS
+## What transfers well to ValAdrien OS
 
-These ideas from `pi-mono` fit Valadrien OS with little conceptual risk:
+These ideas from `pi-mono` fit ValAdrien OS with little conceptual risk:
 
 ### 1. Read-only run lifecycle subscriptions
 
-Valadrien OS should continue exposing run and transcript events to plugins, for example:
+ValAdrien OS should continue exposing run and transcript events to plugins, for example:
 
 - run started / finished
 - tool started / finished
 - usage reported
 - issue comment created
 
-This matches Valadrien OS's control-plane posture: observe, react, automate.
+This matches ValAdrien OS's control-plane posture: observe, react, automate.
 
 ### 2. Plugin-to-plugin events
 
-Valadrien OS already has this. It is worth keeping and extending.
+ValAdrien OS already has this. It is worth keeping and extending.
 
 This is the clean replacement for many ad hoc hook chains.
 
 ### 3. Explicit worker lifecycle hooks
 
-Valadrien OS already has `setup()` and `onHealth()`. That is the right shape.
+ValAdrien OS already has `setup()` and `onHealth()`. That is the right shape.
 
 If more lifecycle is needed, it should stay explicit and host-controlled.
 
 ### 4. Trusted adapter-level prompt/runtime middleware
 
-Some `pi-mono` ideas do belong in Valadrien OS, but only inside trusted adapter/runtime code:
+Some `pi-mono` ideas do belong in ValAdrien OS, but only inside trusted adapter/runtime code:
 
 - prompt shaping before a run starts
 - provider request customization
@@ -165,11 +165,11 @@ This should be an adapter surface, not a general company plugin surface.
 
 ## What should not transfer directly
 
-These `pi-mono` capabilities are a bad fit for Valadrien OS core:
+These `pi-mono` capabilities are a bad fit for ValAdrien OS core:
 
 ### 1. Arbitrary mutation hooks on control-plane decisions
 
-Valadrien OS should not let general plugins rewrite:
+ValAdrien OS should not let general plugins rewrite:
 
 - issue checkout semantics
 - approval outcomes
@@ -183,11 +183,11 @@ Those are core invariants.
 
 `pi-mono`'s low-friction override model is great for a personal coding harness.
 
-Valadrien OS should keep plugin tools namespaced and non-shadowing.
+ValAdrien OS should keep plugin tools namespaced and non-shadowing.
 
 ### 3. Project-local plugin loading
 
-Valadrien OS is an operator-controlled control plane. Repo-local plugin auto-loading would make behavior too implicit and too hard to govern.
+ValAdrien OS is an operator-controlled control plane. Repo-local plugin auto-loading would make behavior too implicit and too hard to govern.
 
 ### 4. UI-session-specific hooks as first-class product surface
 
@@ -202,9 +202,9 @@ Hooks like:
 
 are tied to `pi-mono` being an interactive terminal coding harness.
 
-They do not map directly to Valadrien OS's board-and-issues model.
+They do not map directly to ValAdrien OS's board-and-issues model.
 
-## Recommended Valadrien OS direction
+## Recommended ValAdrien OS direction
 
 If we want a "hooks" story inspired by `pi-mono`, it should split into two layers:
 
@@ -241,7 +241,7 @@ If the question is "what hooks do `pi` and `pi-mono` have?":
 - `pi`: JSON output events, not a general extension hook system
 - `pi-mono`: a broad extension hook API with 27 named event hooks plus tool/command/provider registration
 
-If the question is "what works for Valadrien OS too?":
+If the question is "what works for ValAdrien OS too?":
 
 - yes: typed event subscriptions, worker lifecycle hooks, namespaced plugin events, read-only run lifecycle events
 - maybe, but trusted-only: prompt/provider/tool middleware around adapter execution

@@ -2,7 +2,7 @@
 
 ## Problem
 
-Agents need API keys to authenticate with Valadrien OS. The current approach
+Agents need API keys to authenticate with ValAdrien OS. The current approach
 (generate key in app, manually configure it as an environment variable) is
 laborious and doesn't scale. Different adapter types have different trust
 models, and we want to support a spectrum from "zero-config local" to
@@ -25,10 +25,10 @@ models, and we want to support a spectrum from "zero-config local" to
 
 ### Tier 1: Local Adapter (claude-local, codex-local)
 
-**Trust model:** The adapter process runs on the same machine as the Valadrien OS
+**Trust model:** The adapter process runs on the same machine as the ValAdrien OS
 server (or is invoked directly by it). There is no meaningful network boundary.
 
-**Approach:** Valadrien OS generates a token and passes it directly to the agent
+**Approach:** ValAdrien OS generates a token and passes it directly to the agent
 process as a parameter/env var at invocation time. No manual setup required.
 
 **Token format:** Short-lived JWT issued per heartbeat invocation (or per
@@ -53,7 +53,7 @@ add a `VALADRIEN_OS_API_KEY` (JWT) to the set of injected env vars.
 **Trust model:** A developer is setting up a remote or semi-remote agent and
 has shell access to it.
 
-**Approach:** Similar to `claude setup-token` -- the developer runs a Valadrien OS CLI
+**Approach:** Similar to `claude setup-token` -- the developer runs a ValAdrien OS CLI
 command that opens a browser URL for confirmation, then receives a token that
 gets stored in the agent's config automatically.
 
@@ -65,7 +65,7 @@ valadrien-os auth login
 **Token format:** Long-lived API key (stored hashed on the server side).
 
 **Status:** Future. Not needed until we have remote adapters that aren't
-managed by the Valadrien OS server itself.
+managed by the ValAdrien OS server itself.
 
 ### Tier 3: Agent Self-Registration (Invite Link)
 
@@ -75,26 +75,26 @@ agent receives an onboarding URL and negotiates its own registration.
 
 **Approach:**
 
-1. A company admin (user or agent) generates an **invite URL** from Valadrien OS.
+1. A company admin (user or agent) generates an **invite URL** from ValAdrien OS.
 2. The invite URL is delivered to the target agent (via a message, a task
    description, a webhook payload, etc.).
 3. The agent fetches the URL, which returns an **onboarding document**
    containing:
    - Company identity and context
-   - The Valadrien OS SKILL.md (or a link to it)
-   - What information Valadrien OS needs from the agent (e.g. webhook URL, adapter
+   - The ValAdrien OS SKILL.md (or a link to it)
+   - What information ValAdrien OS needs from the agent (e.g. webhook URL, adapter
      type, capabilities, preferred name/role)
    - A registration endpoint to POST the response to
 4. The agent responds with its configuration (e.g. "here's my webhook URL,
    here's my name, here are my capabilities").
-5. Valadrien OS stores the pending registration.
+5. ValAdrien OS stores the pending registration.
 6. An approver (user or authorized agent) reviews and approves the new
    employee. Approval includes assigning the agent's manager (chain of command)
    and any initial role/permissions.
-7. On approval, Valadrien OS provisions the agent's credentials and sends the
+7. On approval, ValAdrien OS provisions the agent's credentials and sends the
    first heartbeat.
 
-**Token format:** Valadrien OS issues an API key (or JWT) upon approval, delivered
+**Token format:** ValAdrien OS issues an API key (or JWT) upon approval, delivered
 to the agent via its declared communication channel.
 
 **Inspiration:**
@@ -130,7 +130,7 @@ Response:
     "skillUrl": "https://app.TODO_DOMAIN/skills/valadrien-os/SKILL.md",
     "requiredFields": {
       "name": "Your display name",
-      "adapterType": "How Valadrien OS should send you heartbeats",
+      "adapterType": "How ValAdrien OS should send you heartbeats",
       "webhookUrl": "If adapter is webhook-based, your endpoint URL",
       "capabilities": "What you can do (free text or structured)"
     },
@@ -166,13 +166,13 @@ OpenClaw is the ideal first target for Tier 3 because:
 
 **Workflow:**
 
-1. Generate a Valadrien OS invite link for the company.
+1. Generate a ValAdrien OS invite link for the company.
 2. Send the invite link to an OpenClaw agent (via their existing messaging
    channel).
 3. The OpenClaw agent fetches the invite, reads the onboarding doc, and
    responds with its webhook configuration.
-4. A Valadrien OS company member approves the new agent.
-5. Valadrien OS begins sending heartbeats to the OpenClaw webhook endpoint.
+4. A ValAdrien OS company member approves the new agent.
+5. ValAdrien OS begins sending heartbeats to the OpenClaw webhook endpoint.
 
 ---
 

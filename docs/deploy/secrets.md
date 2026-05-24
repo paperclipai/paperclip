@@ -3,23 +3,23 @@ title: Secrets Management
 summary: Master key, encryption, and strict mode
 ---
 
-Valadrien OS encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
+ValAdrien OS encrypts secrets at rest using a local master key. Agent environment variables that contain sensitive values (API keys, tokens) are stored as encrypted secret references.
 
 ## Custody Boundaries
 
-Valadrien OS protects secret values up to the moment they are handed to an agent
+ValAdrien OS protects secret values up to the moment they are handed to an agent
 or workload:
 
 - Storage: values are encrypted at rest by the active provider. The local
   provider keeps them encrypted with a key that never leaves the host.
 - Transport: values are decrypted server-side and injected into the agent
   process environment, SSH command env, sandbox driver, or HTTP request
-  immediately before the call. Valadrien OS does not return decrypted values to
+  immediately before the call. ValAdrien OS does not return decrypted values to
   the board UI.
 - Audit: each resolution records a non-sensitive event (secret id, version,
   provider id, consumer, outcome) without the value or provider credentials.
 
-Once a value reaches the consuming process, Valadrien OS can no longer guarantee
+Once a value reaches the consuming process, ValAdrien OS can no longer guarantee
 secrecy. The agent (or sandbox, or remote host) can read the value, write it to
 its own logs or transcript, or pass it to downstream tools. Treat any secret
 you bind to an agent as exposed to that agent. Limit blast radius with bindings
@@ -43,12 +43,12 @@ For agent and project environment variables:
 4. Set the row source to `Secret`, select the stored secret, and choose either
    `latest` or a pinned version.
 
-At runtime, Valadrien OS resolves the selected secret server-side and injects the
+At runtime, ValAdrien OS resolves the selected secret server-side and injects the
 resolved value under the env key from the binding row. The stored secret name
 can be human-readable; the binding key is what the agent process receives.
 
 Project env applies to every issue run in that project. When a project env key
-matches an agent env key, the project value wins before Valadrien OS injects its
+matches an agent env key, the project value wins before ValAdrien OS injects its
 own `VALADRIEN_OS_*` runtime variables.
 
 ## Default Provider: `local_encrypted`
@@ -60,7 +60,7 @@ Secrets are encrypted with a local master key stored at:
 ```
 
 This key is auto-created during onboarding. The key never leaves your machine.
-Valadrien OS best-effort enforces `0600` permissions when it creates or loads the
+ValAdrien OS best-effort enforces `0600` permissions when it creates or loads the
 key file. `valadrien-os doctor` and the provider health API warn when the file is
 readable by group or other users.
 
@@ -114,9 +114,9 @@ configuration or `VALADRIEN_OS_SECRETS_STRICT_MODE=false`.
 
 ## External References
 
-Provider-owned secrets can be linked without copying values into Valadrien OS by
+Provider-owned secrets can be linked without copying values into ValAdrien OS by
 using `managedMode: "external_reference"` plus a provider `externalRef`.
-Valadrien OS stores metadata and a non-sensitive fingerprint, never the value.
+ValAdrien OS stores metadata and a non-sensitive fingerprint, never the value.
 Runtime resolution remains server-side and binding-enforced.
 
 The built-in AWS, GCP, and Vault provider IDs currently accept external
@@ -124,7 +124,7 @@ reference metadata, but runtime resolution requires provider configuration in th
 deployment. Their provider health check reports this as a warning until
 configured.
 
-For hosted Valadrien OS Cloud on AWS, see the AWS Secrets Manager operational
+For hosted ValAdrien OS Cloud on AWS, see the AWS Secrets Manager operational
 contract — required env vars, IAM/KMS scoping, naming and tag conventions, and
 backup/rotation/incident runbooks — in `doc/SECRETS-AWS-PROVIDER.md`.
 
@@ -164,8 +164,8 @@ at validation time.
 
 That keeps the bootstrap rule from the AWS provider applicable to every
 provider family: **provider credentials live in deployment infrastructure
-identity, not in Valadrien OS company secrets**. Allowed credential sources are
-workload identity attached to the Valadrien OS server (instance profile, IRSA, ECS
+identity, not in ValAdrien OS company secrets**. Allowed credential sources are
+workload identity attached to the ValAdrien OS server (instance profile, IRSA, ECS
 task role), `AWS_PROFILE` / SSO / shared config for local runs, an orchestrator
 secret store that boots the server, or short-lived shell credentials for local
 development. Do not paste long-lived API keys into the vault config.
@@ -251,7 +251,7 @@ rejected.
 ### Remote Import From AWS Vaults
 
 AWS provider vaults can import existing AWS Secrets Manager entries as
-Valadrien OS `external_reference` secrets. This is a metadata-only link: Valadrien OS
+ValAdrien OS `external_reference` secrets. This is a metadata-only link: ValAdrien OS
 stores the AWS ARN/path, a fingerprint/version reference, and binding metadata.
 It does not read, copy, store, log, or display the remote plaintext secret
 value during preview or import.
@@ -263,16 +263,16 @@ Operator flow in the board UI:
 3. In the `Secrets` tab, choose `Import from vault`.
 4. Select an AWS vault, search the remote inventory, and load more pages as
    needed.
-5. Check the rows to import, review/edit the Valadrien OS name and key, then
+5. Check the rows to import, review/edit the ValAdrien OS name and key, then
    submit.
 6. Review the result summary for created, skipped, and failed rows.
 
 The preview list is intentionally paged and search-first. AWS accounts can have
 large per-Region inventories, and `ListSecrets` returns opaque `NextToken`
-cursors. Do not expect Valadrien OS to crawl a whole account in the background;
+cursors. Do not expect ValAdrien OS to crawl a whole account in the background;
 load pages deliberately and retry throttled requests with backoff.
 
-Remote import exposes AWS secret metadata visible to the Valadrien OS runtime
+Remote import exposes AWS secret metadata visible to the ValAdrien OS runtime
 role, including names/ARNs and safe derived fields such as dates, whether a
 description or KMS key exists, and tag count. Treat names, ARNs, tags, and
 search text as operational metadata that may be sensitive. The API and activity
@@ -289,12 +289,12 @@ Required AWS posture:
 - Runtime resolution of an imported reference still needs
   `secretsmanager:GetSecretValue` on the selected external ARN/path and KMS
   decrypt when that secret uses a customer-managed key.
-- Keep managed create/rotate/delete permissions scoped to the Valadrien OS
+- Keep managed create/rotate/delete permissions scoped to the ValAdrien OS
   deployment prefix. Do not broaden managed write/delete permissions just
   because import inventory is enabled.
 
 Safe scoping comes from deployment posture rather than AWS list filtering:
-dedicated Valadrien OS runtime roles per environment/account, AWS vaults pointed at
+dedicated ValAdrien OS runtime roles per environment/account, AWS vaults pointed at
 the intended account and Region, import-enabled roles only where inventory
 exposure is acceptable, and board-only access to the import routes. Tags and
 name filters are search aids, not a permission model.
@@ -316,29 +316,29 @@ If import preview fails:
 
 Each provider family has a different backup story:
 
-- `local_encrypted`: back up the local master key file and the Valadrien OS
+- `local_encrypted`: back up the local master key file and the ValAdrien OS
   database together. Either alone is not enough to restore the encrypted
   values, and the vault row only records the path and acknowledgement, not the
   key bytes.
-- `aws_secrets_manager`: back up Valadrien OS's database for vault metadata
+- `aws_secrets_manager`: back up ValAdrien OS's database for vault metadata
   (vault id, region, prefix, KMS key id, default flag, bindings, version
   pointers). The actual secret values live in AWS Secrets Manager under the
-  configured prefix; restore by pointing the same Valadrien OS company at the
+  configured prefix; restore by pointing the same ValAdrien OS company at the
   same AWS namespace and confirming the runtime role still has
   `GetSecretValue` plus KMS decrypt. The full restore checklist lives in
   `doc/SECRETS-AWS-PROVIDER.md`.
 - `gcp_secret_manager` and `vault`: while these are coming soon, only the
-  draft vault config exists in Valadrien OS. Database backups capture it. There
+  draft vault config exists in ValAdrien OS. Database backups capture it. There
   is nothing to restore on the provider side until runtime support lands.
 
 ### AWS Provider Bootstrap Boundary
 
-The AWS Secrets Manager provider cannot bootstrap itself from Valadrien OS
+The AWS Secrets Manager provider cannot bootstrap itself from ValAdrien OS
 `company_secrets`. Its initial AWS access must be present before the server can
 create or resolve AWS-backed company secrets, regardless of whether you use the
 deployment-level default or a per-company vault.
 
-For Valadrien OS Cloud, provision the server runtime IAM role/workload identity,
+For ValAdrien OS Cloud, provision the server runtime IAM role/workload identity,
 KMS key, deployment prefix, and non-secret `VALADRIEN_OS_SECRETS_AWS_*` environment
 configuration before enabling AWS-backed secrets in the board UI. For
 self-hosted and local runs, use the AWS SDK default credential chain: instance
@@ -346,7 +346,7 @@ profile, ECS task role, EKS IRSA/OIDC web identity, AWS SSO/shared config via
 `AWS_PROFILE`, or short-lived shell credentials for local development.
 
 Do not store AWS root credentials or long-lived IAM user access keys in
-Valadrien OS secrets. Bootstrap material belongs in infrastructure IAM/workload
+ValAdrien OS secrets. Bootstrap material belongs in infrastructure IAM/workload
 identity, the process environment, an AWS profile, or the orchestrator secret
 store.
 
@@ -363,7 +363,7 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
-Use the CLI command for normal operations because it goes through the Valadrien OS
+Use the CLI command for normal operations because it goes through the ValAdrien OS
 API, creates or rotates secret records, and updates agent env bindings with
 audit logging.
 
@@ -379,7 +379,7 @@ pnpm valadrien-os secrets declarations --company-id <company-id> --kind secret
 Before importing a package into another instance, use those declarations to
 create local values or link hosted provider references in the target deployment.
 For hosted providers such as AWS Secrets Manager, the hosted provider remains
-the value custodian; Valadrien OS stores metadata and provider version references,
+the value custodian; ValAdrien OS stores metadata and provider version references,
 not provider credentials or plaintext secret values.
 
 ## Secret References in Agent Config

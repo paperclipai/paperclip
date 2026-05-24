@@ -6,7 +6,7 @@ First-party reference plugin showing the smallest possible UI extension.
 
 - a manifest with a `dashboardWidget` UI slot
 - `entrypoints.ui` wiring for plugin UI bundles
-- a minimal React widget rendered in the Valadrien OS dashboard
+- a minimal React widget rendered in the ValAdrien OS dashboard
 - reading host context (`companyId`) from `PluginWidgetProps`
 - worker lifecycle hooks (`setup`, `onHealth`) for basic runtime observability
 

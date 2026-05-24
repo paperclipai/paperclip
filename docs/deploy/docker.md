@@ -3,7 +3,7 @@ title: Docker
 summary: Docker Compose quickstart
 ---
 
-Run Valadrien OS in Docker without installing Node or pnpm locally.
+Run ValAdrien OS in Docker without installing Node or pnpm locally.
 
 ## Compose Quickstart (Recommended)
 

@@ -2,14 +2,14 @@
 
 This Worker is the operator-facing bridge used by `@valadrien-os/plugin-cloudflare-sandbox`.
 
-It exposes a small authenticated JSON API under `/api/valadrien-os-sandbox/v1` and translates Valadrien OS lease and command requests into Cloudflare Sandbox SDK calls.
+It exposes a small authenticated JSON API under `/api/valadrien-os-sandbox/v1` and translates ValAdrien OS lease and command requests into Cloudflare Sandbox SDK calls.
 
 ## What it does
 
 - health and probe
 - acquire, resume, release, and destroy leases
 - execute commands in a sandbox session
-- clean up timed-out sessions so Valadrien OS does not inherit wedged background processes
+- clean up timed-out sessions so ValAdrien OS does not inherit wedged background processes
 
 ## Prerequisites
 
@@ -38,7 +38,7 @@ pnpm dev
 pnpm deploy
 ```
 
-After deploy, configure Valadrien OS with:
+After deploy, configure ValAdrien OS with:
 
 - `bridgeBaseUrl`: your Worker URL
 - `bridgeAuthToken`: the same bearer token value stored in `BRIDGE_AUTH_TOKEN`

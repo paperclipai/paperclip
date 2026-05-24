@@ -1,26 +1,26 @@
 ---
 name: valadrien-os-create-plugin
 description: >
-  Create and develop external Valadrien OS plugins with the CLI-first workflow.
+  Create and develop external ValAdrien OS plugins with the CLI-first workflow.
   Use when scaffolding a new plugin, working on a local plugin against a running
-  Valadrien OS instance, or updating plugin authoring docs. Covers `valadrien-os
+  ValAdrien OS instance, or updating plugin authoring docs. Covers `valadrien-os
   plugin init`, the local install loop via `valadrien-os plugin install <path>`,
   worker/UI rebuild and reload semantics, and the required success checklist.
 ---
 
-# Create and develop a Valadrien OS plugin
+# Create and develop a ValAdrien OS plugin
 
-Use this skill when the task is to create, scaffold, or iterate on a Valadrien OS plugin against a local Valadrien OS instance.
+Use this skill when the task is to create, scaffold, or iterate on a ValAdrien OS plugin against a local ValAdrien OS instance.
 
-## 1. Default: build the plugin OUTSIDE Valadrien OS core
+## 1. Default: build the plugin OUTSIDE ValAdrien OS core
 
 Plugins are their own packages. Unless the task **explicitly** asks for a bundled in-repo example, do not add plugin source under `packages/plugins/` in this repo.
 
-- Scaffold the plugin into a directory outside the Valadrien OS checkout (e.g. `~/dev/valadrien-os-plugins/<name>`).
-- Install it into the running Valadrien OS instance by local absolute path.
-- Edit code in the external package; let Valadrien OS pick up rebuilt output.
+- Scaffold the plugin into a directory outside the ValAdrien OS checkout (e.g. `~/dev/valadrien-os-plugins/<name>`).
+- Install it into the running ValAdrien OS instance by local absolute path.
+- Edit code in the external package; let ValAdrien OS pick up rebuilt output.
 
-Only edit Valadrien OS core itself when the user asks to surface a plugin as a bundled example (`server/src/routes/plugins.ts`, in-repo example lists, docs).
+Only edit ValAdrien OS core itself when the user asks to surface a plugin as a bundled example (`server/src/routes/plugins.ts`, in-repo example lists, docs).
 
 ## 2. Ground rules
 
@@ -53,7 +53,7 @@ Useful flags (all optional):
 - `--template <default|connector|workspace|environment>` — starter template.
 - `--category <connector|workspace|automation|ui|environment>` — manifest category.
 - `--display-name <name>`, `--description <text>`, `--author <name>` — manifest metadata.
-- `--sdk-path <path>` — snapshot the local SDK from a Valadrien OS checkout into `.valadrien-os-sdk/` (useful when developing against an unreleased SDK).
+- `--sdk-path <path>` — snapshot the local SDK from a ValAdrien OS checkout into `.valadrien-os-sdk/` (useful when developing against an unreleased SDK).
 
 On success the command prints the exact next commands (`cd`, `pnpm install`, `pnpm dev`, `valadrien-os plugin install <abs-path>`). Run them in order.
 
@@ -121,7 +121,7 @@ pnpm build
 
 If the plugin is already running under `pnpm dev`, you can keep the watcher up and run `pnpm typecheck` and `pnpm test` in a separate shell.
 
-If you changed Valadrien OS SDK/host/plugin runtime code in addition to the plugin, also run the relevant Valadrien OS workspace checks.
+If you changed ValAdrien OS SDK/host/plugin runtime code in addition to the plugin, also run the relevant ValAdrien OS workspace checks.
 
 ## 7. Success checklist (report this back)
 
@@ -135,7 +135,7 @@ When you finish a local plugin task, report:
 
 If any item is missing, mark it as such — do not silently skip.
 
-## 8. When NOT to edit Valadrien OS core
+## 8. When NOT to edit ValAdrien OS core
 
 Do not add the plugin under `packages/plugins/` or update bundled-example wiring unless the user explicitly asks for a bundled example. Local-path installs are the supported development model; npm packages are the production deployment path.
 

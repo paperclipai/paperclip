@@ -106,9 +106,9 @@ Purpose:
 ### Semantics
 
 - `local`
-  - Valadrien OS may create host-local worktrees, processes, and paths
+  - ValAdrien OS may create host-local worktrees, processes, and paths
 - `cloud`
-  - Valadrien OS should assume no durable host-local execution workspace management
+  - ValAdrien OS should assume no durable host-local execution workspace management
   - adapter-managed and cloud-sandbox flows should be treated as first-class
 - `hybrid`
   - both local and remote execution strategies may exist

@@ -41,7 +41,7 @@ This starts:
 
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
-`pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Valadrien OS dev runner is already alive, Valadrien OS reports the existing process instead of starting a duplicate.
+`pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching ValAdrien OS dev runner is already alive, ValAdrien OS reports the existing process instead of starting a duplicate.
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
@@ -133,7 +133,7 @@ pnpm valadrien-os run
 
 ## Docker Quickstart (No local Node install)
 
-Build and run Valadrien OS in Docker:
+Build and run ValAdrien OS in Docker:
 
 ```sh
 docker build -t valadrien-os-local .
@@ -207,25 +207,25 @@ pnpm valadrien-os configure --section storage
 
 ## Default Agent Workspaces
 
-When a local agent run has no resolved project/session workspace, Valadrien OS falls back to an agent home workspace under the instance root:
+When a local agent run has no resolved project/session workspace, ValAdrien OS falls back to an agent home workspace under the instance root:
 
 - `~/.valadrien-os/instances/default/workspaces/<agent-id>`
 
 This path honors `VALADRIEN_OS_HOME` and `VALADRIEN_OS_INSTANCE_ID` in non-default setups.
 
-For `codex_local`, Valadrien OS also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
+For `codex_local`, ValAdrien OS also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
 
 - `~/.valadrien-os/instances/default/companies/<company-id>/codex-home`
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
-Local adapters require their corresponding CLI/session setup on the machine running Valadrien OS. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
+Local adapters require their corresponding CLI/session setup on the machine running ValAdrien OS. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
 ## Worktree-local Instances
 
-When developing from multiple git worktrees, do not point two Valadrien OS servers at the same embedded PostgreSQL data directory.
+When developing from multiple git worktrees, do not point two ValAdrien OS servers at the same embedded PostgreSQL data directory.
 
-Instead, create a repo-local Valadrien OS config plus an isolated instance for the worktree:
+Instead, create a repo-local ValAdrien OS config plus an isolated instance for the worktree:
 
 ```sh
 valadrien-os worktree init
@@ -239,7 +239,7 @@ This command:
 - creates an isolated instance under `~/.valadrien-os-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
-- by default seeds the isolated DB in `minimal` mode from the current effective Valadrien OS instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
+- by default seeds the isolated DB in `minimal` mode from the current effective ValAdrien OS instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
 
@@ -247,7 +247,7 @@ Seed modes:
 - `full` makes a full logical clone of the source instance
 - `--no-seed` creates an empty isolated instance
 
-Seeded worktree instances quarantine copied live execution by default for both `minimal` and `full` seeds. During restore, Valadrien OS disables copied agent timer heartbeats, resets copied `running` agents to `idle`, blocks and unassigns copied agent-owned `in_progress` issues, and unassigns copied agent-owned `todo`/`in_review` issues. This keeps a freshly booted worktree from starting agents for work already owned by the source instance. Pass `--preserve-live-work` only when you intentionally want the isolated worktree to resume copied assignments.
+Seeded worktree instances quarantine copied live execution by default for both `minimal` and `full` seeds. During restore, ValAdrien OS disables copied agent timer heartbeats, resets copied `running` agents to `idle`, blocks and unassigns copied agent-owned `in_progress` issues, and unassigns copied agent-owned `todo`/`in_review` issues. This keeps a freshly booted worktree from starting agents for work already owned by the source instance. Pass `--preserve-live-work` only when you intentionally want the isolated worktree to resume copied assignments.
 
 After `worktree init`, both the server and the CLI auto-load the repo-local `.valadrien-os/.env` when run inside that worktree, so normal commands like `pnpm dev`, `valadrien-os doctor`, and `valadrien-os db:backup` stay scoped to the worktree instance.
 
@@ -339,9 +339,9 @@ cd /path/to/valadrien-os
 pnpm valadrien-os worktree repair --branch PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 ```
 
-For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's Valadrien OS server first so the command can replace the DB safely.
+For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's ValAdrien OS server first so the command can replace the DB safely.
 
-**`pnpm valadrien-os worktree reseed [options]`** — Re-seed an existing worktree-local instance from another Valadrien OS instance or worktree while preserving the target worktree's current config, ports, and instance identity.
+**`pnpm valadrien-os worktree reseed [options]`** — Re-seed an existing worktree-local instance from another ValAdrien OS instance or worktree while preserving the target worktree's current config, ports, and instance identity.
 
 | Option | Description |
 |---|---|
@@ -372,7 +372,7 @@ pnpm valadrien-os worktree reseed \
   --seed-mode full
 ```
 
-**`pnpm valadrien-os worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Valadrien OS instance inside it. This combines `git worktree add` with `worktree init` in a single step.
+**`pnpm valadrien-os worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated ValAdrien OS instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
 | Option | Description |
 |---|---|
@@ -396,7 +396,7 @@ pnpm valadrien-os worktree:make my-feature --start-point origin/main
 pnpm valadrien-os worktree:make experiment --no-seed
 ```
 
-**`pnpm valadrien-os worktree env [options]`** — Print shell exports for the current worktree-local Valadrien OS instance.
+**`pnpm valadrien-os worktree env [options]`** — Print shell exports for the current worktree-local ValAdrien OS instance.
 
 | Option | Description |
 |---|---|
@@ -411,7 +411,7 @@ pnpm valadrien-os worktree env --json
 eval "$(pnpm valadrien-os worktree env)"
 ```
 
-For project execution worktrees, Valadrien OS can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `VALADRIEN_OS_WORKSPACE_*`, `VALADRIEN_OS_PROJECT_ID`, `VALADRIEN_OS_AGENT_ID`, and `VALADRIEN_OS_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
+For project execution worktrees, ValAdrien OS can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `VALADRIEN_OS_WORKSPACE_*`, `VALADRIEN_OS_PROJECT_ID`, `VALADRIEN_OS_AGENT_ID`, and `VALADRIEN_OS_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
 ## Quick Health Checks
 
@@ -442,7 +442,7 @@ If you set `DATABASE_URL`, the server will use that instead of embedded PostgreS
 
 ## Automatic DB Backups
 
-Valadrien OS can run automatic logical database backups on a timer. These backups cover
+ValAdrien OS can run automatic logical database backups on a timer. These backups cover
 non-system database schemas, including migration history and plugin-owned database
 schemas. Defaults:
 
@@ -529,7 +529,7 @@ Default behavior:
 
 ## CLI Client Operations
 
-Valadrien OS CLI now includes client-side control-plane commands in addition to setup commands.
+ValAdrien OS CLI now includes client-side control-plane commands in addition to setup commands.
 
 Quick examples:
 
@@ -564,7 +564,7 @@ The board UI generates agent onboarding prompts from the add-agent modal (`+` in
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
 - `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
 - `GET /api/skills/index` lists available skill documents.
-- `GET /api/skills/valadrien-os` returns the Valadrien OS heartbeat skill markdown.
+- `GET /api/skills/valadrien-os` returns the ValAdrien OS heartbeat skill markdown.
 
 ## OpenClaw Join Smoke Test
 
@@ -617,6 +617,6 @@ State behavior for this smoke script:
 
 Networking behavior for this smoke script:
 
-- auto-detects and prints a Valadrien OS host URL reachable from inside OpenClaw Docker
+- auto-detects and prints a ValAdrien OS host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `VALADRIEN_OS_HOST_FROM_CONTAINER` / `VALADRIEN_OS_HOST_PORT`)
-- if Valadrien OS rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm valadrien-os allowed-hostname host.docker.internal` and restart Valadrien OS
+- if ValAdrien OS rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm valadrien-os allowed-hostname host.docker.internal` and restart ValAdrien OS

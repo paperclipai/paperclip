@@ -3,7 +3,7 @@ title: Managing Tasks
 summary: Creating issues, assigning work, and tracking progress
 ---
 
-Issues (tasks) are the unit of work in Valadrien OS. They form a hierarchy that traces all work back to the company goal.
+Issues (tasks) are the unit of work in ValAdrien OS. They form a hierarchy that traces all work back to the company goal.
 
 ## Creating Issues
 

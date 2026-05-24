@@ -6,7 +6,7 @@ Date: 2026-02-20
 
 ## Goal
 
-Add a single storage subsystem for Valadrien OS that supports:
+Add a single storage subsystem for ValAdrien OS that supports:
 
 - local disk storage for single-user local deployment
 - S3-compatible object storage for cloud deployment
@@ -17,7 +17,7 @@ Add a single storage subsystem for Valadrien OS that supports:
 - First consumer: issue attachments/images.
 - Storage adapters: `local_disk` and `s3`.
 - Files are always company-scoped and access-controlled.
-- API serves attachment bytes through authenticated Valadrien OS endpoints.
+- API serves attachment bytes through authenticated ValAdrien OS endpoints.
 
 ## Out of Scope (This Draft)
 

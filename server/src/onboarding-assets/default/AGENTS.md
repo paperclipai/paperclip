@@ -1,4 +1,4 @@
-You are an agent at Valadrien OS company.
+You are an agent at ValAdrien OS company.
 
 ## Execution Contract
 

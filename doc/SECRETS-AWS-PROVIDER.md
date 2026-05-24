@@ -1,16 +1,16 @@
 # AWS Secrets Manager Provider
 
-Operational contract for the hosted `aws_secrets_manager` secret provider used by Valadrien OS Cloud.
+Operational contract for the hosted `aws_secrets_manager` secret provider used by ValAdrien OS Cloud.
 
 ## Scope
 
-- Hosted provider for Valadrien OS-managed secrets when Valadrien OS Cloud runs on AWS.
+- Hosted provider for ValAdrien OS-managed secrets when ValAdrien OS Cloud runs on AWS.
 - Source of truth for secret values is AWS Secrets Manager, not Postgres.
-- Valadrien OS stores only metadata needed for ownership, bindings, version selection, audit, and runtime resolution.
-- AWS provider bootstrap credentials are deployment/runtime credentials, not Valadrien OS-managed company secrets.
+- ValAdrien OS stores only metadata needed for ownership, bindings, version selection, audit, and runtime resolution.
+- AWS provider bootstrap credentials are deployment/runtime credentials, not ValAdrien OS-managed company secrets.
 - Remote import for existing AWS secrets is metadata-only. Preview/import uses
-  AWS inventory metadata and creates Valadrien OS external references; it does not
-  copy plaintext into Valadrien OS.
+  AWS inventory metadata and creates ValAdrien OS external references; it does not
+  copy plaintext into ValAdrien OS.
 - Per-company AWS provider vaults (named instances of `aws_secrets_manager`
   with their own region, namespace, prefix, KMS key id, and tags) are managed
   in the board UI under `Company Settings → Secrets → Provider vaults`. See
@@ -21,31 +21,31 @@ Operational contract for the hosted `aws_secrets_manager` secret provider used b
 
 ## Bootstrap Trust Model
 
-The AWS provider has a chicken-and-egg boundary: Valadrien OS cannot use
+The AWS provider has a chicken-and-egg boundary: ValAdrien OS cannot use
 `company_secrets` to unlock the AWS provider that stores those secrets. The
-initial AWS trust must exist before the Valadrien OS server starts.
+initial AWS trust must exist before the ValAdrien OS server starts.
 
 Allowed bootstrap locations:
 
-- Infrastructure IAM or workload identity attached to the Valadrien OS server
+- Infrastructure IAM or workload identity attached to the ValAdrien OS server
   runtime.
-- Process environment or orchestrator secret store used to start the Valadrien OS
+- Process environment or orchestrator secret store used to start the ValAdrien OS
   server.
 - Local AWS SDK sources such as `AWS_PROFILE`, AWS SSO/shared config, web
   identity, container metadata, or instance metadata.
 - Short-lived shell credentials for local development only.
 
 Do not ask operators to paste AWS root credentials or long-lived IAM user access
-keys into the Valadrien OS board UI. Do not store those bootstrap keys in
+keys into the ValAdrien OS board UI. Do not store those bootstrap keys in
 `company_secrets`.
 
-## Valadrien OS Cloud Bootstrap
+## ValAdrien OS Cloud Bootstrap
 
-Valadrien OS Cloud must provision the AWS backing resources before any board user
+ValAdrien OS Cloud must provision the AWS backing resources before any board user
 can create AWS-backed company secrets:
 
 1. Create or select the deployment KMS key.
-2. Create the Valadrien OS server runtime role for the deployment.
+2. Create the ValAdrien OS server runtime role for the deployment.
 3. Attach a minimum IAM policy scoped to the deployment Secrets Manager prefix
    and the configured KMS key.
 4. Configure the server runtime with the non-secret provider environment
@@ -54,8 +54,8 @@ can create AWS-backed company secrets:
    runtime and confirm that the provider reports the expected region, prefix,
    deployment id, KMS setting, and AWS SDK credential source.
 
-Once this is in place, the board UI can create Valadrien OS-managed AWS secrets and
-Valadrien OS will write them under the deployment/company namespace.
+Once this is in place, the board UI can create ValAdrien OS-managed AWS secrets and
+ValAdrien OS will write them under the deployment/company namespace.
 
 ## Self-Hosted And Local Bootstrap
 
@@ -81,8 +81,8 @@ pnpm dev
 
 Temporary `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` environment credentials
 are acceptable only as a local break-glass or short-lived test source. They
-should not be written to Valadrien OS config, committed to `.env` files, stored in
-`company_secrets`, or used as the default Valadrien OS Cloud bootstrap path.
+should not be written to ValAdrien OS config, committed to `.env` files, stored in
+`company_secrets`, or used as the default ValAdrien OS Cloud bootstrap path.
 
 ## Deployment Config
 
@@ -105,13 +105,13 @@ VALADRIEN_OS_SECRETS_AWS_ENDPOINT=
 VALADRIEN_OS_SECRETS_AWS_DELETE_RECOVERY_DAYS=30
 ```
 
-Naming convention for Valadrien OS-managed secrets:
+Naming convention for ValAdrien OS-managed secrets:
 
 ```text
 valadrien-os/{deploymentId}/{companyId}/{secretKey}
 ```
 
-Tag set for Valadrien OS-managed secrets:
+Tag set for ValAdrien OS-managed secrets:
 
 - `valadrien-os:managed-by=valadrien-os`
 - `valadrien-os:provider-owner=<owner tag>`
@@ -124,9 +124,9 @@ Tag set for Valadrien OS-managed secrets:
 
 Launch posture:
 
-- One Valadrien OS app role per deployment.
+- One ValAdrien OS app role per deployment.
 - One deployment-scoped KMS key per deployment at launch.
-- Future per-company KMS keys remain compatible because Valadrien OS stores provider refs and version metadata separately from values.
+- Future per-company KMS keys remain compatible because ValAdrien OS stores provider refs and version metadata separately from values.
 
 Minimum IAM boundary:
 
@@ -139,7 +139,7 @@ arn:aws:secretsmanager:<region>:<account-id>:secret:valadrien-os/<deployment-id>
 
 - Allow `kms:Encrypt`, `kms:Decrypt`, `kms:GenerateDataKey`, and `kms:DescribeKey` for the configured deployment CMK.
 - Deny wildcard access outside the deployment prefix.
-- Prefer workload identity / role-based auth. Do not store AWS credentials inline in Valadrien OS config.
+- Prefer workload identity / role-based auth. Do not store AWS credentials inline in ValAdrien OS config.
 
 Example minimum policy shape:
 
@@ -148,7 +148,7 @@ Example minimum policy shape:
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "Valadrien OSDeploymentSecrets",
+      "Sid": "ValAdrien OSDeploymentSecrets",
       "Effect": "Allow",
       "Action": [
         "secretsmanager:CreateSecret",
@@ -159,7 +159,7 @@ Example minimum policy shape:
       "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:valadrien-os/<deployment-id>/*"
     },
     {
-      "Sid": "Valadrien OSDeploymentKms",
+      "Sid": "ValAdrien OSDeploymentKms",
       "Effect": "Allow",
       "Action": [
         "kms:Encrypt",
@@ -175,8 +175,8 @@ Example minimum policy shape:
 
 Operational expectation:
 
-- Valadrien OS-managed secrets may be deleted only by Valadrien OS or an operator with equivalent break-glass access.
-- External references may resolve through Valadrien OS runtime, but Valadrien OS should not delete the external secret resource.
+- ValAdrien OS-managed secrets may be deleted only by ValAdrien OS or an operator with equivalent break-glass access.
+- External references may resolve through ValAdrien OS runtime, but ValAdrien OS should not delete the external secret resource.
 
 ## Remote Import Inventory IAM
 
@@ -184,7 +184,7 @@ Remote import preview needs one additional AWS permission:
 
 ```json
 {
-  "Sid": "Valadrien OSRemoteSecretInventory",
+  "Sid": "ValAdrien OSRemoteSecretInventory",
   "Effect": "Allow",
   "Action": "secretsmanager:ListSecrets",
   "Resource": "*"
@@ -205,11 +205,11 @@ Remote import preview/import must not call:
 
 Those permissions are only needed later when a bound runtime resolves an
 imported external reference. For imported refs, scope read permissions to the
-operator-approved external prefixes that Valadrien OS is allowed to consume:
+operator-approved external prefixes that ValAdrien OS is allowed to consume:
 
 ```json
 {
-  "Sid": "Valadrien OSResolveImportedExternalReferences",
+  "Sid": "ValAdrien OSResolveImportedExternalReferences",
   "Effect": "Allow",
   "Action": "secretsmanager:GetSecretValue",
   "Resource": [
@@ -225,23 +225,23 @@ remote import.
 
 Safe scoping guidance:
 
-- Prefer one Valadrien OS runtime role per environment/account.
+- Prefer one ValAdrien OS runtime role per environment/account.
 - Point provider vaults at the intended AWS account and Region instead of a
   broad central admin role.
 - Enable `ListSecrets` only in accounts where inventory exposure is acceptable.
 - Keep preview/import board-only; agent API keys must not call these routes.
 - Treat AWS tag/name filters as search UX only, not permission enforcement.
 
-Valadrien OS also blocks importing refs under its own managed namespace as
-external references. Use the Valadrien OS-managed flow for
+ValAdrien OS also blocks importing refs under its own managed namespace as
+external references. Use the ValAdrien OS-managed flow for
 `valadrien-os/{deploymentId}/{companyId}/{secretKey}` resources.
 
 ## Existing AWS Secrets
 
 V1 keeps existing AWS Secrets Manager entries as **linked external references**, not adopted
-Valadrien OS-managed resources.
+ValAdrien OS-managed resources.
 
-Use the Valadrien OS-managed flow when Valadrien OS should create and rotate the value. The AWS
+Use the ValAdrien OS-managed flow when ValAdrien OS should create and rotate the value. The AWS
 secret name is derived from deployment and company scope:
 
 ```text
@@ -255,47 +255,47 @@ as:
 /valadrien-os-bench/anthropic_api_key
 ```
 
-In that mode Valadrien OS stores only the path or ARN, resolves it at runtime, and records
-redacted access events. Operators rotate the actual value in AWS. Update the Valadrien OS
+In that mode ValAdrien OS stores only the path or ARN, resolves it at runtime, and records
+redacted access events. Operators rotate the actual value in AWS. Update the ValAdrien OS
 reference only when the AWS path, ARN, or pinned provider version changes.
 
-Valadrien OS does not currently offer an "adopt existing AWS secret" flow that takes over future
+ValAdrien OS does not currently offer an "adopt existing AWS secret" flow that takes over future
 `PutSecretValue` writes for an arbitrary existing secret. Adding that later requires explicit
-confirmation UX, scope validation, expected Valadrien OS tags, and security/cloud-ops review.
+confirmation UX, scope validation, expected ValAdrien OS tags, and security/cloud-ops review.
 
 ## Data Custody
 
-- Valadrien OS stores `externalRef`, `providerVersionRef`, provider id, fingerprint hash, status, and binding metadata.
-- Valadrien OS does not store AWS secret plaintext in `company_secret_versions.material`.
+- ValAdrien OS stores `externalRef`, `providerVersionRef`, provider id, fingerprint hash, status, and binding metadata.
+- ValAdrien OS does not store AWS secret plaintext in `company_secret_versions.material`.
 - Runtime resolution fetches the value from AWS only when a bound consumer needs it.
 
 ## Rotation Runbook
 
-Manual Valadrien OS-managed rotation:
+Manual ValAdrien OS-managed rotation:
 
-1. Write the new value through the Valadrien OS secret rotate flow.
-2. Valadrien OS creates a new AWS secret version with `PutSecretValue`.
-3. Valadrien OS records the new `providerVersionRef` in `company_secret_versions`.
-4. Re-run or restart affected workloads that consume `latest`, or pin consumers to a specific Valadrien OS version before rollout when you need staged release safety.
+1. Write the new value through the ValAdrien OS secret rotate flow.
+2. ValAdrien OS creates a new AWS secret version with `PutSecretValue`.
+3. ValAdrien OS records the new `providerVersionRef` in `company_secret_versions`.
+4. Re-run or restart affected workloads that consume `latest`, or pin consumers to a specific ValAdrien OS version before rollout when you need staged release safety.
 
 Guidance:
 
-- Prefer pinned Valadrien OS secret versions for risky rollouts.
+- Prefer pinned ValAdrien OS secret versions for risky rollouts.
 - Treat provider-native automatic rotation as a later enhancement; current V1 flow is explicit create-new-version plus controlled rollout.
 
 ## Backup And Restore Runbook
 
 What must survive:
 
-- Valadrien OS database metadata for secret ownership, bindings, status, and provider version refs.
+- ValAdrien OS database metadata for secret ownership, bindings, status, and provider version refs.
 - AWS Secrets Manager namespace under the configured deployment prefix.
 - The configured KMS key and its decrypt permissions.
 
 Restore checklist:
 
-1. Restore Valadrien OS database metadata.
+1. Restore ValAdrien OS database metadata.
 2. Confirm the same AWS Secrets Manager namespace still exists.
-3. Confirm the Valadrien OS runtime role can call `GetSecretValue` on the restored prefix.
+3. Confirm the ValAdrien OS runtime role can call `GetSecretValue` on the restored prefix.
 4. Confirm the role still has decrypt access to the CMK referenced by `VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID`.
 5. Run the live smoke below or a targeted runtime secret resolution test.
 
@@ -340,12 +340,12 @@ Potential incidents:
 
 Response steps:
 
-1. Stop or pause affected Valadrien OS runs.
-2. Audit recent Valadrien OS secret access events for impacted secret ids and consumers.
+1. Stop or pause affected ValAdrien OS runs.
+2. Audit recent ValAdrien OS secret access events for impacted secret ids and consumers.
 3. Audit AWS CloudTrail for `ListSecrets`, `GetSecretValue`,
    `PutSecretValue`, and `DeleteSecret` calls on the relevant vault account,
    Region, deployment prefix, and approved external prefixes.
-4. Rotate impacted secrets in AWS through Valadrien OS-managed versioning.
+4. Rotate impacted secrets in AWS through ValAdrien OS-managed versioning.
 5. Re-scope IAM and KMS policies before resuming normal traffic.
 6. If a value may have reached an agent transcript or external system, treat it as exposed and rotate immediately.
 
@@ -361,8 +361,8 @@ Prerequisites:
 
 Suggested smoke:
 
-1. Create a test secret through the Valadrien OS board or API under a throwaway company.
+1. Create a test secret through the ValAdrien OS board or API under a throwaway company.
 2. Confirm the resulting AWS secret name matches `valadrien-os/{deploymentId}/{companyId}/{secretKey}`.
-3. Rotate the secret once and confirm a new `providerVersionRef` appears in Valadrien OS metadata.
+3. Rotate the secret once and confirm a new `providerVersionRef` appears in ValAdrien OS metadata.
 4. Resolve the secret through a bound runtime path, not by adding a general-purpose reveal endpoint.
 5. Delete the throwaway secret and confirm AWS schedules deletion with the configured recovery window.

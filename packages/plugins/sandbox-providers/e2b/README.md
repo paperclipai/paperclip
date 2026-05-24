@@ -1,12 +1,12 @@
 # `@valadrien-os/plugin-e2b`
 
-Published E2B sandbox provider plugin for Valadrien OS.
+Published E2B sandbox provider plugin for ValAdrien OS.
 
-This package lives in the Valadrien OS monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. That means operators can install it from the Plugins page by package name, and the host will fetch its transitive dependencies at install time without adding lockfile churn to the Valadrien OS repo.
+This package lives in the ValAdrien OS monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. That means operators can install it from the Plugins page by package name, and the host will fetch its transitive dependencies at install time without adding lockfile churn to the ValAdrien OS repo.
 
 ## Install
 
-From a Valadrien OS instance, install:
+From a ValAdrien OS instance, install:
 
 ```text
 @valadrien-os/plugin-e2b
@@ -19,7 +19,7 @@ The host plugin installer runs `npm install` into the managed plugin directory, 
 Configure E2B from `Company Settings -> Environments`, not from the plugin's instance settings page.
 
 - Put the E2B API key on the sandbox environment itself.
-- When you save an environment, Valadrien OS stores pasted API keys as company secrets.
+- When you save an environment, ValAdrien OS stores pasted API keys as company secrets.
 - `E2B_API_KEY` remains an optional host-level fallback when an environment omits the key.
 
 ## Local development

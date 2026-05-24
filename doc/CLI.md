@@ -1,6 +1,6 @@
 # CLI Reference
 
-Valadrien OS CLI now supports both:
+ValAdrien OS CLI now supports both:
 
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
@@ -130,10 +130,10 @@ pnpm valadrien-os agent get <agent-id>
 pnpm valadrien-os agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
-`agent local-cli` is the quickest way to run local Claude/Codex manually as a Valadrien OS agent:
+`agent local-cli` is the quickest way to run local Claude/Codex manually as a ValAdrien OS agent:
 
 - creates a new long-lived agent API key
-- installs missing Valadrien OS skills into `~/.codex/skills` and `~/.claude/skills`
+- installs missing ValAdrien OS skills into `~/.codex/skills` and `~/.claude/skills`
 - prints `export ...` lines for `VALADRIEN_OS_API_URL`, `VALADRIEN_OS_COMPANY_ID`, `VALADRIEN_OS_AGENT_ID`, and `VALADRIEN_OS_API_KEY`
 
 Example for shortname-based local setup:
@@ -156,10 +156,10 @@ pnpm valadrien-os secrets migrate-inline-env --company-id <company-id> [--apply]
 
 Secret listing and declarations never print secret values. `create` accepts
 `--value-env` so shell history does not capture the value. `link` records
-provider-owned references without copying the secret value into Valadrien OS.
+provider-owned references without copying the secret value into ValAdrien OS.
 For AWS-backed secrets, `secrets doctor` reports missing non-secret provider
 env and the expected AWS SDK runtime credential source; do not store AWS
-bootstrap credentials in Valadrien OS secrets.
+bootstrap credentials in ValAdrien OS secrets.
 
 Per-company provider vaults (multiple vault instances per provider, default
 vault selection, coming-soon GCP/Vault) are configured from the board UI under
@@ -204,7 +204,7 @@ pnpm valadrien-os heartbeat run --agent-id <agent-id> [--api-base http://localho
 
 ## Local Storage Defaults
 
-Local Valadrien OS data lives under the selected instance root. `VALADRIEN_OS_HOME` chooses the home directory and `VALADRIEN_OS_INSTANCE_ID` chooses the instance.
+Local ValAdrien OS data lives under the selected instance root. `VALADRIEN_OS_HOME` chooses the home directory and `VALADRIEN_OS_INSTANCE_ID` chooses the instance.
 
 ```text
 ~/.valadrien-os/                                     # VALADRIEN_OS_HOME

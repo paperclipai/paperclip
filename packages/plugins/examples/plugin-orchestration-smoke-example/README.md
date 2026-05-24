@@ -24,7 +24,7 @@ pnpm test
 pnpm build
 ```
 
-## Install Into Valadrien OS
+## Install Into ValAdrien OS
 
 Use an absolute local path during development:
 

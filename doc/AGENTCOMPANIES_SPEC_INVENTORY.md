@@ -1,6 +1,6 @@
 # Agent Companies Spec Inventory
 
-This document indexes every part of the Valadrien OS codebase that touches the [Agent Companies Specification](docs/companies/companies-spec.md) (`agentcompanies/v1-draft`).
+This document indexes every part of the ValAdrien OS codebase that touches the [Agent Companies Specification](docs/companies/companies-spec.md) (`agentcompanies/v1-draft`).
 
 Use it when you need to:
 
@@ -38,7 +38,7 @@ These define the contract between server, CLI, and UI.
 | File | Responsibility |
 |---|---|
 | `server/src/services/company-portability.ts` | **Core portability service.** Export (manifest generation, markdown file emission, `.valadrien-os.yaml` sidecars), import (graph resolution, collision handling, entity creation), preview (planned-action summary). Handles skill key derivation, recurring task <-> routine mapping, legacy recurrence migration, and package README generation. References `agentcompanies/v1` version string. |
-| `server/src/services/routines.ts` | Valadrien OS routine runtime service. Portability now exports routines as recurring `TASK.md` entries and imports recurring tasks back through this service. |
+| `server/src/services/routines.ts` | ValAdrien OS routine runtime service. Portability now exports routines as recurring `TASK.md` entries and imports recurring tasks back through this service. |
 | `server/src/services/company-export-readme.ts` | Generates `README.md` and Mermaid org-chart for exported company packages. |
 | `server/src/services/index.ts` | Re-exports `companyPortabilityService`. |
 

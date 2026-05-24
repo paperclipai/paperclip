@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "A Valadrien OS plugin",
+  "description": "A ValAdrien OS plugin",
   "scripts": {
     "prebuild": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",

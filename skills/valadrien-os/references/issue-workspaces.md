@@ -18,17 +18,17 @@ Read `currentExecutionWorkspace`:
 - `status` / `closedAt` — whether the workspace is usable
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
-If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Valadrien OS preserves workspace continuity.
+If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so ValAdrien OS preserves workspace continuity.
 
 ## Control Services
 
-Prefer Valadrien OS-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.
+Prefer ValAdrien OS-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.
 
 ```sh
 # Start all configured services; waits for configured readiness checks.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-Valadrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
   -d '{}'
@@ -36,7 +36,7 @@ curl -sS -X POST \
 # Restart all configured services.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-Valadrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
   -d '{}'
@@ -44,7 +44,7 @@ curl -sS -X POST \
 # Stop all running services.
 curl -sS -X POST \
   -H "Authorization: Bearer $VALADRIEN_OS_API_KEY" \
-  -H "X-Valadrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
+  -H "X-ValAdrien OS-Run-Id: $VALADRIEN_OS_RUN_ID" \
   -H "Content-Type: application/json" \
   "$VALADRIEN_OS_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/stop" \
   -d '{}'
@@ -71,7 +71,7 @@ For QA/browser checks, use the service whose `status` is `running` and whose `he
 
 ## MCP Tools
 
-When the Valadrien OS MCP tools are available, prefer these issue-scoped tools:
+When the ValAdrien OS MCP tools are available, prefer these issue-scoped tools:
 
 - `valadrienOsGetIssueWorkspaceRuntime` — reads `currentExecutionWorkspace` and service URLs for an issue.
 - `valadrienOsControlIssueWorkspaceServices` — starts, stops, or restarts the current issue workspace services.

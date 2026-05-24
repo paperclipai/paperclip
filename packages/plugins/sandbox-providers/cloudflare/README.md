@@ -1,12 +1,12 @@
 # `@valadrien-os/plugin-cloudflare-sandbox`
 
-Published Cloudflare sandbox provider plugin for Valadrien OS.
+Published Cloudflare sandbox provider plugin for ValAdrien OS.
 
-This package lives in the Valadrien OS monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. Operators can install it from the Plugins page by package name, and the host will fetch its dependencies at install time without adding lockfile churn to the Valadrien OS repo.
+This package lives in the ValAdrien OS monorepo, but it is intentionally excluded from the root `pnpm` workspace and shaped to publish and install like a standalone npm package. Operators can install it from the Plugins page by package name, and the host will fetch its dependencies at install time without adding lockfile churn to the ValAdrien OS repo.
 
 ## Install
 
-From a Valadrien OS instance, install:
+From a ValAdrien OS instance, install:
 
 ```text
 @valadrien-os/plugin-cloudflare-sandbox
@@ -29,7 +29,7 @@ Important validation rules:
 - non-local `bridgeBaseUrl` values must be `https://`
 - `sessionId` is required when `sessionStrategy` is `named`
 
-Pasted auth tokens are stored by Valadrien OS as company secrets because the manifest marks `bridgeAuthToken` as a `secret-ref` field.
+Pasted auth tokens are stored by ValAdrien OS as company secrets because the manifest marks `bridgeAuthToken` as a `secret-ref` field.
 
 ## Bridge template
 
