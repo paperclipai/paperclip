@@ -33,7 +33,10 @@ import type { agents as agentsTable } from "@paperclipai/db";
 import { guildSkillCreateSchema, truncateGuildSkillBody } from "@paperclipai/shared";
 
 import { guildSkillService } from "../services/guild-skills.js";
-import { GUILD_WORKER_LEARNINGS_FILE } from "./guild-worker-env.js";
+import {
+  GUILD_WORKER_LEARNINGS_FILE,
+  VIDEO_ISSUE_TITLE_PATTERN,
+} from "./guild-worker-env.js";
 
 /**
  * Phase 2 Task 2.2 -- video.stage.completed activity_log emission.
@@ -44,13 +47,12 @@ import { GUILD_WORKER_LEARNINGS_FILE } from "./guild-worker-env.js";
  * when the title matches `video-<stage>/<request_id>` AND the run
  * closed clean AND the agent is a guild; null otherwise.
  *
- * Mirrors the regex used in `buildGuildWorkerEnv` (`[^/]+` request_id
- * segment, exact stage list) so the entry and exit hooks agree on what
- * counts as a video-stage run. Defense-in-depth: rejects non-guild
- * agents even if a future caller forgot to gate, matching the same
- * pattern used elsewhere in this module.
+ * Reuses `VIDEO_ISSUE_TITLE_PATTERN` from `guild-worker-env` so the
+ * entry and exit hooks agree on what counts as a video-stage run
+ * (single source of truth, no drift risk). Defense-in-depth: rejects
+ * non-guild agents even if a future caller forgot to gate, matching
+ * the same pattern used elsewhere in this module.
  */
-const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/([^/]+)$/;
 
 export interface VideoStageCompletedEventInput {
   agent: Pick<AgentRow, "kind">;
