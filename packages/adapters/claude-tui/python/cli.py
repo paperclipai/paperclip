@@ -223,6 +223,16 @@ def worker_main(
             welcome = parse_welcome(snap.visible_text or snap.history_text)
             model = welcome.model
             plan = welcome.plan
+            # Diagnostic dump: emit the first/last lines of what claude actually
+            # rendered, so we can see login prompts / modals when welcome parsing
+            # fails.
+            screen = snap.visible_text or snap.history_text or ""
+            lines = [ln.rstrip() for ln in screen.splitlines() if ln.strip()]
+            head = "\n".join(lines[:20])
+            tail = "\n".join(lines[-10:]) if len(lines) > 30 else ""
+            emit_log("info", f"post-start screen ({len(lines)} non-blank lines):\n{head}")
+            if tail:
+                emit_log("info", f"post-start screen tail:\n{tail}")
         except Exception as exc:
             emit_log("warn", f"welcome parse failed: {exc!r}")
 
