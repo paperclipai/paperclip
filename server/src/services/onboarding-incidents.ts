@@ -13,6 +13,7 @@ const INCIDENT_FILE_EXT = ".json";
 const INCIDENT_DECAY_MS = 30 * 24 * 60 * 60 * 1000;
 const INCIDENT_DECAY_SCAN_LIMIT = 100;
 const INCIDENT_INGEST_PER_REQUEST_LIMIT = 25;
+const INCIDENT_INGEST_SCAN_LIMIT = 100;
 const STORED_BODY_MAX_BYTES = 8 * 1024;
 const STORED_HEADER_VALUE_MAX_BYTES = 256;
 const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -161,9 +162,9 @@ export function onboardingIncidentsService(
     if (byteSize <= STORED_BODY_MAX_BYTES) {
       return { serialized, truncation: { truncated: false } };
     }
-    const truncatedBuffer = Buffer.from(serialized, "utf8").subarray(0, STORED_BODY_MAX_BYTES);
+    const truncated = truncateUtf8ByBytes(serialized, STORED_BODY_MAX_BYTES);
     return {
-      serialized: `${truncatedBuffer.toString("utf8")}\n[truncated ${byteSize - STORED_BODY_MAX_BYTES} bytes]`,
+      serialized: `${truncated}\n[truncated ${byteSize - STORED_BODY_MAX_BYTES} bytes]`,
       truncation: { truncated: true, originalByteSize: byteSize },
     };
   }
@@ -393,8 +394,11 @@ ${headersSection}
         return { ingestedCount, skippedCount };
       }
       const incidentFiles = entries.filter((entry) => entry.endsWith(INCIDENT_FILE_EXT));
+      let processedCount = 0;
       for (const entry of incidentFiles) {
         if (ingestedCount >= INCIDENT_INGEST_PER_REQUEST_LIMIT) break;
+        if (processedCount >= INCIDENT_INGEST_SCAN_LIMIT) break;
+        processedCount += 1;
         const entryPath = path.join(incidentDir, entry);
         let parsed: OnboardingIncidentRecord | null = null;
         try {
@@ -431,6 +435,26 @@ ${headersSection}
       decayOnce,
     },
   };
+}
+
+// Trim a UTF-8 byte buffer back to the last complete code point so the cut
+// never lands inside a multi-byte sequence (which would emit U+FFFD on decode).
+function truncateUtf8ByBytes(input: string, maxBytes: number): string {
+  const buffer = Buffer.from(input, "utf8");
+  if (buffer.length <= maxBytes) return input;
+  let end = maxBytes;
+  while (end > 0 && (buffer[end - 1] & 0xc0) === 0x80) end -= 1;
+  if (end > 0) {
+    const start = buffer[end - 1];
+    const need =
+      (start & 0x80) === 0 ? 1
+        : (start & 0xe0) === 0xc0 ? 2
+          : (start & 0xf0) === 0xe0 ? 3
+            : (start & 0xf8) === 0xf0 ? 4
+              : 1;
+    if (need > maxBytes - (end - 1)) end -= 1;
+  }
+  return buffer.subarray(0, end).toString("utf8");
 }
 
 function isIncidentEligibleForCreator(
