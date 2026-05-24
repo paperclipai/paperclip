@@ -1189,6 +1189,7 @@ export type {
   RouteSection,
   AlertSection,
   CrewAlert,
+  BriefingDocument,
 } from "./types/briefing.js";
 
 export type {
