@@ -978,7 +978,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {availableCredentials.length > 0 || selectedCredentialIds.length > 0 ? (
+          {credentialTypesForAdapter.size > 0 ||
+          availableCredentials.length > 0 ||
+          selectedCredentialIds.length > 0 ? (
             <CredentialMultiSelect
               credentials={availableCredentials}
               selectedIds={selectedCredentialIds}
