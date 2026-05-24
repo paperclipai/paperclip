@@ -1644,6 +1644,7 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  productivityReviewSnoozedUntil: issues.productivityReviewSnoozedUntil,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
