@@ -134,13 +134,7 @@ function compactFailureText(value: string) {
 function isAdapterTerminalFailureRun(run: LatestIssueRun) {
   if (!run) return false;
   const errorCode = readNonEmptyString(run.errorCode)?.toLowerCase() ?? null;
-  if (
-    errorCode?.startsWith("adapter_") ||
-    errorCode?.includes("usage") ||
-    errorCode?.includes("quota") ||
-    errorCode?.includes("rate_limit") ||
-    errorCode?.includes("rate-limit")
-  ) return true;
+  if (errorCode?.startsWith("adapter_")) return true;
 
   const error = readNonEmptyString(run.error)?.toLowerCase() ?? null;
   return Boolean(
@@ -1705,7 +1699,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "",
       "## Ownership",
       "",
-      "- Selected owner: the first invokable manager/creator/executive candidate with budget available.",
+      "- Selected owner: for adapter/quota failures, the first invokable engineering candidate with budget available; otherwise the first invokable manager/creator/executive candidate.",
       "",
       "## Required Action",
       "",

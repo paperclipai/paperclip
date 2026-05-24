@@ -2624,7 +2624,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain("Recovery owner: [CEO]");
   });
 
-  it("redacts error-code-only stranded recovery failures in issue copy", async () => {
+  it("surfaces adapter error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -2655,6 +2655,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry adapter failure");
     expect(comments[0]?.body).toContain("adapter_exit_code");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
+  });
+
+  it("redacts non-adapter usage-like error codes in issue copy", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "memory_usage_exceeded",
+      runError: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+    expect(recoveryAction.evidence).toMatchObject({
+      latestRunErrorCode: "memory_usage_exceeded",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Latest retry failure details were withheld");
+    expect(comments[0]?.body).not.toContain("Latest retry adapter failure");
+    expect(comments[0]?.body).not.toContain("memory_usage_exceeded");
   });
 
   it("reuses the raced stranded recovery issue when duplicate active recovery creation conflicts", async () => {
