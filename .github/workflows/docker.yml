@@ -187,11 +187,20 @@ jobs:
         run: |
           set -e
           echo "rolling out ${TAG} to ${NS}/${RELEASE}"
+          # --timeout bumped 10m → 30m on 2026-05-23 after rev 316 + several
+          # prior revs hit "context deadline exceeded" while the cluster was
+          # in apiserver/kubelet-latency cascade (control-plane nodes at
+          # 110/110 pods, multus FailedCreatePodSandBox storms). The
+          # underlying StatefulSet/Deployment rollouts kept progressing
+          # asynchronously and completed in the 15-30min window after helm
+          # gave up at 10m. 30m absorbs that window without changing CI's
+          # report-success semantics for healthy rollouts (which still
+          # finish in ~30-90s). Investigate further if 30m proves too short.
           helm upgrade "${RELEASE}" ./deploy/helm/paperclip \
             -n "${NS}" \
             -f deploy/helm/paperclip/values.blockcast.yaml \
             --set image.tag="${TAG}" \
-            --wait --timeout 10m
+            --wait --timeout 30m
           helm -n "${NS}" list | head -3
           kubectl -n "${NS}" get pod -l app.kubernetes.io/name=paperclip \
             -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount
