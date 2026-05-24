@@ -164,6 +164,7 @@ export function InviteLandingPage() {
         message: string;
         hint?: string;
       }>;
+      nextActions?: Record<string, unknown>;
     };
     const claimSecret = typeof payload.claimSecret === "string" ? payload.claimSecret : null;
     const claimApiKeyPath = typeof payload.claimApiKeyPath === "string" ? payload.claimApiKeyPath : null;
@@ -173,6 +174,11 @@ export function InviteLandingPage() {
     const onboardingTextUrl = readNestedString(payload.onboarding, ["textInstructions", "url"]);
     const onboardingTextPath = readNestedString(payload.onboarding, ["textInstructions", "path"]);
     const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
+    const autoSetupCommand = readNestedString(payload.onboarding, ["autoSetup", "singleCommand", "command"]);
+    const nextActionClaimUrl = readNestedString(payload.nextActions, ["claimWhenApproved", "url"]);
+    const nextActionPerAgentPath = readNestedString(payload.nextActions, ["claimWhenApproved", "saveResponseTo", "perAgent"]);
+    const nextActionLegacyPath = readNestedString(payload.nextActions, ["claimWhenApproved", "saveResponseTo", "legacy"]);
+    const paperclipApiUrl = readNestedString(payload.nextActions, ["configureOpenClawEnv", "PAPERCLIP_API_URL"]);
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
@@ -183,11 +189,22 @@ export function InviteLandingPage() {
           <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
             Request ID: <span className="font-mono">{payload.id}</span>
           </div>
+          {autoSetupCommand && (
+            <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">Automatic setup command</p>
+              <p>Run this in the OpenClaw runtime to submit or replay the join request.</p>
+              <p className="font-mono break-all">{autoSetupCommand}</p>
+            </div>
+          )}
           {claimSecret && claimApiKeyPath && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">One-time claim secret (save now)</p>
               <p className="font-mono break-all">{claimSecret}</p>
               <p className="font-mono break-all">POST {claimApiKeyPath}</p>
+              {nextActionClaimUrl && <p className="font-mono break-all">Claim URL: {nextActionClaimUrl}</p>}
+              {nextActionPerAgentPath && <p className="font-mono break-all">Save approved claim to {nextActionPerAgentPath}</p>}
+              {nextActionLegacyPath && <p className="font-mono break-all">Legacy fallback: {nextActionLegacyPath}</p>}
+              {paperclipApiUrl && <p className="font-mono break-all">Set PAPERCLIP_API_URL={paperclipApiUrl}</p>}
             </div>
           )}
           {(onboardingSkillUrl || onboardingSkillPath || onboardingInstallPath) && (

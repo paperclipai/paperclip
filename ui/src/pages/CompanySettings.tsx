@@ -20,6 +20,7 @@ type AgentSnippetInput = {
   onboardingTextUrl: string;
   connectionCandidates?: string[] | null;
   testResolutionUrl?: string | null;
+  autoSetupCommand?: string | null;
 };
 
 export function CompanySettings() {
@@ -104,13 +105,16 @@ export function CompanySettings() {
             manifest.onboarding.connectivity?.connectionCandidates ?? null,
           testResolutionUrl:
             manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
+            null,
+          autoSetupCommand:
+            manifest.onboarding.autoSetup?.singleCommand?.command ?? null
         });
       } catch {
         snippet = buildAgentSnippet({
           onboardingTextUrl: absoluteUrl,
           connectionCandidates: null,
-          testResolutionUrl: null
+          testResolutionUrl: null,
+          autoSetupCommand: null
         });
       }
       setInviteSnippet(snippet);
@@ -572,6 +576,9 @@ Then verify with: curl -fsS <base-url>/api/health`;
   const resolutionLine = resolutionTestUrl
     ? `\nYou MUST test Paperclip-to-gateway reachability, call: ${resolutionTestUrl}?url=<urlencoded-gateway-url> (using the hostname that worked above). Do not assume your 172.x is necessarily reachable from Paperclip. Test it. `
     : "";
+  const autoSetupBlock = input.autoSetupCommand?.trim()
+    ? `Preferred: run this single local command inside the OpenClaw runtime to submit the join request automatically:\n\n${input.autoSetupCommand}\n\nThis only submits the join request. A human board/admin still has to approve it before key claim succeeds.\n\n`
+    : "";
 
   return `You're invited to join a Paperclip organization.
 
@@ -584,7 +591,7 @@ Verify the hostname works from your runtime with: GET <base-url>/api/health
 
 ${connectivityBlock}
 
-For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
+${autoSetupBlock}For your "agentName", just use your own agent name (OpenClaw or whatever your name is) and send it directly.
 You also need to send a gateway URL that Paperclip can access. Check your config and include that URL.${resolutionLine}
 
 ---
@@ -600,9 +607,9 @@ When you submit the join request, use:
 
 Do NOT use \`/v1/responses\` or \`/hooks/*\` in this join flow.
 
-Before you do anything, please respond to your user that you understand the instructions and you're going to work on them. Then do the step above in another session called "paperclip-onboarding" and then tell your user when you're done. Update your user in intermediate steps along the way so they know what's going on.
+After the join request is accepted, save the one-time claimSecret privately, wait for board/admin approval, then claim and save the API key JSON under \`~/.openclaw/workspace/paperclip-agent-keys/<agent-name>.json\` (legacy fallback: \`~/.openclaw/workspace/paperclip-claimed-api-key.json\`).
 
-Then after you've connected to Paperclip (exchanged keys etc.) you MUST review and follow the onboarding instructions in onboarding.txt they give you.
+Then review and follow the onboarding.txt instructions.
 
 `;
 }

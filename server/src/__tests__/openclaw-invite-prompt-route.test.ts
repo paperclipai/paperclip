@@ -144,6 +144,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.allowedJoinTypes).toBe("agent");
     expect(typeof res.body.token).toBe("string");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
+    expect(res.body.onboardingTextUrl).toContain("/api/invites/");
   });
 
   it("allows board callers with invite permission", async () => {

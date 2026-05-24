@@ -36,12 +36,18 @@ type AgentJoinRequestAccepted = JoinRequest & {
     message: string;
     hint?: string;
   }>;
+  nextActions?: Record<string, unknown>;
 };
 
 type InviteOnboardingManifest = {
   invite: InviteSummary;
   onboarding: {
     inviteMessage?: string | null;
+    autoSetup?: {
+      singleCommand?: {
+        command?: string;
+      };
+    };
     connectivity?: {
       guidance?: string;
       connectionCandidates?: string[];
