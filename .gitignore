@@ -1,60 +1,52 @@
-node_modules
+```
+# Dependencies
 node_modules/
-**/node_modules
-**/node_modules/
+
+# Build outputs
 dist/
-ui/storybook-static/
-.env
+build/
 *.tsbuildinfo
-drizzle/meta/
-.vite/
-coverage/
-.DS_Store
-data/
-.paperclip/
-.pnpm-store/
-tmp-*
-cli/tmp/
 
-# Scratch/seed scripts (but not scripts/ dir)
-check-*.mjs
-!scripts/check-*.mjs
-new-agent*.json
-newcompany.json
-seed-*.mjs
-server/check-*.mjs
-server/seed-*.mjs
-packages/db/seed-*.mjs
-
-# npm publish build artifacts
-cli/package.dev.json
-
-# Build artifacts in src directories
-server/src/**/*.js
-server/src/**/*.js.map
-server/src/**/*.d.ts
-server/src/**/*.d.ts.map
-tmp/
-feedback-export-*
-diagnostics/
-
-# Editor / tool temp files
+# Logs and temp files
+*.log
 *.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
 .vscode/
-.claude/settings.local.json
-.paperclip-local/
-/.idea/
-/.agents/
+.idea/
 
-# Doc maintenance cursor
-.doc-review-cursor
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Playwright
-tests/e2e/test-results/
-tests/e2e/playwright-report/
-tests/release-smoke/test-results/
-tests/release-smoke/playwright-report/
-.superset/
-.superpowers/
-.claude/worktrees/
-.herenow
+# Compiled and binary files
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.out
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+.gradle/
+target/
+
+# System files
+.DS_Store
+Thumbs.db
+```
