@@ -313,6 +313,10 @@ class ClaudeTuiDriver:
         "Do you trust the files",
         "Press Enter to continue",
         "Use Claude Code's terminal setup",
+        "Select login method",
+        "Log in with your Anthropic",
+        "Anthropic Console account",
+        "Browser didn't open",
     )
 
     def _looks_like_onboarding(self, text: str) -> bool:
@@ -330,12 +334,14 @@ class ClaudeTuiDriver:
         )
 
         # Dismiss any first-run onboarding screens. claude shows a theme
-        # picker / trust-files / setup wizard on a fresh .claude directory,
-        # and the TUI blocks on these until the user advances. We send Enter
-        # to accept whatever default is highlighted and re-settle, up to
-        # MAX_ONBOARDING_STEPS times.
-        MAX_ONBOARDING_STEPS = 6
-        for _ in range(MAX_ONBOARDING_STEPS):
+        # picker / login-method / trust-files / setup wizard on a fresh
+        # .claude directory, and the TUI blocks on these until the user
+        # advances. We send Enter to accept whatever default is highlighted
+        # and re-settle, up to MAX_ONBOARDING_STEPS times. The login-method
+        # step may take longer because claude validates .credentials.json,
+        # so give it a generous settle.
+        MAX_ONBOARDING_STEPS = 8
+        for step in range(MAX_ONBOARDING_STEPS):
             snap = self._session.snapshot()
             screen = snap.visible_text or ""
             if not self._looks_like_onboarding(screen):
@@ -343,8 +349,8 @@ class ClaudeTuiDriver:
             self._session.write_keys("\r")
             self._session.read_until(
                 predicate=lambda v, h: False,
-                quiet_sec=1.0,
-                hard_timeout=5.0,
+                quiet_sec=1.5,
+                hard_timeout=8.0,
             )
 
         self._started = True
