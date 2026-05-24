@@ -77,3 +77,5 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { tokenCapResets } from "./token_cap_resets.js";
+export { tokenCapWarnings } from "./token_cap_warnings.js";
