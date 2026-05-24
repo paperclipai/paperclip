@@ -111,11 +111,11 @@ export function autoPromotionScanner(
               agentId: null,
               runId: null,
               details: {
-                guildId: cfg.guildId,
-                guildSlug: guild?.name ?? null,
-                scanId,
-                errorMessage: error.message,
-                errorStack: error.stack ?? null,
+                guild_id: cfg.guildId,
+                guild_slug: guild?.name ?? null,
+                scan_id: scanId,
+                error_message: error.message,
+                error_stack: error.stack ?? null,
                 stage,
               } as Record<string, unknown>,
             });

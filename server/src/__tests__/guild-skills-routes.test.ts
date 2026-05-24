@@ -154,11 +154,11 @@ describeEmbeddedPostgres("POST /companies/:companyId/guilds/:guildId/skills (Pla
 
     const d = row.details as Record<string, unknown>;
     expect(d.source).toBe("direct-post");
-    expect(d.guildId).toBe(guildId);
-    expect(d.guildSlug).toBe("eng-guild");
-    expect(d.ingestedCount).toBe(1);
-    expect(d.rejectedCount).toBe(0);
-    expect(d.fileMissing).toBe(false);
+    expect(d.guild_id).toBe(guildId);
+    expect(d.guild_slug).toBe("eng-guild");
+    expect(d.ingested_count).toBe(1);
+    expect(d.rejected_count).toBe(0);
+    expect(d.file_missing).toBe(false);
     const ingested = d.ingested as Array<{ id: string; name: string; body: string }>;
     expect(ingested).toHaveLength(1);
     expect(ingested[0]!.id).toBe(createdSkillId);
@@ -192,10 +192,10 @@ describeEmbeddedPostgres("POST /companies/:companyId/guilds/:guildId/skills (Pla
       .where(eq(activityLog.action, "guild.worker.skills_ingested"));
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
-    // run_id column on the activity_log row + the runId echoed in
+    // run_id column on the activity_log row + the run_id echoed in
     // details both line up with the request's createdByRunId.
     expect(row.runId).toBe(runId);
-    expect((row.details as Record<string, unknown>).runId).toBe(runId);
+    expect((row.details as Record<string, unknown>).run_id).toBe(runId);
     expect(row.actorType).toBe("agent");
   });
 

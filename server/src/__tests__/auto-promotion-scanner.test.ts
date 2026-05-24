@@ -463,9 +463,9 @@ describeEmbeddedPostgres(
         .where(eq(activityLog.action, "guild.skill.auto_promotion_scan_failed"));
       expect(failRows).toHaveLength(1);
       const failPayload = failRows[0]!.details as Record<string, unknown>;
-      expect(failPayload.guildId).toBe(guildIds[1]);
-      expect(typeof failPayload.errorMessage).toBe("string");
-      expect(typeof failPayload.scanId).toBe("string");
+      expect(failPayload.guild_id).toBe(guildIds[1]);
+      expect(typeof failPayload.error_message).toBe("string");
+      expect(typeof failPayload.scan_id).toBe("string");
       expect(typeof failPayload.stage).toBe("string");
 
       scanSpy.mockRestore();

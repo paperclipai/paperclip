@@ -609,12 +609,12 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
     expect(dispatched.entityType).toBe("heartbeat_run");
     expect(dispatched.entityId).toBe(queued!.id);
     const dispatchedDetails = dispatched.details as Record<string, unknown>;
-    expect(dispatchedDetails.runId).toBe(queued!.id);
-    expect(dispatchedDetails.guildId).toBe(agentId);
-    expect(dispatchedDetails.guildSlug).toBe("e3-telemetry-guild");
-    expect(dispatchedDetails.snapshotedSkillCount).toBe(0);
-    expect(dispatchedDetails.autonomyJsonAvailable).toBe(true);
-    expect(typeof dispatchedDetails.sandboxDir).toBe("string");
+    expect(dispatchedDetails.run_id).toBe(queued!.id);
+    expect(dispatchedDetails.guild_id).toBe(agentId);
+    expect(dispatchedDetails.guild_slug).toBe("e3-telemetry-guild");
+    expect(dispatchedDetails.snapshoted_skill_count).toBe(0);
+    expect(dispatchedDetails.autonomy_json_available).toBe(true);
+    expect(typeof dispatchedDetails.sandbox_dir).toBe("string");
 
     const ingestedRows = await db
       .select()
@@ -627,10 +627,10 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
       );
     expect(ingestedRows).toHaveLength(1);
     const ingestedDetails = ingestedRows[0]!.details as Record<string, unknown>;
-    expect(ingestedDetails.ingestedCount).toBe(1);
-    expect(ingestedDetails.rejectedCount).toBe(0);
-    expect(ingestedDetails.fileMissing).toBe(false);
-    expect(ingestedDetails.guildSlug).toBe("e3-telemetry-guild");
+    expect(ingestedDetails.ingested_count).toBe(1);
+    expect(ingestedDetails.rejected_count).toBe(0);
+    expect(ingestedDetails.file_missing).toBe(false);
+    expect(ingestedDetails.guild_slug).toBe("e3-telemetry-guild");
     // Phase F follow-up: emission carries a source discriminator so
     // future audits can distinguish exit-hook vs direct-POST writes.
     expect(ingestedDetails.source).toBe("exit-hook");
@@ -812,7 +812,7 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
     expect(finished?.status).toBe("succeeded");
 
-    // Activity_log: usedCount/usedSuccessCount/usedFailureCount populated.
+    // Activity_log: used_count/used_success_count/used_failure_count populated.
     const ingestedRows = await db
       .select()
       .from(activityLog)
@@ -824,11 +824,11 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
       );
     expect(ingestedRows).toHaveLength(1);
     const d = ingestedRows[0]!.details as Record<string, unknown>;
-    expect(d.usedCount).toBe(2);
-    expect(d.usedSuccessCount).toBe(1);
-    expect(d.usedFailureCount).toBe(1);
-    expect(d.usedRejectedCount).toBe(0);
-    const recordedUse = d.recordedUse as Array<{
+    expect(d.used_count).toBe(2);
+    expect(d.used_success_count).toBe(1);
+    expect(d.used_failure_count).toBe(1);
+    expect(d.used_rejected_count).toBe(0);
+    const recordedUse = d.recorded_use as Array<{
       id: string;
       name: string;
       success: boolean;
@@ -852,7 +852,7 @@ describeEmbeddedPostgres("heartbeat guild dispatch (Plan 3 Phase E1b)", () => {
     expect(persistedFailure[0]!.failCount).toBe(1);
 
     // Mixed batch: the new skill was also ingested.
-    expect(d.ingestedCount).toBe(1);
+    expect(d.ingested_count).toBe(1);
     const ingested = d.ingested as Array<{ name: string }>;
     expect(ingested[0]!.name).toBe("p3b-newly-learned");
   }, 30_000);

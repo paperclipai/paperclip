@@ -302,7 +302,7 @@ describeEmbeddedPostgres(
           .where(eq(activityLog.id, activityId))
           .limit(1);
         expect(activity?.action).toBe("guild.skill.auto_promotion_config_changed");
-        expect(activity?.details).toMatchObject({ fieldsChanged: ["enabled"] });
+        expect(activity?.details).toMatchObject({ fields_changed: ["enabled"] });
       });
 
       it("rejects patch that violates the min_uses floor", async () => {
@@ -347,7 +347,7 @@ describeEmbeddedPostgres(
           .where(eq(activityLog.id, activityId))
           .limit(1);
         expect(activity?.details).toMatchObject({
-          fieldsChanged: expect.arrayContaining(["enabled", "dryRun", "minUses"]),
+          fields_changed: expect.arrayContaining(["enabled", "dryRun", "minUses"]),
         });
       });
     });
@@ -425,7 +425,7 @@ describeEmbeddedPostgres(
           .where(eq(activityLog.id, activityId))
           .limit(1);
         expect(activity?.action).toBe("guild.skill.auto_promotion_reverted");
-        expect(activity?.details).toMatchObject({ auditId, revertedBy: "op-1" });
+        expect(activity?.details).toMatchObject({ audit_id: auditId, reverted_by: "op-1" });
       });
 
       it("rejects empty reason", async () => {
@@ -1167,7 +1167,7 @@ describeEmbeddedPostgres(
           .where(eq(activityLog.entityId, guildId))
           .limit(1);
         expect(activity?.action).toBe("guild.skill.auto_promoted");
-        expect(activity?.details).toMatchObject({ promotedCount: 1, dryRun: false });
+        expect(activity?.details).toMatchObject({ promoted_count: 1, dry_run: false });
       });
 
       // health update: lastSuccessfulScanAt is updated after scan

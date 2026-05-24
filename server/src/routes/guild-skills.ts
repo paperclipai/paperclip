@@ -108,21 +108,21 @@ export function guildSkillRoutes(db: Db) {
           entityId: created.id,
           // Anchor the row on the guild (not the caller) so the
           // operator's "activity for guild X" filter and the
-          // notifier's guildSlug field both line up with the
+          // notifier's guild_slug field both line up with the
           // worker-exit-hook emission shape.
           agentId: guildId,
           runId: created.createdByRunId ?? null,
           details: {
             source: "direct-post",
-            runId: created.createdByRunId ?? null,
-            guildId,
-            guildSlug: guild.name,
-            ingestedCount: 1,
-            rejectedCount: 0,
+            run_id: created.createdByRunId ?? null,
+            guild_id: guildId,
+            guild_slug: guild.name,
+            ingested_count: 1,
+            rejected_count: 0,
             // No file involved in the direct-POST path; surface false
             // so consumers can distinguish "no learnings.json" from
             // "didn't go through the file path at all".
-            fileMissing: false,
+            file_missing: false,
             ingested: [
               {
                 id: created.id,

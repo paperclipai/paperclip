@@ -6923,25 +6923,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // ingested via the worker-exit hook (learnings.json) from
           // those created directly via POST /skills.
           source: "exit-hook",
-          runId: args.run.id,
-          guildId: args.agent.id,
-          guildSlug: args.agent.name,
-          ingestedCount: ingest.ingested.length,
-          rejectedCount: ingest.rejected.length,
+          run_id: args.run.id,
+          guild_id: args.agent.id,
+          guild_slug: args.agent.name,
+          ingested_count: ingest.ingested.length,
+          rejected_count: ingest.rejected.length,
           // Plan 3b: record-use telemetry. Operator queries can find
           // workers that successfully re-applied existing knowledge
           // vs. those that found existing skills unhelpful.
-          usedCount: ingest.recordedUse.length,
-          usedSuccessCount,
-          usedFailureCount,
-          usedRejectedCount: ingest.recordedUseRejected.length,
-          fileMissing: ingest.fileMissing,
-          ...(ingest.topLevelError ? { topLevelError: ingest.topLevelError } : {}),
+          used_count: ingest.recordedUse.length,
+          used_success_count: usedSuccessCount,
+          used_failure_count: usedFailureCount,
+          used_rejected_count: ingest.recordedUseRejected.length,
+          file_missing: ingest.fileMissing,
+          ...(ingest.topLevelError ? { top_level_error: ingest.topLevelError } : {}),
           ...(ingest.ingested.length > 0 ? { ingested: ingest.ingested } : {}),
           ...(ingest.rejected.length > 0 ? { rejected: ingest.rejected } : {}),
-          ...(ingest.recordedUse.length > 0 ? { recordedUse: ingest.recordedUse } : {}),
+          ...(ingest.recordedUse.length > 0 ? { recorded_use: ingest.recordedUse } : {}),
           ...(ingest.recordedUseRejected.length > 0
-            ? { recordedUseRejected: ingest.recordedUseRejected }
+            ? { recorded_use_rejected: ingest.recordedUseRejected }
             : {}),
         },
       });
@@ -6977,8 +6977,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             details: {
               stage: videoEvent.stage,
               request_id: videoEvent.requestId,
-              guildId: args.agent.id,
-              guildSlug: args.agent.name,
+              guild_id: args.agent.id,
+              guild_slug: args.agent.name,
             },
           });
         } catch (telemetryErr) {
@@ -8043,6 +8043,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // PLUGIN_EVENT_SET (registered in @paperclipai/shared as
         // 'guild.worker.dispatched'). Failures warn-log but never
         // block dispatch.
+        // Run event payload keeps camelCase (run events are a separate
+        // boundary; not normalized as part of the activity_log details
+        // snake_case sweep).
         const dispatchTelemetryPayload: Record<string, unknown> = {
           runId: run.id,
           guildId: agent.id,
@@ -8050,6 +8053,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sandboxDir: guildSandboxDir,
           snapshotedSkillCount: prep.snapshotedSkillCount,
           autonomyJsonAvailable: prep.autonomyJsonPath !== null,
+        };
+        // activity_log details: snake_case (canonical at the
+        // activity_log row boundary).
+        const dispatchActivityDetails: Record<string, unknown> = {
+          run_id: run.id,
+          guild_id: agent.id,
+          guild_slug: agent.name,
+          sandbox_dir: guildSandboxDir,
+          snapshoted_skill_count: prep.snapshotedSkillCount,
+          autonomy_json_available: prep.autonomyJsonPath !== null,
         };
         try {
           await appendRunEvent(currentRun, seq++, {
@@ -8077,7 +8090,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             entityId: run.id,
             agentId: agent.id,
             runId: run.id,
-            details: dispatchTelemetryPayload,
+            details: dispatchActivityDetails,
           });
         } catch (telemetryErr) {
           logger.warn(

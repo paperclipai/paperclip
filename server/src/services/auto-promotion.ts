@@ -167,12 +167,12 @@ export function autoPromotionService(db: Db) {
           agentId: null,
           runId: null,
           details: {
-            guildId,
-            guildSlug: guild[0]?.name ?? null,
-            changedBy: actor.id,
+            guild_id: guildId,
+            guild_slug: guild[0]?.name ?? null,
+            changed_by: actor.id,
             before,
             after: updated[0],
-            fieldsChanged: keys,
+            fields_changed: keys,
           } as Record<string, unknown>,
         })
         .returning({ id: activityLog.id });
@@ -280,12 +280,12 @@ export function autoPromotionService(db: Db) {
           agentId: null,
           runId: null,
           details: {
-            guildId: auditRow[0].guildId,
-            guildSlug: guild[0]?.name ?? null,
-            auditId,
-            skillId: auditRow[0].skillId,
-            skillName: skillRow[0].name,
-            revertedBy,
+            guild_id: auditRow[0].guildId,
+            guild_slug: guild[0]?.name ?? null,
+            audit_id: auditId,
+            skill_id: auditRow[0].skillId,
+            skill_name: skillRow[0].name,
+            reverted_by: revertedBy,
             reason: reason.slice(0, 500),
           } as Record<string, unknown>,
         })
@@ -446,31 +446,31 @@ export function autoPromotionService(db: Db) {
     }>(sql`
       WITH ranked AS (
         SELECT
-          details->>'scanId' AS scan_id,
-          MAX(created_at)    AS decided_at,
+          details->>'scan_id' AS scan_id,
+          MAX(created_at)     AS decided_at,
           MAX(CASE WHEN action IN (
             'guild.skill.auto_promotion_scan',
             'guild.skill.auto_promotion_scan_dryrun',
             'guild.skill.auto_promoted'
-          ) THEN (details->>'scannedCount')::int END) AS scanned_count,
+          ) THEN (details->>'scanned_count')::int END) AS scanned_count,
           MAX(CASE WHEN action IN (
             'guild.skill.auto_promotion_scan',
             'guild.skill.auto_promotion_scan_dryrun',
             'guild.skill.auto_promoted'
-          ) THEN (details->>'eligibleCount')::int END) AS eligible_count,
+          ) THEN (details->>'eligible_count')::int END) AS eligible_count,
           MAX(CASE WHEN action IN (
             'guild.skill.auto_promotion_scan',
             'guild.skill.auto_promotion_scan_dryrun',
             'guild.skill.auto_promoted'
-          ) THEN (details->>'promotedCount')::int END) AS promoted_count,
+          ) THEN (details->>'promoted_count')::int END) AS promoted_count,
           BOOL_OR(action = 'guild.skill.auto_promotion_scan_dryrun') AS dry_run,
           BOOL_OR(action = 'guild.skill.auto_promotion_scan_failed') AS failed
         FROM activity_log
         WHERE company_id = ${companyId}
-          AND details->>'guildId' = ${guildId}
+          AND details->>'guild_id' = ${guildId}
           AND action LIKE 'guild.skill.auto_promot%'
-          AND details->>'scanId' IS NOT NULL
-        GROUP BY details->>'scanId'
+          AND details->>'scan_id' IS NOT NULL
+        GROUP BY details->>'scan_id'
       )
       SELECT * FROM ranked ORDER BY decided_at DESC LIMIT ${limit}
     `);
@@ -657,6 +657,19 @@ export function autoPromotionService(db: Db) {
       summaryAction = "guild.skill.auto_promotion_scan";
     }
 
+    // Project promotions[] to snake_case for the activity_log boundary;
+    // the service return type (ScanResult.promotions) stays camelCase
+    // because it's an internal TS API, not part of the activity_log shape.
+    const promotionsForActivity = promotions.map((p) => ({
+      audit_id: p.auditId,
+      skill_id: p.skillId,
+      skill_name: p.skillName,
+      success_count: p.successCount,
+      fail_count: p.failCount,
+      success_ratio: p.successRatio,
+      distinct_runs: p.distinctRuns,
+      skill_age_hours: p.skillAgeHours,
+    }));
     await logActivity(db, {
       companyId: config.companyId,
       actorType: "system",
@@ -665,22 +678,22 @@ export function autoPromotionService(db: Db) {
       entityType: "guild",
       entityId: config.guildId,
       details: {
-        guildId: config.guildId,
-        guildSlug,
-        scanId,
-        scannedCount,
-        eligibleCount,
-        promotedCount,
-        dryRun: config.dryRun,
+        guild_id: config.guildId,
+        guild_slug: guildSlug,
+        scan_id: scanId,
+        scanned_count: scannedCount,
+        eligible_count: eligibleCount,
+        promoted_count: promotedCount,
+        dry_run: config.dryRun,
         thresholds: {
-          minUses: config.minUses,
-          minSuccessRatio: Number(config.minSuccessRatio),
-          minAgeHours: config.minAgeHours,
-          minBodyStableHours: config.minBodyStableHours,
-          minDistinctRuns: config.minDistinctRuns,
-          maxPerTick: config.maxPromotionsPerTick,
+          min_uses: config.minUses,
+          min_success_ratio: Number(config.minSuccessRatio),
+          min_age_hours: config.minAgeHours,
+          min_body_stable_hours: config.minBodyStableHours,
+          min_distinct_runs: config.minDistinctRuns,
+          max_per_tick: config.maxPromotionsPerTick,
         },
-        promotions,
+        promotions: promotionsForActivity,
       },
     });
 
