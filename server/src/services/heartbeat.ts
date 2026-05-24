@@ -66,6 +66,7 @@ import {
   cleanupGuildRunSandbox,
   prepareGuildRunSandbox,
 } from "../dispatch/guild-run-sandbox.js";
+import { buildVideoGuildContext } from "../dispatch/video-guild-context.js";
 import {
   ingestGuildLearnings,
   parseVideoStageCompletedEvent,
@@ -7990,21 +7991,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             "guild dispatch: canonical-skills snapshot query failed; dispatching with empty snapshot",
           );
         }
-        // TODO: Task 2.4b -- wire ArtifactsClient through heartbeat dispatch path.
-        //   Reuse VIDEO_ISSUE_TITLE_PATTERN from dispatch/guild-worker-env.ts to
-        //   parse the issue title into { stage, requestId }; build
-        //   httpArtifactsClient({ url: env.AGENT_FS_URL, token: env.AGENT_FS_TOKEN })
-        //   and pass it here as `videoContext.artifacts` so prior-stage
-        //   artifacts get mirrored into the sandbox. Skipped in 2.4 because
-        //   env-var ingest needs its own design pass.
-        //   See docs/superpowers/plans/2026-05-23-video-guild-implementation.md
-        //   Task 2.4 section for context.
+        // Phase 2 Task 2.4b -- video-guild prior-stage artifact wiring.
+        // For runs whose issue title matches `video-<stage>/<requestId>`,
+        // build an `httpArtifactsClient` from process.env credentials so
+        // `prepareGuildRunSandbox` can mirror prior-stage artifacts into
+        // `<sandboxDir>/artifacts/in/<stage>/<filename>`. Non-video runs
+        // and runs with missing AGENT_FS_URL/AGENT_FS_TOKEN short-circuit
+        // (the latter warn-logs once per dispatch but does not block).
+        const videoCtx = buildVideoGuildContext({
+          issueTitle: issueContext?.title ?? null,
+          env: process.env,
+        });
+        if (videoCtx?.kind === "degraded") {
+          logger.warn(
+            {
+              runId: run.id,
+              agentId: agent.id,
+              stage: videoCtx.stage,
+              requestId: videoCtx.requestId,
+              missingEnv: videoCtx.missingEnv,
+            },
+            "video-guild dispatch: AGENT_FS_URL / AGENT_FS_TOKEN not set; prior-stage artifacts will not be mirrored",
+          );
+        }
         const prep = await prepareGuildRunSandbox({
           runId: run.id,
           guildId: agent.id,
           guildSlug: agent.name,
           guildInstructionsRoot: instructionsRoot,
           skills: snapshotSkills,
+          ...(videoCtx?.kind === "video"
+            ? {
+                videoContext: {
+                  requestId: videoCtx.requestId,
+                  stage: videoCtx.stage,
+                  artifacts: videoCtx.artifacts,
+                },
+              }
+            : {}),
         });
         guildSandboxDir = prep.sandboxDir;
         for (const warning of prep.warnings) {

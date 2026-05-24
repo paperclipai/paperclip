@@ -55,7 +55,7 @@ export const GUILD_MEMORY_PROJECT_PREFIX = "farm";
  * so titles like `video-research/campaign-42/v2` fail to match cleanly
  * rather than silently swallowing the extra path segment.
  */
-const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/([^/]+)$/;
+export const VIDEO_ISSUE_TITLE_PATTERN = /^video-(research|strategy|copy|edit)\/([^/]+)$/;
 
 export interface BuildGuildWorkerEnvInput {
   agent: Pick<AgentRow, "id" | "name" | "kind">;
