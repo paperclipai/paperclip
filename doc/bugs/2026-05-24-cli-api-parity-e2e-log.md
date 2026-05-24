@@ -278,6 +278,28 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: A parser mistake against feedback output (`.vote.id` instead of top-level `.id`) stopped one script after the vote succeeded; the token was manually revoked and the remaining list/export commands were run separately.
 - Follow-up: Record recovery help mismatch and continue remaining CLI domains.
 
+### 2026-05-24T11:50:09+02:00 - Restart isolated server after committed fixes
+
+- Command: `kill <paperclip pid on 3197>`; `pnpm paperclipai onboard --yes --run --bind loopback`; `curl http://127.0.0.1:3197/api/health`; `issue tree-hold:get <issue-id> null --json`
+- Purpose: Restart the disposable server so the committed server-side malformed hold ID fix is active in the running instance.
+- Prerequisites/IDs used: scratch env from Isolation Contract; committed fix `73997628`.
+- Expected result: Server restarts with the same scratch home/config/DB and returns 400 for malformed hold IDs.
+- Actual result: Server restarted on `127.0.0.1:3197`, using the same embedded DB path and pg port `54330`; health returned `status: ok`; malformed hold ID now returns `API error 400: Invalid hold ID`.
+- Status: PASS.
+- Output summary: No real `~/.paperclip`, `~/.codex`, or `~/.claude` paths were used. The server session is currently running under the isolated environment.
+- Follow-up: Continue remaining CLI domains.
+
+### 2026-05-24T11:52:20+02:00 - Advanced agent command pass
+
+- Command: disposable `agent create/list/get/update/delete`; `agent permissions:update`; `agent configuration`; `agent config-revisions`; `agent config-revision:get`; `agent runtime-state`; `agent runtime-state:reset-session`; `agent task-sessions`; `agent skills`; `agent skills:sync`; `agent instructions-path:update`; `agent instructions-bundle`; `agent instructions-bundle:update`; `agent instructions-file:get/put/delete`; `agent local-cli --no-install-skills`; `agent approve/pause/resume/heartbeat:invoke/terminate`; `token agent revoke`
+- Purpose: Exercise advanced agent lifecycle, runtime, instructions, skills, and local CLI token flows on a disposable agent.
+- Prerequisites/IDs used: company `12e9db4b-f66c-459b-959e-d645002240fb`; temp agent `f9dfad96-6045-4b97-a548-bdc95fb22ec4`.
+- Expected result: Commands succeed without mutating the main parity worker; any token created by `local-cli` is revoked; temp agent is deleted.
+- Actual result: Advanced agent commands passed after adapting `instructions-path:update` for process adapter constraints. `agent local-cli --no-install-skills` created key `a9bf0b28-8217-4c60-829c-cb1962203a21`, which was revoked. `agent heartbeat:invoke` passed. Temp agent `f9dfad96-6045-4b97-a548-bdc95fb22ec4` was terminated and deleted. A final key list for the main agent showed no unrevoked keys.
+- Status: PASS with command UX mismatch.
+- Output summary: First `instructions-path:update` attempt without `adapterConfigKey` failed with `No default instructions path key for adapter type 'process'. Provide adapterConfigKey.` A second relative-path attempt with `adapterConfigKey` failed because process adapters without `cwd` require an absolute path. The successful pass used `adapterConfigKey: instructionsFilePath` and an absolute scratch path.
+- Follow-up: Record instructions-path UX mismatch and continue cost/finance/budget/access/admin domains.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
@@ -357,3 +379,16 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Fix summary: Not fixed yet; adapted E2E to `--source-issue-status todo`, which resolved recovery action `1151475f-c97f-456b-9c6a-8e0f936abe05`.
 - Verification command: `pnpm paperclipai issue recovery:resolve <issue-id> --action-id <action-id> --outcome restored --source-issue-status todo --json`.
 - Remaining risk: Users may choose a status shown in help that is invalid for their selected outcome.
+
+### MISMATCH-004 - `agent instructions-path:update` help does not expose process adapter requirements
+
+- Status: Not fixed in this pass.
+- Severity: Low command UX drift.
+- Reproduction command: `pnpm paperclipai agent instructions-path:update <process-agent-id> --payload-json '{"path":"docs/cli-parity.md"}' --json`.
+- Expected result: Help or validation guidance makes clear that process adapters need an explicit `adapterConfigKey`, and relative paths need `adapterConfig.cwd`.
+- Actual result: First attempt failed with `No default instructions path key for adapter type 'process'. Provide adapterConfigKey.` A second attempt with a relative path and `adapterConfigKey` failed with `Relative instructions path requires adapterConfig.cwd to be set to an absolute path`.
+- Suspected cause: CLI help only describes the JSON payload type; adapter-specific path requirements are enforced server-side.
+- Files changed: none for this mismatch.
+- Fix summary: Not fixed yet; adapted E2E to use `{"path":"<absolute scratch path>","adapterConfigKey":"instructionsFilePath"}`.
+- Verification command: `pnpm paperclipai agent instructions-path:update <process-agent-id> --payload-json '{"path":"<absolute scratch path>","adapterConfigKey":"instructionsFilePath"}' --json`.
+- Remaining risk: Users of generic/process adapters may need source inspection or trial-and-error to discover the required key/path shape.
