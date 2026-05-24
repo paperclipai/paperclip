@@ -20,11 +20,6 @@ import {
   joinPromptSections,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  cleanupPerRunClaudeConfigDir,
-  materializePerRunClaudeConfigDir,
-  prepareClaudeTuiConfigSeed,
-} from "./prepare-config-seed.js";
 
 // Python CLI ships with the package at packages/adapters/claude-tui/python/.
 // We probe multiple candidates because production loads this file via different
@@ -170,15 +165,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_API_KEY = authToken;
   }
 
-  // Per-run isolated CLAUDE_CONFIG_DIR — see prepare-config-seed.ts for why we
-  // do this for every run instead of claude-local's host-shared default.
-  const seedDir = await prepareClaudeTuiConfigSeed(process.env, onLog, agent.companyId);
-  const claudeConfigDir = await materializePerRunClaudeConfigDir({
-    seedDir,
-    runId,
-    env: process.env,
-  });
-  env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+  // Credential resolution: rely on the same HOME-based mechanism claude-local
+  // uses. resolveCredentialEnv (services/credentials.ts) materializes the
+  // agent's claude_oauth payload to `${HOME}/.claude/.credentials.json` and
+  // sets HOME in configEnv to that per-agent dir; Claude Code picks it up
+  // automatically. Overriding CLAUDE_CONFIG_DIR here would point Claude Code
+  // away from those creds, so we leave the env as-is.
+  //
+  // Per-run TUI config isolation (the original intent of prepareClaudeTuiConfigSeed)
+  // can be reintroduced as an opt-in feature once we have a way to seed it from
+  // the agent's HOME rather than process.env.HOME.
+  const claudeConfigDir = asString(configEnv.CLAUDE_CONFIG_DIR, "");
+  if (claudeConfigDir) env.CLAUDE_CONFIG_DIR = claudeConfigDir;
 
   // Final spawn env (sanitized inherited + adapter env + ensured PATH).
   const spawnEnv = Object.fromEntries(
@@ -223,11 +221,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     PYTHON_TUI_CLI_PATH,
     "--cwd",
     cwd,
-    "--config-dir",
-    claudeConfigDir,
     "--policy",
     "auto_approve",
   ];
+  if (claudeConfigDir) {
+    cliArgs.push("--config-dir", claudeConfigDir);
+  }
   // NOTE: model + instructionsFile aren't wired through the Python CLI yet —
   // the CLI's argparse only accepts the flags above. The instructions live at
   // `instructionsFilePath` and need a separate plumbing pass (likely via
@@ -244,9 +243,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       commandArgs: cliArgs,
       commandNotes: [
         "Driving the interactive Claude Code TUI via the Python CLI (spike).",
-        "Per-run CLAUDE_CONFIG_DIR isolates session state from other agents.",
+        claudeConfigDir
+          ? `Using CLAUDE_CONFIG_DIR=${claudeConfigDir}.`
+          : "Inheriting Claude config from agent HOME/.claude (no per-run override).",
       ],
-      env: { ...spawnEnv, CLAUDE_CONFIG_DIR: claudeConfigDir },
+      env: spawnEnv,
       prompt,
       promptMetrics: { promptChars: prompt.length },
       context,
@@ -475,8 +476,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (watchdog) clearTimeout(watchdog);
   await stdoutDrained;
 
-  // Best-effort cleanup of per-run config dir (housekeeping covers failures).
-  await cleanupPerRunClaudeConfigDir(claudeConfigDir);
+  // Per-run config-dir cleanup is a no-op now that we share the agent's
+  // HOME/.claude instead of materializing a per-run isolated copy.
 
   const failed = (code ?? 0) !== 0 && !timedOut;
   const errorMessage = timedOut
