@@ -2,6 +2,13 @@ name: Deploy CrewBrief to VPS
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: crewbrief-vps-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -16,7 +23,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Pull latest code and rebuild on VPS
+      - name: Pull latest code and restart server on VPS
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'DEPLOY_EOF'
             set -e
@@ -25,9 +32,14 @@ jobs:
             git fetch origin master
             git reset --hard origin/master
 
-            echo "=== Rebuilding and restarting server ==="
-            docker compose -f docker/docker-compose.yml build server
-            docker compose -f docker/docker-compose.yml up -d server
+            echo "=== Installing dependencies ==="
+            pnpm install --frozen-lockfile
+
+            echo "=== Clearing tsx cache ==="
+            rm -rf /tmp/tsx-1000/*
+
+            echo "=== Restarting server ==="
+            sudo systemctl restart paperclip
 
             echo "=== Waiting for server to be healthy ==="
             for i in $(seq 1 30); do
@@ -43,9 +55,14 @@ jobs:
             done
 
             echo "=== Running database migrations ==="
-            docker compose -f docker/docker-compose.yml exec -T server \
-              node --import ./server/node_modules/tsx/dist/loader.mjs \
-              ./server/node_modules/.bin/drizzle-kit push
+            # Embedded PostgreSQL on port 54329 with trust auth via unix socket
+            # Use the running server process env to find the DATABASE_URL
+            DB_URL=$(grep -z 'DATABASE_URL' /proc/$(systemctl show -p MainPID paperclip | cut -d= -f2)/environ 2>/dev/null | tr '\0' '\n' | grep DATABASE_URL | cut -d= -f2-)
+            if [ -n "$DB_URL" ]; then
+              DATABASE_URL="$DB_URL" pnpm --filter @paperclipai/db exec drizzle-kit push
+            else
+              echo "WARNING: Could not determine DATABASE_URL. Migrations may need manual application."
+            fi
 
             echo "=== Seeding demo data ==="
             CREWBRIEF_API_URL=http://localhost:3100 node /opt/paperclip/scripts/seed-crewbrief-demo-data.mjs
@@ -60,7 +77,7 @@ jobs:
             "https://crewbrief.avva.aero/api/crewbrief/intake/airports" \
             "https://crewbrief.avva.aero/api/crewbrief/intake/batch/airports" \
             "https://crewbrief.avva.aero/api/crewbrief/jetinsight/parse" \
-            "https://crewbrief.avva.aero/api/crewbrief/documents/upload" \
+            "https://crewbrief.avva.aero/api/crewbrief/jetinsight/upload" \
             "https://crewbrief.avva.aero/briefing/monday"; do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ep")
             echo "$ep -> HTTP $CODE"
