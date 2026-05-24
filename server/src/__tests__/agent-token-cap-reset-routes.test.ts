@@ -241,13 +241,13 @@ describeEmbeddedPostgres("POST /api/agents/:agentId/token-cap/reset", () => {
 
   // ─── Auth: 403 paths ────────────────────────────────────────────────────────
 
-  it("returns 403 for an unauthenticated request", async () => {
+  it("returns 401 for an unauthenticated request", async () => {
     const { targetAgentId, recoverIssueId } = await seedFixture();
     const app = await createApp({ type: "none" });
     const res = await request(app)
       .post(`/api/agents/${targetAgentId}/token-cap/reset`)
       .send({ recoverIssueId });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
   });
 
   it("returns 403 for a non-CEO agent caller", async () => {
