@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -119,11 +119,11 @@ function productivityReviewEscalationFingerprint(sourceIssueId: string) {
 }
 
 function issueRunScopeSql(issueId: string) {
-  return sql`(
-    ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskKey' = ${issueId}
-  )`;
+  return or(
+    eq(heartbeatRuns.contextIssueId, issueId),
+    eq(heartbeatRuns.contextTaskId, issueId),
+    eq(heartbeatRuns.contextTaskKey, issueId),
+  );
 }
 
 function msToHuman(ms: number | null) {
