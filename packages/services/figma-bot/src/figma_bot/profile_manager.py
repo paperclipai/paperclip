@@ -45,6 +45,10 @@ class ProfileManager:
         self._context = None
         self.page: Page | None = None
         self.switch_lock = threading.Lock()
+        # ccrotate claim-only lease id (when CCROTATE_LEASE_URL is set).
+        # Acquired at end of launch(); released in close(). None if the
+        # feature is disabled or the claim failed (graceful no-op).
+        self._ccrotate_lease_id: str | None = None
         os.makedirs(os.path.dirname(self.profile_dir), exist_ok=True)
         os.makedirs(self.profile_dir, exist_ok=True)
         os.makedirs(self.backup_dir, exist_ok=True)
@@ -127,6 +131,12 @@ class ProfileManager:
             self.page = None
             raise
         state.log(f"ProfileManager[{self.identity}]: Camoufox launched, slug={self.slug}")
+        # Tell ccrotate-auth-bot we're holding this identity so its
+        # stale-poller skips device-auth (which would rotate Google's
+        # session and invalidate the figma OAuth chain we're about to
+        # mint). No-op if CCROTATE_LEASE_URL is unset; never raises.
+        from . import ccrotate_lease  # noqa: PLC0415 (lazy: optional dep)
+        self._ccrotate_lease_id = ccrotate_lease.claim(self.identity)
 
     def close(self) -> None:
         with self.switch_lock:
@@ -134,6 +144,17 @@ class ProfileManager:
                 self._backup_locked()
             except Exception as e:
                 state.log(f"ProfileManager[{self.identity}]: final backup failed: {e}")
+            # Release the ccrotate claim BEFORE tearing down Camoufox so
+            # the gate clears even if Camoufox exit hangs.
+            if self._ccrotate_lease_id:
+                try:
+                    from . import ccrotate_lease  # noqa: PLC0415
+                    ccrotate_lease.release(self._ccrotate_lease_id, self.identity)
+                except Exception as e:
+                    state.log(
+                        f"ProfileManager[{self.identity}]: ccrotate release failed: {e}"
+                    )
+                self._ccrotate_lease_id = None
             try:
                 if self._ctx is not None:
                     self._ctx.__exit__(None, None, None)

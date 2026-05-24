@@ -25,6 +25,16 @@ IDENTITIES_PATH = os.environ.get(
 )
 PROFILES_ROOT = os.environ.get("FIGMA_PROFILES_ROOT", "/config/profiles")
 
+# Optional ccrotate-auth-bot endpoint for claim-only leases. When set,
+# ProfileManager.launch() POSTs to {CCROTATE_LEASE_URL}/lease/claim with
+# the identity it's about to use, and ProfileManager.close() DELETEs.
+# The claim tells ccrotate's stale-poller to skip device-auth on this
+# identity — see Blockcast/onprem-k8s#356 + #357 for the contract.
+# Empty string disables the feature (graceful: no calls, no errors).
+CCROTATE_LEASE_URL = os.environ.get("CCROTATE_LEASE_URL", "")
+CCROTATE_LEASE_TTL_SEC = int(os.environ.get("CCROTATE_LEASE_TTL_SEC", "1800"))
+CCROTATE_LEASE_AGENT = os.environ.get("CCROTATE_LEASE_AGENT", "figma-designer-bot")
+
 # Pre-T6 layout — migration shim only.
 LEGACY_PROFILE_DIR = "/config/playwright-profile"
 LEGACY_BACKUP_DIR = "/config/playwright-profile-backup"
