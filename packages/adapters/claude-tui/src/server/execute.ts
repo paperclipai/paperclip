@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -20,10 +21,13 @@ import {
   prepareClaudeTuiConfigSeed,
 } from "./prepare-config-seed.js";
 
-// TODO: make this configurable via adapter config / env. The Python CLI is
-// being built in parallel by another agent (spike location).
-const PYTHON_TUI_CLI_PATH = "/tmp/tui-spike/cli.py";
-const PYTHON_INTERPRETER = "python3";
+// Python CLI ships with the package at packages/adapters/claude-tui/python/.
+// From src/server/execute.ts → ../../python/cli.py. Honors PYTHON_TUI_CLI_PATH
+// env override for dev iteration against /tmp/tui-spike/.
+const PYTHON_TUI_CLI_PATH =
+  process.env.PYTHON_TUI_CLI_PATH ??
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "python", "cli.py");
+const PYTHON_INTERPRETER = process.env.PYTHON_TUI_INTERPRETER ?? "python3";
 const DEFAULT_TIMEOUT_SEC = 3600;
 const DEFAULT_GRACE_SEC = 20;
 const SHUTDOWN_WAIT_MS = 5_000;
