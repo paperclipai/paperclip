@@ -419,6 +419,79 @@ describe("heartbeat artifact upload integration (Phase 3.5 Step 2)", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Task 2.4b: sandbox-dir == agent home (artifact contract fix)
+  // ---------------------------------------------------------------------------
+  describe("Task 2.4b: hook reads artifacts from the per-run sandbox dir", () => {
+    it("picks up <sandboxDir>/artifacts/out/research-bundle.json after a succeeded video-research run", async () => {
+      // Simulate the exact production layout: prepareGuildRunSandbox
+      // created `<sandboxDir>/artifacts/{in,out}/` and the worker dropped
+      // a research-bundle.json into `<sandboxDir>/artifacts/out/`. The
+      // hook must read from that path (matching `AGENT_HOME = sandboxDir`)
+      // -- NOT from resolveDefaultAgentWorkspaceDir(agent.id).
+      const sandboxDir = await fsp.mkdtemp(path.join(tmpRoot, "paperclip-guild-run-task24b-"));
+      const outDir = path.join(sandboxDir, "artifacts", "out");
+      await fsp.mkdir(outDir, { recursive: true });
+      const payload = {
+        executiveSummary: "Citedon serves AI-citation tracking for SEO teams.",
+        sources: ["https://citedon.com/about"],
+      };
+      await fsp.writeFile(
+        path.join(outDir, "research-bundle.json"),
+        JSON.stringify(payload, null, 2),
+        "utf-8",
+      );
+
+      const client = new FakeUploadClient();
+      const { calledUpload, result } = await hookDecision({
+        issueTitle: "video-research/citedon-launch-001",
+        runStatus: "succeeded",
+        // Critical: the hook is now given `sandboxDir`, not the agent
+        // workspace dir. This is the exact mapping in heartbeat.ts post-fix.
+        agentHomeDir: sandboxDir,
+        uploadClient: client,
+      });
+
+      expect(calledUpload).toBe(true);
+      expect(result).not.toBeNull();
+      expect(result!.uploaded).toEqual(["research-bundle.json"]);
+      expect(result!.failed).toEqual([]);
+      expect(result!.skipped).toBeNull();
+
+      // The fake upload client received the file with the parsed
+      // request_id and stage from the issue title.
+      expect(client.calls).toHaveLength(1);
+      expect(client.calls[0]).toMatchObject({
+        requestId: "citedon-launch-001",
+        stage: "research",
+        filename: "research-bundle.json",
+      });
+    });
+
+    it("returns skipped='no-artifacts-dir' when the sandbox has no artifacts/out (degraded path)", async () => {
+      // A worker that produced nothing (or that wrote to the wrong
+      // place) leaves artifacts/out empty/missing. The hook must not
+      // crash; it should return skipped and an empty uploaded[].
+      const sandboxDir = await fsp.mkdtemp(path.join(tmpRoot, "paperclip-guild-run-empty-"));
+      // No artifacts/out created.
+
+      const client = new FakeUploadClient();
+      const { calledUpload, result } = await hookDecision({
+        issueTitle: "video-research/req-empty",
+        runStatus: "succeeded",
+        agentHomeDir: sandboxDir,
+        uploadClient: client,
+      });
+
+      expect(calledUpload).toBe(true);
+      expect(result).not.toBeNull();
+      expect(result!.uploaded).toEqual([]);
+      expect(result!.failed).toEqual([]);
+      expect(result!.skipped).toEqual({ reason: "no-artifacts-dir" });
+      expect(client.calls).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // issueTitle bug fix verification
   // ---------------------------------------------------------------------------
   describe("buildGuildWorkerEnv issueTitle bug fix", () => {

@@ -192,4 +192,68 @@ describe("prepareGuildRunSandbox + cleanupGuildRunSandbox (Plan 3 Phase E1a)", (
     expect(cleanup.removed).toBe(true);
     expect(cleanup.warning).toBeNull();
   });
+
+  describe("artifacts/{in,out} pre-creation (Task 2.4b)", () => {
+    it("creates artifacts/in and artifacts/out as empty dirs for non-video guild runs", async () => {
+      await fs.writeFile(path.join(bundleRoot, "autonomy.json"), "{}", "utf-8");
+
+      const result = await prepareGuildRunSandbox({
+        runId: "88888888-8888-8888-8888-888888888888",
+        guildId: "g1",
+        guildSlug: "eng-guild",
+        guildInstructionsRoot: bundleRoot,
+        skills: [],
+        tmpDirOverride: testTmpRoot,
+        // No videoContext -- this is the non-video path.
+      });
+      createdSandboxes.push(result.sandboxDir);
+
+      const inDir = path.join(result.sandboxDir, "artifacts", "in");
+      const outDir = path.join(result.sandboxDir, "artifacts", "out");
+
+      const inStat = await fs.stat(inDir);
+      const outStat = await fs.stat(outDir);
+      expect(inStat.isDirectory()).toBe(true);
+      expect(outStat.isDirectory()).toBe(true);
+
+      // Empty: no entries inside.
+      expect(await fs.readdir(inDir)).toEqual([]);
+      expect(await fs.readdir(outDir)).toEqual([]);
+    });
+
+    it("creates artifacts/in and artifacts/out even when there is no instructionsRootPath", async () => {
+      const result = await prepareGuildRunSandbox({
+        runId: "99999999-9999-9999-9999-999999999999",
+        guildId: "g1",
+        guildSlug: "eng-guild",
+        guildInstructionsRoot: null,
+        skills: [],
+        tmpDirOverride: testTmpRoot,
+      });
+      createdSandboxes.push(result.sandboxDir);
+
+      // Pre-creation must succeed independently of the autonomy.json source.
+      await expect(fs.stat(path.join(result.sandboxDir, "artifacts", "in"))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(result.sandboxDir, "artifacts", "out"))).resolves.toBeDefined();
+    });
+
+    it("creates artifacts/out for guild runs even when videoContext is omitted (worker can drop files unconditionally)", async () => {
+      await fs.writeFile(path.join(bundleRoot, "autonomy.json"), "{}", "utf-8");
+      const result = await prepareGuildRunSandbox({
+        runId: "aaaaaaaa-bbbb-cccc-dddd-000000000001",
+        guildId: "g1",
+        guildSlug: "eng-guild",
+        guildInstructionsRoot: bundleRoot,
+        skills: [],
+        tmpDirOverride: testTmpRoot,
+      });
+      createdSandboxes.push(result.sandboxDir);
+
+      const outDir = path.join(result.sandboxDir, "artifacts", "out");
+      // Worker can write into it without first creating it.
+      const tmpFile = path.join(outDir, "hello.json");
+      await fs.writeFile(tmpFile, '{"hello":"world"}', "utf-8");
+      expect(JSON.parse(await fs.readFile(tmpFile, "utf-8"))).toEqual({ hello: "world" });
+    });
+  });
 });

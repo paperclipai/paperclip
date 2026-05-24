@@ -12,6 +12,8 @@
  * function's actual signature per the TDD rule "adapt the test, not
  * the function".
  */
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { buildGuildWorkerEnv } from "../dispatch/guild-worker-env.js";
@@ -106,5 +108,53 @@ describe("video-guild worker env", () => {
     });
     expect(env.VIDEO_AD_REQUEST_ID).toBeUndefined();
     expect(env.VIDEO_AD_STAGE).toBeUndefined();
+  });
+
+  describe("VIDEO_AD_ARTIFACTS_DIR (Task 2.4b)", () => {
+    it("sets VIDEO_AD_ARTIFACTS_DIR=<sandboxDir>/artifacts when issue title matches video pattern", () => {
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: "video-research/abc-123",
+      });
+      expect(env.VIDEO_AD_ARTIFACTS_DIR).toBe(path.join(sandboxDir, "artifacts"));
+    });
+
+    it("sets VIDEO_AD_ARTIFACTS_DIR for every recognised stage", () => {
+      for (const stage of ["research", "strategy", "copy", "edit"]) {
+        const env = buildGuildWorkerEnv({
+          agent: guildAgent,
+          sandboxDir,
+          issueTitle: `video-${stage}/req-1`,
+        });
+        expect(env.VIDEO_AD_ARTIFACTS_DIR).toBe(path.join(sandboxDir, "artifacts"));
+      }
+    });
+
+    it("does NOT set VIDEO_AD_ARTIFACTS_DIR for non-video guild issues (eng-guild)", () => {
+      const env = buildGuildWorkerEnv({
+        agent: engGuildAgent,
+        sandboxDir,
+        issueTitle: "eng-typescript-bug",
+      });
+      expect(env.VIDEO_AD_ARTIFACTS_DIR).toBeUndefined();
+    });
+
+    it("does NOT set VIDEO_AD_ARTIFACTS_DIR when issueTitle is omitted on a video-guild agent", () => {
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+      });
+      expect(env.VIDEO_AD_ARTIFACTS_DIR).toBeUndefined();
+    });
+
+    it("does NOT set VIDEO_AD_ARTIFACTS_DIR for unrecognised video-* stages", () => {
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: "video-foo/bar-123",
+      });
+      expect(env.VIDEO_AD_ARTIFACTS_DIR).toBeUndefined();
+    });
   });
 });

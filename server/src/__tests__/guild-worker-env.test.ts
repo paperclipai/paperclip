@@ -29,7 +29,23 @@ describe("buildGuildWorkerEnv (Plan 3 Phase E1a)", () => {
       GUILD_SKILLS_PATH: path.join(sandboxDir, GUILD_WORKER_SKILLS_FILE),
       WORKER_LEARNINGS_PATH: path.join(sandboxDir, GUILD_WORKER_LEARNINGS_FILE),
       MEMORY_SERVICE_PROJECT: `${GUILD_MEMORY_PROJECT_PREFIX}/eng-guild`,
+      AGENT_HOME: sandboxDir,
     });
+  });
+
+  it("emits AGENT_HOME=sandboxDir for every guild worker (Task 2.4b)", () => {
+    // Verifies the artifact-contract bug fix: workers + sandbox prep +
+    // upload hook must all agree that the per-run sandbox dir is the
+    // worker's $AGENT_HOME. Before Task 2.4b this var was never set,
+    // so workers invented their own paths and the upload hook (reading
+    // from resolveDefaultAgentWorkspaceDir) found nothing.
+    for (const slug of ["eng-guild", "video-guild", "design-guild"]) {
+      const env = buildGuildWorkerEnv({
+        agent: { id: `aaaaaaaa-bbbb-cccc-dddd-${slug.padEnd(12, "x")}`, name: slug, kind: "guild" },
+        sandboxDir: "/tmp/paperclip-guild-run-some-id-XXXXXX",
+      });
+      expect(env.AGENT_HOME).toBe("/tmp/paperclip-guild-run-some-id-XXXXXX");
+    }
   });
 
   it("returns an empty object for kind='agent' so callers can spread unconditionally", () => {

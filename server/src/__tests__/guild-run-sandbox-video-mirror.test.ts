@@ -74,7 +74,7 @@ describe("prepareGuildRunSandbox video-context mirror (Phase 2 Task 2.4)", () =>
     await fs.rm(bundleRoot, { recursive: true, force: true }).catch(() => {});
   });
 
-  it("research stage: no prior artifacts mirrored and no artifacts/in dir created", async () => {
+  it("research stage: no prior artifacts mirrored; artifacts/in dir is pre-created but empty (Task 2.4b)", async () => {
     const client = new FakeArtifactsClient(new Map());
     const result = await prepareGuildRunSandbox({
       runId: "aaaaaaaa-aaaa-aaaa-aaaa-000000000001",
@@ -94,7 +94,11 @@ describe("prepareGuildRunSandbox video-context mirror (Phase 2 Task 2.4)", () =>
     expect(client.calls).toEqual([]);
     expect(result.mirroredArtifacts).toEqual([]);
     expect(result.warnings).toEqual([]);
-    await expect(fs.access(path.join(result.sandboxDir, "artifacts", "in"))).rejects.toThrow();
+    // Task 2.4b -- artifacts/in is always pre-created so the worker can
+    // unconditionally read inputs; for the research stage it stays empty
+    // (no prior stages).
+    const inEntries = await fs.readdir(path.join(result.sandboxDir, "artifacts", "in"));
+    expect(inEntries).toEqual([]);
   });
 
   it("strategy stage: mirrors research-bundle.json from the research stage", async () => {
@@ -307,7 +311,7 @@ describe("prepareGuildRunSandbox video-context mirror (Phase 2 Task 2.4)", () =>
     ).rejects.toThrow();
   });
 
-  it("no videoContext: backward-compatible -- no client calls, no artifacts/in dir", async () => {
+  it("no videoContext: backward-compatible -- no client calls; artifacts/{in,out} pre-created empty (Task 2.4b)", async () => {
     const result = await prepareGuildRunSandbox({
       runId: "aaaaaaaa-aaaa-aaaa-aaaa-000000000006",
       guildId: "g1",
@@ -320,6 +324,12 @@ describe("prepareGuildRunSandbox video-context mirror (Phase 2 Task 2.4)", () =>
 
     expect(result.warnings).toEqual([]);
     expect(result.mirroredArtifacts).toEqual([]);
-    await expect(fs.access(path.join(result.sandboxDir, "artifacts"))).rejects.toThrow();
+    // Task 2.4b -- artifacts/{in,out} are always pre-created (regardless of
+    // guild type or stage) so all guild workers can write to artifacts/out/
+    // and read from artifacts/in/ without first mkdir-ing.
+    const inEntries = await fs.readdir(path.join(result.sandboxDir, "artifacts", "in"));
+    const outEntries = await fs.readdir(path.join(result.sandboxDir, "artifacts", "out"));
+    expect(inEntries).toEqual([]);
+    expect(outEntries).toEqual([]);
   });
 });
