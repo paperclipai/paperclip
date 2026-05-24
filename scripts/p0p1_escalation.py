@@ -10,12 +10,12 @@ Suppression (skip if any of the following):
   - All direct blockers are in_review AND have pending request_confirmation/suggest_tasks interactions
   - CEO has commented on this issue within the last 24 hours (covered-hold)
 """
-import json, sys, time, urllib.request, urllib.error
+import json, os, sys, time, urllib.request, urllib.error
 from datetime import datetime, timezone
 
-API     = "http://localhost:3100"
-TOKEN   = "pcp_board_5b391fab83204689721526535d3600a0e289bb9e560c834a"
-COMPANY = "f7949f00-0ccb-407a-a440-8955b29c06ca"
+API     = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100")
+TOKEN   = os.environ["PAPERCLIP_TOKEN"]
+COMPANY = os.environ.get("PAPERCLIP_COMPANY_ID", "f7949f00-0ccb-407a-a440-8955b29c06ca")
 
 CEO = "b30408d8-6a35-4677-a85b-8c23a0a46d14"
 CTO = "6ce3717b-412c-4ab7-a546-598206864622"
