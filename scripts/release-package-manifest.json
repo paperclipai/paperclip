@@ -59,13 +59,18 @@
     "name": "@paperclipai/db",
     "publishFromCi": true
   },
-  {
-    "dir": "packages/plugins/sdk",
-    "name": "@paperclipai/plugin-sdk",
-    "publishFromCi": true
-  },
-  {
-    "dir": "server",
+    {
+      "dir": "packages/plugins/sdk",
+      "name": "@paperclipai/plugin-sdk",
+      "publishFromCi": true
+    },
+    {
+      "dir": "packages/react-native-hooks",
+      "name": "@paperclipai/react-native-hooks",
+      "publishFromCi": false
+    },
+    {
+      "dir": "server",
     "name": "@paperclipai/server",
     "publishFromCi": true
   },
