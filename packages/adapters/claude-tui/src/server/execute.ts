@@ -274,9 +274,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     cwd,
     "--policy",
     "auto_approve",
-    // Single-token form so argparse doesn't mistake the value for another flag.
-    "--claude-arg=--dangerously-skip-permissions",
   ];
+  // We intentionally do NOT pass --dangerously-skip-permissions: it triggers
+  // a "Yes, I accept" modal whose default selection is "No, exit", and the
+  // arrow-key navigation we'd need to dismiss it doesn't reach claude
+  // reliably during early init. Per-tool permission prompts are instead
+  // auto-approved by modal_handler under policy=auto_approve, which is the
+  // path the TUI driver was designed for.
   if (claudeConfigDir) {
     cliArgs.push("--config-dir", claudeConfigDir);
   }
