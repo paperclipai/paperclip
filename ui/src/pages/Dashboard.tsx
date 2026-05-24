@@ -23,6 +23,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { TokenUsageWidget } from "../components/TokenUsageWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
@@ -334,6 +335,8 @@ export function Dashboard() {
             // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
+
+          <TokenUsageWidget companyId={selectedCompanyId!} />
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
