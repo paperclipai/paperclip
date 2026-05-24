@@ -50,14 +50,20 @@ RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
   || (echo "ERROR: claude-tui python CLI missing in build stage" \
       && ls -la /app/packages/adapters/claude-tui/ \
       && exit 1)
+# Mirror python files into dist/ so the dist-relative path resolution also works.
+RUN mkdir -p /app/packages/adapters/claude-tui/dist/python \
+  && cp /app/packages/adapters/claude-tui/python/*.py /app/packages/adapters/claude-tui/dist/python/ \
+  && chmod -R a+r /app/packages/adapters/claude-tui/python /app/packages/adapters/claude-tui/dist/python
 
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils python3 python3-ptyprocess python3-pyte && rm -rf /var/lib/apt/lists/*
 RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
+  && test -f /app/packages/adapters/claude-tui/dist/python/cli.py \
   || (echo "ERROR: claude-tui python CLI missing in production stage" \
       && ls -la /app/packages/adapters/claude-tui/ \
+      && ls -la /app/packages/adapters/claude-tui/dist/ 2>/dev/null \
       && exit 1)
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.130.0

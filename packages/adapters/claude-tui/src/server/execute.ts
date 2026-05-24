@@ -22,11 +22,22 @@ import {
 } from "./prepare-config-seed.js";
 
 // Python CLI ships with the package at packages/adapters/claude-tui/python/.
-// From src/server/execute.ts → ../../python/cli.py. Honors PYTHON_TUI_CLI_PATH
-// env override for dev iteration against /tmp/tui-spike/.
-const PYTHON_TUI_CLI_PATH =
-  process.env.PYTHON_TUI_CLI_PATH ??
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "python", "cli.py");
+// We probe multiple candidates because production loads this file via different
+// resolution paths (tsx-loader realpath, pnpm symlink, bundled dist) and the
+// "right" location depends on whether the python/ dir was copied next to src
+// (workspace dev), next to dist (build-time copy), or globally via env.
+const EXECUTE_MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PYTHON_CLI_CANDIDATES: string[] = (() => {
+  const list: string[] = [];
+  if (process.env.PYTHON_TUI_CLI_PATH) list.push(process.env.PYTHON_TUI_CLI_PATH);
+  // workspace dev: src/server/execute.ts → ../../python/cli.py
+  list.push(path.resolve(EXECUTE_MODULE_DIR, "..", "..", "python", "cli.py"));
+  // build copy: dist/server/execute.js → ../python/cli.py (when build copies it next to dist)
+  list.push(path.resolve(EXECUTE_MODULE_DIR, "..", "python", "cli.py"));
+  // image-absolute fallback (matches Dockerfile's bundled location)
+  list.push("/app/packages/adapters/claude-tui/python/cli.py");
+  return Array.from(new Set(list));
+})();
 const PYTHON_INTERPRETER = process.env.PYTHON_TUI_INTERPRETER ?? "python3";
 const DEFAULT_TIMEOUT_SEC = 3600;
 const DEFAULT_GRACE_SEC = 20;
@@ -90,13 +101,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const instructionsFilePath = asString(config.instructionsFilePath, "");
 
-  // Validate the Python CLI exists before doing anything else — gives a clear
-  // error pointing at the spike directory while the Python agent's CLI is WIP.
-  if (!pathExistsSync(PYTHON_TUI_CLI_PATH)) {
+  // Resolve the Python CLI by probing candidates. Multi-candidate probing
+  // exists because the build assertion confirmed cli.py was in the image at
+  // /app/packages/adapters/claude-tui/python/cli.py, yet runtime still saw it
+  // as missing — most likely a pnpm/tsx resolution quirk where import.meta.url
+  // pointed inside the .pnpm virtual store rather than the realpath.
+  const resolvedPython = PYTHON_CLI_CANDIDATES.find(pathExistsSync) ?? null;
+  if (!resolvedPython) {
+    const moduleUrl = import.meta.url;
     const message =
-      `claude_tui adapter: Python TUI CLI not found at ${PYTHON_TUI_CLI_PATH}. ` +
-      `The CLI is being developed in parallel; check /tmp/tui-spike/ or wire ` +
-      `PYTHON_TUI_CLI_PATH via adapter config once it lands.`;
+      `claude_tui adapter: Python TUI CLI not found. ` +
+      `Tried [${PYTHON_CLI_CANDIDATES.join(", ")}]. ` +
+      `import.meta.url=${moduleUrl}. ` +
+      `Set PYTHON_TUI_CLI_PATH to point at cli.py.`;
     await onLog("stderr", `${message}\n`);
     return {
       exitCode: null,
@@ -106,6 +123,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode: "claude_tui_cli_missing",
     };
   }
+  const PYTHON_TUI_CLI_PATH = resolvedPython;
 
   // Build env. resolveAllCredentialEnv has already substituted secret refs in
   // configEnv into plain values (heartbeat.ts:7066). We just merge them onto
