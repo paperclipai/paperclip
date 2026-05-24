@@ -2894,6 +2894,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (agent?.status === "error") {
+        logger.info(
+          { agentId, issueId: issue.id, companyId: issue.companyId },
+          "stalled-issue recovery: skipping spawn - assignee agent is in persistent error state",
+        );
+        result.skipped += 1;
+        continue;
+      }
+
       if (await hasActiveExecutionPath(
         issue.companyId,
         issue.id,
