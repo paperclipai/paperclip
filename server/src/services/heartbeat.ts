@@ -4309,6 +4309,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (decision.kind !== "enqueue" || !issue) return;
 
+    // AUTO-MARK DONE: If the task was agent import and run succeeded, mark issue as done
+    const isAgentImportTask = issue.title.toLowerCase().includes("import") && 
+                               issue.title.toLowerCase().includes("agent");
+    if (isAgentImportTask && detectedProgressSummary && 
+        !detectedProgressSummary.includes("error") && 
+        !detectedProgressSummary.includes("fail")) {
+      // Mark issue as done automatically
+      await db.update(issues)
+        .set({ status: "done", completedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.auto_marked_done",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          label: "Auto-marked issue as done after successful agent import",
+          sourceRunId: run.id,
+          detectedProgressSummary,
+          issue: issueUiLink(issue),
+        },
+      });
+      return;
+    }
+
     const handoffRun = await enqueueWakeup(run.agentId, {
       source: "automation",
       triggerDetail: "system",

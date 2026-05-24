@@ -5,8 +5,12 @@
  */
 
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Import the functions from our scripts
 // In production, these would be proper modules
@@ -75,7 +79,7 @@ async function importAgents(repoUrl: string, options: {
 
   // Write external agents to temp file
   const tempFile = `/tmp/import-agents-${Date.now()}.json`;
-  require('fs').writeFileSync(tempFile, JSON.stringify(externalAgents, null, 2));
+  writeFileSync(tempFile, JSON.stringify(externalAgents, null, 2));
 
   const converterResult = await runCommand(
     `npx tsx ${converterScript} ${tempFile}`
@@ -164,28 +168,19 @@ async function importAgents(repoUrl: string, options: {
 
   // Cleanup
   try {
-    require('fs').unlinkSync(tempFile);
+    unlinkSync(tempFile);
   } catch { /* ignore */ }
 
   return results;
 }
 
 async function createAgentViaAPI(agent: any, companyId?: string): Promise<{ success: boolean; id?: string; error?: string }> {
-  // In production, this would call the actual Paperclip API
-  // For now, we simulate the API call
-
   const apiUrl = process.env.PAPERCLIP_API_URL || 'http://localhost:3100';
-  const apiKey = process.env.PAPERCLIP_API_KEY;
-
-  if (!apiKey) {
-    return { success: false, error: 'PAPERCLIP_API_KEY not set' };
-  }
 
   try {
     const response = await fetch(`${apiUrl}/api/companies/${companyId}/agent-hires`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
