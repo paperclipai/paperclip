@@ -19,6 +19,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_SUPPRESSED_ACTION,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
@@ -120,6 +121,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    runStatus?: "succeeded" | "failed" | "cancelled" | "timed_out";
+    errorCode?: string | null;
+    resultJson?: Record<string, unknown> | null;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -129,7 +133,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         id: runId,
         companyId: input.companyId,
         agentId: input.agentId,
-        status: "succeeded",
+        status: input.runStatus ?? "succeeded",
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
@@ -137,6 +141,8 @@ describeEmbeddedPostgres("productivity review service", () => {
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
         livenessState: "advanced",
         nextAction: "Continue processing the next batch.",
+        errorCode: input.errorCode ?? null,
+        resultJson: input.resultJson ?? null,
         createdAt,
         updatedAt: createdAt,
       });
@@ -562,5 +568,131 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("suppresses productivity reviews and emits an infra alert when terminal runs are dominated by process_lost", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      runStatus: "failed",
+      errorCode: "process_lost",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.processLostStormSuppressed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    const alerts = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_SUPPRESSED_ACTION));
+    expect(alerts).toHaveLength(1);
+    const details = alerts[0]?.details as {
+      processLostCount?: number;
+      terminalRunCount?: number;
+      processLostRatio?: number;
+      suppressedTrigger?: string;
+      sampleProcessLostRunIds?: string[];
+    } | null;
+    expect(alerts[0]?.entityId).toBe(seeded.issueId);
+    expect(alerts[0]?.agentId).toBe(seeded.coderId);
+    expect(details?.processLostCount).toBe(DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS);
+    expect(details?.terminalRunCount).toBe(DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS);
+    expect(details?.processLostRatio).toBe(1);
+    expect(details?.suppressedTrigger).toBe("no_comment_streak");
+    expect(details?.sampleProcessLostRunIds?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("detects process_lost storms from resultJson.stopReason when errorCode is missing", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      runStatus: "failed",
+      resultJson: { stopReason: "process_lost" },
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.processLostStormSuppressed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not suppress when process_lost ratio is below the storm threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // 7 process_lost + 3 other-failure terminal runs = 70% — below 80% threshold.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 7,
+      now,
+      runStatus: "failed",
+      errorCode: "process_lost",
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 3,
+      now: new Date(now.getTime() - 7 * 60_000),
+      runStatus: "failed",
+      errorCode: "adapter_failed",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.processLostStormSuppressed).toBe(0);
+    expect(result.created).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("does not suppress non-storm failure mixes that still satisfy the no-comment streak trigger", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      runStatus: "failed",
+      errorCode: "adapter_failed",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.processLostStormSuppressed).toBe(0);
+    expect(result.created).toBe(1);
+    const alerts = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_SUPPRESSED_ACTION));
+    expect(alerts).toHaveLength(0);
   });
 });

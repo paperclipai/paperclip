@@ -30,6 +30,10 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_RATIO = 0.8;
+export const PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_MIN_TERMINAL_RUNS = 5;
+export const PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_SUPPRESSED_ACTION =
+  "issue.productivity_review_suppressed_process_lost_storm";
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -55,6 +59,13 @@ type ProductivityReviewThresholds = {
   maxCreationsPerWindow: number;
 };
 
+type ProcessLostStormSignal = {
+  processLostCount: number;
+  terminalRunCount: number;
+  ratio: number;
+  latestProcessLostRunIds: string[];
+};
+
 type ProductivityReviewEvidence = {
   trigger: ProductivityReviewTrigger;
   triggerReasons: string[];
@@ -77,6 +88,7 @@ type ProductivityReviewEvidence = {
   nextAction: string | null;
   thresholds: ProductivityReviewThresholds;
   generatedAt: Date;
+  processLostStorm: ProcessLostStormSignal | null;
 };
 
 type EnqueueWakeup = (
@@ -94,6 +106,12 @@ type EnqueueWakeup = (
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+function isProcessLostRun(run: HeartbeatRunRow) {
+  if (run.errorCode === "process_lost") return true;
+  const resultStopReason = (run.resultJson as { stopReason?: unknown } | null | undefined)?.stopReason;
+  return typeof resultStopReason === "string" && resultStopReason === "process_lost";
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -429,6 +447,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       noCommentStreak += 1;
     }
 
+    const processLostRuns = terminalRuns.filter(isProcessLostRun);
+    const processLostStorm: ProcessLostStormSignal | null =
+      terminalRuns.length >= PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_MIN_TERMINAL_RUNS &&
+      processLostRuns.length / terminalRuns.length >= PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_RATIO
+        ? {
+          processLostCount: processLostRuns.length,
+          terminalRunCount: terminalRuns.length,
+          ratio: processLostRuns.length / terminalRuns.length,
+          latestProcessLostRunIds: processLostRuns.slice(0, 5).map((run) => run.id),
+        }
+        : null;
+
     const [
       runCountLastHour,
       runCountLastSixHours,
@@ -519,6 +549,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       nextAction: latestRuns.find((run) => run.nextAction)?.nextAction ?? null,
       thresholds,
       generatedAt: now,
+      processLostStorm,
     };
   }
 
@@ -758,6 +789,47 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  async function emitProcessLostStormAlert(evidence: ProductivityReviewEvidence) {
+    const storm = evidence.processLostStorm;
+    if (!storm) return;
+    await logActivity(db, {
+      companyId: evidence.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_SUPPRESSED_ACTION,
+      entityType: "issue",
+      entityId: evidence.sourceIssue.id,
+      agentId: evidence.sourceAgent.id,
+      details: {
+        source: "productivity_review.reconcile",
+        sourceIssueId: evidence.sourceIssue.id,
+        sourceIssueIdentifier: evidence.sourceIssue.identifier,
+        assigneeAgentId: evidence.sourceAgent.id,
+        suppressedTrigger: evidence.trigger,
+        noCommentStreak: evidence.noCommentStreak,
+        processLostCount: storm.processLostCount,
+        terminalRunCount: storm.terminalRunCount,
+        processLostRatio: storm.ratio,
+        processLostThreshold: PRODUCTIVITY_REVIEW_PROCESS_LOST_STORM_RATIO,
+        sampleProcessLostRunIds: storm.latestProcessLostRunIds,
+        reason: "process_lost storm detected; suppressing productivity review to surface infra event instead",
+      },
+    });
+    logger.warn(
+      {
+        companyId: evidence.sourceIssue.companyId,
+        sourceIssueId: evidence.sourceIssue.id,
+        sourceIssueIdentifier: evidence.sourceIssue.identifier,
+        assigneeAgentId: evidence.sourceAgent.id,
+        suppressedTrigger: evidence.trigger,
+        processLostCount: storm.processLostCount,
+        terminalRunCount: storm.terminalRunCount,
+        processLostRatio: storm.ratio,
+      },
+      "productivity review suppressed: process_lost storm",
+    );
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -788,6 +860,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      processLostStormSuppressed: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
@@ -816,6 +889,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
+        continue;
+      }
+      if (evidence.processLostStorm) {
+        await emitProcessLostStormAlert(evidence);
+        result.processLostStormSuppressed += 1;
         continue;
       }
       let prefix = prefixCache.get(candidate.companyId);
