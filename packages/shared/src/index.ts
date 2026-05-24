@@ -736,6 +736,7 @@ export type {
   CostByAgentModel,
   CostWindowSpendRow,
   CostByProject,
+  AgentTokenUsageRow,
   FinanceEvent,
   FinanceSummary,
   FinanceByBiller,

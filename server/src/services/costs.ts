@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects, tokenCapResets, tokenCapWarnings } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -449,6 +449,87 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           costEvents.model,
         )
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
+    },
+
+    tokenUsage: async (companyId: string) => {
+      const now = new Date();
+      const { start: monthStart } = currentUtcMonthWindow(now);
+      const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+
+      const result = await db.execute(sql`
+        WITH
+          usage_agg AS (
+            SELECT ${costEvents.agentId} AS agent_id,
+                   COALESCE(SUM(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision AS raw_tokens
+            FROM ${costEvents}
+            WHERE ${costEvents.companyId} = ${companyId}
+              AND ${costEvents.occurredAt} >= ${monthStart}
+            GROUP BY ${costEvents.agentId}
+          ),
+          reset_agg AS (
+            SELECT ${tokenCapResets.agentId} AS agent_id,
+                   COALESCE(SUM(${tokenCapResets.offsetTokens}), 0)::double precision AS reset_offset
+            FROM ${tokenCapResets}
+            WHERE ${tokenCapResets.companyId} = ${companyId}
+              AND ${tokenCapResets.month} = ${monthDate}
+            GROUP BY ${tokenCapResets.agentId}
+          ),
+          warning_set AS (
+            SELECT ${tokenCapWarnings.agentId} AS agent_id
+            FROM ${tokenCapWarnings}
+            WHERE ${tokenCapWarnings.companyId} = ${companyId}
+              AND ${tokenCapWarnings.month} = ${monthDate}
+          )
+        SELECT
+          ${agents.id} AS "agentId",
+          ${agents.name} AS "agentName",
+          (COALESCE(u.raw_tokens, 0) - COALESCE(r.reset_offset, 0)) AS "netUsageTokens",
+          ${agents.monthlyTokenCapTokens} AS "capTokens",
+          CASE
+            WHEN ${agents.monthlyTokenCapTokens} IS NULL THEN NULL
+            ELSE ROUND(
+              ((COALESCE(u.raw_tokens, 0) - COALESCE(r.reset_offset, 0))
+               / CAST(${agents.monthlyTokenCapTokens} AS double precision) * 100)::numeric,
+              1
+            )::double precision
+          END AS "pctOfCap",
+          (w.agent_id IS NOT NULL) AS "warningFired",
+          CASE
+            WHEN ${agents.monthlyTokenCapTokens} IS NULL THEN false
+            ELSE (COALESCE(u.raw_tokens, 0) - COALESCE(r.reset_offset, 0))
+                 >= CAST(${agents.monthlyTokenCapTokens} AS double precision)
+          END AS "hardStopped"
+        FROM ${agents}
+        LEFT JOIN usage_agg u ON u.agent_id = ${agents.id}
+        LEFT JOIN reset_agg r ON r.agent_id = ${agents.id}
+        LEFT JOIN warning_set w ON w.agent_id = ${agents.id}
+        WHERE ${agents.companyId} = ${companyId}
+        ORDER BY ${agents.name}
+      `);
+
+      const rawRows = Array.isArray(result) ? result : (result as { rows: unknown[] }).rows ?? [];
+
+      return rawRows.map((row: unknown) => {
+        const r = row as {
+          agentId: string;
+          agentName: string;
+          netUsageTokens: number | string;
+          capTokens: number | string | null;
+          pctOfCap: number | string | null;
+          warningFired: boolean;
+          hardStopped: boolean;
+        };
+        return {
+          agentId: r.agentId,
+          agentName: r.agentName,
+          month: monthDate,
+          netUsageTokens: Number(r.netUsageTokens),
+          capTokens: r.capTokens !== null && r.capTokens !== undefined ? Number(r.capTokens) : null,
+          pctOfCap: r.pctOfCap !== null && r.pctOfCap !== undefined ? Number(r.pctOfCap) : null,
+          warningFired: Boolean(r.warningFired),
+          hardStopped: Boolean(r.hardStopped),
+        };
+      });
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {
