@@ -126,3 +126,16 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+/** per-agent monthly token cap utilisation row (current month only) */
+export interface AgentTokenUsageRow {
+  agentId: string;
+  agentName: string;
+  /** ISO date string for the first day of the current UTC month, e.g. "2026-05-01" */
+  month: string;
+  netUsageTokens: number;
+  capTokens: number | null;
+  pctOfCap: number | null;
+  warningFired: boolean;
+  hardStopped: boolean;
+}

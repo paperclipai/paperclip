@@ -215,6 +215,13 @@ export function costRoutes(
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/agents/token-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await costs.tokenUsage(companyId);
+    res.json(rows);
+  });
+
   router.get("/companies/:companyId/costs/window-spend", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

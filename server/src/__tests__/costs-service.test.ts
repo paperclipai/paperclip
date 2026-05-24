@@ -13,6 +13,8 @@ import {
   heartbeatRuns,
   issues,
   projects,
+  tokenCapResets,
+  tokenCapWarnings,
 } from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
@@ -84,6 +86,7 @@ const mockCostService = vi.hoisted(() => ({
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  tokenUsage: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -387,6 +390,27 @@ describe("cost routes", () => {
         details: { budgetMonthlyCents: 2500 },
       }),
     );
+  });
+
+  it("returns token usage rows for a company", async () => {
+    const tokenRow = {
+      agentId: "agent-1",
+      agentName: "CTO",
+      month: "2026-05-01",
+      netUsageTokens: 12345,
+      capTokens: 100000,
+      pctOfCap: 12.3,
+      warningFired: false,
+      hardStopped: false,
+    };
+    mockCostService.tokenUsage.mockResolvedValueOnce([tokenRow]);
+
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/agents/token-usage");
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.tokenUsage).toHaveBeenCalledWith("company-1");
+    expect(res.body).toEqual([tokenRow]);
   });
 });
 
@@ -842,5 +866,162 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+});
+
+describeEmbeddedPostgres("costService.tokenUsage", () => {
+  let db!: ReturnType<typeof createDb>;
+  let costs!: ReturnType<typeof costService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+  const thisMonthStart = (() => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  })();
+  const thisMonthDate = (() => {
+    const now = new Date();
+    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  })();
+
+  async function insertAgent(id: string, name: string, cap: number | null = null) {
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      monthlyTokenCapTokens: cap,
+    });
+  }
+
+  async function insertCostEvent(agentId: string, tokens: { input: number; cached: number; output: number }) {
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription_included",
+      model: "claude-sonnet-4-6",
+      inputTokens: tokens.input,
+      cachedInputTokens: tokens.cached,
+      outputTokens: tokens.output,
+      costCents: 0,
+      occurredAt: new Date(thisMonthStart.getTime() + 3_600_000),
+    });
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-token-usage-");
+    db = createDb(tempDb.connectionString);
+    costs = costService(db);
+  }, 20_000);
+
+  beforeEach(async () => {
+    companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  });
+
+  afterEach(async () => {
+    await db.delete(tokenCapWarnings);
+    await db.delete(tokenCapResets);
+    await db.delete(costEvents);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("returns an agent with no cap: capTokens null, pctOfCap null, warningFired false, hardStopped false", async () => {
+    const agentId = randomUUID();
+    await insertAgent(agentId, "NoCap Agent", null);
+    await insertCostEvent(agentId, { input: 5000, cached: 0, output: 1000 });
+
+    const rows = await costs.tokenUsage(companyId);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row?.agentId).toBe(agentId);
+    expect(row?.netUsageTokens).toBe(6000);
+    expect(row?.capTokens).toBeNull();
+    expect(row?.pctOfCap).toBeNull();
+    expect(row?.warningFired).toBe(false);
+    expect(row?.hardStopped).toBe(false);
+    expect(row?.month).toBe(thisMonthDate);
+  });
+
+  it("returns an agent under cap with no warning", async () => {
+    const agentId = randomUUID();
+    await insertAgent(agentId, "Under Cap", 100_000);
+    await insertCostEvent(agentId, { input: 10_000, cached: 0, output: 2_000 });
+
+    const rows = await costs.tokenUsage(companyId);
+    const row = rows.find((r) => r.agentId === agentId)!;
+    expect(row.netUsageTokens).toBe(12_000);
+    expect(row.capTokens).toBe(100_000);
+    expect(row.pctOfCap).toBeCloseTo(12.0, 1);
+    expect(row.warningFired).toBe(false);
+    expect(row.hardStopped).toBe(false);
+  });
+
+  it("returns an agent in warning state (warningFired true, not hardStopped)", async () => {
+    const agentId = randomUUID();
+    await insertAgent(agentId, "Warning Agent", 100_000);
+    await insertCostEvent(agentId, { input: 82_000, cached: 0, output: 0 });
+    await db.insert(tokenCapWarnings).values({
+      companyId,
+      agentId,
+      month: thisMonthDate,
+      sentAt: new Date(),
+    });
+
+    const rows = await costs.tokenUsage(companyId);
+    const row = rows.find((r) => r.agentId === agentId)!;
+    expect(row.netUsageTokens).toBe(82_000);
+    expect(row.pctOfCap).toBeCloseTo(82.0, 1);
+    expect(row.warningFired).toBe(true);
+    expect(row.hardStopped).toBe(false);
+  });
+
+  it("returns an agent that is hard-stopped (netUsage >= capTokens)", async () => {
+    const agentId = randomUUID();
+    await insertAgent(agentId, "Hard Stop Agent", 50_000);
+    await insertCostEvent(agentId, { input: 45_000, cached: 0, output: 10_000 });
+
+    const rows = await costs.tokenUsage(companyId);
+    const row = rows.find((r) => r.agentId === agentId)!;
+    expect(row.netUsageTokens).toBe(55_000);
+    expect(row.hardStopped).toBe(true);
+    expect(row.pctOfCap).toBeCloseTo(110.0, 1);
+  });
+
+  it("applies a reset offset that brings net usage back under the cap", async () => {
+    const agentId = randomUUID();
+    await insertAgent(agentId, "Reset Agent", 100_000);
+    await insertCostEvent(agentId, { input: 95_000, cached: 0, output: 0 });
+    await db.insert(tokenCapResets).values({
+      companyId,
+      agentId,
+      month: thisMonthDate,
+      offsetTokens: 50_000,
+      resetAt: new Date(),
+      authorizedByUserId: "board-user",
+    });
+
+    const rows = await costs.tokenUsage(companyId);
+    const row = rows.find((r) => r.agentId === agentId)!;
+    expect(row.netUsageTokens).toBe(45_000);
+    expect(row.pctOfCap).toBeCloseTo(45.0, 1);
+    expect(row.hardStopped).toBe(false);
+    expect(row.warningFired).toBe(false);
   });
 });

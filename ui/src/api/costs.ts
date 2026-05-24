@@ -11,6 +11,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  AgentTokenUsageRow,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -43,6 +44,8 @@ export const costsApi = {
     api.get<FinanceByKind[]>(`/companies/${companyId}/costs/finance-by-kind${dateParams(from, to)}`),
   financeEvents: (companyId: string, from?: string, to?: string, limit: number = 100) =>
     api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
+  tokenUsage: (companyId: string) =>
+    api.get<AgentTokenUsageRow[]>(`/companies/${companyId}/agents/token-usage`),
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
