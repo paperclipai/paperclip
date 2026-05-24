@@ -8,12 +8,16 @@
  * `httpArtifactsClient`, which hits the agent-fs REST surface added in
  * Task 2.3.
  *
- * v0 contract: JSON-only. The agent-fs route returns the parsed JSON
- * body. Text and binary artifacts (e.g. captions.srt, .mp4) are not in
- * scope; they require an agent-fs route extension and a different
- * fetch path. A `null` return means the artifact does not exist (or
- * the agent-fs call returned a non-200 we treat as missing); callers
- * decide whether that is fatal.
+ * This client handles JSON artifacts only -- the agent-fs JSON route
+ * parses the body and returns it as a structured value. Binary artifacts
+ * (`.mp4`, `.srt`, `caption_text.txt`, etc.) are written via the binary
+ * route added in Phase 3.5 Step 1 and read by ceo-chat over HTTP (see
+ * `services/ceo-chat/src/video-ad/artifact-fetcher.ts`); they do NOT
+ * flow through this client.
+ *
+ * A `null` return means the artifact does not exist (or the agent-fs
+ * call returned a non-200 we treat as missing); callers decide whether
+ * that is fatal.
  *
  * The HTTP request shape:
  *   GET <baseUrl>/artifacts/<requestId>/<stage>/<filename>
@@ -37,7 +41,7 @@ export interface ArtifactsClient {
 }
 
 export interface HttpArtifactsClientEnv {
-  /** Base URL for agent-fs, e.g. `http://agent-fs:8080`. No trailing slash. */
+  /** Base URL for agent-fs, e.g. `http://agent-fs:7100`. No trailing slash. */
   url: string;
   /** Bearer token for the dispatcher's agent-fs credentials. */
   token: string;
@@ -109,7 +113,7 @@ export interface ArtifactUploadClient {
 }
 
 export interface HttpArtifactUploadClientEnv {
-  /** Base URL for agent-fs, e.g. `http://agent-fs:8080`. No trailing slash. */
+  /** Base URL for agent-fs, e.g. `http://agent-fs:7100`. No trailing slash. */
   url: string;
   /** Bearer token for the dispatcher's agent-fs credentials. */
   token: string;
