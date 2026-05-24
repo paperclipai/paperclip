@@ -74,3 +74,19 @@ export type {
   SandboxCallbackBridgeWorkerHandle,
   StartedSandboxCallbackBridgeServer,
 } from "./sandbox-callback-bridge.js";
+// Export OpenAI-compatible client utilities for adapters
+export type {
+  OpenAICompatibleClientConfig,
+  ChatMessage,
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ChatCompletionChoice,
+  ChatCompletionUsage,
+  ErrorCode,
+  APIError,
+  StreamEvent,
+} from "./openai-compatible-client.js";
+export {
+  OpenAICompatibleClient,
+  aggregateStream,
+} from "./openai-compatible-client.js";
