@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -70,8 +71,7 @@ function resolveClaudeBillingType(
 
 function pathExistsSync(candidate: string): boolean {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require("node:fs").existsSync(candidate);
+    return existsSync(candidate);
   } catch {
     return false;
   }
@@ -104,13 +104,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const resolvedPython = PYTHON_CLI_CANDIDATES.find(pathExistsSync) ?? null;
   if (!resolvedPython) {
     const moduleUrl = import.meta.url;
-    // Dump a structured view of the runtime filesystem state so we can see
-    // why probes failed even when the build asserts the file is present.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("node:fs") as typeof import("node:fs");
     const probe = (p: string): string => {
       try {
-        const st = fs.statSync(p);
+        const st = statSync(p);
         return `${p} OK ${st.isDirectory() ? "dir" : st.isFile() ? `file ${st.size}b` : "other"} mode=${(st.mode & 0o777).toString(8)}`;
       } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException).code ?? "?";
@@ -119,7 +115,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
     const lsDir = (p: string): string => {
       try {
-        return `${p}: ${fs.readdirSync(p).join(",")}`;
+        return `${p}: ${readdirSync(p).join(",")}`;
       } catch (err: unknown) {
         return `${p}: <${(err as NodeJS.ErrnoException).code ?? "err"}>`;
       }
