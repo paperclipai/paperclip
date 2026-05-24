@@ -157,6 +157,34 @@ export function issueRecoveryActionService(db: Db) {
     return result;
   }
 
+  async function getById(actionId: string): Promise<IssueRecoveryAction | null> {
+    const row = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, actionId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row ? toReadModel(row) : null;
+  }
+
+  async function listActiveByCompany(
+    companyId: string,
+    filters: { ownerAgentId?: string | null; sourceIssueId?: string | null } = {},
+  ): Promise<IssueRecoveryAction[]> {
+    const predicates = [
+      eq(issueRecoveryActions.companyId, companyId),
+      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+    ];
+    if (filters.ownerAgentId) predicates.push(eq(issueRecoveryActions.ownerAgentId, filters.ownerAgentId));
+    if (filters.sourceIssueId) predicates.push(eq(issueRecoveryActions.sourceIssueId, filters.sourceIssueId));
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(...predicates))
+      .orderBy(desc(issueRecoveryActions.updatedAt));
+    return rows.map(toReadModel);
+  }
+
   async function retryUpsertSourceScoped(
     input: UpsertIssueRecoveryActionInput,
     retryCount: number,
@@ -288,6 +316,8 @@ export function issueRecoveryActionService(db: Db) {
 
   return {
     getActiveForIssue,
+    getById,
+    listActiveByCompany,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,
