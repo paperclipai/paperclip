@@ -518,6 +518,11 @@ describe.sequential("issue comment reopen routes", () => {
         payload: expect.objectContaining({
           reopenedFrom: "done",
         }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "issue_reopened_via_comment",
+          forceFreshSession: true,
+          commentWakeFreshnessGuard: true,
+        }),
       }),
     ));
   });
@@ -756,6 +761,8 @@ describe.sequential("issue comment reopen routes", () => {
           wakeCommentId: "comment-1",
           wakeReason: "issue_reopened_via_comment",
           reopenedFrom: "blocked",
+          forceFreshSession: true,
+          commentWakeFreshnessGuard: true,
         }),
       }),
     ));
@@ -824,6 +831,35 @@ describe.sequential("issue comment reopen routes", () => {
         contextSnapshot: expect.objectContaining({
           wakeReason: "issue_commented",
           source: "issue.comment",
+          forceFreshSession: true,
+          commentWakeFreshnessGuard: true,
+        }),
+      }),
+    ));
+  });
+
+  it("forces fresh sessions for POST comment mention wakeups", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.findMentionedAgents.mockResolvedValue(["33333333-3333-4333-8333-333333333333"]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "@CodexCoder please check this too." });
+
+    expect(res.status).toBe(201);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "33333333-3333-4333-8333-333333333333",
+      expect.objectContaining({
+        reason: "issue_comment_mentioned",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          commentId: "comment-1",
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "issue_comment_mentioned",
+          source: "comment.mention",
+          forceFreshSession: true,
+          commentWakeFreshnessGuard: true,
         }),
       }),
     ));
