@@ -161,6 +161,7 @@ describe("issue subresource commands", () => {
           payload: { version: 1, prompt: "Continue?" },
         }),
       ]);
+      await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID]);
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--selected-client-keys", "yes"]);
       await run(["issue", "interaction:reject", ISSUE_ID, INTERACTION_ID, "--reason", "no"]);
       await run(["issue", "interaction:cancel", ISSUE_ID, INTERACTION_ID, "--reason", "stale"]);
@@ -193,6 +194,7 @@ describe("issue subresource commands", () => {
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions`],
+      ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/reject`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/cancel`],

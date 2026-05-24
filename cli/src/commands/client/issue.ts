@@ -749,7 +749,7 @@ export function registerIssueCommands(program: Command): void {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = acceptIssueThreadInteractionSchema.parse({
-            selectedClientKeys: parseCsv(opts.selectedClientKeys),
+            selectedClientKeys: opts.selectedClientKeys === undefined ? undefined : parseCsv(opts.selectedClientKeys),
           });
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
           printOutput(interaction, { json: ctx.json });

@@ -190,6 +190,72 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: No additional files changed before commit.
 - Follow-up: Stage and commit the context fix plus parity log, then continue with full CLI inventory and remaining command coverage.
 
+### 2026-05-24T11:28:30+02:00 - Commit context fix
+
+- Command: `git add cli/src/__tests__/context.test.ts cli/src/client/context.ts cli/src/commands/client/context.ts doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`; `git commit -m "Fix CLI context profile patching"`
+- Purpose: Persist the verified context isolation fix before continuing broader parity testing.
+- Prerequisites/IDs used: focused context test and CLI typecheck from previous entry.
+- Expected result: Commit contains only the context patching fix and living parity log.
+- Actual result: Commit `1da21a91` created with 4 files changed.
+- Status: PASS.
+- Output summary: The working tree was clean immediately after this commit.
+- Follow-up: Continue full CLI inventory and commit each subsequent fix after focused verification.
+
+### 2026-05-24T11:30:29+02:00 - Approval and issue subresource partial pass
+
+- Command: `approval create/list/get/comment/request-revision/resubmit/approve/reject`; `issue approvals/approval:link/approval:unlink`; `issue read/unread/archive/unarchive`; `issue child:create/get`; `issue document:put/get/lock/unlock/revisions/restore`; `issue work-product:create/list/update/delete`
+- Purpose: Exercise approval lifecycle and issue subresource CLI/API parity with JSON outputs.
+- Prerequisites/IDs used: company `12e9db4b-f66c-459b-959e-d645002240fb`; issue `f0250734-95f1-4c28-9e10-f1954649fffb`; project `d32032ce-d95e-4c4e-a942-dd98498025fb`; goal `5b2a9135-1044-48d6-a17d-6b91dd9fdc74`.
+- Expected result: Approval lifecycle commands mutate and read approvals; issue markers, child creation, documents, and work products succeed.
+- Actual result: Approval lifecycle succeeded. Created/approved approval `c7f19d1c-fcb3-4e4d-87a7-e8a248a9eb09`; created/rejected approval `bbcfb3ae-38f1-43b0-8f9f-0661e291f29c`; linked and unlinked issue approvals successfully. Issue read/unread/archive/unarchive succeeded. Child issue `6e78d443-c9f4-46ba-9137-f1fa2b7a75c5` was created and fetched. Document create/get/lock/unlock/update/revisions/restore succeeded after supplying `--base-revision-id`; work product create/list/update/delete succeeded.
+- Status: PASS with docs/operator learning.
+- Output summary: A first document update attempt without `--base-revision-id` failed with `API error 409: Document update requires baseRevisionId`; help/source confirmed the flag exists and is required for updates.
+- Follow-up: Continue interactions, tree holds, attachments, labels, feedback, and recovery checks.
+
+### 2026-05-24T11:36:54+02:00 - Fix optional interaction accept keys
+
+- Command: `issue interaction:create`; `issue interaction:accept <issue-id> <interaction-id>` without `--selected-client-keys`; edited `cli/src/commands/client/issue.ts` and `cli/src/__tests__/issue-subresources.test.ts`; `pnpm exec vitest run cli/src/__tests__/issue-subresources.test.ts`; `pnpm --dir cli typecheck`
+- Purpose: Verify and fix request-confirmation acceptance without optional selected task keys.
+- Prerequisites/IDs used: issue `f0250734-95f1-4c28-9e10-f1954649fffb`.
+- Expected result: Omitting optional `--selected-client-keys` sends no `selectedClientKeys` field.
+- Actual result: Before the fix, the CLI sent `selectedClientKeys: []` and local validation failed with `Array must contain at least 1 element(s)`. After the fix, the focused issue subresource test passed 4 tests and CLI typecheck passed.
+- Status: PASS with fixed bug.
+- Output summary: The command now preserves `undefined` for omitted optional CSV input while still parsing provided CSV values.
+- Follow-up: Commit this fix before continuing, per user instruction.
+
+### 2026-05-24T11:39:47+02:00 - Interaction lifecycle and tree hold retry
+
+- Command: `issue interaction:create/accept/reject/respond/cancel`; `issue tree-state`; `issue tree-preview`; `issue tree-hold:create/list/get/release`
+- Purpose: Exercise issue interaction lifecycle and tree control commands.
+- Prerequisites/IDs used: issue `f0250734-95f1-4c28-9e10-f1954649fffb`.
+- Expected result: Request confirmation accept/reject succeeds; question respond/cancel succeeds; tree hold create/list/get/release succeeds.
+- Actual result: Request confirmation accept/reject succeeded. Ask-user-question respond succeeded. `interaction:cancel` only works for `ask_user_questions`; trying it against `request_confirmation` returned `API error 422: Only ask_user_questions interactions can be cancelled`. A corrected ask-user-question cancel succeeded. Tree hold create/list succeeded, but my script initially parsed the create response as `.id`; the API returns `.hold.id`, so the subsequent get used literal `null` and the server returned 500.
+- Status: PASS with fixed server hardening and command UX mismatch.
+- Output summary: Active tree hold `8f07dd71-092f-4746-9b6d-27bbb086b305` was later fetched and released using the correct `.hold.id`/list-derived ID.
+- Follow-up: Harden tree hold routes so malformed hold IDs return 400 instead of database 500; log `interaction:cancel` kind-specific UX mismatch.
+
+### 2026-05-24T11:41:28+02:00 - Fix malformed tree hold ID 500
+
+- Command: edited `server/src/routes/issue-tree-control.ts` and `server/src/__tests__/issue-tree-control-routes.test.ts`; `pnpm exec vitest run server/src/__tests__/issue-tree-control-routes.test.ts`; `pnpm --dir server typecheck`
+- Purpose: Prevent malformed tree hold IDs from reaching PostgreSQL UUID comparisons.
+- Prerequisites/IDs used: reproduction path `/api/issues/<issue-id>/tree-holds/null`.
+- Expected result: Invalid hold IDs return a client error and do not call the tree hold service.
+- Actual result: Focused route test passed 9 tests; server typecheck passed.
+- Status: PASS with fixed bug.
+- Output summary: Both `GET /tree-holds/null` and `POST /tree-holds/null/release` now validate UUID shape and return 400.
+- Follow-up: Commit this fix before continuing, per user instruction.
+
+### 2026-05-24T11:43:22+02:00 - Attachments, labels, and feedback retry
+
+- Command: `issue tree-hold:get/release`; `issue attachment:upload/list/download/delete`; `issue label:create/list/delete`; `issue feedback:vote/votes/list/export`; `token agent create/revoke`
+- Purpose: Resume the subresource pass after fixing the tree hold script shape and route hardening.
+- Prerequisites/IDs used: issue `f0250734-95f1-4c28-9e10-f1954649fffb`; tree hold `8f07dd71-092f-4746-9b6d-27bbb086b305`; company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`.
+- Expected result: Active hold is released; attachment upload/download round trip matches bytes; label lifecycle succeeds; feedback vote succeeds against a valid target.
+- Actual result: Tree hold get/release succeeded. Attachment upload/list/download/delete succeeded and `cmp` verified downloaded bytes. Label create/list/delete succeeded. Feedback vote against board-authored comment failed with `API error 422: Feedback voting is only available on agent-authored issue comments`. A retry that created an isolated temporary agent token `a67f4f69-7250-43d6-9988-96e7692da605` still failed because `issue comment --api-key <agent-token>` did not produce an agent-authored feedback target. The temporary token was revoked immediately after the failure.
+- Status: PARTIAL.
+- Output summary: No plaintext token values were written to this log. Token `a67f4f69-7250-43d6-9988-96e7692da605` is revoked.
+- Follow-up: Inspect agent-authored comment command/auth semantics before retrying feedback voting.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
@@ -217,3 +283,42 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Fix summary: Not fixed; the implemented top-level `whoami` command is functional, and this pass is prioritizing functional parity bugs.
 - Verification command: `pnpm paperclipai whoami --json`.
 - Remaining risk: Docs/runbook users may try a stale command shape.
+
+### BUG-002 - `issue interaction:accept` rejected omitted optional selected keys
+
+- Status: Fixed.
+- Severity: Medium CLI/API parity bug; the command help marks `--selected-client-keys` optional, but omitting it made the CLI fail before calling the API.
+- Reproduction command: `pnpm paperclipai issue interaction:accept <issue-id> <request-confirmation-interaction-id> --json`.
+- Expected result: The CLI sends `{}` and the API accepts the pending request confirmation.
+- Actual result: CLI validation failed with `selectedClientKeys` too small because omitted input was converted to `[]`.
+- Suspected cause: `parseCsv(undefined)` returns `[]`, and `interaction:accept` always included that value in the payload.
+- Files changed: `cli/src/commands/client/issue.ts`; `cli/src/__tests__/issue-subresources.test.ts`.
+- Fix summary: Preserve `undefined` when `--selected-client-keys` is omitted; keep CSV parsing for explicit values.
+- Verification command: `pnpm exec vitest run cli/src/__tests__/issue-subresources.test.ts`; `pnpm --dir cli typecheck`.
+- Remaining risk: Low; focused CLI command wrapper coverage now includes omitted and explicit selected-key cases.
+
+### BUG-003 - Malformed tree hold ID returned server 500
+
+- Status: Fixed.
+- Severity: Medium API robustness bug; malformed user input reached a UUID database comparison and surfaced as a 500.
+- Reproduction command: `pnpm paperclipai issue tree-hold:get <issue-id> null --json` or `pnpm paperclipai issue tree-hold:release <issue-id> null --json`.
+- Expected result: Invalid hold IDs return a 400 client error without querying the tree hold service.
+- Actual result: Server returned `API error 500: Internal server error`; server log showed `invalid input syntax for type uuid: "null"`.
+- Suspected cause: Tree hold routes did not validate `holdId` before passing it to service/database code.
+- Files changed: `server/src/routes/issue-tree-control.ts`; `server/src/__tests__/issue-tree-control-routes.test.ts`.
+- Fix summary: Validate `holdId` with `isUuidLike` in get/release routes and return `{ error: "Invalid hold ID" }` with status 400.
+- Verification command: `pnpm exec vitest run server/src/__tests__/issue-tree-control-routes.test.ts`; `pnpm --dir server typecheck`.
+- Remaining risk: Low; route-level regression covers both malformed get and release paths.
+
+### MISMATCH-002 - `issue interaction:cancel` command is generic but API only cancels questions
+
+- Status: Not fixed in this pass.
+- Severity: Low command UX drift.
+- Reproduction command: `pnpm paperclipai issue interaction:cancel <issue-id> <request-confirmation-interaction-id> --reason "..." --json`.
+- Expected result: Either the command help states it only applies to `ask_user_questions`, or request confirmations expose a cancel/supersede flow.
+- Actual result: API returns `422: Only ask_user_questions interactions can be cancelled`.
+- Suspected cause: CLI command name/help is generic while server service method is `cancelQuestions`.
+- Files changed: none for this mismatch.
+- Fix summary: Not fixed yet; adapted E2E to cancel an `ask_user_questions` interaction.
+- Verification command: `pnpm paperclipai issue interaction:cancel <issue-id> <ask-user-questions-interaction-id> --reason "Cancelled by CLI parity" --json`.
+- Remaining risk: Users may try to cancel a request confirmation because the CLI help does not mention the kind restriction.
