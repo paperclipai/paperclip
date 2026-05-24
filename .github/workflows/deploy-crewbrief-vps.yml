@@ -16,7 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check required secrets
+        id: check_secrets
+        run: |
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USER }}" ]; then
+            echo "VPS_SSH_KEY, VPS_HOST, or VPS_USER secrets not configured."
+            echo "Set them in https://github.com/jetpiloto1/paperclip/settings/secrets/actions"
+            echo "skip_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install SSH key
+        if: steps.check_secrets.outputs.skip_deploy == 'false'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -24,6 +36,7 @@ jobs:
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
       - name: Pull latest code and restart server on VPS
+        if: steps.check_secrets.outputs.skip_deploy == 'false'
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'DEPLOY_EOF'
             set -e
