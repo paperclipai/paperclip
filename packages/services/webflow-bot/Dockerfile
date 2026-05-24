@@ -76,8 +76,10 @@ COPY packages/services/webflow-bot/src /app/src
 # Install as a package so `python3 -m webflow_bot` is the canonical
 # entrypoint. --no-deps because Camoufox + Playwright are already
 # pinned above; pyproject.toml lists them for tooling (mypy/ruff) but
-# the runtime versions live in this Dockerfile.
-RUN pip install --no-cache-dir --no-deps -e /app
+# the runtime versions live in this Dockerfile. This image has already
+# copied the source into /app, so a normal wheel install avoids requiring
+# editable-install support from the build backend.
+RUN pip install --no-cache-dir --no-deps /app
 
 # The bot is launched by the wrapper command in the Deployment manifest
 # (Xvfb + x11vnc + websockify orchestration is a manifest concern, not
