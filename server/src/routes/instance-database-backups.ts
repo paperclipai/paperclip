@@ -20,6 +20,11 @@ export type InstanceDatabaseBackupService = {
 export function instanceDatabaseBackupRoutes(service: InstanceDatabaseBackupService) {
   const router = Router();
 
+  /**
+   * Admin-only internal endpoint — intended for privileged clients (admin tools,
+   * the server's own scheduled backup process), not the regular UI or CLI.
+   * Board-user auth is enforced via `assertInstanceAdmin` middleware.
+   */
   router.post("/instance/database-backups", async (req, res) => {
     assertInstanceAdmin(req);
     const result = await service.runManualBackup();
