@@ -95,7 +95,7 @@ ARG CCROTATE_REF=306da1767a7eeac0e49c33bcbaee2706396da2e6
 #    only changes the floor for agents that enable dind without setting
 #    explicit limits.
 ARG CLAUDE_K8S_REF=8246446d2ec0a1f66f1d71519493107785a34f13
-ARG OPENCODE_K8S_REF=f640b5139f391877db19e239fdc28adde8763ede
+ARG OPENCODE_K8S_REF=16dfad42e1c09d6295861973e682c51f92d2fb7a
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
