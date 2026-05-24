@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -216,6 +217,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     wakePrompt,
     renderedPrompt,
   ]);
+
+  // Pre-accept the cwd in ${HOME}/.claude.json so the TUI doesn't show the
+  // "Do you trust the files in this folder?" dialog on first run. credentials.ts
+  // already seeded hasCompletedOnboarding; we merge in the per-project trust
+  // entry here because cwd is only known at adapter-execution time.
+  const agentHome = typeof spawnEnv.HOME === "string" ? spawnEnv.HOME : "";
+  if (agentHome) {
+    const globalConfigFile = path.join(agentHome, ".claude.json");
+    try {
+      let existing: Record<string, unknown> = {};
+      try {
+        const raw = await fs.readFile(globalConfigFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // missing — credentials.ts always seeds it for claude_oauth, but if
+        // the agent runs without that credential type we still want trust
+        // pre-accepted.
+      }
+      const projects =
+        existing.projects && typeof existing.projects === "object" && !Array.isArray(existing.projects)
+          ? { ...(existing.projects as Record<string, unknown>) }
+          : {};
+      const prior =
+        projects[cwd] && typeof projects[cwd] === "object" && !Array.isArray(projects[cwd])
+          ? (projects[cwd] as Record<string, unknown>)
+          : {};
+      projects[cwd] = {
+        ...prior,
+        hasTrustDialogAccepted: true,
+        projectOnboardingSeenCount:
+          typeof prior.projectOnboardingSeenCount === "number" && prior.projectOnboardingSeenCount > 0
+            ? prior.projectOnboardingSeenCount
+            : 1,
+      };
+      const next = {
+        ...existing,
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion:
+          typeof existing.lastOnboardingVersion === "string" ? existing.lastOnboardingVersion : "2.1.141",
+        projects,
+      };
+      await fs.writeFile(globalConfigFile, JSON.stringify(next), "utf-8");
+      await fs.chmod(globalConfigFile, 0o600).catch(() => undefined);
+    } catch {
+      // best-effort; the TUI driver also handles onboarding screens defensively.
+    }
+  }
 
   const cliArgs = [
     PYTHON_TUI_CLI_PATH,

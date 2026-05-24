@@ -288,6 +288,31 @@ export async function resolveCredentialEnv(
       const credFile = path.join(claudeDir, ".credentials.json");
       await fs.writeFile(credFile, JSON.stringify({ claudeAiOauth: oauth }), "utf-8");
       await fs.chmod(credFile, 0o600).catch(() => undefined);
+
+      // Pre-seed ~/.claude.json so the interactive TUI skips its first-run
+      // onboarding wizard (theme picker → login picker → OAuth paste). The
+      // headless --print path doesn't read this file, but the TUI does. Merge
+      // with any existing file in case the adapter has already written a
+      // per-project trust entry alongside.
+      const globalConfigFile = path.join(agentHome, ".claude.json");
+      let existingGlobalConfig: Record<string, unknown> = {};
+      try {
+        const raw = await fs.readFile(globalConfigFile, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          existingGlobalConfig = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // missing or unreadable — start fresh
+      }
+      const globalConfig: Record<string, unknown> = {
+        ...existingGlobalConfig,
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion: "2.1.141",
+      };
+      await fs.writeFile(globalConfigFile, JSON.stringify(globalConfig), "utf-8");
+      await fs.chmod(globalConfigFile, 0o600).catch(() => undefined);
+
       logger.info(
         { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, subscriptionType },
         "wrote claude_oauth credentials.json for agent",
