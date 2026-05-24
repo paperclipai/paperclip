@@ -242,9 +242,7 @@ function createUploadHandler(db: Db, storage: StorageService) {
     } catch (err) {
       next(err);
     }
-  });
-
-  return router;
+  };
 }
 
 async function storeParsedData(db: Db, parsed: ParsedItinerary): Promise<ExtractionCounts> {

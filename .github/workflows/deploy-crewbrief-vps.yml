@@ -59,6 +59,8 @@ jobs:
             "https://crewbrief.avva.aero/api/briefings/demo-trip-001/demo-duty-001" \
             "https://crewbrief.avva.aero/api/crewbrief/intake/airports" \
             "https://crewbrief.avva.aero/api/crewbrief/intake/batch/airports" \
+            "https://crewbrief.avva.aero/api/crewbrief/jetinsight/parse" \
+            "https://crewbrief.avva.aero/api/crewbrief/documents/upload" \
             "https://crewbrief.avva.aero/briefing/monday"; do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ep")
             echo "$ep -> HTTP $CODE"
