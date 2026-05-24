@@ -416,8 +416,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
 
   const credentialTypesForAdapter = useMemo(
-    () => credentialTypesForAdapterType(adapterType),
-    [adapterType],
+    () => credentialTypesForAdapterType(adapterType, acpxAgent),
+    [adapterType, acpxAgent],
   );
   const availableCredentials = useMemo(
     () => credentials.filter((c) => credentialTypesForAdapter.has(c.type)),
@@ -471,6 +471,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       props.onChange({ credentialIds: [defaultCred.id] });
     }
   }, [isCreate, availableCredentials]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prune selected credentials that became incompatible after switching ACPX agent
+  // (claude ↔ codex). The adapter-type change handler already prunes when the
+  // adapter itself changes; this covers the narrower agent toggle within ACPX.
+  useEffect(() => {
+    if (selectedCredentialIds.length === 0) return;
+    const compatibleIds = selectedCredentialIds.filter((id) => {
+      const cred = credentials.find((c) => c.id === id);
+      return cred ? credentialTypesForAdapter.has(cred.type) : false;
+    });
+    if (compatibleIds.length === selectedCredentialIds.length) return;
+    if (isCreate) {
+      props.onChange({ credentialIds: compatibleIds });
+    } else {
+      setOverlay((prev) => ({ ...prev, credentialIds: compatibleIds }));
+    }
+  }, [credentialTypesForAdapter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
@@ -1943,7 +1960,10 @@ const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
   openrouter_api_key: "OpenRouter API Key",
 };
 
-function credentialTypesForAdapterType(adapterType: string): Set<CredentialType> {
+function credentialTypesForAdapterType(
+  adapterType: string,
+  acpxAgent?: string,
+): Set<CredentialType> {
   switch (adapterType) {
     case "claude_local":
       return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
@@ -1961,9 +1981,16 @@ function credentialTypesForAdapterType(adapterType: string): Set<CredentialType>
         "gemini_api_key",
       ]);
     case "acpx_local":
-      // ACPX dispatches to claude or codex at run time based on config.agent —
-      // accept the full set so the user can attach one credential per provider
-      // and let the subprocess pick.
+      // ACPX dispatches based on adapterConfig.agent. Narrow the credential
+      // picker to the provider that will actually be invoked so the user
+      // isn't offered creds that the runtime will ignore.
+      if (acpxAgent === "claude") {
+        return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
+      }
+      if (acpxAgent === "codex") {
+        return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
+      }
+      // custom or unset — allow both providers
       return new Set<CredentialType>([
         "claude_oauth",
         "claude_api_key",
@@ -2009,7 +2036,7 @@ function CredentialMultiSelect({
   return (
     <Field
       label="Credentials"
-      hint="Provider credentials to inject into the adapter environment at run time. Pick one per provider (e.g. one Anthropic + one OpenAI for ACPX). Manage in Company Settings."
+      hint="Provider credentials to inject into the adapter environment at run time. Only credentials matching this adapter's selected provider are shown. Manage in Company Settings."
     >
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
