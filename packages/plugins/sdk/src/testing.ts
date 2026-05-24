@@ -1781,7 +1781,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         ) {
           throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
         }
-        return { runId: randomUUID() };
+        return { runId: randomUUID(), issueId: randomUUID() };
       },
       managed: {
         async get(agentKey, companyId) {
@@ -1923,7 +1923,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           if (opts.onEvent) {
             sessionEventCallbacks.set(sessionId, opts.onEvent);
           }
-          return { runId: randomUUID() };
+          return { runId: randomUUID(), issueId: randomUUID() };
         },
         async close(sessionId, companyId) {
           requireCapability(manifest, capabilitySet, "agent.sessions.close");
