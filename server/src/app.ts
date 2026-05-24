@@ -73,6 +73,7 @@ import {
   crewbriefWebhookService,
 } from "./services/index.js";
 import { createBlogService } from "./services/crewbrief-blog.js";
+import { generateMondayBriefing, renderBriefingHtml } from "./services/crewbrief-briefing.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -411,6 +412,23 @@ export async function createApp(
       }
       if (req.method === "POST" && (req.path === "/capture/" || req.path === "/capture")) {
         res.json({ status: "ok" });
+        return;
+      }
+      next();
+    });
+
+    app.use((req, res, next) => {
+      if (req.hostname !== crewbriefHost && !req.hostname.endsWith("." + crewbriefHost)) {
+        return next();
+      }
+      if (req.path === "/briefing/monday" || req.path === "/briefing/monday/") {
+        const briefing = generateMondayBriefing("MONDAY", "001");
+        const html = renderBriefingHtml(briefing);
+        if (html) {
+          res.set("Content-Type", "text/html").status(200).end(html);
+        } else {
+          res.status(500).end("Briefing template not found");
+        }
         return;
       }
       next();
