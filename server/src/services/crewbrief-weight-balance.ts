@@ -1,8 +1,10 @@
-import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
-import { readConfigFile } from "../config-file.js";
-
-const require = createRequire(import.meta.url);
+import type { Db } from "@paperclipai/db";
+import { crewbriefWeightBalance } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
+import {
+  extractPdfText,
+  callLLMWithFallback,
+} from "./crewbrief-parser-utils.js";
 
 export interface WeightBalanceData {
   tripId: string;
@@ -111,112 +113,6 @@ Rules:
 - If the text does NOT contain weight and balance data, return { "error": "No weight and balance data found in provided text" }
 - IMPORTANT: Return valid JSON only, no markdown, no code fences.`;
 
-function resolveOpenAiApiKey(): string | null {
-  const envKey = process.env.OPENAI_API_KEY?.trim();
-  if (envKey) return envKey;
-  const config = readConfigFile();
-  if (config?.llm?.provider !== "openai") return null;
-  const configKey = config.llm.apiKey?.trim();
-  return configKey && configKey.length > 0 ? configKey : null;
-}
-
-function resolveAnthropicApiKey(): string | null {
-  const envKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (envKey) return envKey;
-  const config = readConfigFile();
-  if (config?.llm?.provider !== "claude") return null;
-  const configKey = config.llm.apiKey?.trim();
-  return configKey && configKey.length > 0 ? configKey : null;
-}
-
-function determineProvider(): "openai" | "claude" | null {
-  if (resolveOpenAiApiKey()) return "openai";
-  if (resolveAnthropicApiKey()) return "claude";
-  const config = readConfigFile();
-  if (config?.llm?.provider === "openai" && config.llm.apiKey) return "openai";
-  if (config?.llm?.provider === "claude" && config.llm.apiKey) return "claude";
-  return null;
-}
-
-async function callOpenAI(text: string): Promise<WeightBalanceData> {
-  const apiKey = resolveOpenAiApiKey()!;
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Parse this weight and balance document text:\n\n${text}` },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.1,
-      max_tokens: 4096,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`OpenAI API error (${response.status}): ${err}`);
-  }
-
-  const data = (await response.json()) as { choices: { message: { content: string } }[] };
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("OpenAI returned empty response");
-
-  return parseResult(content);
-}
-
-async function callClaude(text: string): Promise<WeightBalanceData> {
-  const apiKey = resolveAnthropicApiKey()!;
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      system: SYSTEM_PROMPT,
-      messages: [
-        { role: "user", content: `Parse this weight and balance document text:\n\n${text}` },
-      ],
-      temperature: 0.1,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Anthropic API error (${response.status}): ${err}`);
-  }
-
-  const data = (await response.json()) as { content: { text: string }[] };
-  const contentBlock = data.content?.[0];
-  if (!contentBlock?.text) throw new Error("Anthropic returned empty response");
-
-  return parseResult(contentBlock.text);
-}
-
-function parseResult(raw: string): WeightBalanceData {
-  const cleaned = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const parsed = JSON.parse(cleaned);
-
-  if (parsed.error) {
-    throw new Error(parsed.error);
-  }
-
-  return parsed as WeightBalanceData;
-}
-
 export function deterministicParseWeightBalance(text: string): WeightBalanceData | null {
   const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   if (lines.length < 5) return null;
@@ -241,7 +137,10 @@ export function deterministicParseWeightBalance(text: string): WeightBalanceData
     lowerText.includes("takeoff weight") ||
     lowerText.includes("landing weight") ||
     lowerText.includes("ramp weight") ||
-    lowerText.includes("payload");
+    lowerText.includes("payload") ||
+    lowerText.includes("load distribution") ||
+    lowerText.includes("loading manifest") ||
+    lowerText.includes("station");
 
   if (!hasWbIndicators) return null;
 
@@ -249,102 +148,116 @@ export function deterministicParseWeightBalance(text: string): WeightBalanceData
     tripId: `WB-${new Date().toISOString().slice(0, 10)}`,
   };
 
-  const tailMatch = text.match(/\bN\d{1,5}[A-Z]?\b/) || text.match(/\b(C-|[A-Z]{2}-)?[A-Z0-9]{3,6}\b.*(?:tail|acft|aircraft|reg[#:]?)/i);
+  const tailMatch = text.match(/\bN\d{1,5}[A-Z]{0,2}\b/) || text.match(/\b(C-|[A-Z]{2}-)?[A-Z0-9]{3,6}\b.*(?:tail|acft|aircraft|reg[#:]?)/i) || text.match(/(?:acft|aircraft|registration|reg[#:]?)[:\s]+([A-Z0-9-]+)/i);
   if (tailMatch && !tailMatch[0].match(/^\d+(\.\d+)?$/)) {
-    if (tailMatch[0].startsWith("N") && tailMatch[0].length > 3) {
-      result.aircraftRegistration = tailMatch[0];
+    const reg = tailMatch[1] || tailMatch[0];
+    if (reg.startsWith("N") && reg.length > 3) {
+      result.aircraftRegistration = reg;
     }
+  }
+
+  const dateMatch = text.match(/(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4})/) || text.match(/(\d{4}-\d{2}-\d{2})/) || text.match(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})/i);
+  if (dateMatch) {
+    result.documentDate = dateMatch[1];
+  }
+
+  const dateLineMatch = text.match(/Date[:\s]+([A-Za-z0-9\/\-\s,]+)/i);
+  if (dateLineMatch && dateLineMatch[1].trim().length > 4) {
+    result.documentDate = dateLineMatch[1].trim();
   }
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const lower = lowerLines[i];
 
-    const lineLower = line.toLowerCase();
-
-    if (lineLower.includes("basic empty weight") || lineLower.includes("bew")) {
+    if (lower.includes("basic empty weight") || lower.includes("bew")) {
       const val = extractNumberAfterLabel(line, ["basic empty weight", "bew"], lines, i);
       if (val) result.basicEmptyWeight = val;
       continue;
     }
 
-    if (lineLower.includes("operating empty weight") || lineLower.includes("oew")) {
+    if (lower.includes("operating empty weight") || lower.includes("oew")) {
       const val = extractNumberAfterLabel(line, ["operating empty weight", "oew"], lines, i);
       if (val) result.operatingEmptyWeight = val;
       continue;
     }
 
-    if (lineLower.includes("max takeoff") || lineLower.includes("mtow") || (lineLower.includes("takeoff") && lineLower.includes("weight") && lineLower.includes("max"))) {
+    if (lower.includes("max takeoff") || lower.includes("mtow") || (lower.includes("takeoff") && lower.includes("weight") && lower.includes("max"))) {
       const val = extractNumberAfterLabel(line, ["max takeoff", "mtow", "maximum takeoff"], lines, i);
       if (val) result.maxTakeoffWeight = val;
       continue;
     }
 
-    if (lineLower.includes("max landing") || lineLower.includes("mlw") || (lineLower.includes("landing") && lineLower.includes("weight") && lineLower.includes("max"))) {
+    if (lower.includes("max landing") || lower.includes("mlw") || (lower.includes("landing") && lower.includes("weight") && lower.includes("max"))) {
       const val = extractNumberAfterLabel(line, ["max landing", "mlw", "maximum landing"], lines, i);
       if (val) result.maxLandingWeight = val;
       continue;
     }
 
-    if (lineLower.includes("max zero fuel") || lineLower.includes("mzfw") || (lineLower.includes("zero fuel") && lineLower.includes("max"))) {
+    if (lower.includes("max zero fuel") || lower.includes("mzfw") || (lower.includes("zero fuel") && lower.includes("max"))) {
       const val = extractNumberAfterLabel(line, ["max zero fuel", "mzfw", "maximum zero fuel"], lines, i);
       if (val) result.maxZeroFuelWeight = val;
       continue;
     }
 
-    if (lineLower.includes("zero fuel weight") || (lineLower.includes("zero fuel") && !lineLower.includes("max")) || (lineLower === "zfw")) {
+    if (lower.includes("zero fuel weight") || (lower.includes("zero fuel") && !lower.includes("max")) || lower.includes("zfw:")) {
       const val = extractNumberAfterLabel(line, ["zero fuel weight", "zfw"], lines, i);
       if (val) result.zeroFuelWeight = val;
       continue;
     }
 
-    if (lineLower.includes("ramp weight") || lineLower.includes("taxi weight")) {
-      const val = extractNumberAfterLabel(line, ["ramp weight", "taxi weight", "ramp"], lines, i);
-      if (val) result.rampWeight = val;
-      continue;
-    }
-
-    if (lineLower.includes("max ramp") || lineLower.includes("maximum ramp")) {
+    if (lower.includes("max ramp") || lower.includes("maximum ramp")) {
       const val = extractNumberAfterLabel(line, ["max ramp", "maximum ramp"], lines, i);
       if (val) result.maxRampWeight = val;
       continue;
     }
 
-    if ((lineLower.includes("takeoff weight") || lineLower.includes("take-off weight") || lineLower === "tow") && !lineLower.includes("max")) {
+    if (lower.includes("ramp weight") || lower.includes("taxi weight")) {
+      const val = extractNumberAfterLabel(line, ["ramp weight", "taxi weight", "ramp"], lines, i);
+      if (val) result.rampWeight = val;
+      continue;
+    }
+
+    if ((lower.includes("takeoff weight") || lower.includes("take-off weight") || lower === "tow") && !lower.includes("max")) {
       const val = extractNumberAfterLabel(line, ["takeoff weight", "take-off weight", "tow"], lines, i);
       if (val) result.takeoffWeight = val;
       continue;
     }
 
-    if ((lineLower.includes("landing weight") || lineLower === "law") && !lineLower.includes("max")) {
+    if ((lower.includes("landing weight") || lower === "law") && !lower.includes("max")) {
       const val = extractNumberAfterLabel(line, ["landing weight", "law"], lines, i);
       if (val) result.landingWeight = val;
       continue;
     }
 
-    if (lineLower.includes("payload")) {
+    if (lower.includes("payload")) {
       const val = extractNumberAfterLabel(line, ["payload"], lines, i);
       if (val) result.payload = val;
       continue;
     }
 
-    if (lineLower.includes("passenger") && (lineLower.includes("count") || lineLower.includes("number") || lineLower.match(/\d+\s*pax/))) {
-      const match = line.match(/(\d+)\s*(?:pax|passengers?)/i);
+    if (lower.includes("passenger")) {
+      const match = line.match(/(\d+)\s*(?:pax|passengers?)/i) || line.match(/passengers?\s*[:#]?\s*(\d+)/i);
       if (match) result.passengerCount = match[1];
       continue;
     }
 
-    if ((lineLower.includes("total fuel") || lineLower.includes("fuel on board") || lineLower.includes("fob")) && !lineLower.includes("max")) {
+    if ((lower.includes("total fuel") || lower.includes("fuel on board") || lower.includes("fob")) && !lower.includes("max")) {
       const val = extractNumberAfterLabel(line, ["total fuel", "fuel on board", "fob", "fuel"], lines, i);
       if (val) result.fuelRamp = val;
       continue;
     }
 
-    if (lineLower.includes("trip fuel") || lineLower.includes("burn fuel") || lineLower.includes("fuel burn") || (lineLower.includes("fuel") && lineLower.includes("trip"))) {
+    if (lower.includes("trip fuel") || lower.includes("burn fuel") || lower.includes("fuel burn") || (lower.includes("fuel") && lower.includes("trip"))) {
       const val = extractNumberAfterLabel(line, ["trip fuel", "fuel burn", "burn fuel"], lines, i);
       if (val) result.fuelTrip = val;
       continue;
     }
+  }
+
+  const stations = parseLoadStations(text, lines);
+  if (stations.length > 0) {
+    result.stations = stations;
   }
 
   const fuelUnitMatch = text.match(/\b(lbs?|pounds?|kg|kilograms?)\b/i);
@@ -353,7 +266,7 @@ export function deterministicParseWeightBalance(text: string): WeightBalanceData
     result.fuelUnit = unit.startsWith("k") ? "kg" : "lbs";
   }
 
-  const typeMatch = text.match(/(?:Aircraft|Type|Model)[:\s]+([A-Za-z0-9\s-]+)/i);
+  const typeMatch = text.match(/(?:(?:Aircraft|Acft)\s+Type|Aircraft|Type|Model)\s*:\s*([A-Za-z0-9\s/-]+)/i);
   if (typeMatch && typeMatch[1].trim().length > 3) {
     result.aircraftType = typeMatch[1].trim();
   }
@@ -368,6 +281,68 @@ export function deterministicParseWeightBalance(text: string): WeightBalanceData
   if (!hasEssentialFields) return null;
 
   return result;
+}
+
+function parseLoadStations(text: string, lines: string[]): NonNullable<WeightBalanceData["stations"]> {
+  const stations: NonNullable<WeightBalanceData["stations"]> = [];
+  let inStationSection = false;
+  let seenHeader = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lower = lines[i].toLowerCase();
+
+    if (lower.includes("station") && (lower.includes("weight") || lower.includes("load") || lower.includes("distribution") || lower.includes("arm") || lower.includes("moment"))) {
+      inStationSection = true;
+      seenHeader = true;
+      continue;
+    }
+
+    if (!inStationSection) continue;
+
+    if (lower.includes("total") || lower.includes("sum") || lower.includes("limit") || lower.includes("cg limits") || (lower.includes("zero fuel") && !lower.includes("station"))) {
+      continue;
+    }
+
+    const parts = lines[i].split(/\s{2,}|\t+/);
+    const nonEmpty = parts.filter(p => p.trim().length > 0);
+
+    if (nonEmpty.length >= 3) {
+      const stationName = nonEmpty[0].trim();
+      if (stationName.match(/^[A-Za-z\s/]+$/) && stationName.length > 1 &&
+          !stationName.toLowerCase().includes("station") &&
+          !stationName.toLowerCase().includes("weight") &&
+          !stationName.toLowerCase().includes("arm") &&
+          !stationName.toLowerCase().includes("moment")) {
+        const weight = nonEmpty[1].replace(/,/g, "");
+        const arm = nonEmpty.length >= 3 ? nonEmpty[2].replace(/,/g, "") : "";
+        const moment = nonEmpty.length >= 4 ? nonEmpty[3].replace(/,/g, "") : "";
+        if (parseFloat(weight) > 0) {
+          stations.push({ station: stationName, weight, arm, moment });
+        }
+      }
+    }
+  }
+
+  if (stations.length === 0 && !seenHeader) {
+    const tablePattern = /^\s*([A-Za-z][A-Za-z\s/]{1,40}?)\s{2,}([\d,]+\.?\d*)\s{2,}([\d,]+\.?\d*)\s{2,}([\d,]+\.?\d*)\s*$/gm;
+    let tableMatch: RegExpExecArray | null;
+    while ((tableMatch = tablePattern.exec(text)) !== null) {
+      const name = tableMatch[1].trim();
+      const weight = tableMatch[2].replace(/,/g, "");
+      const arm = tableMatch[3].replace(/,/g, "");
+      const moment = tableMatch[4].replace(/,/g, "");
+
+      if (name.length > 1 && parseFloat(weight) > 0 &&
+          !name.toLowerCase().includes("total") &&
+          !name.toLowerCase().includes("station") &&
+          !name.toLowerCase().includes("weight") &&
+          !stations.some(s => s.station === name)) {
+        stations.push({ station: name, weight, arm, moment });
+      }
+    }
+  }
+
+  return stations;
 }
 
 function extractNumberAfterLabel(line: string, labels: string[], allLines: string[], lineIndex: number): string | null {
@@ -400,24 +375,6 @@ function extractNumberAfterLabel(line: string, labels: string[], allLines: strin
   return null;
 }
 
-export async function extractPdfText(pdfBuffer: Buffer): Promise<string> {
-  const result = spawnSync("python3", ["-c", `
-import sys
-from io import BytesIO
-from pdfminer.high_level import extract_text
-data = sys.stdin.buffer.read()
-text = extract_text(BytesIO(data))
-sys.stdout.write(text)
-`], { input: pdfBuffer, maxBuffer: 50 * 1024 * 1024, timeout: 30000 });
-
-  if (result.error) throw new Error(`PDF extraction subprocess failed: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`PDF extraction subprocess exited ${result.status}: ${result.stderr.toString().slice(0, 500)}`);
-
-  const text = result.stdout.toString().trim();
-  if (!text) throw new Error("PDF text extraction returned empty result");
-  return text;
-}
-
 export async function parseWeightBalance(text: string): Promise<WeightBalanceData> {
   if (!text || text.trim().length === 0) {
     throw new Error("No text provided for parsing");
@@ -426,17 +383,58 @@ export async function parseWeightBalance(text: string): Promise<WeightBalanceDat
   const deterministic = deterministicParseWeightBalance(text);
   if (deterministic) return deterministic;
 
-  const provider = determineProvider();
-  if (!provider) {
-    throw new Error(
-      "No LLM provider configured and deterministic parsing failed. " +
-      "Set OPENAI_API_KEY or ANTHROPIC_API_KEY environment variable, " +
-      "or configure llm.provider and llm.apiKey in your paperclip config.",
-    );
-  }
+  return callLLMWithFallback<WeightBalanceData>(
+    SYSTEM_PROMPT,
+    `Parse this weight and balance document text:\n\n${text}`,
+  );
+}
 
-  if (provider === "openai") {
-    return callOpenAI(text);
-  }
-  return callClaude(text);
+export async function storeWeightBalanceData(
+  db: Db,
+  documentId: string,
+  parsed: WeightBalanceData,
+): Promise<void> {
+  await db.insert(crewbriefWeightBalance).values({
+    documentId,
+    tripId: parsed.tripId,
+    documentDate: parsed.documentDate ?? null,
+    aircraftRegistration: parsed.aircraftRegistration ?? null,
+    aircraftType: parsed.aircraftType ?? null,
+    basicEmptyWeight: parsed.basicEmptyWeight ?? null,
+    basicEmptyWeightCg: parsed.basicEmptyWeightCg ?? null,
+    basicEmptyWeightMoment: parsed.basicEmptyWeightMoment ?? null,
+    operatingEmptyWeight: parsed.operatingEmptyWeight ?? null,
+    operatingEmptyWeightCg: parsed.operatingEmptyWeightCg ?? null,
+    operatingEmptyWeightMoment: parsed.operatingEmptyWeightMoment ?? null,
+    maxRampWeight: parsed.maxRampWeight ?? null,
+    maxTakeoffWeight: parsed.maxTakeoffWeight ?? null,
+    maxLandingWeight: parsed.maxLandingWeight ?? null,
+    maxZeroFuelWeight: parsed.maxZeroFuelWeight ?? null,
+    zeroFuelWeight: parsed.zeroFuelWeight ?? null,
+    zeroFuelWeightCg: parsed.zeroFuelWeightCg ?? null,
+    zeroFuelWeightMoment: parsed.zeroFuelWeightMoment ?? null,
+    rampWeight: parsed.rampWeight ?? null,
+    takeoffWeight: parsed.takeoffWeight ?? null,
+    takeoffWeightCg: parsed.takeoffWeightCg ?? null,
+    takeoffWeightMoment: parsed.takeoffWeightMoment ?? null,
+    landingWeight: parsed.landingWeight ?? null,
+    landingWeightCg: parsed.landingWeightCg ?? null,
+    landingWeightMoment: parsed.landingWeightMoment ?? null,
+    fuelUnit: parsed.fuelUnit ?? null,
+    fuelRamp: parsed.fuelRamp ?? null,
+    fuelTrip: parsed.fuelTrip ?? null,
+    fuelContingency: parsed.fuelContingency ?? null,
+    fuelAlternate: parsed.fuelAlternate ?? null,
+    fuelFinalReserve: parsed.fuelFinalReserve ?? null,
+    fuelTaxi: parsed.fuelTaxi ?? null,
+    payload: parsed.payload ?? null,
+    passengerCount: parsed.passengerCount ?? null,
+    passengerWeight: parsed.passengerWeight ?? null,
+    cargoWeight: parsed.cargoWeight ?? null,
+    baggageWeight: parsed.baggageWeight ?? null,
+    crewCount: parsed.crewCount ?? null,
+    crewWeight: parsed.crewWeight ?? null,
+    stations: parsed.stations ? sql`${JSON.stringify(parsed.stations)}::jsonb` : null,
+    rawExtraction: sql`${JSON.stringify(parsed)}::jsonb`,
+  });
 }

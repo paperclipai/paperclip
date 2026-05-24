@@ -1,5 +1,10 @@
 import type { ParseInput, ParseResult } from "./crewbrief-document-registry.js";
-import { parseWeightBalance, extractPdfText, type WeightBalanceData } from "./crewbrief-weight-balance.js";
+import { extractPdfText } from "./crewbrief-parser-utils.js";
+import {
+  parseWeightBalance,
+  storeWeightBalanceData,
+  type WeightBalanceData,
+} from "./crewbrief-weight-balance.js";
 
 function summarizeWeightBalance(parsed: WeightBalanceData): Record<string, unknown> {
   return {
@@ -35,6 +40,9 @@ export async function parseWeightBalanceDocument(input: ParseInput): Promise<Par
   try {
     const text = await extractPdfText(input.buffer);
     const parsed = await parseWeightBalance(text);
+
+    await storeWeightBalanceData(input.db, input.documentId, parsed);
+
     const summary = summarizeWeightBalance(parsed);
     return { success: true, summary };
   } catch (err) {

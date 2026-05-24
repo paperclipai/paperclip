@@ -95,3 +95,4 @@ export { crewbriefTrips } from "./crewbrief_trips.js";
 export { crewbriefDutyDays } from "./crewbrief_duty_days.js";
 export { crewbriefLegs } from "./crewbrief_legs.js";
 export { crewbriefDocuments } from "./crewbrief_documents.js";
+export { crewbriefWeightBalance } from "./crewbrief_weight_balance.js";
