@@ -5,7 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2023"],
-    "types": ["react-native"],
+    "types": ["node", "react-native"],
     "outDir": "dist",
     "rootDir": ".",
     "declaration": false,
