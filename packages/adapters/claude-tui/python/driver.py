@@ -289,7 +289,7 @@ class ClaudeTuiDriver:
         rows: int = 60,
         byte_archive_path: Optional[str] = None,
         claude_argv: Optional[list[str]] = None,
-        liveness_cb: Optional[Callable[[str, float], None]] = None,
+        liveness_cb: Optional[Callable[[str, float, str], None]] = None,
     ):
         self.cwd = cwd
         self.policy = policy
@@ -302,9 +302,10 @@ class ClaudeTuiDriver:
             claude_argv=claude_argv,
         )
         self._started = False
-        # Optional callback (phase: str, elapsed_sec: float) -> None invoked
+        # Optional callback (phase, elapsed_sec, screen_tail) -> None invoked
         # periodically while send_turn is waiting for claude. Used by the CLI
-        # shim to keep upstream run.updatedAt fresh.
+        # shim to keep upstream run.updatedAt fresh and to dump what claude is
+        # actually showing on screen during long waits.
         self._liveness_cb = liveness_cb
 
     # ----------------------------------------------------------- lifecycle
@@ -449,6 +450,8 @@ class ClaudeTuiDriver:
             "snapshot": None,
             "turn_state": None,
             "modal": None,
+            "visible": "",
+            "history": "",
         }
 
         def predicate(visible: str, history: str) -> bool:
@@ -457,6 +460,8 @@ class ClaudeTuiDriver:
             modal = detect_modal(visible) if ts.is_in_modal else None
             latest["turn_state"] = ts
             latest["modal"] = modal
+            latest["visible"] = visible
+            latest["history"] = history
             if ts.is_thinking or ts.is_streaming or ts.is_in_modal:
                 seen_busy = True
             # Stop the read_until when either:
@@ -486,8 +491,10 @@ class ClaudeTuiDriver:
                     phase = "thinking" if (ts and ts.is_thinking) else (
                         "streaming" if (ts and ts.is_streaming) else (
                         "in_modal" if (ts and ts.is_in_modal) else "waiting"))
+                    visible = latest.get("visible") or ""
+                    screen_tail = visible[-800:] if visible else ""
                     try:
-                        self._liveness_cb(phase, now - t_start)
+                        self._liveness_cb(phase, now - t_start, screen_tail)
                     except Exception:
                         pass
                 next_liveness_at = now + self.LIVENESS_PING_SEC
