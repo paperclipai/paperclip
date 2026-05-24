@@ -319,8 +319,21 @@ class ClaudeTuiDriver:
         "Browser didn't open",
     )
 
+    # The Bypass Permissions modal fires when --dangerously-skip-permissions
+    # is passed and the user hasn't yet acknowledged it. Default selection is
+    # "No, exit" which would kill the TUI — we must specifically select option
+    # 2 ("Yes, I accept"). Detected separately from generic onboarding because
+    # it needs a non-default key sequence.
+    _BYPASS_MARKERS = (
+        "Bypass Permissions mode",
+        "Yes, I accept",
+    )
+
     def _looks_like_onboarding(self, text: str) -> bool:
         return any(marker in text for marker in self._ONBOARDING_MARKERS)
+
+    def _looks_like_bypass_dialog(self, text: str) -> bool:
+        return all(marker in text for marker in self._BYPASS_MARKERS)
 
     def start(self) -> None:
         if self._started:
@@ -336,22 +349,32 @@ class ClaudeTuiDriver:
         # Dismiss any first-run onboarding screens. claude shows a theme
         # picker / login-method / trust-files / setup wizard on a fresh
         # .claude directory, and the TUI blocks on these until the user
-        # advances. We send Enter to accept whatever default is highlighted
-        # and re-settle, up to MAX_ONBOARDING_STEPS times. The login-method
-        # step may take longer because claude validates .credentials.json,
-        # so give it a generous settle.
-        MAX_ONBOARDING_STEPS = 8
-        for step in range(MAX_ONBOARDING_STEPS):
+        # advances. The Bypass Permissions modal needs special handling
+        # because its default is "No, exit" — selecting it kills claude.
+        MAX_PRE_TURN_STEPS = 8
+        for step in range(MAX_PRE_TURN_STEPS):
             snap = self._session.snapshot()
             screen = snap.visible_text or ""
-            if not self._looks_like_onboarding(screen):
-                break
-            self._session.write_keys("\r")
-            self._session.read_until(
-                predicate=lambda v, h: False,
-                quiet_sec=1.5,
-                hard_timeout=8.0,
-            )
+            if self._looks_like_bypass_dialog(screen):
+                # Down arrow → highlight option 2 ("Yes, I accept"), Enter to
+                # confirm. Sending "2\r" works in some TUIs but claude's
+                # picker only honours arrow navigation.
+                self._session.write_keys("\x1b[B\r")
+                self._session.read_until(
+                    predicate=lambda v, h: False,
+                    quiet_sec=1.5,
+                    hard_timeout=8.0,
+                )
+                continue
+            if self._looks_like_onboarding(screen):
+                self._session.write_keys("\r")
+                self._session.read_until(
+                    predicate=lambda v, h: False,
+                    quiet_sec=1.5,
+                    hard_timeout=8.0,
+                )
+                continue
+            break
 
         self._started = True
 
