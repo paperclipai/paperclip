@@ -189,6 +189,7 @@ def worker_main(
     policy: str,
     poll_usage: bool,
     byte_archive: Optional[str],
+    claude_argv: Optional[list[str]],
     command_q: "queue.Queue[dict]",
 ) -> int:
     """Main worker loop. Returns the desired process exit code."""
@@ -201,6 +202,7 @@ def worker_main(
         policy=driver_policy,
         poll_usage=poll_usage,
         byte_archive_path=byte_archive,
+        claude_argv=claude_argv,
     )
     with _active_driver_lock:
         _active_driver = drv
@@ -324,6 +326,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="skip /usage polling between turns")
     p.add_argument("--byte-archive", default=None,
                    help="path to write the raw PTY byte stream for offline replay")
+    p.add_argument("--claude-arg", action="append", default=None,
+                   help="extra argument to pass to the spawned `claude` command "
+                        "(repeatable; e.g. --claude-arg --dangerously-skip-permissions)")
     p.add_argument("--log-stderr", action="store_true",
                    help="also mirror log events to stderr for human debugging")
     return p.parse_args(argv)
@@ -387,11 +392,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     def _worker_thread_entry() -> None:
         nonlocal exit_code, worker_exc
         try:
+            claude_argv: Optional[list[str]] = None
+            if args.claude_arg:
+                claude_argv = ["claude", *args.claude_arg]
             exit_code = worker_main(
                 cwd=args.cwd,
                 policy=args.policy,
                 poll_usage=not args.no_poll_usage,
                 byte_archive=args.byte_archive,
+                claude_argv=claude_argv,
                 command_q=command_q,
             )
         except BaseException as exc:  # noqa: BLE001

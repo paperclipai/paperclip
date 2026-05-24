@@ -223,6 +223,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     cwd,
     "--policy",
     "auto_approve",
+    "--claude-arg",
+    "--dangerously-skip-permissions",
   ];
   if (claudeConfigDir) {
     cliArgs.push("--config-dir", claudeConfigDir);

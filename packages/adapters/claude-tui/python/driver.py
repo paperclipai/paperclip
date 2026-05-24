@@ -287,6 +287,7 @@ class ClaudeTuiDriver:
         cols: int = 200,
         rows: int = 60,
         byte_archive_path: Optional[str] = None,
+        claude_argv: Optional[list[str]] = None,
     ):
         self.cwd = cwd
         self.policy = policy
@@ -296,6 +297,7 @@ class ClaudeTuiDriver:
             cols=cols,
             rows=rows,
             byte_archive_path=byte_archive_path,
+            claude_argv=claude_argv,
         )
         self._started = False
 
