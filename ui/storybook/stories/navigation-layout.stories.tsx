@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { CommandPalette } from "@/components/CommandPalette";
-import { CompanySwitcher } from "@/components/CompanySwitcher";
 import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcutsCheatsheet";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PageTabBar } from "@/components/PageTabBar";
@@ -247,8 +246,8 @@ function NavigationLayoutStories() {
           </div>
         </Section>
 
-        <Section eyebrow="Menus" title="Account, company, and switcher menus in open state">
-          <div className="grid gap-5 xl:grid-cols-3">
+        <Section eyebrow="Menus" title="Account and company menus in open state">
+          <div className="grid gap-5 xl:grid-cols-2">
             <div className="relative h-[440px] overflow-hidden border border-border bg-background">
               <div className="absolute bottom-0 left-0 w-72">
                 <SidebarAccountMenu
@@ -263,10 +262,6 @@ function NavigationLayoutStories() {
 
             <div className="h-[260px] overflow-hidden border border-border bg-background p-3">
               <SidebarCompanyMenu open onOpenChange={() => undefined} />
-            </div>
-
-            <div className="h-[320px] overflow-hidden border border-border bg-background p-4">
-              <CompanySwitcher open onOpenChange={() => undefined} />
             </div>
           </div>
         </Section>
