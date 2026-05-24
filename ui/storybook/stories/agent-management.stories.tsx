@@ -20,7 +20,6 @@ import {
   help,
 } from "@/components/agent-config-primitives";
 import { AgentIcon, AgentIconPicker } from "@/components/AgentIconPicker";
-import { AgentProperties } from "@/components/AgentProperties";
 import { RunButton, PauseResumeButton } from "@/components/AgentActionButtons";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 import type { AdapterInfo } from "@/api/adapters";
@@ -678,54 +677,6 @@ function AgentManagementStories() {
               </div>
             </div>
           </section>
-
-          <Section eyebrow="AgentProperties" title="Full detail panel with runtime and reporting data">
-            <div className="grid gap-5 lg:grid-cols-[380px_minmax(0,1fr)]">
-              <Card className="shadow-none">
-                <CardHeader>
-                  <div className="flex items-start gap-3">
-                    <span className="flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-accent/40">
-                      <AgentIcon icon={agentManagementAgents[0]!.icon} className="h-5 w-5" />
-                    </span>
-                    <div>
-                      <CardTitle>{agentManagementAgents[0]!.name}</CardTitle>
-                      <CardDescription>{agentManagementAgents[0]!.capabilities}</CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <AgentProperties agent={agentManagementAgents[0]!} runtimeState={runtimeState} />
-                </CardContent>
-              </Card>
-              <div className="rounded-xl border border-border bg-background/70 p-5">
-                <div className="mb-4 flex flex-wrap gap-2">
-                  <Badge variant="secondary">session populated</Badge>
-                  <Badge variant="secondary">last error shown</Badge>
-                  <Badge variant="secondary">manager lookup seeded</Badge>
-                </div>
-                <div className="grid gap-3 text-sm md:grid-cols-2">
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-xs text-muted-foreground">Budget</div>
-                    <div className="mt-1 font-mono">${(agentManagementAgents[0]!.budgetMonthlyCents / 100).toFixed(0)} / month</div>
-                  </div>
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-xs text-muted-foreground">Spent</div>
-                    <div className="mt-1 font-mono">${(agentManagementAgents[0]!.spentMonthlyCents / 100).toFixed(0)}</div>
-                  </div>
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-xs text-muted-foreground">Instructions</div>
-                    <div className="mt-1 break-all font-mono text-xs">
-                      {String(agentManagementAgents[0]!.adapterConfig.instructionsFilePath)}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border p-3">
-                    <div className="text-xs text-muted-foreground">Runtime policy</div>
-                    <div className="mt-1 font-mono text-xs">heartbeat / 900s / max 2</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </Section>
 
           <Section eyebrow="AgentConfigForm" title="Adapter selection, runtime config, and env vars">
             <div className="max-w-4xl">

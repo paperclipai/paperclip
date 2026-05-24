@@ -11,7 +11,6 @@ import type {
   QuotaWindow,
 } from "@paperclipai/shared";
 import { AlertTriangle, CheckCircle2, CreditCard, Landmark, ReceiptText, WalletCards } from "lucide-react";
-import { AccountingModelCard } from "@/components/AccountingModelCard";
 import { BillerSpendCard } from "@/components/BillerSpendCard";
 import { BudgetIncidentCard } from "@/components/BudgetIncidentCard";
 import { BudgetSidebarMarker, type BudgetSidebarMarkerLevel } from "@/components/BudgetSidebarMarker";
@@ -661,10 +660,6 @@ function BudgetFinanceMatrix() {
               />
             </CaseFrame>
           </div>
-        </Section>
-
-        <Section eyebrow="Accounting" title="AccountingModelCard cost allocation reference">
-          <AccountingModelCard />
         </Section>
 
         <Section eyebrow="Billers" title="BillerSpendCard period comparison and upstream provider split">

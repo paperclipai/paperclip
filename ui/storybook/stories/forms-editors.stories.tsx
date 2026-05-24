@@ -3,7 +3,6 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Agent, CompanySecret, EnvBinding, Project, RoutineVariable } from "@paperclipai/shared";
 import { Code2, FileText, ListPlus, RotateCcw, Table2 } from "lucide-react";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
-import { ExecutionParticipantPicker } from "@/components/ExecutionParticipantPicker";
 import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
@@ -19,9 +18,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "@/components/Routi
 import { ScheduleEditor, describeSchedule } from "@/components/ScheduleEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { buildExecutionPolicy } from "@/lib/issue-execution-policy";
-import { createIssue, storybookAgents } from "../fixtures/paperclipData";
-
+import { storybookAgents } from "../fixtures/paperclipData";
 function Section({
   eyebrow,
   title,
@@ -543,14 +540,6 @@ function RoutineVariablesGallery() {
 }
 
 function PickerGallery() {
-  const [issue, setIssue] = useState(() =>
-    createIssue({
-      executionPolicy: buildExecutionPolicy({
-        reviewerValues: ["agent:agent-qa"],
-        approverValues: ["user:user-board"],
-      }),
-    }),
-  );
   const [manager, setManager] = useState<string | null>("agent-cto");
   const [selectorValue, setSelectorValue] = useState("project-board-ui");
   const agentsWithTerminated: Agent[] = useMemo(
@@ -570,28 +559,10 @@ function PickerGallery() {
   return (
     <Section
       eyebrow="Pickers"
-      title="Execution participants, reporting hierarchy, and inline entity selection"
+      title="Reporting hierarchy and inline entity selection"
       description="Closed trigger states stay compact, while the dropdowns are interactive for search and selection review."
     >
-      <div className="grid gap-4 xl:grid-cols-3">
-        <StatePanel label="ExecutionParticipantPicker" detail="Review and approval participants share the same policy object.">
-          <div className="flex flex-wrap gap-3">
-            <ExecutionParticipantPicker
-              issue={issue}
-              stageType="review"
-              agents={storybookAgents}
-              currentUserId="user-board"
-              onUpdate={(patch) => setIssue((current) => ({ ...current, ...patch }))}
-            />
-            <ExecutionParticipantPicker
-              issue={issue}
-              stageType="approval"
-              agents={storybookAgents}
-              currentUserId="user-board"
-              onUpdate={(patch) => setIssue((current) => ({ ...current, ...patch }))}
-            />
-          </div>
-        </StatePanel>
+      <div className="grid gap-4 xl:grid-cols-2">
         <StatePanel label="ReportsToPicker" detail="Selected manager, CEO disabled state, and filtered hierarchy choices.">
           <div className="flex flex-wrap gap-3">
             <ReportsToPicker agents={agentsWithTerminated} value={manager} onChange={setManager} excludeAgentIds={["agent-codex"]} />

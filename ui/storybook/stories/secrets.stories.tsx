@@ -4,7 +4,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { Secrets } from "@/pages/Secrets";
-import { SecretBindingPicker, type SecretBindingValue } from "@/components/SecretBindingPicker";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -75,56 +74,6 @@ export const SecretsInventory: Story = {
       </div>
     </StorybookSecretsFixtures>
   ),
-};
-
-function BindingPickerSurface({
-  initial,
-  label,
-}: {
-  initial: SecretBindingValue | null;
-  label: string;
-}) {
-  const [value, setValue] = useState<SecretBindingValue | null>(initial);
-  return (
-    <Card className="w-96">
-      <CardHeader>
-        <CardTitle className="text-sm">{label}</CardTitle>
-        <CardDescription className="text-xs">
-          Picker can be reused across agent, project, environment, and plugin config surfaces.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <SecretBindingPicker value={value} onChange={setValue} />
-        <pre className="rounded bg-muted/40 p-2 text-[11px] font-mono">
-          {JSON.stringify(value, null, 2)}
-        </pre>
-      </CardContent>
-    </Card>
-  );
-}
-
-export const BindingPicker: Story = {
-  render: () => {
-    return (
-      <StorybookSecretsFixtures>
-        <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-2">
-          <BindingPickerSurface initial={null} label="Empty state" />
-          <BindingPickerSurface
-            initial={{ secretId: storybookSecrets[0]!.id, version: "latest" }}
-            label="Bound to active secret"
-          />
-          <BindingPickerSurface
-            initial={{ secretId: storybookSecrets[2]!.id, version: "latest" }}
-            label="Bound but disabled"
-          />
-          <BindingPickerSurface
-            initial={{ secretId: "missing-id", version: "latest" }}
-            label="Bound to missing secret"
-          />
-        </div>
-      </StorybookSecretsFixtures>
-    );
-  },
 };
 
 export const EnvEditorWithSecrets: Story = {
