@@ -498,6 +498,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: One disposable worktree remains for manual continuation at `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/shell-home/paperclip-cli-parity-wt`; its isolated config is `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/shell-home/paperclip-cli-parity-wt/.paperclip/config.json`.
 - Follow-up: Commit BUG-007 fix, then continue remaining non-worktree command families. Cloud still requires a configured upstream or fake upstream harness for deeper coverage.
 
+### 2026-05-24T13:06:21+02:00 - Agent prompt, heartbeat, feedback, board claim, OpenClaw, and configure coverage
+
+- Command: `token agent create --company-id 12e9db4b-f66c-459b-959e-d645002240fb --agent 1dd601a1-031a-4225-b005-419427fd059f --name cli-agent-prompt-smoke --json`; `agent-prompt 1dd601a1-031a-4225-b005-419427fd059f <agent-token> "CLI parity agent-prompt smoke without wake" --title "CLI parity agent-prompt smoke" --no-wake --json`; `token agent revoke <key-id> --company-id ... --agent ... --json`; `heartbeat run --agent-id 1dd601a1-031a-4225-b005-419427fd059f --source on_demand --trigger manual --timeout-ms 5000 --json`; `feedback report/export/trace/bundle`; `company feedback:list`; `board-claim show invalid-claim-token --json`; `board-claim claim invalid-claim-token --payload-json '{}' --json`; `openclaw invite-prompt --company-id ... --payload-json '{"goal":"CLI parity OpenClaw invite prompt smoke"}' --json`; `configure --config <scratch-config> --section invalid-section`
+- Purpose: Cover remaining safe operator/helper command surfaces that were not part of the earlier company/issue/agent/core batches.
+- Prerequisites/IDs used: Company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`; feedback trace `6193ff3a-55d3-4c01-bfbf-78e82ed55793`; temporary agent token stored only under scratch artifacts and revoked after use.
+- Expected result: `agent-prompt` creates or updates work through an agent token and no-wake path; heartbeat run returns a bounded on-demand invocation result; feedback report/export/trace/bundle can read the existing feedback trace; invalid board claim calls fail with controlled user-facing errors; OpenClaw invite prompt returns prompt data; invalid configure section should fail non-zero.
+- Actual result: First `agent-prompt` attempts failed with `401` because the test script passed the wrong token field (`.key` object / empty shell variable) instead of `.key.token`. Retrying with `.key.token` passed and the token was revoked. `heartbeat run` completed within the timeout. Feedback report/export and trace/bundle passed using the existing trace. `board-claim show` returned expected `404: Board claim challenge not found`; `board-claim claim` returned expected `400: Claim code is required`. OpenClaw invite prompt passed. `configure --section invalid-section` initially printed an error but exited `0`, exposing BUG-008; after the fix, it exits `1`.
+- Status: PASS after BUG-008 fix; board-claim paths covered only with invalid/gated tokens because no active board claim challenge exists in `local_trusted`.
+- Output summary: Agent token artifacts are under `tmp/cli-api-parity/artifacts/agent-prompt-token*.json`; the token was revoked. Feedback artifacts are under `tmp/cli-api-parity/artifacts/feedback-*`. No real home state was used.
+- Follow-up: Continue cloud/connect/run coverage decisions. `connect` and positive board-claim flows are interactive/bootstrap-token dependent and may remain documented as gated if no disposable token source is available.
+
 ## Bugs And Mismatches
 
 ### BUG-007 - `worktree:make` can recurse through pnpm shim when `HOME` is isolated
@@ -512,6 +523,19 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Fix summary: Added `resolvePnpmInstallInvocation()` and changed worktree dependency installation to reuse `npm_execpath` when the CLI was launched through pnpm, falling back to bare `pnpm` only when no pnpm launcher is available.
 - Verification command: `pnpm exec vitest run cli/src/__tests__/worktree.test.ts`; `pnpm --dir cli typecheck`; live isolated `worktree:cleanup --force` for the partial worktree; live isolated `worktree:make ... --seed-mode minimal`; `worktree:list --json`; `worktree env --config <scratch-worktree-config> --json`; `worktree:merge-history --from paperclip-cli-parity-wt --to current --company CLI --dry`.
 - Remaining risk: Low. If Paperclip is launched outside pnpm, dependency installation still falls back to PATH lookup as before.
+
+### BUG-008 - `configure --section <invalid>` printed an error but exited 0
+
+- Status: Fixed and live-verified.
+- Severity: Low command UX/scripting bug.
+- Reproduction command: `pnpm paperclipai configure --config /Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/config.json --section invalid-section`.
+- Expected result: Invalid non-interactive configuration input should produce a failing process exit code so scripts can detect the error.
+- Actual result: CLI printed `Unknown section: invalid-section...` but exited with status `0`.
+- Suspected cause: `configure()` logged and returned without setting `process.exitCode`.
+- Files changed: `cli/src/commands/configure.ts`, `cli/src/__tests__/configure.test.ts`, `doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`.
+- Fix summary: Set `process.exitCode = 1` for missing config and unknown section early returns; added regression coverage for both paths.
+- Verification command: `pnpm exec vitest run cli/src/__tests__/configure.test.ts`; `pnpm --dir cli typecheck`; live isolated `configure --config <scratch-config> --section invalid-section` returned exit code `1`.
+- Remaining risk: Low; interactive configure paths were not changed.
 
 ### BUG-001 - `context set` erased existing profile fields
 
