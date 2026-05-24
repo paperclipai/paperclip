@@ -1,13 +1,3 @@
-export interface FlightCrewBriefing {
-  tripId: string;
-  dutyDayId: string;
-  overview: BriefingOverview;
-  weather: WeatherSection;
-  notams: NotamSection;
-  route: RouteSection;
-  alerts: AlertSection;
-}
-
 export interface BriefingOverview {
   flightDate: string;
   departure: string;
@@ -67,6 +57,27 @@ export interface RouteSection {
 
 export interface AlertSection {
   items: CrewAlert[];
+}
+
+export interface BriefingDocument {
+  documentId: string;
+  documentType: string;
+  originalFilename: string;
+  parserStatus: string;
+  uploadedAt: string;
+  byteSize: number;
+  sha256: string;
+}
+
+export interface FlightCrewBriefing {
+  tripId: string;
+  dutyDayId: string;
+  overview: BriefingOverview;
+  weather: WeatherSection;
+  notams: NotamSection;
+  route: RouteSection;
+  alerts: AlertSection;
+  documents?: BriefingDocument[];
 }
 
 export interface CrewAlert {

@@ -9,9 +9,10 @@ import {
   crewbriefAircraft,
   crewbriefDutyDays,
   crewbriefCrewMembers,
+  crewbriefDocuments,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import type { FlightCrewBriefing } from "@paperclipai/shared";
+import type { FlightCrewBriefing, BriefingDocument } from "@paperclipai/shared";
 
 const TEMPLATE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -69,9 +70,26 @@ export async function getBriefing(
     ? await db.select().from(crewbriefCrewMembers).where(eq(crewbriefCrewMembers.id, dutyDay.crewMemberId)).limit(1)
     : [];
 
+  const docs = await db
+    .select()
+    .from(crewbriefDocuments)
+    .where(eq(crewbriefDocuments.tripId, tripId))
+    .orderBy(crewbriefDocuments.uploadedAt);
+
+  const briefingDocuments: BriefingDocument[] = docs.map((d) => ({
+    documentId: d.id,
+    documentType: d.documentType,
+    originalFilename: d.originalFilename,
+    parserStatus: d.parserStatus,
+    uploadedAt: d.uploadedAt.toISOString(),
+    byteSize: d.byteSize,
+    sha256: d.sha256,
+  }));
+
   return {
     tripId,
     dutyDayId: dutyDayId ?? "",
+    documents: briefingDocuments.length > 0 ? briefingDocuments : undefined,
     overview: {
       flightDate: dutyDay?.dutyDate ?? trip.startDate ?? "",
       departure: originAirport?.icao ?? primaryLeg.origin ?? "",
