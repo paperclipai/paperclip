@@ -18,6 +18,7 @@ COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
+COPY packages/adapters/claude-tui/package.json packages/adapters/claude-tui/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
