@@ -672,7 +672,7 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
   - `ec3cb727` Clarify instructions path CLI help
   - `c811bf07` Add OpenAPI CLI route
 - Remaining caveats:
-  - Positive interactive `connect` was not run because the CLI intentionally rejects non-TTY use; equivalent scriptable context/token/auth flows were covered.
+  - Positive interactive `connect` was initially not run because the CLI intentionally rejects non-TTY use; this was resolved in the follow-up with prompt-driven board and agent persona command tests plus the already covered scriptable auth/context/token flows.
   - Positive `board-claim claim` was initially not run because the live scratch server was `local_trusted`; this was resolved in the follow-up with an isolated authenticated-mode service test.
   - OpenAPI initially worked only at route/operation inventory level; this was resolved in the follow-up with a schema-backed generator.
 - Tokens and cleanup: All created board and agent tokens were revoked. Plugins were uninstalled. Temporary secrets are gone. Temporary non-default environments and project workspaces are gone. Two routines remain archived in the disposable instance.
@@ -735,6 +735,17 @@ pnpm paperclipai health --json
 - Status: PASS.
 - Output summary: Positive board-claim behavior is now covered by a focused authenticated-mode regression test. The live scratch instance remains `local_trusted`, which is correct for the main parity harness.
 - Follow-up: Commit the board-claim positive coverage, then evaluate whether interactive `connect` can be PTY-tested or should remain classified as lower-risk because its side effects were exercised through scriptable paths.
+
+### 2026-05-24T14:18:20+02:00 - Interactive connect flow verification
+
+- Command: Added `cli/src/__tests__/connect.test.ts`; ran `pnpm exec vitest run cli/src/__tests__/connect.test.ts`; ran `pnpm --dir cli typecheck`.
+- Purpose: Resolve the interactive `connect` caveat by exercising the actual TTY-gated command path with mocked prompts and mocked board-login approval, without opening a real browser or touching real auth state.
+- Prerequisites/IDs used: Temp context files under the OS temp directory; mocked `process.stdin.isTTY` and `process.stdout.isTTY` to true; mocked `loginBoardCli` to return a board credential; mocked API responses for health, company list, board API key create, agent list, and agent API key create.
+- Expected result: Board persona flow verifies health, completes board auth, lists companies, creates a board token, writes the selected board profile to context, and emits JSON output. Agent persona flow verifies health, completes board auth, lists companies and agents, creates an agent token, writes the selected agent profile to context, and emits JSON output.
+- Actual result: Both prompt-driven `connect` tests passed. CLI typecheck passed. The test intentionally does not launch a browser; browser approval itself is already covered by CLI auth challenge route tests and mocked here as the boundary before profile selection/token creation.
+- Status: PASS.
+- Output summary: Interactive `connect` no longer has an untested command-flow caveat. Remaining real-browser/device approval behavior is covered by lower-level CLI auth challenge route tests and scriptable auth commands, not by manually approving in this terminal.
+- Follow-up: Commit the connect flow coverage, then rerun final status and isolation checks.
 
 ## Bugs And Mismatches
 
