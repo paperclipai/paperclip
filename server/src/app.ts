@@ -16,7 +16,9 @@ import { briefingQualityRoutes } from "./routes/briefing-quality.js";
 import { qualityRoutes } from "./routes/quality.js";
 import { crewbriefBriefingRoutes } from "./routes/crewbrief-briefing.js";
 import { crewbriefIntakeRoutes } from "./routes/crewbrief-intake.js";
-import { crewbriefJetinsightRoutes, crewbriefDocumentsRoutes } from "./routes/crewbrief-jetinsight.js";
+import { crewbriefJetinsightRoutes, parseCrewItineraryDocument } from "./routes/crewbrief-jetinsight.js";
+import { crewbriefDocumentsRoutes } from "./routes/crewbrief-documents.js";
+import { registerDocumentType } from "./services/crewbrief-document-registry.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -340,6 +342,8 @@ export async function createApp(
   api.use("/quality", qualityRoutes(db));
   api.use("/briefings", crewbriefBriefingRoutes(db));
   api.use("/crewbrief/intake", crewbriefIntakeRoutes(db));
+  registerDocumentType("crew_itinerary", parseCrewItineraryDocument);
+
   api.use("/crewbrief/jetinsight", crewbriefJetinsightRoutes(db, opts.storageService));
   api.use("/crewbrief/documents", crewbriefDocumentsRoutes(db, opts.storageService));
 

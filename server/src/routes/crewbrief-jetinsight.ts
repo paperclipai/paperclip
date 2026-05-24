@@ -14,6 +14,7 @@ import { eq, sql } from "drizzle-orm";
 import type { StorageService } from "../storage/types.js";
 import { parseItinerary, extractPdfText, type ParsedItinerary, type ExtractionCounts } from "../services/crewbrief-jetinsight.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import type { ParseInput, ParseResult } from "../services/crewbrief-document-registry.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -355,4 +356,15 @@ async function storeParsedData(db: Db, parsed: ParsedItinerary): Promise<Extract
   }
 
   return counts;
+}
+
+export async function parseCrewItineraryDocument(input: ParseInput): Promise<ParseResult> {
+  try {
+    const text = await extractPdfText(input.buffer);
+    const parsed = await parseItinerary(text);
+    const counts = await storeParsedData(input.db, parsed);
+    return { success: true, summary: counts as unknown as Record<string, unknown> };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown parse error" };
+  }
 }
