@@ -56,8 +56,17 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
     <td align="center"><img src="doc/assets/logos/claude.svg" width="32" alt="Claude" /><br/><sub>Claude Code</sub></td>
     <td align="center"><img src="doc/assets/logos/codex.svg" width="32" alt="Codex" /><br/><sub>Codex</sub></td>
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
-    <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
-    <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
+    <td align="center"><img src="doc/assets/logos/gemini.svg" width="32" alt="Gemini" /><br/><sub>Gemini</sub></td>
+    <td align="center"><img src="doc/assets/logos/ollama.svg" width="32" alt="Ollama" /><br/><sub>Ollama</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>And</strong></td>
+    <td align="center"><sub>Grok</sub></td>
+    <td align="center"><sub>LM Studio</sub></td>
+    <td align="center"><sub>OpenCode</sub></td>
+    <td align="center"><sub>OpenRouter</sub></td>
+    <td align="center"><sub>Pi</sub></td>
+    <td align="center"><sub>HTTP/Bash</sub></td>
   </tr>
 </table>
 
@@ -198,7 +207,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td width="50%">
 
-**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Adapter examples match the diagram: Claude Code, Codex, CLI agents such as Cursor/Gemini/bash, HTTP/webhook bots such as OpenClaw, and external adapter plugins. If it can receive a heartbeat, it's hired.
+**Org Chart & Agents** — Agents have roles, titles, reporting lines, permissions, and budgets. Adapter examples match the diagram: Claude Code, Codex, CLI agents such as Cursor/Gemini/bash, HTTP/webhook bots such as OpenClaw, local LLM runners (Ollama, LM Studio), router services (OpenRouter), and external adapter plugins. If it can receive a heartbeat, it's hired.
 
 </td>
 </tr>
@@ -358,27 +367,31 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 ## Roadmap
 
-- ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
-- ✅ Get OpenClaw / claw-style agent employees
-- ✅ companies.sh - import and export entire organizations
-- ✅ Easy AGENTS.md configurations
-- ✅ Skills Manager
-- ✅ Scheduled Routines
-- ✅ Better Budgeting
-- ✅ Agent Reviews and Approvals
-- ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
-- ⚪ Artifacts & Work Products
-- ⚪ Memory / Knowledge
-- ⚪ Enforced Outcomes
-- ⚪ MAXIMIZER MODE
-- ⚪ Deep Planning
-- ⚪ Work Queues
-- ⚪ Self-Organization
-- ⚪ Automatic Organizational Learning
-- ⚪ CEO Chat
-- ⚪ Cloud deployments
-- ⚪ Desktop App
+### Shipped ✅
+- Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
+- OpenClaw / claw-style agent employees
+- companies.sh - import and export entire organizations
+- Easy AGENTS.md configurations
+- Skills Manager
+- Scheduled Routines
+- Better Budgeting
+- Agent Reviews and Approvals
+- Multiple Human Users
+- MCP Server support
+
+### In Progress ⚪
+- Cloud / Sandbox agents (e2b, Modal, Daytona, Cloudflare, Exa)
+- Artifacts & Work Products
+- Memory / Knowledge
+- Enforced Outcomes
+- MAXIMIZER MODE
+- Deep Planning
+- Work Queues
+- Self-Organization
+- Automatic Organizational Learning
+- CEO Chat
+- Cloud deployments
+- Desktop App
 
 This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
 
