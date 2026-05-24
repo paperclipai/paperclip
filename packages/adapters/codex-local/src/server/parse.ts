@@ -18,6 +18,16 @@ const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit(?:\s+for\s+.+?)?\.\s+[^.\n]*?\bor try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
+type TimeZoneParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+};
+
+const timeZonePartsFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
@@ -107,9 +117,12 @@ function buildCodexErrorHaystack(input: {
     .join("\n");
 }
 
-function readTimeZoneParts(date: Date, timeZone: string) {
-  const values = new Map(
-    new Intl.DateTimeFormat("en-US", {
+function getTimeZonePartsFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  const cached = timeZonePartsFormatterCache.get(timeZone);
+  if (cached) return cached;
+
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
       timeZone,
       hourCycle: "h23",
       year: "numeric",
@@ -117,7 +130,20 @@ function readTimeZoneParts(date: Date, timeZone: string) {
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-    }).formatToParts(date).map((part) => [part.type, part.value]),
+    });
+    timeZonePartsFormatterCache.set(timeZone, formatter);
+    return formatter;
+  } catch {
+    return null;
+  }
+}
+
+function readTimeZoneParts(date: Date, timeZone: string): TimeZoneParts | null {
+  const formatter = getTimeZonePartsFormatter(timeZone);
+  if (!formatter) return null;
+
+  const values = new Map(
+    formatter.formatToParts(date).map((part) => [part.type, part.value]),
   );
   return {
     year: Number.parseInt(values.get("year") ?? "", 10),
@@ -133,12 +159,7 @@ function normalizeResetTimeZone(timeZoneHint: string | null | undefined): string
   if (!normalized) return null;
   if (/^(?:utc|gmt)$/i.test(normalized)) return "UTC";
 
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date(0));
-    return normalized;
-  } catch {
-    return null;
-  }
+  return getTimeZonePartsFormatter(normalized)?.resolvedOptions().timeZone ?? null;
 }
 
 function dateFromTimeZoneWallClock(input: {
@@ -154,6 +175,7 @@ function dateFromTimeZoneWallClock(input: {
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const actual = readTimeZoneParts(candidate, input.timeZone);
+    if (!actual) return null;
     const actualUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
     const offsetMs = targetUtc - actualUtc;
     if (offsetMs === 0) break;
@@ -161,6 +183,7 @@ function dateFromTimeZoneWallClock(input: {
   }
 
   const verified = readTimeZoneParts(candidate, input.timeZone);
+  if (!verified) return null;
   if (
     verified.year !== input.year ||
     verified.month !== input.month ||
@@ -184,6 +207,7 @@ function nextClockTimeInTimeZone(input: {
   if (!timeZone) return null;
 
   const nowParts = readTimeZoneParts(input.now, timeZone);
+  if (!nowParts) return null;
   let retryAt = dateFromTimeZoneWallClock({
     year: nowParts.year,
     month: nowParts.month,
@@ -264,13 +288,15 @@ function parseFullDateClockTime(clockText: string): Date | null {
 
   const timeZoneHint = match[7] ?? match[8];
   if (timeZoneHint) {
+    const timeZone = normalizeResetTimeZone(timeZoneHint);
+    if (!timeZone) return null;
     return dateFromTimeZoneWallClock({
       year,
       month: monthIndex + 1,
       day,
       hour: hour24,
       minute,
-      timeZone: timeZoneHint,
+      timeZone,
     });
   }
 
