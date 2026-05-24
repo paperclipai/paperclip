@@ -246,7 +246,7 @@ function createUploadHandler(db: Db, storage: StorageService) {
   };
 }
 
-async function storeParsedData(db: Db, parsed: ParsedItinerary): Promise<ExtractionCounts> {
+export async function storeParsedData(db: Db, parsed: ParsedItinerary): Promise<ExtractionCounts> {
   const counts: ExtractionCounts = { trips: 0, legs: 0, crewMembers: 0, aircraft: 0, airports: 0 };
 
   const [trip] = await db
