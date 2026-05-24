@@ -291,12 +291,106 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+// ROCAA-181: tier failover signal. Shapes mirror @paperclipai/adapter-utils
+// (`AdapterFailoverEvent`, `AdapterTierTransition`) but are parsed defensively
+// because the data arrives via untyped JSON event payloads / `run.usageJson`.
+const TIER_LABEL: Record<string, string> = {
+  tier_0_claude_cli: "Tier 0 (Claude CLI)",
+  tier_1_anthropic_sdk: "Tier 1 (Anthropic SDK)",
+  // Numeric form derived from usageJson.tierUsed when the full id is absent.
+  tier_0: "Tier 0 (Claude CLI)",
+  tier_1: "Tier 1 (Anthropic SDK)",
+  tier_2: "Tier 2",
+  tier_3: "Tier 3",
+  tier_4: "Tier 4",
+};
+
+function tierLabel(value: string | null | undefined): string {
+  if (!value) return "unknown tier";
+  return TIER_LABEL[value] ?? value;
+}
+
+function reasonLabel(reason: string | null | undefined): string {
+  if (!reason) return "unknown reason";
+  // Stable ids like "rate_limit" / "network_econnreset" → human-friendly.
+  return reason.replace(/_/g, " ");
+}
+
+interface ParsedFailoverEvent {
+  at: string | null;
+  from: string | null;
+  to: string | null;
+  reason: string | null;
+  classifierMatch: string | null;
+  billerKeyName: string | null;
+}
+
+interface ParsedTierTransition {
+  // Full shape from AdapterTierTransition (preferred — has from/to/reason).
+  from: string | null;
+  to: string | null;
+  reason: string | null;
+  classifierMatch: string | null;
+  detail: string | null;
+  at: string | null;
+  // Lossy shape from usageJson.tierTransitions ({tier: number, errorReason}).
+  // When the rich fields above are absent we render based on these instead.
+  tier: number | null;
+  errorReason: string | null;
+}
+
+function parseFailoverEvent(value: unknown): ParsedFailoverEvent | null {
+  const rec = asRecord(value);
+  if (!rec) return null;
+  return {
+    at: asNonEmptyString(rec.at),
+    from: asNonEmptyString(rec.from),
+    to: asNonEmptyString(rec.to),
+    reason: asNonEmptyString(rec.reason),
+    classifierMatch: asNonEmptyString(rec.classifierMatch),
+    billerKeyName: asNonEmptyString(rec.billerKeyName),
+  };
+}
+
+function parseTierTransitions(value: unknown): ParsedTierTransition[] {
+  if (!Array.isArray(value)) return [];
+  const out: ParsedTierTransition[] = [];
+  for (const raw of value) {
+    const rec = asRecord(raw);
+    if (!rec) continue;
+    const tierRaw = rec.tier;
+    out.push({
+      from: asNonEmptyString(rec.from),
+      to: asNonEmptyString(rec.to),
+      reason: asNonEmptyString(rec.reason),
+      classifierMatch: asNonEmptyString(rec.classifierMatch),
+      detail: asNonEmptyString(rec.detail),
+      at: asNonEmptyString(rec.at),
+      tier: typeof tierRaw === "number" && Number.isFinite(tierRaw) ? tierRaw : null,
+      errorReason: asNonEmptyString(rec.errorReason),
+    });
+  }
+  return out;
+}
+
 export function RunInvocationCard({
   payload,
   censorUsernameInLogs,
+  tierUsed,
+  tierTransitions,
+  runFailoverEvent,
 }: {
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
+  /** Result-side `tierUsed` (number 0..4) read from `run.usageJson.tierUsed`.
+   *  Triggers the Tier 1 pill even if `meta.failoverEvent` is missing. */
+  tierUsed?: number | null;
+  /** Result-side transitions read from `run.usageJson.tierTransitions`.
+   *  Used to render the timeline annotation when the meta payload is absent. */
+  tierTransitions?: unknown;
+  /** Result-side failover event from `run.usageJson.failoverEvent` — the
+   *  canonical post-completion source carrying `billerKeyName`/`from`/`to`. */
+  runFailoverEvent?: unknown;
 }) {
   const commandLine = [
     typeof payload.command === "string" ? payload.command : null,
@@ -314,9 +408,95 @@ export function RunInvocationCard({
     || payload.context !== undefined
     || payload.env !== undefined;
 
+  // ROCAA-181: prefer the meta-side failoverEvent (live during the run); fall
+  // back to the result-side copy stored on `usageJson.failoverEvent` for the
+  // post-completion view.
+  const failoverEvent =
+    parseFailoverEvent(payload.failoverEvent) ?? parseFailoverEvent(runFailoverEvent);
+  // Result-side `tierUsed` (1+) is the "OR" branch of the acceptance criterion
+  // — render the pill even when meta.failoverEvent was lost / not captured.
+  const tierUsedNumber =
+    typeof tierUsed === "number" && Number.isFinite(tierUsed) ? tierUsed : null;
+  // Transitions: prefer ones with rich {from,to,reason} (from result), else the
+  // lossy `{tier, errorReason}` shape, else synthesize one from failoverEvent.
+  const parsedTransitions = parseTierTransitions(tierTransitions);
+  const transitions: ParsedTierTransition[] =
+    parsedTransitions.length > 0
+      ? parsedTransitions
+      : failoverEvent
+        ? [{
+            from: failoverEvent.from,
+            to: failoverEvent.to,
+            reason: failoverEvent.reason,
+            classifierMatch: failoverEvent.classifierMatch,
+            detail: null,
+            at: failoverEvent.at,
+            tier: null,
+            errorReason: null,
+          }]
+        : [];
+  const showTierBadge =
+    failoverEvent != null || (tierUsedNumber != null && tierUsedNumber >= 1);
+  // Pill text. Prefer failoverEvent.to (specific id like tier_1_anthropic_sdk),
+  // else derive from numeric tier (`tier_${n}`).
+  const pillTier = failoverEvent?.to ?? (tierUsedNumber != null ? `tier_${tierUsedNumber}` : null);
+  const pillTierLabel = tierLabel(pillTier);
+  const pillBillerKey = failoverEvent?.billerKeyName ?? null;
+
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+        {showTierBadge && (
+          <span
+            data-testid="tier-failover-badge"
+            className="inline-flex items-center gap-1 rounded-md border border-amber-400/60 bg-amber-100/60 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:border-amber-300/40 dark:bg-amber-300/10 dark:text-amber-200"
+            title={
+              pillBillerKey
+                ? `Failover-billed run — charged to ${pillBillerKey}`
+                : "Failover-billed run"
+            }
+          >
+            {pillTierLabel}
+            {pillBillerKey ? ` — API key (${pillBillerKey})` : ""}
+          </span>
+        )}
+      </div>
+      {transitions.length > 0 && (
+        <div
+          data-testid="tier-failover-timeline"
+          className="rounded-md border border-amber-400/50 bg-amber-50/60 px-2 py-1.5 dark:border-amber-300/30 dark:bg-amber-300/5"
+        >
+          <div className="text-[11px] font-medium uppercase tracking-wide text-amber-900/80 dark:text-amber-200/80">
+            Tier transition
+          </div>
+          <ul className="mt-1 space-y-1">
+            {transitions.map((t, idx) => {
+              const fromLabel = t.from ? tierLabel(t.from) : null;
+              // Lossy shape: only `tier` is set, so we know the destination but
+              // not the origin. Render destination only.
+              const toLabel = t.to ? tierLabel(t.to) : t.tier != null ? tierLabel(`tier_${t.tier}`) : null;
+              const reasonText = reasonLabel(t.reason ?? t.errorReason);
+              return (
+                <li key={`${idx}-${t.at ?? t.reason ?? "transition"}`} className="text-xs">
+                  <span className="font-mono">
+                    {fromLabel ? `${fromLabel} → ` : ""}
+                    {toLabel ?? "unknown tier"}
+                  </span>
+                  <span className="text-muted-foreground"> · reason: </span>
+                  <span className="font-mono">{reasonText}</span>
+                  {t.classifierMatch && (
+                    <span className="text-muted-foreground break-all">
+                      {" · match: "}
+                      <span className="font-mono">{t.classifierMatch}</span>
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
       {typeof payload.adapterType === "string" && (
         <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{payload.adapterType}</div>
       )}
@@ -3806,7 +3986,20 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
+        <RunInvocationCard
+          payload={adapterInvokePayload}
+          censorUsernameInLogs={censorUsernameInLogs}
+          tierUsed={(() => {
+            // ROCAA-181: post-completion result-side path. heartbeat.ts wires
+            // `tierUsed` (number 0..4) onto usageJson when a tier signal is
+            // present. Plain Tier 0 runs leave it 0/undefined → no badge.
+            const u = run.usageJson as Record<string, unknown> | null | undefined;
+            const t = u?.tierUsed;
+            return typeof t === "number" ? t : null;
+          })()}
+          tierTransitions={(run.usageJson as Record<string, unknown> | null | undefined)?.tierTransitions}
+          runFailoverEvent={(run.usageJson as Record<string, unknown> | null | undefined)?.failoverEvent}
+        />
       )}
 
       <div className="flex items-center justify-between">
