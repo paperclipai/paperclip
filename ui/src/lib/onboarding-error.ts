@@ -92,11 +92,13 @@ export function categorizeOnboardingError(err: unknown): CategorizedOnboardingEr
   }
 
   // fetch() throws TypeError (or DOMException for abort) when the network
-  // is unreachable — no response was produced.
-  if (
-    err instanceof TypeError ||
-    (typeof DOMException !== "undefined" && err instanceof DOMException)
-  ) {
+  // is unreachable — no response was produced. Narrow TypeError by message so a
+  // plain JS null-deref doesn't get misclassified as "Couldn't reach Paperclip."
+  const isFetchNetworkError =
+    err instanceof TypeError && /fetch|network|load failed/i.test(err.message);
+  const isAbortError =
+    typeof DOMException !== "undefined" && err instanceof DOMException;
+  if (isFetchNetworkError || isAbortError) {
     return {
       class: "network",
       status: null,
@@ -109,6 +111,8 @@ export function categorizeOnboardingError(err: unknown): CategorizedOnboardingEr
   // Catch-all: treat as unknown server error so the user still gets a retry
   // affordance rather than a dead-end. We never leak the raw message into the
   // banner — copy is sourced from `onboarding-error-copy.ts`.
+  // Log so the "We've logged it." copy is honest and DevTools/Sentry get a signal.
+  console.error("[onboarding] uncategorized error", err);
   return {
     class: "unknown_server_error",
     status: null,

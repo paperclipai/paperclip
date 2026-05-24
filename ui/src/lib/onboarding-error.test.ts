@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import { categorizeOnboardingError } from "./onboarding-error";
 
@@ -92,12 +92,24 @@ describe("categorizeOnboardingError", () => {
   });
 
   describe("Network", () => {
-    it("classifies a TypeError (fetch threw) as network", () => {
+    it("classifies a TypeError with 'Failed to fetch' as network (Chrome)", () => {
       const err = new TypeError("Failed to fetch");
       const result = categorizeOnboardingError(err);
       expect(result.class).toBe("network");
       expect(result.status).toBeNull();
       expect(result.serverMessage).toBe("Failed to fetch");
+    });
+
+    it("classifies a TypeError with 'NetworkError' as network (Firefox)", () => {
+      const err = new TypeError("NetworkError when attempting to fetch resource.");
+      const result = categorizeOnboardingError(err);
+      expect(result.class).toBe("network");
+    });
+
+    it("classifies a TypeError with 'Load failed' as network (Safari)", () => {
+      const err = new TypeError("Load failed");
+      const result = categorizeOnboardingError(err);
+      expect(result.class).toBe("network");
     });
 
     it("classifies an aborted DOMException as network", () => {
@@ -108,6 +120,16 @@ describe("categorizeOnboardingError", () => {
   });
 
   describe("Catch-all", () => {
+    let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      consoleErrorSpy.mockRestore();
+    });
+
     it("classifies an unknown Error as unknown_server_error", () => {
       const err = new Error("boom");
       const result = categorizeOnboardingError(err);
@@ -120,6 +142,38 @@ describe("categorizeOnboardingError", () => {
       expect(result.class).toBe("unknown_server_error");
       expect(result.serverMessage).toBeNull();
       expect(result.fields).toEqual([]);
+    });
+
+    it("classifies a non-network TypeError (JS bug) as unknown_server_error", () => {
+      const err = new TypeError("Cannot read properties of null (reading 'foo')");
+      const result = categorizeOnboardingError(err);
+      expect(result.class).toBe("unknown_server_error");
+      expect(result.serverMessage).toBe(
+        "Cannot read properties of null (reading 'foo')",
+      );
+    });
+
+    it("logs uncategorized errors via console.error so the 'We've logged it' copy is honest", () => {
+      const err = new Error("boom");
+      categorizeOnboardingError(err);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[onboarding] uncategorized error",
+        err,
+      );
+    });
+
+    it("logs non-fetch TypeErrors that fall through to the catch-all", () => {
+      const err = new TypeError("Cannot read properties of null");
+      categorizeOnboardingError(err);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[onboarding] uncategorized error",
+        err,
+      );
+    });
+
+    it("does not log when the error is correctly classified as network", () => {
+      categorizeOnboardingError(new TypeError("Failed to fetch"));
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
   });
 
