@@ -17,7 +17,7 @@ const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@valadrien-os/shared/telemetry", () => ({
     trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -109,7 +109,7 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue telemetry routes", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@valadrien-os/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");

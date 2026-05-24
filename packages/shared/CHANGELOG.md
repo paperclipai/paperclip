@@ -1,4 +1,4 @@
-# @paperclipai/shared
+# @valadrien-os/shared
 
 ## 0.3.1
 

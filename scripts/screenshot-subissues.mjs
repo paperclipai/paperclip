@@ -2,7 +2,7 @@ import { chromium } from "@playwright/test";
 import { mkdir } from "node:fs/promises";
 import { argv } from "node:process";
 
-const outDir = argv[2] ?? "/tmp/paperclip/pap-2189-subissues-screens";
+const outDir = argv[2] ?? "/tmp/valadrien-os/pap-2189-subissues-screens";
 const baseUrl = argv[3] ?? "http://localhost:6006";
 await mkdir(outDir, { recursive: true });
 

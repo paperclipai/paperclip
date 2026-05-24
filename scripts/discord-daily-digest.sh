@@ -6,7 +6,7 @@ cd "$REPO_ROOT"
 
 WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 DATE="${1:-$(date +%Y-%m-%d)}"
-REPO_URL="https://github.com/paperclipai/paperclip"
+REPO_URL="https://github.com/ValDola-stack/valadrien-os"
 
 if [[ -z "$WEBHOOK_URL" ]]; then
   echo "Error: DISCORD_WEBHOOK_URL env var is required" >&2
@@ -52,7 +52,7 @@ else
     "description": "**${COMMIT_COUNT} commit(s)** merged into \`master\` today:\\n\\n${LINES}",
     "color": 3066993,
     "footer": {
-      "text": "paperclipai/paperclip • master"
+      "text": "ValDola-stack/valadrien-os • master"
     }
   }]
 }

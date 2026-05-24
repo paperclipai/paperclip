@@ -9,19 +9,19 @@ import {
   type SDKAgent,
   type SDKMessage,
 } from "@cursor/sdk";
-import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@valadrien-os/adapter-utils";
 import {
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE,
   asBoolean,
   asString,
-  buildPaperclipEnv,
+  buildValadrienOsEnv,
   joinPromptSections,
   parseObject,
-  readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  readValadrienOsIssueWorkModeFromContext,
+  renderValadrienOsWakePrompt,
   renderTemplate,
-  stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
+  stringifyValadrienOsWakePayload,
+} from "@valadrien-os/adapter-utils/server-utils";
 
 type CursorCloudSession = {
   cursorAgentId: string;
@@ -104,8 +104,8 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const { runId, agent, context, authToken } = ctx;
   const env: Record<string, string> = {
     ...configEnv,
-    ...buildPaperclipEnv(agent),
-    PAPERCLIP_RUN_ID: runId,
+    ...buildValadrienOsEnv(agent),
+    VALADRIEN_OS_RUN_ID: runId,
   };
 
   const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
@@ -116,30 +116,30 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
+  const wakePayloadJson = stringifyValadrienOsWakePayload(context.valadrienOsWake);
+  const issueWorkMode = readValadrienOsIssueWorkModeFromContext(context);
 
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (!trimNullable(env.PAPERCLIP_API_KEY) && authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+  if (wakeTaskId) env.VALADRIEN_OS_TASK_ID = wakeTaskId;
+  if (wakeReason) env.VALADRIEN_OS_WAKE_REASON = wakeReason;
+  if (wakeCommentId) env.VALADRIEN_OS_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) env.VALADRIEN_OS_APPROVAL_ID = approvalId;
+  if (approvalStatus) env.VALADRIEN_OS_APPROVAL_STATUS = approvalStatus;
+  if (linkedIssueIds.length > 0) env.VALADRIEN_OS_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakePayloadJson) env.VALADRIEN_OS_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  if (issueWorkMode) env.VALADRIEN_OS_ISSUE_WORK_MODE = issueWorkMode;
+  if (!trimNullable(env.VALADRIEN_OS_API_KEY) && authToken) {
+    env.VALADRIEN_OS_API_KEY = authToken;
   }
 
-  const workspace = parseObject(context.paperclipWorkspace);
+  const workspace = parseObject(context.valadrienOsWorkspace);
   const workspaceMappings: Array<[string, unknown]> = [
-    ["PAPERCLIP_WORKSPACE_CWD", workspace.cwd],
-    ["PAPERCLIP_WORKSPACE_SOURCE", workspace.source],
-    ["PAPERCLIP_WORKSPACE_ID", workspace.workspaceId],
-    ["PAPERCLIP_WORKSPACE_REPO_URL", workspace.repoUrl],
-    ["PAPERCLIP_WORKSPACE_REPO_REF", workspace.repoRef],
-    ["PAPERCLIP_WORKSPACE_BRANCH", workspace.branch],
-    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
+    ["VALADRIEN_OS_WORKSPACE_CWD", workspace.cwd],
+    ["VALADRIEN_OS_WORKSPACE_SOURCE", workspace.source],
+    ["VALADRIEN_OS_WORKSPACE_ID", workspace.workspaceId],
+    ["VALADRIEN_OS_WORKSPACE_REPO_URL", workspace.repoUrl],
+    ["VALADRIEN_OS_WORKSPACE_REPO_REF", workspace.repoRef],
+    ["VALADRIEN_OS_WORKSPACE_BRANCH", workspace.branch],
+    ["VALADRIEN_OS_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
     ["AGENT_HOME", workspace.agentHome],
   ];
   for (const [key, value] of workspaceMappings) {
@@ -176,7 +176,7 @@ async function buildInstructionsPrefix(
     const reason = err instanceof Error ? err.message : String(err);
     await onLog(
       "stderr",
-      `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      `[valadrien-os] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
     );
     return {
       prefix: "",
@@ -188,14 +188,14 @@ async function buildInstructionsPrefix(
   }
 }
 
-function renderPaperclipEnvNote(env: Record<string, string>): string {
+function renderValadrienOsEnvNote(env: Record<string, string>): string {
   const keys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("VALADRIEN_OS_"))
     .sort();
   if (keys.length === 0) return "";
   return [
-    "Paperclip runtime note:",
-    `The following PAPERCLIP_* environment variables are available in the cloud agent shell: ${keys.join(", ")}`,
+    "ValadrienOs runtime note:",
+    `The following VALADRIEN_OS_* environment variables are available in the cloud agent shell: ${keys.join(", ")}`,
     "Use them directly instead of assuming they are absent.",
   ].join("\n");
 }
@@ -335,7 +335,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const workspace = parseObject(context.paperclipWorkspace);
+  const workspace = parseObject(context.valadrienOsWorkspace);
   const repoUrl =
     asString(config.repoUrl, "").trim() ||
     asString(workspace.repoUrl, "").trim();
@@ -377,7 +377,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     : null);
   const canReuseSession = sessionMatches(session, envType, envName, repos);
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = asString(config.promptTemplate, DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE);
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
@@ -389,7 +389,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  const wakePrompt = renderValadrienOsWakePrompt(context.valadrienOsWake, { resumedSession: canReuseSession });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -398,20 +398,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     canReuseSession && wakePrompt.length > 0
       ? ""
       : renderTemplate(promptTemplate, templateData).trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(remoteEnv);
+  const valadrienOsEnvNote = renderValadrienOsEnvNote(remoteEnv);
   const prompt = joinPromptSections([
     instructions.prefix,
     renderedBootstrapPrompt,
     wakePrompt,
-    paperclipEnvNote,
+    valadrienOsEnvNote,
     renderedPrompt,
   ]);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const sessionHandoffNote = asString(context.valadrienOsSessionHandoffMarkdown, "").trim();
   const finalPrompt = joinPromptSections([prompt, sessionHandoffNote]);
 
   const agentOptions = buildAgentOptions({
     apiKey,
-    name: `Paperclip ${agent.name}`,
+    name: `ValadrienOs ${agent.name}`,
     model,
     envType,
     envName,

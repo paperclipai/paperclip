@@ -17,11 +17,11 @@ This removes the release-blocking cross-company exposure path, but it also disab
 
 The original design mixed an instance-global config store with company-scoped secret bindings:
 
-- [server/src/routes/plugins.ts](/Users/dotta/paperclip/.paperclip/worktrees/PAP-2339-secrets-make-a-plan/server/src/routes/plugins.ts:1898) saved one global plugin config row, then wrote bindings into `company_secret_bindings` grouped by each referenced secret's owning company.
-- [packages/db/src/schema/plugin_config.ts](/Users/dotta/paperclip/.paperclip/worktrees/PAP-2339-secrets-make-a-plan/packages/db/src/schema/plugin_config.ts:15) stored one config row per plugin, with no company dimension.
-- [packages/db/src/schema/company_secret_bindings.ts](/Users/dotta/paperclip/.paperclip/worktrees/PAP-2339-secrets-make-a-plan/packages/db/src/schema/company_secret_bindings.ts:5) already modeled bindings as company-scoped.
-- [server/src/services/plugin-secrets-handler.ts](/Users/dotta/paperclip/.paperclip/worktrees/PAP-2339-secrets-make-a-plan/server/src/services/plugin-secrets-handler.ts:212) resolved by `pluginId` + secret UUID, with no active company context from the bridge call.
-- [packages/plugins/sdk/src/worker-rpc-host.ts](/Users/dotta/paperclip/.paperclip/worktrees/PAP-2339-secrets-make-a-plan/packages/plugins/sdk/src/worker-rpc-host.ts:384) exposed `ctx.config.get()` and `ctx.secrets.resolve()` without a company parameter.
+- [server/src/routes/plugins.ts](/Users/dotta/valadrien-os/.valadrien-os/worktrees/PAP-2339-secrets-make-a-plan/server/src/routes/plugins.ts:1898) saved one global plugin config row, then wrote bindings into `company_secret_bindings` grouped by each referenced secret's owning company.
+- [packages/db/src/schema/plugin_config.ts](/Users/dotta/valadrien-os/.valadrien-os/worktrees/PAP-2339-secrets-make-a-plan/packages/db/src/schema/plugin_config.ts:15) stored one config row per plugin, with no company dimension.
+- [packages/db/src/schema/company_secret_bindings.ts](/Users/dotta/valadrien-os/.valadrien-os/worktrees/PAP-2339-secrets-make-a-plan/packages/db/src/schema/company_secret_bindings.ts:5) already modeled bindings as company-scoped.
+- [server/src/services/plugin-secrets-handler.ts](/Users/dotta/valadrien-os/.valadrien-os/worktrees/PAP-2339-secrets-make-a-plan/server/src/services/plugin-secrets-handler.ts:212) resolved by `pluginId` + secret UUID, with no active company context from the bridge call.
+- [packages/plugins/sdk/src/worker-rpc-host.ts](/Users/dotta/valadrien-os/.valadrien-os/worktrees/PAP-2339-secrets-make-a-plan/packages/plugins/sdk/src/worker-rpc-host.ts:384) exposed `ctx.config.get()` and `ctx.secrets.resolve()` without a company parameter.
 
 This violated Least Privilege, Complete Mediation, and Secure Defaults.
 

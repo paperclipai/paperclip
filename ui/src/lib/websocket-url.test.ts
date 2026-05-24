@@ -5,10 +5,10 @@ describe("browserReachableHost", () => {
   it("keeps concrete browser hosts unchanged", () => {
     expect(browserReachableHost({
       protocol: "http:",
-      hostname: "paperclip-dev",
-      host: "paperclip-dev:46259",
+      hostname: "valadrien-os-dev",
+      host: "valadrien-os-dev:46259",
       port: "46259",
-    })).toBe("paperclip-dev:46259");
+    })).toBe("valadrien-os-dev:46259");
   });
 
   it("rewrites wildcard IPv4 bind hosts to localhost", () => {

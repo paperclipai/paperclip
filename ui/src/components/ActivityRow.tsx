@@ -5,7 +5,7 @@ import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
-import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
+import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@valadrien-os/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueRelationIssueSummary } from "@valadrien-os/shared";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { StatusIcon } from "./StatusIcon";
@@ -18,7 +18,7 @@ export function IssueReferencePill({
 }) {
   const issueLabel = issue.identifier ?? issue.title;
   const classNames = cn(
-    "paperclip-mention-chip paperclip-mention-chip--issue",
+    "valadrien-os-mention-chip valadrien-os-mention-chip--issue",
     "inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs no-underline",
     issue.identifier && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
     strikethrough && "opacity-60 line-through decoration-muted-foreground",

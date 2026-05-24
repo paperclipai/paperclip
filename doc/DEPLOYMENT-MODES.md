@@ -5,7 +5,7 @@ Date: 2026-02-23
 
 ## 1. Purpose
 
-Paperclip supports two runtime modes:
+Valadrien OS supports two runtime modes:
 
 1. `local_trusted`
 2. `authenticated`
@@ -17,7 +17,7 @@ Paperclip supports two runtime modes:
 
 This keeps one authenticated auth stack while still separating low-friction private-network defaults from internet-facing hardening requirements.
 
-Paperclip now treats **bind** as a separate concern from auth:
+Valadrien OS now treats **bind** as a separate concern from auth:
 
 - auth model: `local_trusted` vs `authenticated`, plus `private/public`
 - reachability model: `server.bind = loopback | lan | tailnet | custom`
@@ -66,7 +66,7 @@ Paperclip now treats **bind** as a separate concern from auth:
 Default onboarding remains interactive and flagless:
 
 ```sh
-pnpm paperclipai onboard
+pnpm valadrien-os onboard
 ```
 
 Server prompt behavior:
@@ -83,9 +83,9 @@ Server prompt behavior:
 Examples:
 
 ```sh
-pnpm paperclipai onboard --yes
-pnpm paperclipai onboard --yes --bind lan
-pnpm paperclipai run --bind tailnet
+pnpm valadrien-os onboard --yes
+pnpm valadrien-os onboard --yes --bind lan
+pnpm valadrien-os run --bind tailnet
 ```
 
 `configure --section server` follows the same interactive behavior.
@@ -95,7 +95,7 @@ pnpm paperclipai run --bind tailnet
 Default doctor remains flagless:
 
 ```sh
-pnpm paperclipai doctor
+pnpm valadrien-os doctor
 ```
 
 Doctor reads configured mode/exposure and applies mode-aware checks. Optional override flags are secondary.
@@ -114,7 +114,7 @@ This is required because user assignment paths validate active membership for `a
 
 ## 7. Local Trusted -> Authenticated Claim Flow
 
-When running `authenticated` mode, if the only instance admin is `local-board`, Paperclip emits a startup warning with a one-time high-entropy claim URL.
+When running `authenticated` mode, if the only instance admin is `local-board`, Valadrien OS emits a startup warning with a one-time high-entropy claim URL.
 
 - URL format: `/board-claim/<token>?code=<code>`
 - intended use: signed-in human claims board ownership

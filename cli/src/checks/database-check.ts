@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { ValadrienOsConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
 
-export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
+export async function databaseCheck(config: ValadrienOsConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
     if (!config.database.connectionString) {
       return {
@@ -11,12 +11,12 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
         status: "fail",
         message: "PostgreSQL mode selected but no connection string configured",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section database`",
+        repairHint: "Run `valadrien-os configure --section database`",
       };
     }
 
     try {
-      const { createDb } = await import("@paperclipai/db");
+      const { createDb } = await import("@valadrien-os/db");
       const db = createDb(config.database.connectionString);
       await db.execute("SELECT 1");
       return {
@@ -54,6 +54,6 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     status: "fail",
     message: `Unknown database mode: ${String(config.database.mode)}`,
     canRepair: false,
-    repairHint: "Run `paperclipai configure --section database`",
+    repairHint: "Run `valadrien-os configure --section database`",
   };
 }

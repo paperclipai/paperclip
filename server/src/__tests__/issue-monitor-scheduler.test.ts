@@ -18,7 +18,7 @@ import {
   issueDocuments,
   issues,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -41,7 +41,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   const seededAgentIds = new Set<string>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-issue-monitor-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -157,7 +157,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });

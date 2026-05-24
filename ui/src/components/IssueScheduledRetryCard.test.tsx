@@ -5,7 +5,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { IssueRetryNowOutcome, IssueScheduledRetry } from "@paperclipai/shared";
+import type { IssueRetryNowOutcome, IssueScheduledRetry } from "@valadrien-os/shared";
 import { IssueScheduledRetryCard } from "./IssueScheduledRetryCard";
 import { ToastProvider } from "../context/ToastContext";
 

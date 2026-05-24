@@ -1,10 +1,10 @@
-import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { UsageSummary } from "@valadrien-os/adapter-utils";
 import {
   asString,
   asNumber,
   parseObject,
   parseJson,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@valadrien-os/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;

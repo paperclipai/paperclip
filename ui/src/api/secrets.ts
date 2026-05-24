@@ -12,7 +12,7 @@ import type {
   SecretProviderConfigHealthResponse,
   SecretProviderDescriptor,
   SecretStatus,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { api } from "./client";
 
 export interface SecretUsageResponse {

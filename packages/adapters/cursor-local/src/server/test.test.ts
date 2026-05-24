@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { runChildProcess } from "@valadrien-os/adapter-utils/server-utils";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { testEnvironment } from "./test.js";
 
@@ -71,7 +71,7 @@ function createSandboxRunner(options: { homeDir: string; installCommandPath: str
 
 describe("cursor testEnvironment", () => {
   it("re-resolves the installed agent under ~/.cursor/bin and verifies --version before the hello probe", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-envtest-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-cursor-envtest-"));
     const homeDir = path.join(root, "home");
     const workspace = path.join(root, "workspace");
     const remoteWorkspace = path.join(root, "remote-workspace");

@@ -79,15 +79,15 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
-const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const DEFAULT_VALADRIEN_OS_INSTANCE_ID = "default";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
-const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
+const VALADRIEN_OS_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
-const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
+const MATERIALIZED_SKILL_SENTINEL = ".valadrien-os-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
 
@@ -97,21 +97,21 @@ function expandHomePrefix(value: string): string {
   return value;
 }
 
-export function resolvePaperclipInstanceRootForAdapter(input: {
+export function resolveValadrienOsInstanceRootForAdapter(input: {
   homeDir?: string;
   instanceId?: string;
   env?: NodeJS.ProcessEnv;
 } = {}): string {
   const env = input.env ?? process.env;
-  const homeRaw = input.homeDir?.trim() || env.PAPERCLIP_HOME?.trim();
-  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".paperclip"));
-  const instanceId = input.instanceId?.trim() || env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
-  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
+  const homeRaw = input.homeDir?.trim() || env.VALADRIEN_OS_HOME?.trim();
+  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".valadrien-os"));
+  const instanceId = input.instanceId?.trim() || env.VALADRIEN_OS_INSTANCE_ID?.trim() || DEFAULT_VALADRIEN_OS_INSTANCE_ID;
+  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid VALADRIEN_OS_INSTANCE_ID '${instanceId}'.`);
   return path.resolve(homeDir, "instances", instanceId);
 }
 
-export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
-  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+export const DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE = [
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your ValadrienOs work.",
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
@@ -129,7 +129,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
-export interface PaperclipSkillEntry {
+export interface ValadrienOsSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
@@ -142,14 +142,14 @@ export interface InstalledSkillTarget {
   kind: "symlink" | "directory" | "file";
 }
 
-export interface MaterializedPaperclipSkillCopyResult {
+export interface MaterializedValadrienOsSkillCopyResult {
   copiedFiles: number;
   skippedSymlinks: string[];
 }
 
 interface PersistentSkillSnapshotOptions {
   adapterType: string;
-  availableEntries: PaperclipSkillEntry[];
+  availableEntries: ValadrienOsSkillEntry[];
   desiredSkills: string[];
   installed: Map<string, InstalledSkillTarget>;
   skillsHome: string;
@@ -181,14 +181,14 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
 > {
   if (entry.required) {
     return {
-      origin: "paperclip_required",
-      originLabel: "Required by Paperclip",
+      origin: "valadrien_os_required",
+      originLabel: "Required by ValadrienOs",
       readOnly: false,
     };
   }
   return {
     origin: "company_managed",
-    originLabel: "Managed by Paperclip",
+    originLabel: "Managed by ValadrienOs",
     readOnly: false,
   };
 }
@@ -300,7 +300,7 @@ export function joinPromptSections(
     .join(separator);
 }
 
-type PaperclipWakeIssue = {
+type ValadrienOsWakeIssue = {
   id: string | null;
   identifier: string | null;
   title: string | null;
@@ -309,18 +309,18 @@ type PaperclipWakeIssue = {
   priority: string | null;
 };
 
-type PaperclipWakeExecutionPrincipal = {
+type ValadrienOsWakeExecutionPrincipal = {
   type: "agent" | "user" | null;
   agentId: string | null;
   userId: string | null;
 };
 
-type PaperclipWakeExecutionStage = {
+type ValadrienOsWakeExecutionStage = {
   wakeRole: "reviewer" | "approver" | "executor" | null;
   stageId: string | null;
   stageType: string | null;
-  currentParticipant: PaperclipWakeExecutionPrincipal | null;
-  returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  currentParticipant: ValadrienOsWakeExecutionPrincipal | null;
+  returnAssignee: ValadrienOsWakeExecutionPrincipal | null;
   reviewRequest: {
     instructions: string;
   } | null;
@@ -328,7 +328,7 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
-type PaperclipWakeComment = {
+type ValadrienOsWakeComment = {
   id: string | null;
   issueId: string | null;
   body: string;
@@ -338,7 +338,7 @@ type PaperclipWakeComment = {
   authorId: string | null;
 };
 
-type PaperclipWakeContinuationSummary = {
+type ValadrienOsWakeContinuationSummary = {
   key: string | null;
   title: string | null;
   body: string;
@@ -346,7 +346,7 @@ type PaperclipWakeContinuationSummary = {
   updatedAt: string | null;
 };
 
-type PaperclipWakeLivenessContinuation = {
+type ValadrienOsWakeLivenessContinuation = {
   attempt: number | null;
   maxAttempts: number | null;
   sourceRunId: string | null;
@@ -355,7 +355,7 @@ type PaperclipWakeLivenessContinuation = {
   instruction: string | null;
 };
 
-type PaperclipWakeChildIssueSummary = {
+type ValadrienOsWakeChildIssueSummary = {
   id: string | null;
   identifier: string | null;
   title: string | null;
@@ -364,7 +364,7 @@ type PaperclipWakeChildIssueSummary = {
   summary: string | null;
 };
 
-type PaperclipWakeBlockerSummary = {
+type ValadrienOsWakeBlockerSummary = {
   id: string | null;
   identifier: string | null;
   title: string | null;
@@ -372,32 +372,32 @@ type PaperclipWakeBlockerSummary = {
   priority: string | null;
 };
 
-type PaperclipWakeTreeHoldSummary = {
+type ValadrienOsWakeTreeHoldSummary = {
   holdId: string | null;
   rootIssueId: string | null;
   mode: string | null;
   reason: string | null;
 };
 
-type PaperclipWakePayload = {
+type ValadrienOsWakePayload = {
   reason: string | null;
-  issue: PaperclipWakeIssue | null;
+  issue: ValadrienOsWakeIssue | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
-  activeTreeHold: PaperclipWakeTreeHoldSummary | null;
+  activeTreeHold: ValadrienOsWakeTreeHoldSummary | null;
   unresolvedBlockerIssueIds: string[];
-  unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
-  executionStage: PaperclipWakeExecutionStage | null;
-  continuationSummary: PaperclipWakeContinuationSummary | null;
-  livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  unresolvedBlockerSummaries: ValadrienOsWakeBlockerSummary[];
+  executionStage: ValadrienOsWakeExecutionStage | null;
+  continuationSummary: ValadrienOsWakeContinuationSummary | null;
+  livenessContinuation: ValadrienOsWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
-  childIssueSummaries: PaperclipWakeChildIssueSummary[];
+  childIssueSummaries: ValadrienOsWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
   commentIds: string[];
   latestCommentId: string | null;
-  comments: PaperclipWakeComment[];
+  comments: ValadrienOsWakeComment[];
   requestedCount: number;
   includedCount: number;
   missingCount: number;
@@ -405,7 +405,7 @@ type PaperclipWakePayload = {
   fallbackFetchNeeded: boolean;
 };
 
-function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
+function normalizeValadrienOsWakeIssue(value: unknown): ValadrienOsWakeIssue | null {
   const issue = parseObject(value);
   const id = asString(issue.id, "").trim() || null;
   const identifier = asString(issue.identifier, "").trim() || null;
@@ -424,7 +424,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   };
 }
 
-function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
+function normalizeValadrienOsWakeComment(value: unknown): ValadrienOsWakeComment | null {
   const comment = parseObject(value);
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
@@ -440,7 +440,7 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   };
 }
 
-function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
+function normalizeValadrienOsWakeContinuationSummary(value: unknown): ValadrienOsWakeContinuationSummary | null {
   const summary = parseObject(value);
   const body = asString(summary.body, "").trim();
   if (!body) return null;
@@ -453,7 +453,7 @@ function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWak
   };
 }
 
-function normalizePaperclipWakeLivenessContinuation(value: unknown): PaperclipWakeLivenessContinuation | null {
+function normalizeValadrienOsWakeLivenessContinuation(value: unknown): ValadrienOsWakeLivenessContinuation | null {
   const continuation = parseObject(value);
   const attempt = asNumber(continuation.attempt, 0);
   const maxAttempts = asNumber(continuation.maxAttempts, 0);
@@ -472,7 +472,7 @@ function normalizePaperclipWakeLivenessContinuation(value: unknown): PaperclipWa
   };
 }
 
-function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeChildIssueSummary | null {
+function normalizeValadrienOsWakeChildIssueSummary(value: unknown): ValadrienOsWakeChildIssueSummary | null {
   const child = parseObject(value);
   const id = asString(child.id, "").trim() || null;
   const identifier = asString(child.identifier, "").trim() || null;
@@ -484,7 +484,7 @@ function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeC
   return { id, identifier, title, status, priority, summary };
 }
 
-function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBlockerSummary | null {
+function normalizeValadrienOsWakeBlockerSummary(value: unknown): ValadrienOsWakeBlockerSummary | null {
   const blocker = parseObject(value);
   const id = asString(blocker.id, "").trim() || null;
   const identifier = asString(blocker.identifier, "").trim() || null;
@@ -495,7 +495,7 @@ function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBloc
   return { id, identifier, title, status, priority };
 }
 
-function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTreeHoldSummary | null {
+function normalizeValadrienOsWakeTreeHoldSummary(value: unknown): ValadrienOsWakeTreeHoldSummary | null {
   const hold = parseObject(value);
   const holdId = asString(hold.holdId, "").trim() || null;
   const rootIssueId = asString(hold.rootIssueId, "").trim() || null;
@@ -505,7 +505,7 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
-function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
+function normalizeValadrienOsWakeExecutionPrincipal(value: unknown): ValadrienOsWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
   if (typeRaw !== "agent" && typeRaw !== "user") return null;
@@ -516,7 +516,7 @@ function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWake
   };
 }
 
-function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
+function normalizeValadrienOsWakeExecutionStage(value: unknown): ValadrienOsWakeExecutionStage | null {
   const stage = parseObject(value);
   const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
   const wakeRole =
@@ -528,8 +528,8 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
         .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         .map((entry) => entry.trim())
     : [];
-  const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
-  const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const currentParticipant = normalizeValadrienOsWakeExecutionPrincipal(stage.currentParticipant);
+  const returnAssignee = normalizeValadrienOsWakeExecutionPrincipal(stage.returnAssignee);
   const reviewRequestRaw = parseObject(stage.reviewRequest);
   const reviewInstructions = asString(reviewRequestRaw.instructions, "").trim();
   const reviewRequest = reviewInstructions ? { instructions: reviewInstructions } : null;
@@ -553,12 +553,12 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
-export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
+export function normalizeValadrienOsWakePayload(value: unknown): ValadrienOsWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
     ? payload.comments
-        .map((entry) => normalizePaperclipWakeComment(entry))
-        .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+        .map((entry) => normalizeValadrienOsWakeComment(entry))
+        .filter((entry): entry is ValadrienOsWakeComment => Boolean(entry))
     : [];
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
@@ -566,13 +566,13 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         .map((entry) => entry.trim())
     : [];
-  const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
-  const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
-  const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const executionStage = normalizeValadrienOsWakeExecutionStage(payload.executionStage);
+  const continuationSummary = normalizeValadrienOsWakeContinuationSummary(payload.continuationSummary);
+  const livenessContinuation = normalizeValadrienOsWakeLivenessContinuation(payload.livenessContinuation);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
-        .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
-        .filter((entry): entry is PaperclipWakeChildIssueSummary => Boolean(entry))
+        .map((entry) => normalizeValadrienOsWakeChildIssueSummary(entry))
+        .filter((entry): entry is ValadrienOsWakeChildIssueSummary => Boolean(entry))
     : [];
   const unresolvedBlockerIssueIds = Array.isArray(payload.unresolvedBlockerIssueIds)
     ? payload.unresolvedBlockerIssueIds
@@ -581,18 +581,18 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
   const unresolvedBlockerSummaries = Array.isArray(payload.unresolvedBlockerSummaries)
     ? payload.unresolvedBlockerSummaries
-        .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
-        .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
+        .map((entry) => normalizeValadrienOsWakeBlockerSummary(entry))
+        .filter((entry): entry is ValadrienOsWakeBlockerSummary => Boolean(entry))
     : [];
 
-  const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const activeTreeHold = normalizeValadrienOsWakeTreeHoldSummary(payload.activeTreeHold);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizeValadrienOsWakeIssue(payload.issue)) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
-    issue: normalizePaperclipWakeIssue(payload.issue),
+    issue: normalizeValadrienOsWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -617,30 +617,30 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   };
 }
 
-export function stringifyPaperclipWakePayload(value: unknown): string | null {
-  const normalized = normalizePaperclipWakePayload(value);
+export function stringifyValadrienOsWakePayload(value: unknown): string | null {
+  const normalized = normalizeValadrienOsWakePayload(value);
   if (!normalized) return null;
   return JSON.stringify(normalized);
 }
 
-export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
+export function readValadrienOsIssueWorkModeFromContext(value: unknown): string | null {
   const context = parseObject(value);
-  const issue = parseObject(context.paperclipIssue);
+  const issue = parseObject(context.valadrienOsIssue);
   const direct = asString(issue.workMode, "").trim();
   if (direct) return direct;
-  const wake = normalizePaperclipWakePayload(context.paperclipWake);
+  const wake = normalizeValadrienOsWakePayload(context.valadrienOsWake);
   return wake?.issue?.workMode ?? null;
 }
 
-export function renderPaperclipWakePrompt(
+export function renderValadrienOsWakePrompt(
   value: unknown,
   options: { resumedSession?: boolean } = {},
 ): string {
-  const normalized = normalizePaperclipWakePayload(value);
+  const normalized = normalizeValadrienOsWakePayload(value);
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
   const executionStage = normalized.executionStage;
-  const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
+  const principalLabel = (principal: ValadrienOsWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
     return principal.userId ? `user ${principal.userId}` : "user";
@@ -648,9 +648,9 @@ export function renderPaperclipWakePrompt(
 
   const lines = resumedSession
       ? [
-        "## Paperclip Resume Delta",
+        "## ValadrienOs Resume Delta",
         "",
-        "You are resuming an existing Paperclip session.",
+        "You are resuming an existing ValadrienOs session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
@@ -664,7 +664,7 @@ export function renderPaperclipWakePrompt(
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ]
     : [
-        "## Paperclip Wake Payload",
+        "## ValadrienOs Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
@@ -884,13 +884,13 @@ export function buildInvocationEnvForLogs(
 
   const resolvedCommand = options.resolvedCommand?.trim();
   if (resolvedCommand) {
-    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
+    merged[options.resolvedCommandEnvKey ?? "VALADRIEN_OS_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
   }
 
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+export function buildValadrienOsEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -898,22 +898,22 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     return host;
   };
   const vars: Record<string, string> = {
-    PAPERCLIP_AGENT_ID: agent.id,
-    PAPERCLIP_COMPANY_ID: agent.companyId,
+    VALADRIEN_OS_AGENT_ID: agent.id,
+    VALADRIEN_OS_COMPANY_ID: agent.companyId,
   };
   const runtimeHost = resolveHostForUrl(
-    process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
+    process.env.VALADRIEN_OS_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
-  const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const runtimePort = process.env.VALADRIEN_OS_LISTEN_PORT ?? process.env.PORT ?? "3100";
   const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
+    process.env.VALADRIEN_OS_RUNTIME_API_URL ??
+    process.env.VALADRIEN_OS_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
+  vars.VALADRIEN_OS_API_URL = apiUrl;
   return vars;
 }
 
-export function applyPaperclipWorkspaceEnv(
+export function applyValadrienOsWorkspaceEnv(
   env: Record<string, string>,
   input: {
     workspaceCwd?: string | null;
@@ -928,14 +928,14 @@ export function applyPaperclipWorkspaceEnv(
   },
 ): Record<string, string> {
   const mappings = [
-    ["PAPERCLIP_WORKSPACE_CWD", input.workspaceCwd],
-    ["PAPERCLIP_WORKSPACE_SOURCE", input.workspaceSource],
-    ["PAPERCLIP_WORKSPACE_STRATEGY", input.workspaceStrategy],
-    ["PAPERCLIP_WORKSPACE_ID", input.workspaceId],
-    ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
-    ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
-    ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
-    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["VALADRIEN_OS_WORKSPACE_CWD", input.workspaceCwd],
+    ["VALADRIEN_OS_WORKSPACE_SOURCE", input.workspaceSource],
+    ["VALADRIEN_OS_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["VALADRIEN_OS_WORKSPACE_ID", input.workspaceId],
+    ["VALADRIEN_OS_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["VALADRIEN_OS_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["VALADRIEN_OS_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["VALADRIEN_OS_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
     ["AGENT_HOME", input.agentHome],
   ] as const;
 
@@ -948,7 +948,7 @@ export function applyPaperclipWorkspaceEnv(
   return env;
 }
 
-export function shapePaperclipWorkspaceEnvForExecution(input: {
+export function shapeValadrienOsWorkspaceEnvForExecution(input: {
   workspaceCwd?: string | null;
   workspaceWorktreePath?: string | null;
   workspaceHints?: Array<Record<string, unknown>>;
@@ -990,7 +990,7 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
   if (executionCwd === null) {
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] shapePaperclipWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
+      "[valadrien-os] shapeValadrienOsWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
         "stripping workspaceCwd to avoid leaking local paths into the remote environment.",
     );
   }
@@ -1058,7 +1058,7 @@ export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
   return nextEnv;
 }
 
-export function refreshPaperclipWorkspaceEnvForExecution(input: {
+export function refreshValadrienOsWorkspaceEnvForExecution(input: {
   env: Record<string, string>;
   envConfig?: Record<string, unknown>;
   workspaceCwd?: string | null;
@@ -1078,7 +1078,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   workspaceWorktreePath: string | null;
   workspaceHints: Array<Record<string, unknown>>;
 } {
-  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+  const shapedWorkspaceEnv = shapeValadrienOsWorkspaceEnvForExecution({
     workspaceCwd: input.workspaceCwd,
     workspaceWorktreePath: input.workspaceWorktreePath,
     workspaceHints: input.workspaceHints,
@@ -1086,11 +1086,11 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     executionCwd: input.executionCwd,
   });
 
-  delete input.env.PAPERCLIP_WORKSPACE_CWD;
-  delete input.env.PAPERCLIP_WORKSPACE_WORKTREE_PATH;
-  delete input.env.PAPERCLIP_WORKSPACES_JSON;
+  delete input.env.VALADRIEN_OS_WORKSPACE_CWD;
+  delete input.env.VALADRIEN_OS_WORKSPACE_WORKTREE_PATH;
+  delete input.env.VALADRIEN_OS_WORKSPACES_JSON;
 
-  applyPaperclipWorkspaceEnv(input.env, {
+  applyValadrienOsWorkspaceEnv(input.env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource: input.workspaceSource,
     workspaceStrategy: input.workspaceStrategy,
@@ -1103,7 +1103,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   });
 
   if (shapedWorkspaceEnv.workspaceHints.length > 0) {
-    input.env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+    input.env.VALADRIEN_OS_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
   }
 
   const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
@@ -1119,13 +1119,13 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   return shapedWorkspaceEnv;
 }
 
-export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sanitizeInheritedValadrienOsEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
-    if (key === "PAPERCLIP_LISTEN_HOST") continue;
-    if (key === "PAPERCLIP_LISTEN_PORT") continue;
+    if (!key.startsWith("VALADRIEN_OS_")) continue;
+    if (key === "VALADRIEN_OS_RUNTIME_API_URL") continue;
+    if (key === "VALADRIEN_OS_LISTEN_HOST") continue;
+    if (key === "VALADRIEN_OS_LISTEN_PORT") continue;
     delete env[key];
   }
   return env;
@@ -1308,12 +1308,12 @@ export async function ensureAbsoluteDirectory(
   }
 }
 
-export async function resolvePaperclipSkillsDir(
+export async function resolveValadrienOsSkillsDir(
   moduleDir: string,
   additionalCandidates: string[] = [],
 ): Promise<string | null> {
   const candidates = [
-    ...PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) => path.resolve(moduleDir, relativePath)),
+    ...VALADRIEN_OS_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) => path.resolve(moduleDir, relativePath)),
     ...additionalCandidates.map((candidate) => path.resolve(candidate)),
   ];
   const seenRoots = new Set<string>();
@@ -1342,11 +1342,11 @@ async function readSkillRequired(skillDir: string): Promise<boolean> {
   }
 }
 
-export async function listPaperclipSkillEntries(
+export async function listValadrienOsSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
-): Promise<PaperclipSkillEntry[]> {
-  const root = await resolvePaperclipSkillsDir(moduleDir, additionalCandidates);
+): Promise<ValadrienOsSkillEntry[]> {
+  const root = await resolveValadrienOsSkillsDir(moduleDir, additionalCandidates);
   if (!root) return [];
 
   try {
@@ -1356,12 +1356,12 @@ export async function listPaperclipSkillEntries(
       const skillDir = path.join(root, entry.name);
       const required = await readSkillRequired(skillDir);
       return {
-        key: `paperclipai/paperclip/${entry.name}`,
+        key: `ValDola-stack/valadrien-os/${entry.name}`,
         runtimeName: entry.name,
         source: skillDir,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Bundled ValadrienOs skills are always available for local adapters."
           : null,
       };
     }));
@@ -1437,7 +1437,7 @@ export function buildPersistentSkillSnapshot(
 
   for (const desiredSkill of desiredSkills) {
     if (availableByKey.has(desiredSkill)) continue;
-    warnings.push(`Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`);
+    warnings.push(`Desired skill "${desiredSkill}" is not available from the ValadrienOs skills directory.`);
     entries.push({
       key: desiredSkill,
       runtimeName: null,
@@ -1446,7 +1446,7 @@ export function buildPersistentSkillSnapshot(
       state: "missing",
       sourcePath: null,
       targetPath: null,
-      detail: "Paperclip cannot find this skill in the local runtime skills directory.",
+      detail: "ValadrienOs cannot find this skill in the local runtime skills directory.",
       origin: "external_unknown",
       originLabel: "External or unavailable",
       readOnly: false,
@@ -1483,9 +1483,9 @@ export function buildPersistentSkillSnapshot(
   };
 }
 
-function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSkillEntry[] {
+function normalizeConfiguredValadrienOsRuntimeSkills(value: unknown): ValadrienOsSkillEntry[] {
   if (!Array.isArray(value)) return [];
-  const out: PaperclipSkillEntry[] = [];
+  const out: ValadrienOsSkillEntry[] = [];
   for (const rawEntry of value) {
     const entry = parseObject(rawEntry);
     const key = asString(entry.key, asString(entry.name, "")).trim();
@@ -1506,24 +1506,24 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
   return out;
 }
 
-export async function readPaperclipRuntimeSkillEntries(
+export async function readValadrienOsRuntimeSkillEntries(
   config: Record<string, unknown>,
   moduleDir: string,
   additionalCandidates: string[] = [],
-): Promise<PaperclipSkillEntry[]> {
-  const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(config.paperclipRuntimeSkills);
+): Promise<ValadrienOsSkillEntry[]> {
+  const configuredEntries = normalizeConfiguredValadrienOsRuntimeSkills(config.valadrienOsRuntimeSkills);
   if (configuredEntries.length > 0) return configuredEntries;
-  return listPaperclipSkillEntries(moduleDir, additionalCandidates);
+  return listValadrienOsSkillEntries(moduleDir, additionalCandidates);
 }
 
-export async function readPaperclipSkillMarkdown(
+export async function readValadrienOsSkillMarkdown(
   moduleDir: string,
   skillKey: string,
 ): Promise<string | null> {
   const normalized = skillKey.trim().toLowerCase();
   if (!normalized) return null;
 
-  const entries = await listPaperclipSkillEntries(moduleDir);
+  const entries = await listValadrienOsSkillEntries(moduleDir);
   const match = entries.find((entry) => entry.key === normalized);
   if (!match) return null;
 
@@ -1534,11 +1534,11 @@ export async function readPaperclipSkillMarkdown(
   }
 }
 
-export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
+export function readValadrienOsSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
 } {
-  const raw = config.paperclipSkillSync;
+  const raw = config.valadrienOsSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { explicit: false, desiredSkills: [] };
   }
@@ -1556,7 +1556,7 @@ export function readPaperclipSkillSyncPreference(config: Record<string, unknown>
   };
 }
 
-function canonicalizeDesiredPaperclipSkillReference(
+function canonicalizeDesiredValadrienOsSkillReference(
   reference: string,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string {
@@ -1579,11 +1579,11 @@ function canonicalizeDesiredPaperclipSkillReference(
   return normalizedReference;
 }
 
-export function resolvePaperclipDesiredSkillNames(
+export function resolveValadrienOsDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean }>,
 ): string[] {
-  const preference = readPaperclipSkillSyncPreference(config);
+  const preference = readValadrienOsSkillSyncPreference(config);
   const requiredSkills = availableEntries
     .filter((entry) => entry.required)
     .map((entry) => entry.key);
@@ -1591,17 +1591,17 @@ export function resolvePaperclipDesiredSkillNames(
     return Array.from(new Set(requiredSkills));
   }
   const desiredSkills = preference.desiredSkills
-    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .map((reference) => canonicalizeDesiredValadrienOsSkillReference(reference, availableEntries))
     .filter(Boolean);
   return Array.from(new Set([...requiredSkills, ...desiredSkills]));
 }
 
-export function writePaperclipSkillSyncPreference(
+export function writeValadrienOsSkillSyncPreference(
   config: Record<string, unknown>,
   desiredSkills: string[],
 ): Record<string, unknown> {
   const next = { ...config };
-  const raw = next.paperclipSkillSync;
+  const raw = next.valadrienOsSkillSync;
   const current =
     typeof raw === "object" && raw !== null && !Array.isArray(raw)
       ? { ...(raw as Record<string, unknown>) }
@@ -1613,11 +1613,11 @@ export function writePaperclipSkillSyncPreference(
         .filter(Boolean),
     ),
   );
-  next.paperclipSkillSync = current;
+  next.valadrienOsSkillSync = current;
   return next;
 }
 
-export async function ensurePaperclipSkillSymlink(
+export async function ensureValadrienOsSkillSymlink(
   source: string,
   target: string,
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
@@ -1712,7 +1712,7 @@ async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<vo
       if (code !== "EEXIST") throw err;
       if (await removeStaleMaterializeLock(lockDir, MATERIALIZED_SKILL_LOCK_STALE_MS)) continue;
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for Paperclip skill materialization lock at ${lockDir}`);
+        throw new Error(`Timed out waiting for ValadrienOs skill materialization lock at ${lockDir}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -1749,10 +1749,10 @@ async function removeStaleMaterializeLock(lockDir: string, staleMs: number): Pro
   return true;
 }
 
-export async function materializePaperclipSkillCopy(
+export async function materializeValadrienOsSkillCopy(
   source: string,
   target: string,
-): Promise<MaterializedPaperclipSkillCopyResult> {
+): Promise<MaterializedValadrienOsSkillCopyResult> {
   const sourceRoot = path.resolve(source);
   const targetRoot = path.resolve(target);
   const relativeTarget = path.relative(sourceRoot, targetRoot);
@@ -1771,10 +1771,10 @@ export async function materializePaperclipSkillCopy(
     throw new Error("Refusing to materialize a skill root that is itself a symlink.");
   }
   if (!rootStat.isDirectory()) {
-    throw new Error("Paperclip skills must be directories.");
+    throw new Error("ValadrienOs skills must be directories.");
   }
 
-  const result: MaterializedPaperclipSkillCopyResult = {
+  const result: MaterializedValadrienOsSkillCopyResult = {
     copiedFiles: 0,
     skippedSymlinks: [],
   };
@@ -1915,14 +1915,14 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...sanitizeInheritedValadrienOsEnv(process.env),
       ...opts.env,
     };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
-    // These vars leak in when the Paperclip server itself is started from
-    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
+    // These vars leak in when the ValadrienOs server itself is started from
+    // within a Claude Code session (e.g. `npx valadrien-os run` in a terminal
     // owned by Claude Code) or when cron inherits a contaminated shell env.
     const CLAUDE_CODE_NESTING_VARS = [
       "CLAUDECODE",

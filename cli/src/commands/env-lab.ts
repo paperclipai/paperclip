@@ -8,13 +8,13 @@ import {
   readSshEnvLabFixtureStatus,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
-} from "@paperclipai/adapter-utils/ssh";
-import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
+} from "@valadrien-os/adapter-utils/ssh";
+import { resolveValadrienOsInstanceId, resolveValadrienOsInstanceRoot } from "../config/home.js";
 
 export function resolveEnvLabSshStatePath(instanceId?: string): string {
-  const resolvedInstanceId = resolvePaperclipInstanceId(instanceId);
+  const resolvedInstanceId = resolveValadrienOsInstanceId(instanceId);
   return path.resolve(
-    resolvePaperclipInstanceRoot(resolvedInstanceId),
+    resolveValadrienOsInstanceRoot(resolvedInstanceId),
     "env-lab",
     "ssh-fixture",
     "state.json",
@@ -138,7 +138,7 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
     p.log.message(`State: ${pc.dim(status.statePath)}`);
   }
 
-  p.log.message(`Cleanup: ${pc.dim("pnpm paperclipai env-lab down")}`);
+  p.log.message(`Cleanup: ${pc.dim("pnpm valadrien-os env-lab down")}`);
 }
 
 export function registerEnvLabCommands(program: Command) {
@@ -147,28 +147,28 @@ export function registerEnvLabCommands(program: Command) {
   envLab
     .command("up")
     .description("Start the default SSH env-lab fixture")
-    .option("-i, --instance <id>", "Paperclip instance id (default: current/default)")
+    .option("-i, --instance <id>", "ValadrienOs instance id (default: current/default)")
     .option("--json", "Print machine-readable fixture details")
     .action(envLabUpCommand);
 
   envLab
     .command("status")
     .description("Show the current SSH env-lab fixture state")
-    .option("-i, --instance <id>", "Paperclip instance id (default: current/default)")
+    .option("-i, --instance <id>", "ValadrienOs instance id (default: current/default)")
     .option("--json", "Print machine-readable fixture details")
     .action(envLabStatusCommand);
 
   envLab
     .command("down")
     .description("Stop the default SSH env-lab fixture")
-    .option("-i, --instance <id>", "Paperclip instance id (default: current/default)")
+    .option("-i, --instance <id>", "ValadrienOs instance id (default: current/default)")
     .option("--json", "Print machine-readable stop details")
     .action(envLabDownCommand);
 
   envLab
     .command("doctor")
     .description("Check SSH fixture prerequisites and current status")
-    .option("-i, --instance <id>", "Paperclip instance id (default: current/default)")
+    .option("-i, --instance <id>", "ValadrienOs instance id (default: current/default)")
     .option("--json", "Print machine-readable diagnostic details")
     .action(envLabDoctorCommand);
 }

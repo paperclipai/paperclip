@@ -12,11 +12,11 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
         <h1 className="text-xl font-semibold">Instance setup required</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {hasActiveInvite
-            ? "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:"
-            : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
+            ? "No instance admin exists yet. A bootstrap invite is already active. Check your ValadrienOs startup logs for the first admin invite URL, or run this command to rotate it:"
+            : "No instance admin exists yet. Run this command in your ValadrienOs environment to generate the first admin invite URL:"}
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
+{`pnpm valadrien-os auth bootstrap-ceo`}
         </pre>
       </div>
     </div>
@@ -30,7 +30,7 @@ function NoBoardAccessPage() {
         <h1 className="text-xl font-semibold">No company access</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This account is signed in, but it does not have an active company membership or instance-admin access on
-          this Paperclip instance.
+          this ValadrienOs instance.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
           Use a company invite or sign in with an account that already belongs to this org.

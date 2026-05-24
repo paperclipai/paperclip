@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@valadrien-os/shared";
 import type { CompanyUserProfile } from "./company-members";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-pi-local/server";
+import { execute } from "@valadrien-os/adapter-pi-local/server";
 
 async function writeFakePiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -48,7 +48,7 @@ process.exit(0);
 
 describe("pi_local execute", () => {
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-pi-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "pi");
     await fs.mkdir(workspace, { recursive: true });
@@ -94,7 +94,7 @@ describe("pi_local execute", () => {
   });
 
   it("prepends installed skill bin/ dirs to the spawned Pi child PATH", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-path-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-pi-path-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "pi");
     const skillDir = path.join(root, "skills", "demo-skill");
@@ -129,7 +129,7 @@ describe("pi_local execute", () => {
           cwd: workspace,
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
-          paperclipRuntimeSkills: [
+          valadrienOsRuntimeSkills: [
             { key: "demo-skill", runtimeName: "demo-skill", source: skillDir, required: true },
           ],
         },
@@ -150,7 +150,7 @@ describe("pi_local execute", () => {
   });
 
   it("does not expose bin/ dirs from skills that are not injected", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-path-neg-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-pi-path-neg-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "pi");
     const nonInjectedSkillDir = path.join(root, "skills", "not-injected");
@@ -185,9 +185,9 @@ describe("pi_local execute", () => {
           cwd: workspace,
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
-          // required:false with no explicit paperclipSkillSync preference →
-          // resolvePaperclipDesiredSkillNames returns [] → skill is not injected.
-          paperclipRuntimeSkills: [
+          // required:false with no explicit valadrienOsSkillSync preference →
+          // resolveValadrienOsDesiredSkillNames returns [] → skill is not injected.
+          valadrienOsRuntimeSkills: [
             { key: "not-injected", runtimeName: "not-injected", source: nonInjectedSkillDir, required: false },
           ],
         },

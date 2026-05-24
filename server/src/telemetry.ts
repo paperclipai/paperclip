@@ -3,8 +3,8 @@ import {
   TelemetryClient,
   resolveTelemetryConfig,
   loadOrCreateState,
-} from "@paperclipai/shared/telemetry";
-import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+} from "@valadrien-os/shared/telemetry";
+import { resolveValadrienOsInstanceRoot } from "./home-paths.js";
 import { serverVersion } from "./version.js";
 
 let client: TelemetryClient | null = null;
@@ -15,7 +15,7 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
   const config = resolveTelemetryConfig(fileConfig);
   if (!config.enabled) return null;
 
-  const stateDir = path.join(resolvePaperclipInstanceRoot(), "telemetry");
+  const stateDir = path.join(resolveValadrienOsInstanceRoot(), "telemetry");
   client = new TelemetryClient(
     config,
     () => loadOrCreateState(stateDir, serverVersion),

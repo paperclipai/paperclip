@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@valadrien-os/shared";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

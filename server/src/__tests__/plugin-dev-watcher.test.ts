@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function makeTempPluginDir(): string {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-plugin-watch-"));
+  const dir = mkdtempSync(path.join(os.tmpdir(), "valadrien-os-plugin-watch-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -41,7 +41,7 @@ function writePluginPackage(pluginDir: string): void {
     path.join(pluginDir, "package.json"),
     JSON.stringify({
       name: "@acme/example",
-      paperclipPlugin: {
+      valadrienOsPlugin: {
         manifest: "./dist/manifest.js",
         worker: "./dist/worker.js",
         ui: "./dist/ui",

@@ -17,7 +17,7 @@ import {
   type PluginSettingsPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
-} from "@paperclipai/plugin-sdk/ui";
+} from "@valadrien-os/plugin-sdk/ui";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,
@@ -856,7 +856,7 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
   return (
     <Section title="Issue CRUD">
       <div style={mutedTextStyle}>
-        This is a regular embedded React page inside Paperclip calling the board API directly. It creates, updates, and deletes issues for the current company.
+        This is a regular embedded React page inside ValadrienOs calling the board API directly. It creates, updates, and deletes issues for the current company.
       </div>
       {!context.companyId ? (
         <div style={mutedTextStyle}>Select a company to use issue demos.</div>
@@ -1100,9 +1100,9 @@ function KitchenSinkTopRow({ context }: { context: PluginPageProps["context"] })
             {hostNavigation.resolveHref(`/${PAGE_ROUTE}`)}
           </a>
         </Section>
-        <Section title="Paperclip Animation">
+        <Section title="ValadrienOs Animation">
           <div style={mutedTextStyle}>
-            This is the same Paperclip ASCII treatment used in onboarding, copied into the example plugin so the package stays self-contained.
+            This is the same ValadrienOs ASCII treatment used in onboarding, copied into the example plugin so the package stays self-contained.
           </div>
           <AsciiArtAnimation />
         </Section>
@@ -1222,7 +1222,7 @@ function KitchenSinkHostIntegrationDemo({ context }: { context: PluginPageProps[
   return (
     <Section title="Host Integrations">
       <div style={mutedTextStyle}>
-        Plugin pages can feel like native Paperclip pages. This section demonstrates host toasts, company-scoped routing, and reading live heartbeat data from the embedded page.
+        Plugin pages can feel like native ValadrienOs pages. This section demonstrates host toasts, company-scoped routing, and reading live heartbeat data from the embedded page.
       </div>
       <div style={subtleCardStyle}>
         <div style={rowStyle}>
@@ -1304,7 +1304,7 @@ function KitchenSinkSharedPickerDemo({ context }: { context: PluginPageProps["co
   return (
     <Section title="Shared Host Pickers">
       <div style={mutedTextStyle}>
-        These controls are imported from `@paperclipai/plugin-sdk/ui` and reuse the host's assignee and project pickers from the new issue pane.
+        These controls are imported from `@valadrien-os/plugin-sdk/ui` and reuse the host's assignee and project pickers from the new issue pane.
       </div>
       {!context.companyId ? (
         <div style={mutedTextStyle}>Select a company to load picker options.</div>
@@ -1591,7 +1591,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
         <JsonBlock value={overview.data?.runtimeLaunchers ?? []} />
       </Section>
 
-      <Section title="Paperclip Domain APIs">
+      <Section title="ValadrienOs Domain APIs">
         <div style={{ display: "grid", gap: "12px", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
           <PaginatedDomainCard
             title="Companies"
@@ -2127,7 +2127,7 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
         <div style={{ display: "grid", gap: "8px" }}>
           <strong>About</strong>
           <div style={{ fontSize: "13px", lineHeight: 1.5 }}>
-            Kitchen Sink demonstrates the current Paperclip plugin API surface in one local, trusted example. It intentionally includes domain mutations, event handling, streams, tools, jobs, webhooks, and local workspace/process demos.
+            Kitchen Sink demonstrates the current ValadrienOs plugin API surface in one local, trusted example. It intentionally includes domain mutations, event handling, streams, tools, jobs, webhooks, and local workspace/process demos.
           </div>
           <div style={{ fontSize: "12px", opacity: 0.7 }}>
             Current company context: {context.companyId ?? "none"}

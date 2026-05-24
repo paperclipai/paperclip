@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import { createTestHarness } from "@valadrien-os/plugin-sdk/testing";
+import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@valadrien-os/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
-  PAPERCLIP_DISTILL_SKILL_KEY,
+  VALADRIEN_OS_DISTILL_SKILL_KEY,
   WIKI_MAINTAINER_AGENT_KEY,
   WIKI_MAINTAINER_SKILL_CANONICAL_KEY,
   WIKI_MAINTAINER_SKILL_KEY,
@@ -34,10 +34,10 @@ import { OPERATION_ORIGIN_KIND, type WikiSkillResource } from "../src/wiki.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_COMPANY_ID = "99999999-9999-4999-8999-999999999999";
-const ORIGINAL_DEPLOYMENT_MODE = process.env.PAPERCLIP_DEPLOYMENT_MODE;
-const ORIGINAL_DEPLOYMENT_EXPOSURE = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+const ORIGINAL_DEPLOYMENT_MODE = process.env.VALADRIEN_OS_DEPLOYMENT_MODE;
+const ORIGINAL_DEPLOYMENT_EXPOSURE = process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE;
 type TestBridgeGlobal = typeof globalThis & {
-  __paperclipPluginBridge__?: {
+  __valadrienOsPluginBridge__?: {
     sdkUi?: Record<string, unknown>;
   };
 };
@@ -101,14 +101,14 @@ let mockPageMetadataByPath: Record<string, {
 
 beforeEach(() => {
   if (ORIGINAL_DEPLOYMENT_MODE == null) {
-    delete process.env.PAPERCLIP_DEPLOYMENT_MODE;
+    delete process.env.VALADRIEN_OS_DEPLOYMENT_MODE;
   } else {
-    process.env.PAPERCLIP_DEPLOYMENT_MODE = ORIGINAL_DEPLOYMENT_MODE;
+    process.env.VALADRIEN_OS_DEPLOYMENT_MODE = ORIGINAL_DEPLOYMENT_MODE;
   }
   if (ORIGINAL_DEPLOYMENT_EXPOSURE == null) {
-    delete process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+    delete process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE;
   } else {
-    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = ORIGINAL_DEPLOYMENT_EXPOSURE;
+    process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE = ORIGINAL_DEPLOYMENT_EXPOSURE;
   }
   mockPathname = "/PAP/wiki";
   mockSearch = "";
@@ -122,7 +122,7 @@ beforeEach(() => {
   mockDistillationOverviewData = null;
   mockPageContentsByPath = {};
   mockPageMetadataByPath = {};
-  (globalThis as TestBridgeGlobal).__paperclipPluginBridge__ = {
+  (globalThis as TestBridgeGlobal).__valadrienOsPluginBridge__ = {
     sdkUi: {
       usePluginData: (key: string, params?: Record<string, unknown>) => {
         if (key === "overview") {
@@ -460,16 +460,16 @@ beforeEach(() => {
 
 afterEach(() => {
   if (ORIGINAL_DEPLOYMENT_MODE == null) {
-    delete process.env.PAPERCLIP_DEPLOYMENT_MODE;
+    delete process.env.VALADRIEN_OS_DEPLOYMENT_MODE;
   } else {
-    process.env.PAPERCLIP_DEPLOYMENT_MODE = ORIGINAL_DEPLOYMENT_MODE;
+    process.env.VALADRIEN_OS_DEPLOYMENT_MODE = ORIGINAL_DEPLOYMENT_MODE;
   }
   if (ORIGINAL_DEPLOYMENT_EXPOSURE == null) {
-    delete process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+    delete process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE;
   } else {
-    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = ORIGINAL_DEPLOYMENT_EXPOSURE;
+    process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE = ORIGINAL_DEPLOYMENT_EXPOSURE;
   }
-  delete (globalThis as TestBridgeGlobal).__paperclipPluginBridge__;
+  delete (globalThis as TestBridgeGlobal).__valadrienOsPluginBridge__;
 });
 
 function wikiMaintainerAgent(): Agent {
@@ -495,7 +495,7 @@ function wikiMaintainerAgent(): Agent {
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
     metadata: {
-      paperclipManagedResource: {
+      valadrienOsManagedResource: {
         pluginKey: manifest.id,
         resourceKind: "agent",
         resourceKey: "wiki-maintainer",
@@ -556,7 +556,7 @@ function existingProject(): Project {
   };
 }
 
-function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
+function valadrienOsIssue(overrides: Partial<Issue> = {}): Issue {
   const now = new Date();
   return {
     id: "66666666-6666-4666-8666-666666666666",
@@ -566,7 +566,7 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     goalId: null,
     parentId: null,
     title: "Design event ingestion controls",
-    description: "Decide which Paperclip issues, comments, and documents can be ingested into the wiki.",
+    description: "Decide which ValadrienOs issues, comments, and documents can be ingested into the wiki.",
     status: "todo",
     workMode: "standard",
     priority: "medium",
@@ -653,7 +653,7 @@ function mockPersistedWikiSpace(harness: ReturnType<typeof createTestHarness>, s
 
 describe("LLM Wiki plugin scaffold", () => {
   it("declares standalone plugin surfaces without core wiki coupling", () => {
-    expect(manifest.id).toBe("paperclipai.plugin-llm-wiki");
+    expect(manifest.id).toBe("valadrien-os.plugin-llm-wiki");
     expect(manifest.entrypoints.worker).toBe("./dist/worker.js");
     expect(manifest.entrypoints.ui).toBe("./dist/ui");
     expect(manifest.database?.namespaceSlug).toBe("llm_wiki");
@@ -765,7 +765,7 @@ describe("LLM Wiki plugin scaffold", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).not.toContain("skills/<name>/SKILL.md");
     expect(DEFAULT_AGENT_INSTRUCTION_FILES["skills/wiki-ingest/SKILL.md"]).toBeUndefined();
     expect(manifest.skills?.map((skill) => skill.skillKey)).toEqual([...WIKI_MANAGED_SKILL_KEYS]);
-    expect(manifest.agents?.[0]?.adapterConfig?.paperclipSkillSync).toEqual({
+    expect(manifest.agents?.[0]?.adapterConfig?.valadrienOsSkillSync).toEqual({
       desiredSkills: WIKI_MANAGED_SKILL_CANONICAL_KEYS,
     });
     expect(QUERY_PROMPT).toContain("wiki-query skill");
@@ -813,7 +813,7 @@ describe("LLM Wiki plugin scaffold", () => {
       context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
     } as never));
 
-    expect(markup).toContain("Issues table · project-1 · plugin:paperclipai.plugin-llm-wiki:operation");
+    expect(markup).toContain("Issues table · project-1 · plugin:valadrien-os.plugin-llm-wiki:operation");
     expect(markup).not.toContain("Recent runs");
     expect(markup).not.toContain(">Operations</h2>");
   });
@@ -862,7 +862,7 @@ describe("LLM Wiki plugin scaffold", () => {
     mockPageContentsByPath["wiki/concepts/sidebar-navigation.md"] = `---
 title: Sidebar navigation
 type: concept
-tags: [paperclip, wiki]
+tags: [valadrien-os, wiki]
 sources:
   - raw/sidebar-notes.md
 created: 2026-05-04
@@ -882,7 +882,7 @@ Route sidebar state stays attached to the selected wiki page.
     expect(markup).toContain(">type</dt>");
     expect(markup).toContain("concept");
     expect(markup).toContain(">tags</dt>");
-    expect(markup).toContain("paperclip");
+    expect(markup).toContain("valadrien-os");
     expect(markup).toContain("wiki");
     expect(markup).toContain(">sources</dt>");
     expect(markup).toContain("raw/sidebar-notes.md");
@@ -1612,7 +1612,7 @@ Duplicate headings receive stable suffixes.
       entries: options?.relativePath === "wiki"
         ? [
             { path: "wiki/concepts/agent-memory-layer.md", name: "agent-memory-layer.md", kind: "file", size: 12, modifiedAt },
-            { path: "wiki/entities/paperclip.md", name: "paperclip.md", kind: "file", size: 10, modifiedAt },
+            { path: "wiki/entities/valadrien-os.md", name: "valadrien-os.md", kind: "file", size: 10, modifiedAt },
             { path: "wiki/projects/llm-wiki/standup.md", name: "standup.md", kind: "file", size: 16, modifiedAt },
           ]
         : [
@@ -1636,7 +1636,7 @@ Duplicate headings receive stable suffixes.
 
     expect(result.pages).toEqual([
       expect.objectContaining({ path: "wiki/concepts/agent-memory-layer.md", title: null }),
-      expect.objectContaining({ path: "wiki/entities/paperclip.md", title: null }),
+      expect.objectContaining({ path: "wiki/entities/valadrien-os.md", title: null }),
       expect.objectContaining({ path: "wiki/projects/llm-wiki/standup.md", title: null }),
     ]);
     expect(result.sources).toEqual([
@@ -1644,9 +1644,9 @@ Duplicate headings receive stable suffixes.
     ]);
   });
 
-  it("does not ingest Paperclip events until operator controls enable them", async () => {
+  it("does not ingest ValadrienOs events until operator controls enable them", async () => {
     const harness = createTestHarness({ manifest });
-    const issue = paperclipIssue();
+    const issue = valadrienOsIssue();
     harness.seed({ issues: [issue] });
     const writes: Array<{ path: string; contents: string }> = [];
     harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
@@ -1667,9 +1667,9 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
   });
 
-  it("records enabled Paperclip issue events as cursor observations without creating ingest operations", async () => {
+  it("records enabled ValadrienOs issue events as cursor observations without creating ingest operations", async () => {
     const harness = createTestHarness({ manifest });
-    const issue = paperclipIssue();
+    const issue = valadrienOsIssue();
     harness.seed({ issues: [issue] });
     const writes: Array<{ path: string; contents: string }> = [];
     harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
@@ -1703,7 +1703,7 @@ Duplicate headings receive stable suffixes.
     expect(operations).toHaveLength(0);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_sources"))).toBe(false);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
-    const cursorUpsert = harness.dbExecutes.find((execute) => execute.sql.includes("paperclip_distillation_cursors"));
+    const cursorUpsert = harness.dbExecutes.find((execute) => execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorUpsert?.params).toEqual(expect.arrayContaining([
       COMPANY_ID,
       "default",
@@ -1713,7 +1713,7 @@ Duplicate headings receive stable suffixes.
     ]));
   });
 
-  it("preserves Paperclip event ingestion sources when only enabled changes", async () => {
+  it("preserves ValadrienOs event ingestion sources when only enabled changes", async () => {
     const harness = createTestHarness({ manifest });
 
     await plugin.definition.setup(harness.ctx);
@@ -1748,16 +1748,16 @@ Duplicate headings receive stable suffixes.
     });
   });
 
-  it("keeps Paperclip event cursor observations company scoped and ignores plugin-operation issues", async () => {
+  it("keeps ValadrienOs event cursor observations company scoped and ignores plugin-operation issues", async () => {
     const harness = createTestHarness({ manifest });
-    const visibleIssue = paperclipIssue({ projectId: "77777777-7777-4777-8777-777777777777" });
-    const otherCompanyIssue = paperclipIssue({
+    const visibleIssue = valadrienOsIssue({ projectId: "77777777-7777-4777-8777-777777777777" });
+    const otherCompanyIssue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777778",
       companyId: OTHER_COMPANY_ID,
       projectId: "77777777-7777-4777-8777-777777777779",
       identifier: "PAP-9999",
     });
-    const operationIssue = paperclipIssue({
+    const operationIssue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777780",
       originKind: `${OPERATION_ORIGIN_KIND}:ingest`,
     });
@@ -1789,7 +1789,7 @@ Duplicate headings receive stable suffixes.
       eventId: "event-plugin-operation",
     });
 
-    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_cursors"));
+    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorWrites).toHaveLength(1);
     expect(cursorWrites[0].params).toEqual(expect.arrayContaining([
       COMPANY_ID,
@@ -1799,9 +1799,9 @@ Duplicate headings receive stable suffixes.
     ]));
   });
 
-  it("routes Paperclip issue, comment, and document event cursors only to the default space", async () => {
+  it("routes ValadrienOs issue, comment, and document event cursors only to the default space", async () => {
     const harness = createTestHarness({ manifest });
-    const issue = paperclipIssue({ projectId: "77777777-7777-4777-8777-777777777777" });
+    const issue = valadrienOsIssue({ projectId: "77777777-7777-4777-8777-777777777777" });
     harness.seed({ issues: [issue] });
 
     await plugin.definition.setup(harness.ctx);
@@ -1836,7 +1836,7 @@ Duplicate headings receive stable suffixes.
       eventId: "event-default-document-updated",
     });
 
-    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_cursors"));
+    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorWrites).toHaveLength(3);
     expect(cursorWrites.every((execute) => execute.params?.[10] !== created.space.id)).toBe(true);
     expect(cursorWrites.map((execute) => execute.params?.[2])).toEqual(["default", "default", "default"]);
@@ -1845,10 +1845,10 @@ Duplicate headings receive stable suffixes.
     expect(String(cursorWrites[2].params?.[9])).toContain('"lastSourceKind":"documents"');
   });
 
-  it("routes Paperclip events into an explicitly enabled shared non-default space", async () => {
+  it("routes ValadrienOs events into an explicitly enabled shared non-default space", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({ projectId: project.id });
+    const issue = valadrienOsIssue({ projectId: project.id });
     harness.seed({ projects: [project], issues: [issue] });
 
     await plugin.definition.setup(harness.ctx);
@@ -1868,12 +1868,12 @@ Duplicate headings receive stable suffixes.
       cursor: { maxWindowCharacters: 60000, maxCharactersPerSource: 12000, minSourceAgeMinutes: 15, maxWindowsPerRun: 6, staleAfterHours: 72 },
       backfill: { requireManualQueue: true },
     };
-    await harness.performAction("update-paperclip-ingestion-profile", {
+    await harness.performAction("update-valadrien-os-ingestion-profile", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
       profile: enabledProfile,
     });
-    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { paperclipIngestion: enabledProfile } });
+    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { valadrienOsIngestion: enabledProfile } });
 
     await harness.emit("issue.created", {}, {
       companyId: COMPANY_ID,
@@ -1882,14 +1882,14 @@ Duplicate headings receive stable suffixes.
       eventId: "event-non-default-enabled",
     });
 
-    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_cursors"));
+    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorWrites.some((execute) => execute.params?.[10] === created.space.id)).toBe(true);
   });
 
   it("stops new non-default observations after the per-space profile is disabled", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({ projectId: project.id });
+    const issue = valadrienOsIssue({ projectId: project.id });
     harness.seed({ projects: [project], issues: [issue] });
 
     await plugin.definition.setup(harness.ctx);
@@ -1909,24 +1909,24 @@ Duplicate headings receive stable suffixes.
       cursor: { maxWindowCharacters: 60000, maxCharactersPerSource: 12000, minSourceAgeMinutes: 15, maxWindowsPerRun: 6, staleAfterHours: 72 },
       backfill: { requireManualQueue: true },
     };
-    await harness.performAction("update-paperclip-ingestion-profile", {
+    await harness.performAction("update-valadrien-os-ingestion-profile", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
       profile: enabledProfile,
     });
-    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { paperclipIngestion: enabledProfile } });
+    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { valadrienOsIngestion: enabledProfile } });
     await harness.emit("issue.created", {}, {
       companyId: COMPANY_ID,
       entityId: issue.id,
       entityType: "issue",
       eventId: "event-before-disable",
     });
-    await harness.performAction("update-paperclip-ingestion-profile", {
+    await harness.performAction("update-valadrien-os-ingestion-profile", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
       profile: { ...enabledProfile, enabled: false },
     });
-    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { paperclipIngestion: { ...enabledProfile, enabled: false } } });
+    mockPersistedWikiSpace(harness, { ...(created.space as unknown as Record<string, unknown>), settings: { valadrienOsIngestion: { ...enabledProfile, enabled: false } } });
     await harness.emit("issue.updated", {}, {
       companyId: COMPANY_ID,
       entityId: issue.id,
@@ -1935,20 +1935,20 @@ Duplicate headings receive stable suffixes.
     });
 
     const nonDefaultCursorWrites = harness.dbExecutes.filter((execute) =>
-      execute.sql.includes("paperclip_distillation_cursors") && execute.params?.[10] === created.space.id);
+      execute.sql.includes("valadrien_os_distillation_cursors") && execute.params?.[10] === created.space.id);
     expect(nonDefaultCursorWrites).toHaveLength(1);
   });
 
-  it("assembles deterministic Paperclip source bundles with issue, document, and comment provenance", async () => {
+  it("assembles deterministic ValadrienOs source bundles with issue, document, and comment provenance", async () => {
     const harness = createTestHarness({ manifest });
-    const root = paperclipIssue({
+    const root = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777781",
       identifier: "PAP-4000",
       title: "Root distillation issue",
       projectId: "77777777-7777-4777-8777-777777777777",
       updatedAt: new Date("2026-05-01T10:00:00Z"),
     });
-    const child = paperclipIssue({
+    const child = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777782",
       identifier: "PAP-4001",
       title: "Child source issue",
@@ -1988,12 +1988,12 @@ Duplicate headings receive stable suffixes.
       sourceRefs: Array<{ kind: string; issueIdentifier: string | null; documentKey?: string; commentId?: string }>;
       sourceHash: string;
       sourceWindowEnd: string | null;
-    }>("assemble-paperclip-source-bundle", {
+    }>("assemble-valadrien-os-source-bundle", {
       companyId: COMPANY_ID,
       rootIssueId: root.id,
       maxCharacters: 20000,
     });
-    const second = await harness.performAction<typeof first>("assemble-paperclip-source-bundle", {
+    const second = await harness.performAction<typeof first>("assemble-valadrien-os-source-bundle", {
       companyId: COMPANY_ID,
       rootIssueId: root.id,
       maxCharacters: 20000,
@@ -2014,7 +2014,7 @@ Duplicate headings receive stable suffixes.
 
   it("suppresses secret-like comment and document bodies before storing distillation snapshots", async () => {
     const harness = createTestHarness({ manifest });
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777784",
       identifier: "PAP-4002",
       title: "Sensitive source issue",
@@ -2054,7 +2054,7 @@ Duplicate headings receive stable suffixes.
         warnings: string[];
         sourceRefs: Array<Record<string, unknown>>;
       };
-    }>("create-paperclip-distillation-run", {
+    }>("create-valadrien-os-distillation-run", {
       companyId: COMPANY_ID,
       projectId: issue.projectId,
       maxCharacters: 20000,
@@ -2072,7 +2072,7 @@ Duplicate headings receive stable suffixes.
       expect.objectContaining({ kind: "document", redactionStatus: "suppressed_sensitive_content" }),
     ]));
 
-    const snapshotInsert = harness.dbExecutes.find((execute) => execute.sql.includes("paperclip_source_snapshots"));
+    const snapshotInsert = harness.dbExecutes.find((execute) => execute.sql.includes("valadrien_os_source_snapshots"));
     const storedSourceRefs = String(snapshotInsert?.params?.[9] ?? "");
     const storedMarkdown = String(snapshotInsert?.params?.[10] ?? "");
     expect(storedSourceRefs).toContain("suppressed_sensitive_content");
@@ -2083,7 +2083,7 @@ Duplicate headings receive stable suffixes.
 
   it("creates source snapshots and only advances cursors after successful distillation outcomes", async () => {
     const harness = createTestHarness({ manifest });
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       projectId: "77777777-7777-4777-8777-777777777777",
       updatedAt: new Date("2026-05-02T10:00:00Z"),
     });
@@ -2095,14 +2095,14 @@ Duplicate headings receive stable suffixes.
       cursorId: string;
       snapshotId: string;
       bundle: { sourceHash: string; sourceWindowEnd: string };
-    }>("create-paperclip-distillation-run", {
+    }>("create-valadrien-os-distillation-run", {
       companyId: COMPANY_ID,
       projectId: issue.projectId,
     });
     expect(run.snapshotId).toEqual(expect.any(String));
-    expect(harness.dbExecutes.some((execute) => execute.sql.includes("paperclip_source_snapshots"))).toBe(true);
+    expect(harness.dbExecutes.some((execute) => execute.sql.includes("valadrien_os_source_snapshots"))).toBe(true);
 
-    const failed = await harness.performAction<{ cursorAdvanced: boolean }>("record-paperclip-distillation-outcome", {
+    const failed = await harness.performAction<{ cursorAdvanced: boolean }>("record-valadrien-os-distillation-outcome", {
       companyId: COMPANY_ID,
       runId: run.runId,
       cursorId: run.cursorId,
@@ -2113,10 +2113,10 @@ Duplicate headings receive stable suffixes.
     });
     expect(failed.cursorAdvanced).toBe(false);
     const cursorUpdatesAfterFailure = harness.dbExecutes.filter((execute) =>
-      execute.sql.trim().startsWith("UPDATE") && execute.sql.includes("paperclip_distillation_cursors"));
+      execute.sql.trim().startsWith("UPDATE") && execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorUpdatesAfterFailure).toHaveLength(0);
 
-    const succeeded = await harness.performAction<{ cursorAdvanced: boolean }>("record-paperclip-distillation-outcome", {
+    const succeeded = await harness.performAction<{ cursorAdvanced: boolean }>("record-valadrien-os-distillation-outcome", {
       companyId: COMPANY_ID,
       runId: run.runId,
       cursorId: run.cursorId,
@@ -2126,7 +2126,7 @@ Duplicate headings receive stable suffixes.
     });
     expect(succeeded.cursorAdvanced).toBe(true);
     const cursorSuccessUpdate = harness.dbExecutes.find((execute) =>
-      execute.sql.trim().startsWith("UPDATE") && execute.sql.includes("paperclip_distillation_cursors"));
+      execute.sql.trim().startsWith("UPDATE") && execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorSuccessUpdate?.params).toEqual(expect.arrayContaining([
       COMPANY_ID,
       "default",
@@ -2140,7 +2140,7 @@ Duplicate headings receive stable suffixes.
   it("uses the existing distillation cursor id after an upsert conflict", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777800",
       identifier: "PAP-4099",
       title: "Existing cursor target",
@@ -2150,7 +2150,7 @@ Duplicate headings receive stable suffixes.
     const existingCursorId = "77777777-7777-4777-8777-777777777899";
     const originalQuery = harness.ctx.db.query.bind(harness.ctx.db);
     harness.ctx.db.query = async <T,>(sql: string, params?: unknown[]) => {
-      if (sql.includes("SELECT id") && sql.includes("paperclip_distillation_cursors")) {
+      if (sql.includes("SELECT id") && sql.includes("valadrien_os_distillation_cursors")) {
         return [{ id: existingCursorId }] as T[];
       }
       return originalQuery<T>(sql, params);
@@ -2158,14 +2158,14 @@ Duplicate headings receive stable suffixes.
     harness.seed({ projects: [project], issues: [issue] });
 
     await plugin.definition.setup(harness.ctx);
-    const result = await harness.performAction<{ cursorId: string }>("create-paperclip-distillation-run", {
+    const result = await harness.performAction<{ cursorId: string }>("create-valadrien-os-distillation-run", {
       companyId: COMPANY_ID,
       projectId: project.id,
     });
 
     expect(result.cursorId).toBe(existingCursorId);
     const runInsert = harness.dbExecutes.find((execute) =>
-      execute.sql.includes("paperclip_distillation_runs") && execute.sql.includes("'source_ready'"));
+      execute.sql.includes("valadrien_os_distillation_runs") && execute.sql.includes("'source_ready'"));
     expect(runInsert?.params?.[3]).toBe(existingCursorId);
   });
 
@@ -2173,20 +2173,20 @@ Duplicate headings receive stable suffixes.
     const harness = createTestHarness({ manifest });
     await plugin.definition.setup(harness.ctx);
 
-    await harness.performAction("create-paperclip-distillation-work-item", {
+    await harness.performAction("create-valadrien-os-distillation-work-item", {
       companyId: COMPANY_ID,
       kind: "manual",
       projectId: "77777777-7777-4777-8777-777777777777",
       idempotencyKey: "manual:project:77777777-7777-4777-8777-777777777777",
     });
-    await harness.performAction("create-paperclip-distillation-work-item", {
+    await harness.performAction("create-valadrien-os-distillation-work-item", {
       companyId: COMPANY_ID,
       kind: "retry",
       rootIssueId: "77777777-7777-4777-8777-777777777781",
       priority: "high",
       idempotencyKey: "retry:run:1",
     });
-    await harness.performAction("create-paperclip-distillation-work-item", {
+    await harness.performAction("create-valadrien-os-distillation-work-item", {
       companyId: COMPANY_ID,
       kind: "backfill",
       projectId: "77777777-7777-4777-8777-777777777777",
@@ -2195,32 +2195,32 @@ Duplicate headings receive stable suffixes.
       idempotencyKey: "backfill:last-30-days",
     });
 
-    const workItemWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_work_items"));
+    const workItemWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_work_items"));
     expect(workItemWrites).toHaveLength(3);
     expect(workItemWrites.map((write) => write.params?.[3])).toEqual(["manual", "retry", "backfill"]);
     expect(String(workItemWrites[0].params?.[9])).toContain('"sourceScope":"project"');
     expect(String(workItemWrites[1].params?.[9])).toContain('"sourceScope":"root_issue"');
     expect(String(workItemWrites[2].params?.[9])).toContain('"sourceScope":"project"');
 
-    await expect(harness.performAction("create-paperclip-distillation-work-item", {
+    await expect(harness.performAction("create-valadrien-os-distillation-work-item", {
       companyId: COMPANY_ID,
       kind: "backfill",
       idempotencyKey: "backfill:company",
     })).rejects.toThrow("whole-company backfill is not allowed");
   });
 
-  it("records estimated Paperclip distillation cost without refusing on legacy cost config", async () => {
+  it("records estimated ValadrienOs distillation cost without refusing on legacy cost config", async () => {
     const harness = createTestHarness({
       manifest,
       config: {
-        maxPaperclipRoutineRunCostCents: 1,
-        maxPaperclipDistillationTaskCostCents: 1,
-        maxPaperclipDistillationProjectCostCents: 1,
-        paperclipCostCentsPerThousandSourceCharacters: 100,
+        maxValadrienOsRoutineRunCostCents: 1,
+        maxValadrienOsDistillationTaskCostCents: 1,
+        maxValadrienOsDistillationProjectCostCents: 1,
+        valadrienOsCostCentsPerThousandSourceCharacters: 100,
       },
     });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777795",
       identifier: "PAP-4104",
       title: "Large source bundle",
@@ -2235,7 +2235,7 @@ Duplicate headings receive stable suffixes.
       status: string;
       estimatedCostCents: number;
       snapshotId: string | null;
-    }>("create-paperclip-distillation-run", {
+    }>("create-valadrien-os-distillation-run", {
       companyId: COMPANY_ID,
       projectId: project.id,
       routineRun: true,
@@ -2245,7 +2245,7 @@ Duplicate headings receive stable suffixes.
     expect(result.estimatedCostCents).toBeGreaterThan(1);
     expect(result.snapshotId).toEqual(expect.any(String));
     const readyRun = harness.dbExecutes.find((execute) =>
-      execute.sql.includes("paperclip_distillation_runs") && execute.sql.includes("'source_ready'"));
+      execute.sql.includes("valadrien_os_distillation_runs") && execute.sql.includes("'source_ready'"));
     expect(readyRun?.params).toEqual(expect.arrayContaining([
       COMPANY_ID,
       "default",
@@ -2254,14 +2254,14 @@ Duplicate headings receive stable suffixes.
       null,
       project.id,
     ]));
-    expect(harness.dbExecutes.some((execute) => execute.sql.includes("paperclip_source_snapshots"))).toBe(true);
+    expect(harness.dbExecutes.some((execute) => execute.sql.includes("valadrien_os_source_snapshots"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("refused_cost_cap"))).toBe(false);
   });
 
   it("queues visible manual distill operation issues for a company-wide stale cursor scan", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777796",
       identifier: "PAP-4105",
       title: "Manual distillation target",
@@ -2276,7 +2276,7 @@ Duplicate headings receive stable suffixes.
       status: string;
       operation: { issue: { originKind: string; billingCode: string | null; assigneeAgentId: string | null; assigneeAdapterOverrides: { modelProfile?: string } | null; description: string | null } };
       workItem: { kind: string; workItemId: string };
-    }>("distill-paperclip-now", {
+    }>("distill-valadrien-os-now", {
       companyId: COMPANY_ID,
       autoApply: false,
       useCheapModelProfile: true,
@@ -2289,12 +2289,12 @@ Duplicate headings receive stable suffixes.
     expect(result.operation.issue.billingCode).toBe("plugin-llm-wiki:default");
     expect(result.operation.issue.assigneeAgentId).toBe(wikiMaintainerAgent().id);
     expect(result.operation.issue.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
-    expect(result.operation.issue.description).toContain("Prompt source: LLM Wiki plugin action `distill-paperclip-now`");
-    expect(result.operation.issue.description).toContain(`Required skill: use the installed \`${PAPERCLIP_DISTILL_SKILL_KEY}\` skill`);
+    expect(result.operation.issue.description).toContain("Prompt source: LLM Wiki plugin action `distill-valadrien-os-now`");
+    expect(result.operation.issue.description).toContain(`Required skill: use the installed \`${VALADRIEN_OS_DISTILL_SKILL_KEY}\` skill`);
     expect(result.operation.issue.description).toContain("Do not hardcode a single project");
     expect(result.operation.issue.description).not.toContain(`Source project ID: ${project.id}`);
     const workItemInsert = harness.dbExecutes.find((execute) =>
-      execute.sql.includes("paperclip_distillation_work_items") && execute.params?.[3] === "manual");
+      execute.sql.includes("valadrien_os_distillation_work_items") && execute.params?.[3] === "manual");
     expect(workItemInsert?.params).toEqual(expect.arrayContaining([
       COMPANY_ID,
       "default",
@@ -2304,7 +2304,7 @@ Duplicate headings receive stable suffixes.
       null,
     ]));
     const runInsert = harness.dbExecutes.find((execute) =>
-      execute.sql.includes("paperclip_distillation_runs") && execute.sql.includes("operation_issue_id"));
+      execute.sql.includes("valadrien_os_distillation_runs") && execute.sql.includes("operation_issue_id"));
     expect(runInsert).toBeUndefined();
   });
 
@@ -2362,7 +2362,7 @@ Duplicate headings receive stable suffixes.
     const result = await harness.performAction<{
       selectedProjects: Array<{ id: string; observedAt: string | null }>;
       eventIngestion: { enabled: boolean; sources: { issues: boolean; comments: boolean; documents: boolean } };
-    }>("enable-paperclip-distillation-active-projects", {
+    }>("enable-valadrien-os-distillation-active-projects", {
       companyId: COMPANY_ID,
       limit: 2,
     });
@@ -2372,17 +2372,17 @@ Duplicate headings receive stable suffixes.
       enabled: true,
       sources: { issues: true, comments: true, documents: true },
     });
-    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_cursors"));
+    const cursorWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_cursors"));
     expect(cursorWrites).toHaveLength(2);
     expect(cursorWrites.map((execute) => execute.params?.[5])).toEqual([recentProject.id, olderProject.id]);
     expect(cursorWrites.map((execute) => execute.params?.[8])).toEqual([1, 1]);
     expect(String(cursorWrites[0]?.params?.[9])).toContain('"configuredBy":"enable-active-projects"');
   });
 
-  it("backfills only the selected Paperclip project and date window", async () => {
+  it("backfills only the selected ValadrienOs project and date window", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const inWindow = paperclipIssue({
+    const inWindow = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777797",
       identifier: "PAP-4106",
       title: "Backfill in-window decision",
@@ -2391,7 +2391,7 @@ Duplicate headings receive stable suffixes.
       projectId: project.id,
       updatedAt: new Date("2026-04-15T12:00:00Z"),
     });
-    const outOfWindow = paperclipIssue({
+    const outOfWindow = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777798",
       identifier: "PAP-4107",
       title: "Backfill out-of-window decision",
@@ -2400,7 +2400,7 @@ Duplicate headings receive stable suffixes.
       projectId: project.id,
       updatedAt: new Date("2026-03-01T12:00:00Z"),
     });
-    const otherProject = paperclipIssue({
+    const otherProject = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777799",
       identifier: "PAP-4108",
       title: "Other project decision",
@@ -2417,7 +2417,7 @@ Duplicate headings receive stable suffixes.
       patches: Array<{ operationType: string; proposedContents: string }>;
       workItem: { kind: string };
       operation: { issue: { originKind: string } };
-    }>("backfill-paperclip-distillation", {
+    }>("backfill-valadrien-os-distillation", {
       companyId: COMPANY_ID,
       projectId: project.id,
       backfillStartAt: "2026-04-01T00:00:00Z",
@@ -2434,14 +2434,14 @@ Duplicate headings receive stable suffixes.
     expect(projectPatch?.proposedContents).not.toContain("PAP-4107");
     expect(projectPatch?.proposedContents).not.toContain("PAP-4108");
     const workItemInsert = harness.dbExecutes.find((execute) =>
-      execute.sql.includes("paperclip_distillation_work_items") && execute.params?.[3] === "backfill");
+      execute.sql.includes("valadrien_os_distillation_work_items") && execute.params?.[3] === "backfill");
     expect(String(workItemInsert?.params?.[9])).toContain('"backfillStartAt":"2026-04-01T00:00:00Z"');
   });
 
-  it("generates review-required Paperclip project page patches with provenance, index, and log updates", async () => {
+  it("generates review-required ValadrienOs project page patches with provenance, index, and log updates", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777791",
       identifier: "PAP-4100",
       title: "Approved project page distillation plan",
@@ -2472,7 +2472,7 @@ Duplicate headings receive stable suffixes.
       status: string;
       patches: Array<{ pagePath: string; operationType: string; currentHash: string | null; proposedContents: string; sourceRefs: Array<{ issueIdentifier: string | null }> }>;
       warnings: string[];
-    }>("distill-paperclip-project-page", {
+    }>("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       autoApply: false,
@@ -2500,14 +2500,14 @@ Duplicate headings receive stable suffixes.
     expect(projectPatch.sourceRefs).toEqual([expect.objectContaining({ issueIdentifier: "PAP-4100" })]);
     expect(result.patches[2].proposedContents).toContain("[[wiki/projects/existing-wiki-project/index.md]]");
     expect(result.patches[2].proposedContents).toContain("[[wiki/projects/existing-wiki-project/standup.md]]");
-    expect(result.patches[3].proposedContents).toContain("paperclip-distill | proposed");
+    expect(result.patches[3].proposedContents).toContain("valadrien-os-distill | proposed");
     expect(result.warnings).toContain("Auto-apply policy disabled; proposed patches require review.");
   });
 
   it("keeps suppressed secret-like source content out of generated wiki patches", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777796",
       identifier: "PAP-4104",
       title: "Distill sanitized provenance",
@@ -2559,7 +2559,7 @@ Duplicate headings receive stable suffixes.
     const result = await harness.performAction<{
       status: string;
       patches: Array<{ operationType: string; proposedContents: string }>;
-    }>("distill-paperclip-project-page", {
+    }>("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       maxCharacters: 20000,
@@ -2574,10 +2574,10 @@ Duplicate headings receive stable suffixes.
     expect(combinedPatchContents).not.toContain("sk-patchsecretdocumentvalue1234567890");
   });
 
-  it("auto-applies Paperclip project page patches by default when policy allows and records page bindings", async () => {
+  it("auto-applies ValadrienOs project page patches by default when policy allows and records page bindings", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777792",
       identifier: "PAP-4101",
       title: "Implement project page writer",
@@ -2606,7 +2606,7 @@ Duplicate headings receive stable suffixes.
       status: string;
       appliedPages: string[];
       patches: Array<{ pagePath: string; sourceHash: string }>;
-    }>("distill-paperclip-project-page", {
+    }>("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       autoApply: true,
@@ -2625,8 +2625,8 @@ Duplicate headings receive stable suffixes.
     expect(files.get("wiki/projects/existing-wiki-project/index.md")).toContain("## Current Direction");
     expect(files.get("wiki/projects/existing-wiki-project/index.md")).toContain("## References");
     expect(files.get("wiki/index.md")).toContain("wiki/projects/existing-wiki-project/index.md");
-    expect(files.get("wiki/log.md")).toContain("paperclip-distill | proposed");
-    const bindingWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_page_bindings"));
+    expect(files.get("wiki/log.md")).toContain("valadrien-os-distill | proposed");
+    const bindingWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_page_bindings"));
     expect(bindingWrites).toHaveLength(4);
     expect(bindingWrites[0].params).toEqual(expect.arrayContaining([
       COMPANY_ID,
@@ -2638,12 +2638,12 @@ Duplicate headings receive stable suffixes.
     ]));
   });
 
-  it("refuses auto-apply Paperclip project page patches in authenticated/public deployments", async () => {
-    process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
-    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "public";
+  it("refuses auto-apply ValadrienOs project page patches in authenticated/public deployments", async () => {
+    process.env.VALADRIEN_OS_DEPLOYMENT_MODE = "authenticated";
+    process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE = "public";
     const harness = createTestHarness({ manifest, config: { autoApplyIngestPatches: true } });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-77777777779a",
       identifier: "PAP-4101",
       title: "Implement project page writer",
@@ -2674,7 +2674,7 @@ Duplicate headings receive stable suffixes.
       status: string;
       appliedPages: string[];
       warnings: string[];
-    }>("distill-paperclip-project-page", {
+    }>("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       autoApply: true,
@@ -2690,10 +2690,10 @@ Duplicate headings receive stable suffixes.
     );
   });
 
-  it("refuses stale project page hashes before writing generated Paperclip pages", async () => {
+  it("refuses stale project page hashes before writing generated ValadrienOs pages", async () => {
     const harness = createTestHarness({ manifest, config: { autoApplyIngestPatches: true } });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777793",
       identifier: "PAP-4102",
       title: "Publish project page",
@@ -2720,7 +2720,7 @@ Duplicate headings receive stable suffixes.
     };
 
     await plugin.definition.setup(harness.ctx);
-    await expect(harness.performAction("distill-paperclip-project-page", {
+    await expect(harness.performAction("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       autoApply: true,
@@ -2730,10 +2730,10 @@ Duplicate headings receive stable suffixes.
     expect(writes).toHaveLength(0);
   });
 
-  it("skips low-signal Paperclip source windows without proposing wiki writes", async () => {
+  it("skips low-signal ValadrienOs source windows without proposing wiki writes", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-777777777794",
       identifier: "PAP-4103",
       title: "Routine heartbeat",
@@ -2749,7 +2749,7 @@ Duplicate headings receive stable suffixes.
     };
 
     await plugin.definition.setup(harness.ctx);
-    const result = await harness.performAction<{ status: string; reason: string; patches: unknown[] }>("distill-paperclip-project-page", {
+    const result = await harness.performAction<{ status: string; reason: string; patches: unknown[] }>("distill-valadrien-os-project-page", {
       companyId: COMPANY_ID,
       projectId: project.id,
       maxCharacters: 20000,
@@ -3024,7 +3024,7 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_sources"))).toBe(true);
   });
 
-  it("preserves manual source ingest for non-default spaces while refusing Paperclip distillation there", async () => {
+  it("preserves manual source ingest for non-default spaces while refusing ValadrienOs distillation there", async () => {
     const harness = createTestHarness({ manifest });
     const writes: Array<{ path: string; contents: string }> = [];
     harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
@@ -3082,14 +3082,14 @@ Duplicate headings receive stable suffixes.
 
     expect(source.spaceSlug).toBe(created.space.slug);
     expect(writes.map((write) => write.path)).toContain(`spaces/${created.space.slug}/${source.rawPath}`);
-    await expect(harness.performAction("distill-paperclip-now", {
+    await expect(harness.performAction("distill-valadrien-os-now", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
       projectId: existingProject().id,
-    })).rejects.toThrow("Paperclip ingestion policy denied queue");
+    })).rejects.toThrow("ValadrienOs ingestion policy denied queue");
   });
 
-  it("fails closed for direct Paperclip ingestion actions against restricted spaces", async () => {
+  it("fails closed for direct ValadrienOs ingestion actions against restricted spaces", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({
       agents: [wikiMaintainerAgent()],
@@ -3132,24 +3132,24 @@ Duplicate headings receive stable suffixes.
       }
       return originalQuery<T>(sql, params);
     };
-    await expect(harness.performAction("distill-paperclip-now", {
+    await expect(harness.performAction("distill-valadrien-os-now", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
       projectId: existingProject().id,
-    })).rejects.toThrow("Paperclip ingestion policy denied queue");
+    })).rejects.toThrow("ValadrienOs ingestion policy denied queue");
 
     const operations = await harness.ctx.issues.list({
       companyId: COMPANY_ID,
       originKindPrefix: String(OPERATION_ORIGIN_KIND),
     });
     expect(operations).toHaveLength(0);
-    expect(harness.dbExecutes.some((execute) => execute.sql.includes("paperclip_distillation_work_items"))).toBe(false);
+    expect(harness.dbExecutes.some((execute) => execute.sql.includes("valadrien_os_distillation_work_items"))).toBe(false);
   });
 
-  it("re-checks Paperclip ingestion policy at execution time for queued work", async () => {
+  it("re-checks ValadrienOs ingestion policy at execution time for queued work", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
-    const issue = paperclipIssue({
+    const issue = valadrienOsIssue({
       id: "77777777-7777-4777-8777-7777777777b0",
       identifier: "PAP-4111",
       title: "Queued distillation source",
@@ -3160,7 +3160,7 @@ Duplicate headings receive stable suffixes.
     harness.seed({ agents: [wikiMaintainerAgent()], projects: [project], issues: [issue] });
 
     await plugin.definition.setup(harness.ctx);
-    const queued = await harness.performAction<{ status: string }>("distill-paperclip-now", {
+    const queued = await harness.performAction<{ status: string }>("distill-valadrien-os-now", {
       companyId: COMPANY_ID,
       projectId: project.id,
     });
@@ -3193,15 +3193,15 @@ Duplicate headings receive stable suffixes.
       return originalQuery<T>(sql, params);
     };
 
-    await expect(harness.performAction("create-paperclip-distillation-run", {
+    await expect(harness.performAction("create-valadrien-os-distillation-run", {
       companyId: COMPANY_ID,
       projectId: project.id,
-    })).rejects.toThrow("personal spaces cannot ingest Paperclip sources");
+    })).rejects.toThrow("personal spaces cannot ingest ValadrienOs sources");
     expect(harness.dbExecutes.some((execute) =>
-      execute.sql.includes("paperclip_distillation_runs") && execute.sql.includes("'source_ready'"))).toBe(false);
+      execute.sql.includes("valadrien_os_distillation_runs") && execute.sql.includes("'source_ready'"))).toBe(false);
   });
 
-  it("queues Paperclip ingestion backfills for every selected project scope", async () => {
+  it("queues ValadrienOs ingestion backfills for every selected project scope", async () => {
     const harness = createTestHarness({ manifest });
     await plugin.definition.setup(harness.ctx);
 
@@ -3210,7 +3210,7 @@ Duplicate headings receive stable suffixes.
       workItemId: string;
       issueId: string;
       workItems: Array<{ workItemId: string; issueId: string; projectId: string | null; rootIssueId: string | null }>;
-    }>("queue-paperclip-ingestion-backfill", {
+    }>("queue-valadrien-os-ingestion-backfill", {
       companyId: COMPANY_ID,
       sourceScope: {
         kind: "selected_projects",
@@ -3231,10 +3231,10 @@ Duplicate headings receive stable suffixes.
       "77777777-7777-4777-8777-7777777777a1",
       "77777777-7777-4777-8777-7777777777a2",
     ]);
-    expect(harness.dbExecutes.filter((execute) => execute.sql.includes("paperclip_distillation_work_items"))).toHaveLength(2);
+    expect(harness.dbExecutes.filter((execute) => execute.sql.includes("valadrien_os_distillation_work_items"))).toHaveLength(2);
   });
 
-  it("rejects oversized Paperclip ingestion profile and source-scope payloads", async () => {
+  it("rejects oversized ValadrienOs ingestion profile and source-scope payloads", async () => {
     const harness = createTestHarness({ manifest });
 
     await plugin.definition.setup(harness.ctx);
@@ -3243,24 +3243,24 @@ Duplicate headings receive stable suffixes.
       enabled: true,
       maxCharacters: 20001,
       sources: { issues: true },
-    })).rejects.toThrow("maxCharacters exceeds the hard Paperclip ingestion cap");
+    })).rejects.toThrow("maxCharacters exceeds the hard ValadrienOs ingestion cap");
 
-    await expect(harness.performAction("enable-paperclip-distillation-active-projects", {
+    await expect(harness.performAction("enable-valadrien-os-distillation-active-projects", {
       companyId: COMPANY_ID,
       limit: 26,
     })).rejects.toThrow("fan-out exceeds the hard cap");
 
-    await expect(harness.performAction("assemble-paperclip-source-bundle", {
+    await expect(harness.performAction("assemble-valadrien-os-source-bundle", {
       companyId: COMPANY_ID,
       projectId: "77777777-7777-4777-8777-777777777777",
       rootIssueId: "77777777-7777-4777-8777-777777777778",
     })).rejects.toThrow("either projectId or rootIssueId");
 
-    await expect(harness.performAction("assemble-paperclip-source-bundle", {
+    await expect(harness.performAction("assemble-valadrien-os-source-bundle", {
       companyId: COMPANY_ID,
       projectId: "77777777-7777-4777-8777-777777777777",
       maxCharacters: 60001,
-    })).rejects.toThrow("maxCharacters exceeds the hard Paperclip ingestion cap");
+    })).rejects.toThrow("maxCharacters exceeds the hard ValadrienOs ingestion cap");
   });
 
   it("keeps default-space files at the root and isolates managed spaces under slug prefixes", async () => {

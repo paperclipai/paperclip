@@ -3,14 +3,14 @@ title: Storage
 summary: Local disk vs S3-compatible storage
 ---
 
-Paperclip stores uploaded files (issue attachments, images) using a configurable storage provider.
+Valadrien OS stores uploaded files (issue attachments, images) using a configurable storage provider.
 
 ## Local Disk (Default)
 
 Files are stored at:
 
 ```
-~/.paperclip/instances/default/data/storage
+~/.valadrien-os/instances/default/data/storage
 ```
 
 No configuration required. Suitable for local development and single-machine deployments.
@@ -22,7 +22,7 @@ For production or multi-node deployments, use S3-compatible object storage (AWS 
 Configure via CLI:
 
 ```sh
-pnpm paperclipai configure --section storage
+pnpm valadrien-os configure --section storage
 ```
 
 ## Configuration
@@ -35,5 +35,5 @@ pnpm paperclipai configure --section storage
 Storage configuration is stored in the instance config file:
 
 ```
-~/.paperclip/instances/default/config.json
+~/.valadrien-os/instances/default/config.json
 ```

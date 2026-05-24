@@ -9,7 +9,7 @@ import {
   issueDocuments,
   issueReferenceMentions,
   issues,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -56,7 +56,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-refs-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-issue-refs-");
     db = createDb(tempDb.connectionString);
     refs = issueReferenceService(db);
     await ensureIssueReferenceMentionsTable(db);
@@ -87,7 +87,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -136,7 +136,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
       id: commentId,
       companyId,
       issueId: sourceIssueId,
-      body: "Follow up in https://paperclip.test/issues/pap-2 after the document lands.",
+      body: "Follow up in https://valadrien-os.test/issues/pap-2 after the document lands.",
     });
     await refs.syncComment(commentId);
 
@@ -185,7 +185,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip Backfill",
+      name: "ValadrienOs Backfill",
       issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });

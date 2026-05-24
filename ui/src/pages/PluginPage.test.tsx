@@ -30,7 +30,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP" }],
+    companies: [{ id: "company-1", name: "ValadrienOs", issuePrefix: "PAP" }],
     selectedCompanyId: "company-1",
   }),
 }));
@@ -64,7 +64,7 @@ async function flushReact() {
 function pageContribution(overrides: Partial<{ slots: unknown[] }> = {}) {
   return {
     pluginId: "plugin-wiki",
-    pluginKey: "paperclipai.plugin-llm-wiki",
+    pluginKey: "valadrien-os.plugin-llm-wiki",
     displayName: "LLM Wiki",
     version: "0.1.0",
     uiEntryFile: "ui.js",

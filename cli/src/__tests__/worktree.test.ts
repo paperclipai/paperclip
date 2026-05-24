@@ -15,7 +15,7 @@ import {
   projects,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
@@ -43,7 +43,7 @@ import {
   rewriteLocalUrlPort,
   sanitizeWorktreeInstanceId,
 } from "../commands/worktree-lib.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import type { ValadrienOsConfig } from "../config/schema.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -72,7 +72,7 @@ afterEach(() => {
   }
 });
 
-function buildSourceConfig(): PaperclipConfig {
+function buildSourceConfig(): ValadrienOsConfig {
   return {
     $meta: {
       version: 1,
@@ -116,7 +116,7 @@ function buildSourceConfig(): PaperclipConfig {
         baseDir: "/tmp/main/storage",
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "valadrien-os",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -139,13 +139,13 @@ describe("worktree helpers", () => {
   });
 
   it("resolves worktree:make target paths under the user home directory", () => {
-    expect(resolveWorktreeMakeTargetPath("paperclip-pr-432")).toBe(
-      path.resolve(os.homedir(), "paperclip-pr-432"),
+    expect(resolveWorktreeMakeTargetPath("valadrien-os-pr-432")).toBe(
+      path.resolve(os.homedir(), "valadrien-os-pr-432"),
     );
   });
 
   it("rejects worktree:make names that are not safe directory/branch names", () => {
-    expect(() => resolveWorktreeMakeTargetPath("paperclip/pr-432")).toThrow(
+    expect(() => resolveWorktreeMakeTargetPath("valadrien-os/pr-432")).toThrow(
       "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
     );
   });
@@ -193,13 +193,13 @@ describe("worktree helpers", () => {
   it("rewrites auth URLs only when they already include a port", () => {
     expect(rewriteLocalUrlPort("http://127.0.0.1:3100", 3110)).toBe("http://127.0.0.1:3110/");
     expect(rewriteLocalUrlPort("http://my-host.ts.net:3100", 3110)).toBe("http://my-host.ts.net:3110/");
-    expect(rewriteLocalUrlPort("https://paperclip.example", 3110)).toBe("https://paperclip.example");
+    expect(rewriteLocalUrlPort("https://valadrien-os.example", 3110)).toBe("https://valadrien-os.example");
   });
 
   it("builds isolated config and env paths for a worktree", () => {
     const paths = resolveWorktreeLocalPaths({
-      cwd: "/tmp/paperclip-feature",
-      homeDir: "/tmp/paperclip-worktrees",
+      cwd: "/tmp/valadrien-os-feature",
+      homeDir: "/tmp/valadrien-os-worktrees",
       instanceId: "feature-worktree-support",
     });
     const config = buildWorktreeConfig({
@@ -211,25 +211,25 @@ describe("worktree helpers", () => {
     });
 
     expect(config.database.embeddedPostgresDataDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "db"),
+      path.resolve("/tmp/valadrien-os-worktrees", "instances", "feature-worktree-support", "db"),
     );
     expect(config.database.embeddedPostgresPort).toBe(54339);
     expect(config.server.port).toBe(3110);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3110/");
     expect(config.storage.localDisk.baseDir).toBe(
-      path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "data", "storage"),
+      path.resolve("/tmp/valadrien-os-worktrees", "instances", "feature-worktree-support", "data", "storage"),
     );
 
     const env = buildWorktreeEnvEntries(paths, {
       name: "feature-worktree-support",
       color: "#3abf7a",
     });
-    expect(env.PAPERCLIP_HOME).toBe(path.resolve("/tmp/paperclip-worktrees"));
-    expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree-support");
-    expect(env.PAPERCLIP_IN_WORKTREE).toBe("true");
-    expect(env.PAPERCLIP_WORKTREE_NAME).toBe("feature-worktree-support");
-    expect(env.PAPERCLIP_WORKTREE_COLOR).toBe("#3abf7a");
-    expect(formatShellExports(env)).toContain("export PAPERCLIP_INSTANCE_ID='feature-worktree-support'");
+    expect(env.VALADRIEN_OS_HOME).toBe(path.resolve("/tmp/valadrien-os-worktrees"));
+    expect(env.VALADRIEN_OS_INSTANCE_ID).toBe("feature-worktree-support");
+    expect(env.VALADRIEN_OS_IN_WORKTREE).toBe("true");
+    expect(env.VALADRIEN_OS_WORKTREE_NAME).toBe("feature-worktree-support");
+    expect(env.VALADRIEN_OS_WORKTREE_COLOR).toBe("#3abf7a");
+    expect(formatShellExports(env)).toContain("export VALADRIEN_OS_INSTANCE_ID='feature-worktree-support'");
   });
 
   it("falls back across storage roots before skipping a missing attachment object", async () => {
@@ -288,7 +288,7 @@ describe("worktree helpers", () => {
   });
 
   itEmbeddedPostgres("quarantines copied live execution state in seeded worktree databases", async () => {
-    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-quarantine-");
+    const tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-worktree-quarantine-");
     const db = createDb(tempDb.connectionString);
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -301,7 +301,7 @@ describe("worktree helpers", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "ValadrienOs",
         issuePrefix: "WTQ",
         requireBoardApprovalForNewAgents: false,
       });
@@ -420,12 +420,12 @@ describe("worktree helpers", () => {
   }, 20_000);
 
   it("copies the source local_encrypted secrets key into the seeded worktree instance", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
-    const originalInlineMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
-    const originalKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-secrets-"));
+    const originalInlineMasterKey = process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
+    const originalKeyFile = process.env.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE;
     try {
-      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
-      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+      delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
+      delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE;
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
       const sourceKeyPath = path.join(tempRoot, "source", "secrets", "master.key");
       const targetKeyPath = path.join(tempRoot, "target", "secrets", "master.key");
@@ -445,21 +445,21 @@ describe("worktree helpers", () => {
       expect(fs.readFileSync(targetKeyPath, "utf8")).toBe("source-master-key");
     } finally {
       if (originalInlineMasterKey === undefined) {
-        delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+        delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
       } else {
-        process.env.PAPERCLIP_SECRETS_MASTER_KEY = originalInlineMasterKey;
+        process.env.VALADRIEN_OS_SECRETS_MASTER_KEY = originalInlineMasterKey;
       }
       if (originalKeyFile === undefined) {
-        delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+        delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE;
       } else {
-        process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = originalKeyFile;
+        process.env.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE = originalKeyFile;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
   it("writes the source inline secrets master key into the seeded worktree instance", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-secrets-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-secrets-"));
     try {
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
       const targetKeyPath = path.join(tempRoot, "target", "secrets", "master.key");
@@ -468,7 +468,7 @@ describe("worktree helpers", () => {
         sourceConfigPath,
         sourceConfig: buildSourceConfig(),
         sourceEnvEntries: {
-          PAPERCLIP_SECRETS_MASTER_KEY: "inline-source-master-key",
+          VALADRIEN_OS_SECRETS_MASTER_KEY: "inline-source-master-key",
         },
         targetKeyFilePath: targetKeyPath,
       });
@@ -480,46 +480,46 @@ describe("worktree helpers", () => {
   });
 
   it("persists the current agent jwt secret into the worktree env file", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-jwt-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-jwt-"));
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
-    const originalJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const originalJwtSecret = process.env.VALADRIEN_OS_AGENT_JWT_SECRET;
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
-      process.env.PAPERCLIP_AGENT_JWT_SECRET = "worktree-shared-secret";
+      process.env.VALADRIEN_OS_AGENT_JWT_SECRET = "worktree-shared-secret";
       process.chdir(repoRoot);
 
       await worktreeInitCommand({
         seed: false,
         fromConfig: path.join(tempRoot, "missing", "config.json"),
-        home: path.join(tempRoot, ".paperclip-worktrees"),
+        home: path.join(tempRoot, ".valadrien-os-worktrees"),
       });
 
-      const envPath = path.join(repoRoot, ".paperclip", ".env");
+      const envPath = path.join(repoRoot, ".valadrien-os", ".env");
       const envContents = fs.readFileSync(envPath, "utf8");
-      expect(envContents).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
-      expect(envContents).toContain("PAPERCLIP_WORKTREE_NAME=repo");
-      expect(envContents).toMatch(/PAPERCLIP_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
+      expect(envContents).toContain("VALADRIEN_OS_AGENT_JWT_SECRET=worktree-shared-secret");
+      expect(envContents).toContain("VALADRIEN_OS_WORKTREE_NAME=repo");
+      expect(envContents).toMatch(/VALADRIEN_OS_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
     } finally {
       process.chdir(originalCwd);
       if (originalJwtSecret === undefined) {
-        delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+        delete process.env.VALADRIEN_OS_AGENT_JWT_SECRET;
       } else {
-        process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
+        process.env.VALADRIEN_OS_AGENT_JWT_SECRET = originalJwtSecret;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
   it("preserves repo-managed worktree checkouts when --force re-runs from the source repo", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-force-preserve-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-force-preserve-"));
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
-      const repoConfigDir = path.join(repoRoot, ".paperclip");
+      const repoConfigDir = path.join(repoRoot, ".valadrien-os");
       fs.mkdirSync(repoConfigDir, { recursive: true });
       fs.writeFileSync(path.join(repoConfigDir, "config.json"), "stale", "utf8");
       fs.writeFileSync(path.join(repoConfigDir, ".env"), "STALE=1", "utf8");
@@ -538,7 +538,7 @@ describe("worktree helpers", () => {
         seed: false,
         force: true,
         fromConfig: path.join(tempRoot, "missing", "config.json"),
-        home: path.join(tempRoot, ".paperclip-worktrees"),
+        home: path.join(tempRoot, ".valadrien-os-worktrees"),
       });
 
       expect(fs.existsSync(sentinelPath)).toBe(true);
@@ -554,22 +554,22 @@ describe("worktree helpers", () => {
   itEmbeddedPostgres(
     "seeds authenticated users into minimally cloned worktree instances",
     async () => {
-      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-auth-seed-"));
       const worktreeRoot = path.join(tempRoot, "PAP-999-auth-seed");
       const sourceHome = path.join(tempRoot, "source-home");
       const sourceConfigDir = path.join(sourceHome, "instances", "source");
       const sourceConfigPath = path.join(sourceConfigDir, "config.json");
       const sourceEnvPath = path.join(sourceConfigDir, ".env");
       const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
-      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const worktreeHome = path.join(tempRoot, ".valadrien-os-worktrees");
       const originalCwd = process.cwd();
-      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
+      const sourceDb = await startEmbeddedPostgresTestDatabase("valadrien-os-worktree-auth-source-");
 
       try {
         const sourceDbClient = createDb(sourceDb.connectionString);
         await sourceDbClient.insert(authUsers).values({
           id: "user-existing",
-          email: "existing@paperclip.ing",
+          email: "existing@TODO_DOMAIN",
           name: "Existing User",
           emailVerified: true,
           createdAt: new Date(),
@@ -609,13 +609,13 @@ describe("worktree helpers", () => {
         });
 
         const targetConfig = JSON.parse(
-          fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
-        ) as PaperclipConfig;
+          fs.readFileSync(path.join(worktreeRoot, ".valadrien-os", "config.json"), "utf8"),
+        ) as ValadrienOsConfig;
         const { default: EmbeddedPostgres } = await import("embedded-postgres");
         const targetPg = new EmbeddedPostgres({
           databaseDir: targetConfig.database.embeddedPostgresDataDir,
-          user: "paperclip",
-          password: "paperclip",
+          user: "valadrien-os",
+          password: "valadrien-os",
           port: targetConfig.database.embeddedPostgresPort,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -626,10 +626,10 @@ describe("worktree helpers", () => {
         await targetPg.start();
         try {
           const targetDb = createDb(
-            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+            `postgres://valadrien-os:valadrien-os@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/valadrien-os`,
           );
           const seededUsers = await targetDb.select().from(authUsers);
-          expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+          expect(seededUsers.some((row) => row.email === "existing@TODO_DOMAIN")).toBe(true);
         } finally {
           await targetPg.stop();
         }
@@ -643,9 +643,9 @@ describe("worktree helpers", () => {
   );
 
   it("avoids ports already claimed by sibling worktree instance configs", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-claimed-ports-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-claimed-ports-"));
     const repoRoot = path.join(tempRoot, "repo");
-    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const homeDir = path.join(tempRoot, ".valadrien-os-worktrees");
     const siblingInstanceRoot = path.join(homeDir, "instances", "existing-worktree");
     const originalCwd = process.cwd();
 
@@ -686,7 +686,7 @@ describe("worktree helpers", () => {
                 baseDir: path.join(siblingInstanceRoot, "storage"),
               },
               s3: {
-                bucket: "paperclip",
+                bucket: "valadrien-os",
                 region: "us-east-1",
                 prefix: "",
                 forcePathStyle: false,
@@ -712,7 +712,7 @@ describe("worktree helpers", () => {
         home: homeDir,
       });
 
-      const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".paperclip", "config.json"), "utf8"));
+      const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".valadrien-os", "config.json"), "utf8"));
       expect(config.server.port).toBeGreaterThan(3101);
       expect(config.database.embeddedPostgresPort).not.toBe(54330);
       expect(config.database.embeddedPostgresPort).not.toBe(config.server.port);
@@ -723,43 +723,43 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("defaults the seed source config to the current repo-local Paperclip config", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-config-"));
+  it("defaults the seed source config to the current repo-local ValadrienOs config", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-source-config-"));
     const repoRoot = path.join(tempRoot, "repo");
-    const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+    const localConfigPath = path.join(repoRoot, ".valadrien-os", "config.json");
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalValadrienOsConfig = process.env.VALADRIEN_OS_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
       fs.writeFileSync(localConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
-      delete process.env.PAPERCLIP_CONFIG;
+      delete process.env.VALADRIEN_OS_CONFIG;
       process.chdir(repoRoot);
 
       expect(fs.realpathSync(resolveSourceConfigPath({}))).toBe(fs.realpathSync(localConfigPath));
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
+      if (originalValadrienOsConfig === undefined) {
+        delete process.env.VALADRIEN_OS_CONFIG;
       } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+        process.env.VALADRIEN_OS_CONFIG = originalValadrienOsConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
   it("preserves the source config path across worktree:make cwd changes", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-override-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-source-override-"));
     const sourceConfigPath = path.join(tempRoot, "source", "config.json");
     const targetRoot = path.join(tempRoot, "target");
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalValadrienOsConfig = process.env.VALADRIEN_OS_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(targetRoot, { recursive: true });
       fs.writeFileSync(sourceConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
-      delete process.env.PAPERCLIP_CONFIG;
+      delete process.env.VALADRIEN_OS_CONFIG;
       process.chdir(targetRoot);
 
       expect(resolveSourceConfigPath({ sourceConfigPathOverride: sourceConfigPath })).toBe(
@@ -767,10 +767,10 @@ describe("worktree helpers", () => {
       );
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
+      if (originalValadrienOsConfig === undefined) {
+        delete process.env.VALADRIEN_OS_CONFIG;
       } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+        process.env.VALADRIEN_OS_CONFIG = originalValadrienOsConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -792,10 +792,10 @@ describe("worktree helpers", () => {
   });
 
   it("derives worktree reseed target paths from the adjacent env file", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-reseed-target-"));
     const worktreeRoot = path.join(tempRoot, "repo");
-    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
-    const envPath = path.join(worktreeRoot, ".paperclip", ".env");
+    const configPath = path.join(worktreeRoot, ".valadrien-os", "config.json");
+    const envPath = path.join(worktreeRoot, ".valadrien-os", ".env");
 
     try {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -803,8 +803,8 @@ describe("worktree helpers", () => {
       fs.writeFileSync(
         envPath,
         [
-          "PAPERCLIP_HOME=/tmp/paperclip-worktrees",
-          "PAPERCLIP_INSTANCE_ID=pap-1132-chat",
+          "VALADRIEN_OS_HOME=/tmp/valadrien-os-worktrees",
+          "VALADRIEN_OS_INSTANCE_ID=pap-1132-chat",
         ].join("\n"),
         "utf8",
       );
@@ -815,7 +815,7 @@ describe("worktree helpers", () => {
         }),
       ).toMatchObject({
         cwd: worktreeRoot,
-        homeDir: "/tmp/paperclip-worktrees",
+        homeDir: "/tmp/valadrien-os-worktrees",
         instanceId: "pap-1132-chat",
       });
     } finally {
@@ -824,30 +824,30 @@ describe("worktree helpers", () => {
   });
 
   it("rejects reseed targets without worktree env metadata", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-target-missing-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-reseed-target-missing-"));
     const worktreeRoot = path.join(tempRoot, "repo");
-    const configPath = path.join(worktreeRoot, ".paperclip", "config.json");
+    const configPath = path.join(worktreeRoot, ".valadrien-os", "config.json");
 
     try {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify(buildSourceConfig()), "utf8");
-      fs.writeFileSync(path.join(worktreeRoot, ".paperclip", ".env"), "", "utf8");
+      fs.writeFileSync(path.join(worktreeRoot, ".valadrien-os", ".env"), "", "utf8");
 
       expect(() =>
         resolveWorktreeReseedTargetPaths({
           configPath,
           rootPath: worktreeRoot,
-        })).toThrow("does not look like a worktree-local Paperclip instance");
+        })).toThrow("does not look like a worktree-local ValadrienOs instance");
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
   it("reseed preserves the current worktree ports, instance id, and branding", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-reseed-"));
     const repoRoot = path.join(tempRoot, "repo");
     const sourceRoot = path.join(tempRoot, "source");
-    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const homeDir = path.join(tempRoot, ".valadrien-os-worktrees");
     const currentInstanceId = "existing-worktree";
     const currentPaths = resolveWorktreeLocalPaths({
       cwd: repoRoot,
@@ -856,11 +856,11 @@ describe("worktree helpers", () => {
     });
     const sourcePaths = resolveWorktreeLocalPaths({
       cwd: sourceRoot,
-      homeDir: path.join(tempRoot, ".paperclip-source"),
+      homeDir: path.join(tempRoot, ".valadrien-os-source"),
       instanceId: "default",
     });
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalValadrienOsConfig = process.env.VALADRIEN_OS_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -887,15 +887,15 @@ describe("worktree helpers", () => {
       fs.writeFileSync(
         currentPaths.envPath,
         [
-          `PAPERCLIP_HOME=${homeDir}`,
-          `PAPERCLIP_INSTANCE_ID=${currentInstanceId}`,
-          "PAPERCLIP_WORKTREE_NAME=existing-name",
-          "PAPERCLIP_WORKTREE_COLOR=\"#112233\"",
+          `VALADRIEN_OS_HOME=${homeDir}`,
+          `VALADRIEN_OS_INSTANCE_ID=${currentInstanceId}`,
+          "VALADRIEN_OS_WORKTREE_NAME=existing-name",
+          "VALADRIEN_OS_WORKTREE_COLOR=\"#112233\"",
         ].join("\n"),
         "utf8",
       );
 
-      delete process.env.PAPERCLIP_CONFIG;
+      delete process.env.VALADRIEN_OS_CONFIG;
       process.chdir(repoRoot);
 
       await worktreeReseedCommand({
@@ -909,25 +909,25 @@ describe("worktree helpers", () => {
       expect(rewrittenConfig.server.port).toBe(3114);
       expect(rewrittenConfig.database.embeddedPostgresPort).toBe(54341);
       expect(rewrittenConfig.database.embeddedPostgresDataDir).toBe(currentPaths.embeddedPostgresDataDir);
-      expect(rewrittenEnv).toContain(`PAPERCLIP_INSTANCE_ID=${currentInstanceId}`);
-      expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_NAME=existing-name");
-      expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_COLOR=\"#112233\"");
+      expect(rewrittenEnv).toContain(`VALADRIEN_OS_INSTANCE_ID=${currentInstanceId}`);
+      expect(rewrittenEnv).toContain("VALADRIEN_OS_WORKTREE_NAME=existing-name");
+      expect(rewrittenEnv).toContain("VALADRIEN_OS_WORKTREE_COLOR=\"#112233\"");
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
+      if (originalValadrienOsConfig === undefined) {
+        delete process.env.VALADRIEN_OS_CONFIG;
       } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+        process.env.VALADRIEN_OS_CONFIG = originalValadrienOsConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   }, 30_000);
 
   it("restores the current worktree config and instance data if reseed fails", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-rollback-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-reseed-rollback-"));
     const repoRoot = path.join(tempRoot, "repo");
     const sourceRoot = path.join(tempRoot, "source");
-    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const homeDir = path.join(tempRoot, ".valadrien-os-worktrees");
     const currentInstanceId = "rollback-worktree";
     const currentPaths = resolveWorktreeLocalPaths({
       cwd: repoRoot,
@@ -936,11 +936,11 @@ describe("worktree helpers", () => {
     });
     const sourcePaths = resolveWorktreeLocalPaths({
       cwd: sourceRoot,
-      homeDir: path.join(tempRoot, ".paperclip-source"),
+      homeDir: path.join(tempRoot, ".valadrien-os-source"),
       instanceId: "default",
     });
     const originalCwd = process.cwd();
-    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalValadrienOsConfig = process.env.VALADRIEN_OS_CONFIG;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -969,15 +969,15 @@ describe("worktree helpers", () => {
             keyFilePath: sourcePaths.secretsKeyFilePath,
           },
         },
-      } as PaperclipConfig;
+      } as ValadrienOsConfig;
 
       fs.writeFileSync(currentPaths.configPath, JSON.stringify(currentConfig, null, 2), "utf8");
-      fs.writeFileSync(currentPaths.envPath, `PAPERCLIP_HOME=${homeDir}\nPAPERCLIP_INSTANCE_ID=${currentInstanceId}\n`, "utf8");
+      fs.writeFileSync(currentPaths.envPath, `VALADRIEN_OS_HOME=${homeDir}\nVALADRIEN_OS_INSTANCE_ID=${currentInstanceId}\n`, "utf8");
       fs.writeFileSync(path.join(currentPaths.instanceRoot, "marker.txt"), "keep me", "utf8");
       fs.writeFileSync(sourcePaths.configPath, JSON.stringify(sourceConfig, null, 2), "utf8");
       fs.writeFileSync(sourcePaths.secretsKeyFilePath, "source-secret", "utf8");
 
-      delete process.env.PAPERCLIP_CONFIG;
+      delete process.env.VALADRIEN_OS_CONFIG;
       process.chdir(repoRoot);
 
       await expect(worktreeReseedCommand({
@@ -991,14 +991,14 @@ describe("worktree helpers", () => {
 
       expect(restoredConfig.server.port).toBe(3114);
       expect(restoredConfig.database.embeddedPostgresPort).toBe(54341);
-      expect(restoredEnv).toContain(`PAPERCLIP_INSTANCE_ID=${currentInstanceId}`);
+      expect(restoredEnv).toContain(`VALADRIEN_OS_INSTANCE_ID=${currentInstanceId}`);
       expect(restoredMarker).toBe("keep me");
     } finally {
       process.chdir(originalCwd);
-      if (originalPaperclipConfig === undefined) {
-        delete process.env.PAPERCLIP_CONFIG;
+      if (originalValadrienOsConfig === undefined) {
+        delete process.env.VALADRIEN_OS_CONFIG;
       } else {
-        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+        process.env.VALADRIEN_OS_CONFIG = originalValadrienOsConfig;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -1007,33 +1007,33 @@ describe("worktree helpers", () => {
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip",
+        sourceRepoRoot: "/Users/example/valadrien-os",
+        targetRepoRoot: "/Users/example/valadrien-os-pr-432",
+        workspaceCwd: "/Users/example/valadrien-os",
       }),
-    ).toBe("/Users/example/paperclip-pr-432");
+    ).toBe("/Users/example/valadrien-os-pr-432");
 
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
-        workspaceCwd: "/Users/example/paperclip/packages/db",
+        sourceRepoRoot: "/Users/example/valadrien-os",
+        targetRepoRoot: "/Users/example/valadrien-os-pr-432",
+        workspaceCwd: "/Users/example/valadrien-os/packages/db",
       }),
-    ).toBe("/Users/example/paperclip-pr-432/packages/db");
+    ).toBe("/Users/example/valadrien-os-pr-432/packages/db");
   });
 
   it("does not rebind paths outside the source repo root", () => {
     expect(
       rebindWorkspaceCwd({
-        sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        sourceRepoRoot: "/Users/example/valadrien-os",
+        targetRepoRoot: "/Users/example/valadrien-os-pr-432",
         workspaceCwd: "/Users/example/other-project",
       }),
     ).toBeNull();
   });
 
   it("copies shared git hooks into a linked worktree git dir", () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-hooks-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-hooks-"));
     const repoRoot = path.join(tempRoot, "repo");
     const worktreePath = path.join(tempRoot, "repo-feature");
 
@@ -1081,10 +1081,10 @@ describe("worktree helpers", () => {
   }, 15_000);
 
   it("creates and initializes a worktree from the top-level worktree:make command", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-make-"));
     const repoRoot = path.join(tempRoot, "repo");
     const fakeHome = path.join(tempRoot, "home");
-    const worktreePath = path.join(fakeHome, "paperclip-make-test");
+    const worktreePath = path.join(fakeHome, "valadrien-os-make-test");
     const originalCwd = process.cwd();
     const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
 
@@ -1100,14 +1100,14 @@ describe("worktree helpers", () => {
 
       process.chdir(repoRoot);
 
-      await worktreeMakeCommand("paperclip-make-test", {
+      await worktreeMakeCommand("valadrien-os-make-test", {
         seed: false,
-        home: path.join(tempRoot, ".paperclip-worktrees"),
+        home: path.join(tempRoot, ".valadrien-os-worktrees"),
       });
 
       expect(fs.existsSync(path.join(worktreePath, ".git"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".valadrien-os", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".valadrien-os", ".env"))).toBe(true);
     } finally {
       process.chdir(originalCwd);
       homedirSpy.mockRestore();
@@ -1116,7 +1116,7 @@ describe("worktree helpers", () => {
   }, 20_000);
 
   it("no-ops on the primary checkout unless --branch is provided", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-repair-primary-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-repair-primary-"));
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
 
@@ -1132,20 +1132,20 @@ describe("worktree helpers", () => {
       process.chdir(repoRoot);
       await worktreeRepairCommand({});
 
-      expect(fs.existsSync(path.join(repoRoot, ".paperclip", "config.json"))).toBe(false);
-      expect(fs.existsSync(path.join(repoRoot, ".paperclip", "worktrees"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".valadrien-os", "config.json"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".valadrien-os", "worktrees"))).toBe(false);
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it("repairs the current linked worktree when Paperclip metadata is missing", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-repair-current-"));
+  it("repairs the current linked worktree when ValadrienOs metadata is missing", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-repair-current-"));
     const repoRoot = path.join(tempRoot, "repo");
-    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "repair-me");
+    const worktreePath = path.join(repoRoot, ".valadrien-os", "worktrees", "repair-me");
     const sourceConfigPath = path.join(tempRoot, "source-config.json");
-    const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+    const worktreeHome = path.join(tempRoot, ".valadrien-os-worktrees");
     const worktreePaths = resolveWorktreeLocalPaths({
       cwd: worktreePath,
       homeDir: worktreeHome,
@@ -1178,8 +1178,8 @@ describe("worktree helpers", () => {
         noSeed: true,
       });
 
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(worktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".valadrien-os", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(worktreePath, ".valadrien-os", ".env"))).toBe(true);
       expect(fs.existsSync(path.join(worktreePaths.instanceRoot, "marker.txt"))).toBe(false);
     } finally {
       process.chdir(originalCwd);
@@ -1188,12 +1188,12 @@ describe("worktree helpers", () => {
   }, 20_000);
 
   it("creates and repairs a missing branch worktree when --branch is provided", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-repair-branch-"));
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-worktree-repair-branch-"));
     const repoRoot = path.join(tempRoot, "repo");
     const sourceConfigPath = path.join(tempRoot, "source-config.json");
-    const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+    const worktreeHome = path.join(tempRoot, ".valadrien-os-worktrees");
     const originalCwd = process.cwd();
-    const expectedWorktreePath = path.join(repoRoot, ".paperclip", "worktrees", "feature-repair-me");
+    const expectedWorktreePath = path.join(repoRoot, ".valadrien-os", "worktrees", "feature-repair-me");
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
@@ -1214,8 +1214,8 @@ describe("worktree helpers", () => {
       });
 
       expect(fs.existsSync(path.join(expectedWorktreePath, ".git"))).toBe(true);
-      expect(fs.existsSync(path.join(expectedWorktreePath, ".paperclip", "config.json"))).toBe(true);
-      expect(fs.existsSync(path.join(expectedWorktreePath, ".paperclip", ".env"))).toBe(true);
+      expect(fs.existsSync(path.join(expectedWorktreePath, ".valadrien-os", "config.json"))).toBe(true);
+      expect(fs.existsSync(path.join(expectedWorktreePath, ".valadrien-os", ".env"))).toBe(true);
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1225,7 +1225,7 @@ describe("worktree helpers", () => {
 
 describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
   it("pauses only routines with enabled schedule triggers", async () => {
-    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-routines-");
+    const tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-worktree-routines-");
     const db = createDb(tempDb.connectionString);
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -1239,7 +1239,7 @@ describeEmbeddedPostgres("pauseSeededScheduledRoutines", () => {
     try {
       await db.insert(companies).values({
         id: companyId,
-        name: "Paperclip",
+        name: "ValadrienOs",
         issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
         requireBoardApprovalForNewAgents: false,
       });

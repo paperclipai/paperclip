@@ -121,7 +121,7 @@ describe("execution workspace policy helpers", () => {
         environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
         workspaceStrategy: {
           type: "git_worktree",
-          worktreeParentDir: ".paperclip/worktrees",
+          worktreeParentDir: ".valadrien-os/worktrees",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
           teardownCommand: "bash ./scripts/teardown-worktree.sh",
         },
@@ -132,7 +132,7 @@ describe("execution workspace policy helpers", () => {
       environmentId: "8f8ab8f2-d95f-4315-9f08-d683a1e0f73b",
       workspaceStrategy: {
         type: "git_worktree",
-        worktreeParentDir: ".paperclip/worktrees",
+        worktreeParentDir: ".valadrien-os/worktrees",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
       },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@valadrien-os/shared";
 import { buildIssueTree, countDescendants, filterIssueDescendants } from "./issue-tree";
 
 function makeIssue(id: string, parentId: string | null = null): Issue {

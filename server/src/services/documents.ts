@@ -1,7 +1,7 @@
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import type { Db } from "@valadrien-os/db";
+import { documentRevisions, documents, issueDocuments, issues } from "@valadrien-os/db";
+import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@valadrien-os/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 function normalizeDocumentKey(key: string) {

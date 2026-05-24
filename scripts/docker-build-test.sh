@@ -21,7 +21,7 @@ if ! "$RUNTIME" info >/dev/null 2>&1; then
   exit 0
 fi
 
-IMAGE_TAG="paperclip-build-test:$$"
+IMAGE_TAG="valadrien-os-build-test:$$"
 trap '"$RUNTIME" rmi "$IMAGE_TAG" >/dev/null 2>&1 || true' EXIT
 
 echo "==> Testing Docker build with $RUNTIME"

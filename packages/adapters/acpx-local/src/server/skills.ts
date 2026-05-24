@@ -4,11 +4,11 @@ import type {
   AdapterSkillContext,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+} from "@valadrien-os/adapter-utils";
 import {
-  readPaperclipRuntimeSkillEntries,
-  resolvePaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+  readValadrienOsRuntimeSkillEntries,
+  resolveValadrienOsDesiredSkillNames,
+} from "@valadrien-os/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,20 +29,20 @@ function configuredDetail(agent: AcpxSkillAgent): string {
 }
 
 function unsupportedDetail(): string {
-  return "Desired state is stored in Paperclip only; custom ACP commands need an explicit skill integration contract before runtime sync is available.";
+  return "Desired state is stored in ValadrienOs only; custom ACP commands need an explicit skill integration contract before runtime sync is available.";
 }
 
 async function buildAcpxSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const acpxAgent = normalizeAcpxSkillAgent(config);
-  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const availableEntries = await readValadrienOsRuntimeSkillEntries(config, __moduleDir);
   const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
-  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const desiredSkills = resolveValadrienOsDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
   const supported = acpxAgent !== "custom";
   const warnings: string[] = supported
     ? []
     : [
-        "Custom ACP commands do not expose a Paperclip skill integration contract yet; selected skills are tracked only.",
+        "Custom ACP commands do not expose a ValadrienOs skill integration contract yet; selected skills are tracked only.",
       ];
 
   const entries: AdapterSkillEntry[] = availableEntries.map((entry) => {
@@ -53,8 +53,8 @@ async function buildAcpxSkillSnapshot(config: Record<string, unknown>): Promise<
       desired,
       managed: true,
       state: desired ? "configured" : "available",
-      origin: entry.required ? "paperclip_required" : "company_managed",
-      originLabel: entry.required ? "Required by Paperclip" : "Managed by Paperclip",
+      origin: entry.required ? "valadrien_os_required" : "company_managed",
+      originLabel: entry.required ? "Required by ValadrienOs" : "Managed by ValadrienOs",
       readOnly: false,
       sourcePath: entry.source,
       targetPath: null,
@@ -66,7 +66,7 @@ async function buildAcpxSkillSnapshot(config: Record<string, unknown>): Promise<
 
   for (const desiredSkill of desiredSkills) {
     if (availableByKey.has(desiredSkill)) continue;
-    warnings.push(`Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`);
+    warnings.push(`Desired skill "${desiredSkill}" is not available from the ValadrienOs skills directory.`);
     entries.push({
       key: desiredSkill,
       runtimeName: null,
@@ -78,7 +78,7 @@ async function buildAcpxSkillSnapshot(config: Record<string, unknown>): Promise<
       readOnly: false,
       sourcePath: null,
       targetPath: null,
-      detail: "Paperclip cannot find this skill in the local runtime skills directory.",
+      detail: "ValadrienOs cannot find this skill in the local runtime skills directory.",
     });
   }
 

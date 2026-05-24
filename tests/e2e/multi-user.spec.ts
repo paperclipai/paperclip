@@ -12,7 +12,7 @@ import { test, expect, type Page, type APIRequestContext } from "@playwright/tes
  *   6. Last-owner protection
  */
 
-const BASE = process.env.PAPERCLIP_E2E_BASE_URL ?? "http://127.0.0.1:3104";
+const BASE = process.env.VALADRIEN_OS_E2E_BASE_URL ?? "http://127.0.0.1:3104";
 
 // ---------------------------------------------------------------------------
 // Helpers

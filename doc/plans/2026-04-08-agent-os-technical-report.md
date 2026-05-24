@@ -1,24 +1,24 @@
-# Agent OS Technical Report for Paperclip
+# Agent OS Technical Report for Valadrien OS
 
 Date: 2026-04-08
 Analyzed upstream: `rivet-dev/agent-os` at commit `0063cdccd1dcb1c8e211670cd05482d70d26a5c4` (`0063cdc`), dated 2026-04-06
 
 ## Executive summary
 
-`agent-os` is not a competitor to Paperclip's core product. It is an execution substrate: an embedded, VM-like runtime for agents, tools, filesystems, and session orchestration. Paperclip is a control plane: company scoping, task hierarchy, approvals, budgets, activity logs, workspaces, and governance.
+`agent-os` is not a competitor to Valadrien OS's core product. It is an execution substrate: an embedded, VM-like runtime for agents, tools, filesystems, and session orchestration. Valadrien OS is a control plane: company scoping, task hierarchy, approvals, budgets, activity logs, workspaces, and governance.
 
-The strongest takeaway is not "copy agent-os wholesale." The strongest takeaway is that Paperclip could selectively use its runtime ideas to improve local agent execution safety, reproducibility, and portability while keeping all company/task/governance logic in Paperclip.
+The strongest takeaway is not "copy agent-os wholesale." The strongest takeaway is that Valadrien OS could selectively use its runtime ideas to improve local agent execution safety, reproducibility, and portability while keeping all company/task/governance logic in Valadrien OS.
 
 My recommendation is:
 
-1. Do not merge agent-os concepts into the Paperclip core product model.
+1. Do not merge agent-os concepts into the Valadrien OS core product model.
 2. Do evaluate an optional `agentos_local` execution adapter or internal runtime experiment.
 3. Borrow a few design patterns aggressively:
    - layered/snapshotted execution filesystems
    - explicit capability-based runtime permissions
    - a better host-tools bridge for controlled tool execution
    - a normalized session capability model for agent adapters
-4. Do not import its workflow/cron/queue abstractions into Paperclip core until they are reconciled with Paperclip's issue/comment/governance model.
+4. Do not import its workflow/cron/queue abstractions into Valadrien OS core until they are reconciled with Valadrien OS's issue/comment/governance model.
 
 ## What agent-os actually is
 
@@ -63,7 +63,7 @@ The kernel is implemented in Rust under `crates/kernel/src/`. It models:
 - permissioned filesystem access
 - network permission checks
 
-That gives `agent-os` a much stronger isolation story than Paperclip's current "launch a host CLI in a workspace" local adapter approach.
+That gives `agent-os` a much stronger isolation story than Valadrien OS's current "launch a host CLI in a workspace" local adapter approach.
 
 ### 3. Layered filesystem and snapshots
 
@@ -101,11 +101,11 @@ The session model is more uniform than most agent wrappers. It includes:
 - sequenced session events
 - JSON-RPC transport through ACP adapters
 
-This is directly relevant to Paperclip because our adapter layer still normalizes each CLI agent in a fairly bespoke way.
+This is directly relevant to Valadrien OS because our adapter layer still normalizes each CLI agent in a fairly bespoke way.
 
-## Paperclip anchor points
+## Valadrien OS anchor points
 
-The most relevant current Paperclip surfaces for any future `agent-os` integration are:
+The most relevant current Valadrien OS surfaces for any future `agent-os` integration are:
 
 - `packages/adapter-utils/src/types.ts`
   - shared adapter contract, session metadata, runtime service reporting, environment tests, and optional `detectModel()`
@@ -118,11 +118,11 @@ The most relevant current Paperclip surfaces for any future `agent-os` integrati
 - local adapters such as `packages/adapters/codex-local/src/server/execute.ts` and peers
   - current host-CLI execution model that an `agent-os` runtime experiment would complement or replace for selected agents
 
-## What Paperclip can learn from it
+## What Valadrien OS can learn from it
 
 ### 1. A safer local execution substrate
 
-Paperclip's local adapters currently run host CLIs in managed workspaces and rely on adapter-specific behavior plus process-level controls. That is pragmatic, but weakly isolated.
+Valadrien OS's local adapters currently run host CLIs in managed workspaces and rely on adapter-specific behavior plus process-level controls. That is pragmatic, but weakly isolated.
 
 `agent-os` shows a path toward:
 
@@ -131,16 +131,16 @@ Paperclip's local adapters currently run host CLIs in managed workspaces and rel
 - reducing accidental host leakage
 - making adapter behavior more portable across machines
 
-Best use in Paperclip:
+Best use in Valadrien OS:
 
 - as an optional runtime beneath local adapters
 - or as a new adapter family for agents that can run inside ACP-compatible `agent-os` sessions
 
-This fits Paperclip because it improves execution safety without changing the control-plane model.
+This fits Valadrien OS because it improves execution safety without changing the control-plane model.
 
 ### 2. Snapshotted execution roots instead of only mutable workspaces
 
-Paperclip already has strong execution-workspace concepts, but they are repo/worktree-centric. `agent-os` adds a stronger "start from known lower layers, write into a disposable upper layer" model.
+Valadrien OS already has strong execution-workspace concepts, but they are repo/worktree-centric. `agent-os` adds a stronger "start from known lower layers, write into a disposable upper layer" model.
 
 That could improve:
 
@@ -154,7 +154,7 @@ This is especially interesting for tasks that do not need a full git worktree.
 
 ### 3. A capability vocabulary for runtime governance
 
-Paperclip has governance at the company/task level:
+Valadrien OS has governance at the company/task level:
 
 - approvals
 - budgets
@@ -162,7 +162,7 @@ Paperclip has governance at the company/task level:
 - actor permissions
 - company scoping
 
-It has less structure at the runtime capability level. `agent-os` offers a clear vocabulary that Paperclip could adopt even without adopting the runtime itself:
+It has less structure at the runtime capability level. `agent-os` offers a clear vocabulary that Valadrien OS could adopt even without adopting the runtime itself:
 
 - `fs.read`, `fs.write`, `fs.mount_sensitive`
 - `network.fetch`, `network.http`, `network.listen`, `network.dns`
@@ -178,20 +178,20 @@ That vocabulary would improve:
 
 ### 4. Typed host tools instead of shelling out for everything
 
-Paperclip's plugin system and adapters already have the beginnings of a controlled extension surface. `agent-os` reinforces the value of exposing capabilities as typed tools rather than raw shell access.
+Valadrien OS's plugin system and adapters already have the beginnings of a controlled extension surface. `agent-os` reinforces the value of exposing capabilities as typed tools rather than raw shell access.
 
-Concrete Paperclip uses:
+Concrete Valadrien OS uses:
 
 - board-approved toolkits for sensitive operations
 - company-scoped service tools
 - plugin-defined tools with explicit schemas
 - safer execution for common actions like git metadata inspection, preview lookups, deployment status checks, or document generation
 
-This aligns well with Paperclip's governance story.
+This aligns well with Valadrien OS's governance story.
 
 ### 5. Better adapter normalization around sessions and capabilities
 
-Paperclip's adapter contract already supports execution results, session params, environment tests, skill syncing, quota windows, and optional `detectModel()`. But much of the per-agent behavior is still adapter-specific.
+Valadrien OS's adapter contract already supports execution results, session params, environment tests, skill syncing, quota windows, and optional `detectModel()`. But much of the per-agent behavior is still adapter-specific.
 
 `agent-os` suggests a cleaner normalization target:
 
@@ -200,13 +200,13 @@ Paperclip's adapter contract already supports execution results, session params,
 - explicit mode/config surfaces
 - explicit permission request semantics
 
-Paperclip does not need ACP everywhere, but it would benefit from a more formal internal session capability model inspired by this.
+Valadrien OS does not need ACP everywhere, but it would benefit from a more formal internal session capability model inspired by this.
 
 ### 6. On-demand heavy sandbox escalation
 
 One of the best architectural choices in `agent-os` is that it does not pretend every workload fits the lightweight runtime. It has a sandbox extension for workloads that need a fuller environment.
 
-Paperclip can adopt that philosophy directly:
+Valadrien OS can adopt that philosophy directly:
 
 - lightweight execution by default
 - escalate to full worktree / container / remote sandbox only when needed
@@ -214,11 +214,11 @@ Paperclip can adopt that philosophy directly:
 
 That is better than forcing all tasks into the heaviest environment up front.
 
-## What does not fit Paperclip well
+## What does not fit Valadrien OS well
 
 ### 1. Its built-in orchestration primitives overlap the wrong layer
 
-`agent-os` includes cron/session/workflow style primitives inside the runtime package. Paperclip already has higher-level orchestration concepts:
+`agent-os` includes cron/session/workflow style primitives inside the runtime package. Valadrien OS already has higher-level orchestration concepts:
 
 - issues/comments
 - heartbeat runs
@@ -227,9 +227,9 @@ That is better than forcing all tasks into the heaviest environment up front.
 - execution workspaces
 - budget enforcement
 
-If Paperclip copied `agent-os` cron/workflow/queue ideas directly into core, we would likely duplicate orchestration across two layers. That would blur ownership and make debugging harder.
+If Valadrien OS copied `agent-os` cron/workflow/queue ideas directly into core, we would likely duplicate orchestration across two layers. That would blur ownership and make debugging harder.
 
-Paperclip should keep orchestration authoritative at the control-plane layer.
+Valadrien OS should keep orchestration authoritative at the control-plane layer.
 
 ### 2. It is not company-scoped or governance-native
 
@@ -242,7 +242,7 @@ Paperclip should keep orchestration authoritative at the control-plane layer.
 - approval routing
 - budget hard-stop behavior
 
-Those are Paperclip's differentiators. They should not be displaced by runtime abstractions.
+Those are Valadrien OS's differentiators. They should not be displaced by runtime abstractions.
 
 ### 3. It introduces meaningful implementation complexity
 
@@ -258,7 +258,7 @@ This is justified only if we want stronger local isolation or portability. It is
 
 ### 4. Its security model is not a drop-in governance solution
 
-The permission model is good, but it is low-level. Paperclip would still need to answer:
+The permission model is good, but it is low-level. Valadrien OS would still need to answer:
 
 - who can authorize a capability
 - how approval decisions are logged
@@ -273,11 +273,11 @@ The repo is explicit that some runtimes are planned, partial, or still being ada
 
 - good ideas for ACP-native or compatible agents
 - less certainty for every CLI agent we support today
-- real integration work for Codex/Cursor/Gemini-style Paperclip adapters
+- real integration work for Codex/Cursor/Gemini-style Valadrien OS adapters
 
 So the main near-term value is not universal replacement. It is selective use where compatibility is strong.
 
-## Concrete recommendations for Paperclip
+## Concrete recommendations for Valadrien OS
 
 ### Recommendation A: prototype an optional `agentos_local` adapter
 
@@ -286,7 +286,7 @@ This is the highest-value experiment.
 Goal:
 
 - run one supported agent type inside `agent-os`
-- keep Paperclip heartbeat/task/workspace/budget logic unchanged
+- keep Valadrien OS heartbeat/task/workspace/budget logic unchanged
 - evaluate startup time, isolation, transcript quality, and operational complexity
 
 Good first target:
@@ -295,19 +295,19 @@ Good first target:
 
 Why not start with Codex:
 
-- Paperclip's Codex adapter is already important and carries repo-specific behavior
+- Valadrien OS's Codex adapter is already important and carries repo-specific behavior
 - `agent-os`'s Codex story is present in the registry/docs, but the safest path is to validate the runtime on a less central adapter first
 
 Success criteria:
 
 - heartbeat can invoke the adapter reliably
 - session resume works across heartbeats
-- Paperclip still records logs, summaries, cost metadata, and issue comments normally
+- Valadrien OS still records logs, summaries, cost metadata, and issue comments normally
 - runtime permissions can be configured without breaking common tasks
 
 ### Recommendation B: adopt capability vocabulary into adapter configs
 
-Even without using `agent-os`, Paperclip should consider standardizing adapter/runtime permissions around a vocabulary like:
+Even without using `agent-os`, Valadrien OS should consider standardizing adapter/runtime permissions around a vocabulary like:
 
 - filesystem
 - network
@@ -323,7 +323,7 @@ This would improve:
 
 ### Recommendation C: explore snapshot-backed execution workspaces
 
-Paperclip should evaluate whether some execution workspaces can be backed by:
+Valadrien OS should evaluate whether some execution workspaces can be backed by:
 
 - a reusable lower snapshot
 - a disposable upper layer
@@ -340,7 +340,7 @@ It is less urgent for full repo editing flows that already benefit from git work
 
 ### Recommendation D: strengthen typed tool surfaces
 
-Paperclip plugins and adapters should continue moving toward explicit typed tools over ad hoc shell access. `agent-os` confirms that this is the right direction.
+Valadrien OS plugins and adapters should continue moving toward explicit typed tools over ad hoc shell access. `agent-os` confirms that this is the right direction.
 
 This is a good fit for:
 
@@ -348,9 +348,9 @@ This is a good fit for:
 - workspace runtime services
 - governed operations that need approval or auditability
 
-### Recommendation E: do not import runtime-level workflows into Paperclip core
+### Recommendation E: do not import runtime-level workflows into Valadrien OS core
 
-Paperclip should not copy `agent-os` cron/workflow/queue concepts into core orchestration yet.
+Valadrien OS should not copy `agent-os` cron/workflow/queue concepts into core orchestration yet.
 
 If we want them later, they must map cleanly onto:
 
@@ -380,15 +380,15 @@ Without that mapping, they would create a second orchestration system inside the
 
 ### Poor fits right now
 
-- moving Paperclip orchestration into agent-os workflows
+- moving Valadrien OS orchestration into agent-os workflows
 - replacing company/task/governance models with runtime constructs
 - making Rust sidecars a mandatory dependency for all local execution
 
 ## Bottom line
 
-`agent-os` is useful to Paperclip as an execution technology reference, not as a product model.
+`agent-os` is useful to Valadrien OS as an execution technology reference, not as a product model.
 
-Paperclip should treat it the same way it treats sandboxes or agent CLIs:
+Valadrien OS should treat it the same way it treats sandboxes or agent CLIs:
 
 - execution substrate underneath the control plane
 - optional where the tradeoff is worth it

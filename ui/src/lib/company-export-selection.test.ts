@@ -6,7 +6,7 @@ describe("buildInitialExportCheckedFiles", () => {
     const checked = buildInitialExportCheckedFiles(
       [
         "README.md",
-        ".paperclip.yaml",
+        ".valadrien-os.yaml",
         "tasks/one-off/TASK.md",
         "tasks/recurring/TASK.md",
         "tasks/recurring/notes.md",
@@ -19,7 +19,7 @@ describe("buildInitialExportCheckedFiles", () => {
     );
 
     expect(Array.from(checked).sort()).toEqual([
-      ".paperclip.yaml",
+      ".valadrien-os.yaml",
       "README.md",
       "tasks/recurring/TASK.md",
       "tasks/recurring/notes.md",

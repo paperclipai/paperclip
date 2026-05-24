@@ -3,11 +3,11 @@ import type { DatabaseConfig } from "../config/schema.js";
 import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
-  resolvePaperclipInstanceId,
+  resolveValadrienOsInstanceId,
 } from "../config/home.js";
 
 export async function promptDatabase(current?: DatabaseConfig): Promise<DatabaseConfig> {
-  const instanceId = resolvePaperclipInstanceId();
+  const instanceId = resolveValadrienOsInstanceId();
   const defaultEmbeddedDir = resolveDefaultEmbeddedPostgresDir(instanceId);
   const defaultBackupDir = resolveDefaultBackupDir(instanceId);
   const base: DatabaseConfig = current ?? {
@@ -44,7 +44,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     const value = await p.text({
       message: "PostgreSQL connection string",
       defaultValue: base.connectionString ?? "",
-      placeholder: "postgres://user:pass@localhost:5432/paperclip",
+      placeholder: "postgres://user:pass@localhost:5432/valadrien-os",
       validate: (val) => {
         if (!val) return "Connection string is required for PostgreSQL mode";
         if (!val.startsWith("postgres")) return "Must be a postgres:// or postgresql:// URL";

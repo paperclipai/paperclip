@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@valadrien-os/adapter-utils";
 import { applyTurnBoundary, createTurnBoundaryState, type TurnBoundaryState } from "../shared/turn-boundary.js";
 
 function safeJsonParse(text: string): unknown {

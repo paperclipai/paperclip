@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Kill all local Paperclip dev server processes (across all worktrees).
+# Kill all local Valadrien OS dev server processes (across all worktrees).
 #
 # Usage:
-#   scripts/kill-dev.sh        # kill all paperclip dev processes
+#   scripts/kill-dev.sh        # kill all valadrien-os dev processes
 #   scripts/kill-dev.sh --dry  # preview what would be killed
 #
 
@@ -87,7 +87,7 @@ while IFS= read -r line; do
   pid=$(echo "$line" | awk '{print $2}')
   node_pids+=("$pid")
   node_lines+=("$line")
-done < <(ps aux | grep -E '/paperclip(-[^/]+)?/' | grep node | grep -v grep || true)
+done < <(ps aux | grep -E '/valadrien-os(-[^/]+)?/' | grep node | grep -v grep || true)
 
 # --- Agent browser processes (headless Chrome from ~/.agent-browser) ---
 while IFS= read -r line; do
@@ -99,16 +99,16 @@ done < <(ps aux | grep -E 'agent-browser/browsers/chrome-.*/Google Chrome for Te
 
 candidate_pidfiles=()
 candidate_pidfiles+=(
-  "$HOME"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/instances/*/db/postmaster.pid
-  "$REPO_ROOT"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+  "$HOME"/.valadrien-os/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.valadrien-os/instances/*/db/postmaster.pid
+  "$REPO_ROOT"/.valadrien-os/runtime-services/instances/*/db/postmaster.pid
 )
 
-for sibling_root in "$REPO_PARENT"/paperclip*; do
+for sibling_root in "$REPO_PARENT"/valadrien-os*; do
   [[ -d "$sibling_root" ]] || continue
   candidate_pidfiles+=(
-    "$sibling_root"/.paperclip/instances/*/db/postmaster.pid
-    "$sibling_root"/.paperclip/runtime-services/instances/*/db/postmaster.pid
+    "$sibling_root"/.valadrien-os/instances/*/db/postmaster.pid
+    "$sibling_root"/.valadrien-os/runtime-services/instances/*/db/postmaster.pid
   )
 done
 
@@ -118,12 +118,12 @@ for pidfile in "${candidate_pidfiles[@]:-}"; do
 done
 
 if [[ ${#node_pids[@]} -eq 0 && ${#pg_pids[@]} -eq 0 && ${#browser_pids[@]} -eq 0 ]]; then
-  echo "No Paperclip dev processes found."
+  echo "No Valadrien OS dev processes found."
   exit 0
 fi
 
 if [[ ${#node_pids[@]} -gt 0 ]]; then
-  echo "Found ${#node_pids[@]} Paperclip dev node process(es):"
+  echo "Found ${#node_pids[@]} Valadrien OS dev node process(es):"
   echo ""
 
   for i in "${!node_pids[@]:-}"; do
@@ -176,7 +176,7 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 if [[ ${#node_pids[@]} -gt 0 ]]; then
-  echo "Sending SIGTERM to Paperclip node processes..."
+  echo "Sending SIGTERM to Valadrien OS node processes..."
   for pid in "${node_pids[@]}"; do
     kill -TERM "$pid" 2>/dev/null && echo "  signaled $pid" || echo "  $pid already gone"
   done

@@ -61,9 +61,9 @@ For normal issue implementation plans, use the issue-thread confirmation surface
 
 When an approval you requested is resolved, you may be woken with:
 
-- `PAPERCLIP_APPROVAL_ID` — the resolved approval
-- `PAPERCLIP_APPROVAL_STATUS` — `approved` or `rejected`
-- `PAPERCLIP_LINKED_ISSUE_IDS` — comma-separated list of linked issue IDs
+- `VALADRIEN_OS_APPROVAL_ID` — the resolved approval
+- `VALADRIEN_OS_APPROVAL_STATUS` — `approved` or `rejected`
+- `VALADRIEN_OS_LINKED_ISSUE_IDS` — comma-separated list of linked issue IDs
 
 Handle it at the start of your heartbeat:
 

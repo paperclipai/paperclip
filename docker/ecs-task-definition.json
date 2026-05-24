@@ -1,15 +1,15 @@
 {
-  "family": "paperclip-server",
+  "family": "valadrien-os-server",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
   "memory": "4096",
-  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/paperclip-ecs-execution",
-  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/paperclip-ecs-task",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/valadrien-os-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/valadrien-os-ecs-task",
   "containerDefinitions": [
     {
-      "name": "paperclip-server",
-      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/paperclip-server:latest",
+      "name": "valadrien-os-server",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/valadrien-os-server:latest",
       "essential": true,
       "portMappings": [
         {
@@ -22,41 +22,41 @@
         { "name": "HOST", "value": "0.0.0.0" },
         { "name": "PORT", "value": "3100" },
         { "name": "SERVE_UI", "value": "true" },
-        { "name": "PAPERCLIP_HOME", "value": "/paperclip" },
-        { "name": "PAPERCLIP_INSTANCE_ID", "value": "default" },
-        { "name": "PAPERCLIP_CONFIG", "value": "/paperclip/instances/default/config.json" },
-        { "name": "PAPERCLIP_DEPLOYMENT_MODE", "value": "authenticated" },
-        { "name": "PAPERCLIP_DEPLOYMENT_EXPOSURE", "value": "public" },
-        { "name": "PAPERCLIP_PUBLIC_URL", "value": "https://<DOMAIN>" },
-        { "name": "PAPERCLIP_MIGRATION_AUTO_APPLY", "value": "true" },
+        { "name": "VALADRIEN_OS_HOME", "value": "/valadrien-os" },
+        { "name": "VALADRIEN_OS_INSTANCE_ID", "value": "default" },
+        { "name": "VALADRIEN_OS_CONFIG", "value": "/valadrien-os/instances/default/config.json" },
+        { "name": "VALADRIEN_OS_DEPLOYMENT_MODE", "value": "authenticated" },
+        { "name": "VALADRIEN_OS_DEPLOYMENT_EXPOSURE", "value": "public" },
+        { "name": "VALADRIEN_OS_PUBLIC_URL", "value": "https://<DOMAIN>" },
+        { "name": "VALADRIEN_OS_MIGRATION_AUTO_APPLY", "value": "true" },
         { "name": "HEARTBEAT_SCHEDULER_ENABLED", "value": "true" }
       ],
       "secrets": [
         {
           "name": "DATABASE_URL",
-          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:paperclip/database-url"
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:valadrien-os/database-url"
         },
         {
           "name": "BETTER_AUTH_SECRET",
-          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:paperclip/better-auth-secret"
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:valadrien-os/better-auth-secret"
         },
         {
           "name": "ANTHROPIC_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:paperclip/anthropic-api-key"
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:valadrien-os/anthropic-api-key"
         },
         {
           "name": "OPENAI_API_KEY",
-          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:paperclip/openai-api-key"
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:valadrien-os/openai-api-key"
         },
         {
           "name": "GITHUB_TOKEN",
-          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:paperclip/github-token"
+          "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:valadrien-os/github-token"
         }
       ],
       "mountPoints": [
         {
-          "sourceVolume": "paperclip-data",
-          "containerPath": "/paperclip",
+          "sourceVolume": "valadrien-os-data",
+          "containerPath": "/valadrien-os",
           "readOnly": false
         }
       ],
@@ -70,7 +70,7 @@
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/paperclip",
+          "awslogs-group": "/ecs/valadrien-os",
           "awslogs-region": "<REGION>",
           "awslogs-stream-prefix": "server"
         }
@@ -79,7 +79,7 @@
   ],
   "volumes": [
     {
-      "name": "paperclip-data",
+      "name": "valadrien-os-data",
       "efsVolumeConfiguration": {
         "fileSystemId": "<EFS_ID>",
         "rootDirectory": "/",

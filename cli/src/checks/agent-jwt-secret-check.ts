@@ -11,7 +11,7 @@ export function agentJwtSecretCheck(configPath?: string): CheckResult {
     return {
       name: "Agent JWT secret",
       status: "pass",
-      message: "PAPERCLIP_AGENT_JWT_SECRET is set in environment",
+      message: "VALADRIEN_OS_AGENT_JWT_SECRET is set in environment",
     };
   }
 
@@ -22,19 +22,19 @@ export function agentJwtSecretCheck(configPath?: string): CheckResult {
     return {
       name: "Agent JWT secret",
       status: "warn",
-      message: `PAPERCLIP_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment`,
-      repairHint: `Set the value from ${envPath} in your shell before starting the Paperclip server`,
+      message: `VALADRIEN_OS_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment`,
+      repairHint: `Set the value from ${envPath} in your shell before starting the ValadrienOs server`,
     };
   }
 
   return {
     name: "Agent JWT secret",
     status: "fail",
-    message: `PAPERCLIP_AGENT_JWT_SECRET missing from environment and ${envPath}`,
+    message: `VALADRIEN_OS_AGENT_JWT_SECRET missing from environment and ${envPath}`,
     canRepair: true,
     repair: () => {
       ensureAgentJwtSecret(configPath);
     },
-    repairHint: `Run with --repair to create ${envPath} containing PAPERCLIP_AGENT_JWT_SECRET`,
+    repairHint: `Run with --repair to create ${envPath} containing VALADRIEN_OS_AGENT_JWT_SECRET`,
   };
 }

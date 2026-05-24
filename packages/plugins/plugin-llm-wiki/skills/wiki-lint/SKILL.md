@@ -27,7 +27,7 @@ Audit, do not edit. Return findings the maintainer (human or agent) can triage.
    - **critical**: contradictions, broken links to active pages, fabricated citations.
    - **medium**: stale claims, weak provenance, large concept gaps.
    - **low**: orphans, log drift, small index gaps.
-   Each item has: file path, evidence (a 1–2 line quote), suggested fix, and the operation that should follow up (`ingest`, `paperclip-distill`, `index-refresh`, manual review).
+   Each item has: file path, evidence (a 1–2 line quote), suggested fix, and the operation that should follow up (`ingest`, `valadrien-os-distill`, `index-refresh`, manual review).
 4. **Do not write to `wiki/`.** Lint is read-only by design — the maintainer or the routine that follows decides which findings to act on.
 5. **Append a log entry** describing the run:
    ```

@@ -3,7 +3,7 @@ import {
   asNumber,
   parseObject,
   parseJson,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@valadrien-os/adapter-utils/server-utils";
 
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;

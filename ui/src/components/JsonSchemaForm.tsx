@@ -7,7 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { isUuidLike } from "@paperclipai/shared";
+import { isUuidLike } from "@valadrien-os/shared";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -613,7 +613,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
+        "Pick an existing company secret, or paste a raw value (ValadrienOs will store it as a secret on save)."
       }
       required={isRequired}
       error={error}

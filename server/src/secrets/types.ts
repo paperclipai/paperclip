@@ -2,8 +2,8 @@ import type {
   SecretProvider,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
-} from "@paperclipai/shared";
-import type { DeploymentMode } from "@paperclipai/shared";
+} from "@valadrien-os/shared";
+import type { DeploymentMode } from "@valadrien-os/shared";
 
 export interface StoredSecretVersionMaterial {
   [key: string]: unknown;

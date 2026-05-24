@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import pc from "picocolors";
 import { Command } from "commander";
-import type { Company, FeedbackTrace, FeedbackTraceBundle } from "@paperclipai/shared";
+import type { Company, FeedbackTrace, FeedbackTraceBundle } from "@valadrien-os/shared";
 import {
   addCommonClientOptions,
   handleCommandError,
@@ -179,7 +179,7 @@ export async function resolveFeedbackCompanyId(
   const companyId = companies[0]?.id?.trim();
   if (!companyId) {
     throw new Error(
-      "Company ID is required. Pass --company-id, set PAPERCLIP_COMPANY_ID, or configure a CLI context default.",
+      "Company ID is required. Pass --company-id, set VALADRIEN_OS_COMPANY_ID, or configure a CLI context default.",
     );
   }
   return companyId;
@@ -267,7 +267,7 @@ export function renderFeedbackReport(input: {
 }): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push(pc.bold(pc.magenta("Paperclip Feedback Report")));
+  lines.push(pc.bold(pc.magenta("ValadrienOs Feedback Report")));
   lines.push(pc.dim(new Date().toISOString()));
   lines.push(horizontalRule());
   lines.push(`${pc.dim("Server:")}  ${input.apiBase}`);
@@ -439,7 +439,7 @@ export async function writeFeedbackExportBundle(input: {
 export function renderFeedbackExportSummary(exported: FeedbackExportResult): string {
   const lines: string[] = [];
   lines.push("");
-  lines.push(pc.bold(pc.magenta("Paperclip Feedback Export")));
+  lines.push(pc.bold(pc.magenta("ValadrienOs Feedback Export")));
   lines.push(pc.dim(exported.manifest.exportedAt));
   lines.push(horizontalRule());
   lines.push(`${pc.dim("Company:")} ${exported.manifest.companyId}`);

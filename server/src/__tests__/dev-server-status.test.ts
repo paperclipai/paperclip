@@ -12,7 +12,7 @@ import {
 const tempDirs = [];
 
 function createTempStatusFile(payload: unknown) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-dev-status-"));
+  const dir = mkdtempSync(path.join(os.tmpdir(), "valadrien-os-dev-status-"));
   tempDirs.push(dir);
   const filePath = path.join(dir, "dev-server-status.json");
   writeFileSync(filePath, `${JSON.stringify(payload)}\n`, "utf8");
@@ -36,7 +36,7 @@ describe("dev server status helpers", () => {
       lastRestartAt: "2026-03-20T11:30:00.000Z",
     });
 
-    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toEqual({
+    expect(readPersistedDevServerStatus({ VALADRIEN_OS_DEV_SERVER_STATUS_FILE: filePath })).toEqual({
       dirty: true,
       lastChangedAt: "2026-03-20T12:00:00.000Z",
       changedPathCount: 4,
@@ -76,7 +76,7 @@ describe("dev server status helpers", () => {
       pendingMigrations: [],
     });
 
-    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toBeNull();
+    expect(readPersistedDevServerStatus({ VALADRIEN_OS_DEV_SERVER_STATUS_FILE: filePath })).toBeNull();
   });
 
   it("writes restart requests next to the persisted status file", () => {
@@ -86,7 +86,7 @@ describe("dev server status helpers", () => {
       pendingMigrations: [],
     });
 
-    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    const env = { VALADRIEN_OS_DEV_SERVER_STATUS_FILE: filePath };
     expect(writeDevServerRestartRequest({
       requestedAt: "2026-03-20T12:05:00.000Z",
       reason: "manual_restart_now",

@@ -26,14 +26,14 @@ function parseNumber(value: string | undefined, fallback: number) {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const secret = process.env.VALADRIEN_OS_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
   if (!secret) return null;
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
-    issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
-    audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
+    ttlSeconds: parseNumber(process.env.VALADRIEN_OS_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    issuer: process.env.VALADRIEN_OS_AGENT_JWT_ISSUER ?? "valadrien-os",
+    audience: process.env.VALADRIEN_OS_AGENT_JWT_AUDIENCE ?? "valadrien-os-api",
   };
 }
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
+  "name": "Valadrien OS",
   "description": "The control plane for autonomous AI companies",
   "theme": "mint",
   "colors": {
@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/valadrien-os-ai/valadrien-os"
     }
   ],
   "navigation": {
@@ -27,7 +27,7 @@
           {
             "group": "Introduction",
             "pages": [
-              "start/what-is-paperclip",
+              "start/what-is-valadrien-os",
               "start/quickstart",
               "start/core-concepts",
               "start/architecture"
@@ -144,6 +144,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/valadrien-os-ai/valadrien-os"
   }
 }

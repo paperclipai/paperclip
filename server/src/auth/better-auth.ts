@@ -3,15 +3,15 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   authAccounts,
   authSessions,
   authUsers,
   authVerifications,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import type { Config } from "../config.js";
-import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { resolveValadrienOsInstanceId } from "../home-paths.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -29,12 +29,12 @@ type BetterAuthInstance = ReturnType<typeof betterAuth>;
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
 
-export function deriveAuthCookiePrefix(instanceId = resolvePaperclipInstanceId()): string {
+export function deriveAuthCookiePrefix(instanceId = resolveValadrienOsInstanceId()): string {
   const scopedInstanceId = instanceId
     .trim()
     .replace(AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE, "-")
     .replace(/^-+|-+$/g, "") || AUTH_COOKIE_PREFIX_FALLBACK;
-  return `paperclip-${scopedInstanceId}`;
+  return `valadrien-os-${scopedInstanceId}`;
 }
 
 export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: boolean }) {
@@ -46,7 +46,7 @@ export function buildBetterAuthAdvancedOptions(input: { disableSecureCookies: bo
 
 export function shouldDisableSecureAuthCookies(config: Config): boolean {
   const configuredPublicUrl = (
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    process.env.VALADRIEN_OS_PUBLIC_URL?.trim() ||
     (config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl?.trim() : "")
   );
   if (!configuredPublicUrl) return true;
@@ -101,11 +101,11 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.VALADRIEN_OS_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
-      "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set. " +
-      "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
+      "BETTER_AUTH_SECRET (or VALADRIEN_OS_AGENT_JWT_SECRET) must be set. " +
+      "For local development, set BETTER_AUTH_SECRET=valadrien-os-dev-secret in your .env file.",
     );
   }
   const disableSecureCookies = shouldDisableSecureAuthCookies(config);

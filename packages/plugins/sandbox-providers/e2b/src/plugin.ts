@@ -6,7 +6,7 @@ import {
   SandboxNotFoundError,
   TimeoutError,
 } from "e2b";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin } from "@valadrien-os/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -21,7 +21,7 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
-} from "@paperclipai/plugin-sdk";
+} from "@valadrien-os/plugin-sdk";
 
 interface E2bDriverConfig {
   template: string;
@@ -59,7 +59,7 @@ async function createSandbox(config: E2bDriverConfig): Promise<Sandbox> {
     apiKey: resolveApiKey(config),
     timeoutMs: config.timeoutMs,
     metadata: {
-      paperclipProvider: "e2b",
+      valadrienOsProvider: "e2b",
     },
   };
   return await Sandbox.create(config.template, options);
@@ -104,7 +104,7 @@ async function ensureSandboxWorkspace(sandbox: Sandbox, remoteCwd: string): Prom
 async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
   const result = await sandbox.commands.run("pwd");
   const cwd = result.stdout.trim();
-  const remoteCwd = path.posix.join(cwd.length > 0 ? cwd : "/", "paperclip-workspace");
+  const remoteCwd = path.posix.join(cwd.length > 0 ? cwd : "/", "valadrien-os-workspace");
   await ensureSandboxWorkspace(sandbox, remoteCwd);
   return remoteCwd;
 }
@@ -361,7 +361,7 @@ const plugin = definePlugin({
       typeof params.lease.metadata?.remoteCwd === "string" &&
       params.lease.metadata.remoteCwd.trim().length > 0
         ? params.lease.metadata.remoteCwd.trim()
-        : params.workspace.remotePath ?? params.workspace.localPath ?? "/paperclip-workspace";
+        : params.workspace.remotePath ?? params.workspace.localPath ?? "/valadrien-os-workspace";
 
     if (params.lease.providerLeaseId) {
       const sandbox = await connectSandbox(config, params.lease.providerLeaseId);
@@ -419,7 +419,7 @@ const plugin = definePlugin({
     // whether the command exits in microseconds or minutes.
     let stagedStdinPath: string | null = null;
     if (params.stdin != null) {
-      stagedStdinPath = `/tmp/paperclip-stdin-${randomUUID()}`;
+      stagedStdinPath = `/tmp/valadrien-os-stdin-${randomUUID()}`;
       try {
         await sandbox.files.write(stagedStdinPath, params.stdin);
       } catch (error) {

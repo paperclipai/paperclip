@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker } from "@valadrien-os/plugin-sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
 

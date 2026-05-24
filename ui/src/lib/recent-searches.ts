@@ -1,4 +1,4 @@
-const STORAGE_PREFIX = "paperclip:recent-searches:";
+const STORAGE_PREFIX = "valadrien-os:recent-searches:";
 const MAX_RECENT_SEARCHES = 5;
 
 function storageKey(companyId: string) {

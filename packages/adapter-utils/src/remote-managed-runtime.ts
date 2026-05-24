@@ -73,19 +73,19 @@ export async function prepareRemoteManagedRuntime(input: {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const workspaceRemoteDir = path.posix.join(
     baseWorkspaceRemoteDir,
-    ".paperclip-runtime",
+    ".valadrien-os-runtime",
     "runs",
     input.runId,
     "workspace",
   );
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".valadrien-os-runtime", input.adapterKey);
 
   const preparedWorkspace = await prepareWorkspaceForSshExecution({
     spec: input.spec,
     localDir: input.workspaceLocalDir,
     remoteDir: workspaceRemoteDir,
   });
-  const restoreExclude = preparedWorkspace.gitBacked ? [".git", ".paperclip-runtime"] : [".paperclip-runtime"];
+  const restoreExclude = preparedWorkspace.gitBacked ? [".git", ".valadrien-os-runtime"] : [".valadrien-os-runtime"];
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
     exclude: restoreExclude,
   });

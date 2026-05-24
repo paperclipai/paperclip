@@ -30,48 +30,48 @@ afterEach(() => {
 
 describe("resolveDatabaseTarget", () => {
   it("uses DATABASE_URL from process env first", () => {
-    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/paperclip";
+    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/valadrien-os";
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://env-user:env-pass@db.example.com:5432/paperclip",
+      connectionString: "postgres://env-user:env-pass@db.example.com:5432/valadrien-os",
       source: "DATABASE_URL",
     });
   });
 
-  it("uses DATABASE_URL from repo-local .paperclip/.env", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+  it("uses DATABASE_URL from repo-local .valadrien-os/.env", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-db-runtime-"));
     const projectDir = path.join(tempDir, "repo");
     fs.mkdirSync(projectDir, { recursive: true });
     process.chdir(projectDir);
-    delete process.env.PAPERCLIP_CONFIG;
-    writeJson(path.join(projectDir, ".paperclip", "config.json"), {
+    delete process.env.VALADRIEN_OS_CONFIG;
+    writeJson(path.join(projectDir, ".valadrien-os", "config.json"), {
       database: { mode: "embedded-postgres", embeddedPostgresPort: 54329 },
     });
     writeText(
-      path.join(projectDir, ".paperclip", ".env"),
-      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/paperclip"\n',
+      path.join(projectDir, ".valadrien-os", ".env"),
+      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/valadrien-os"\n',
     );
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://file-user:file-pass@db.example.com:6543/paperclip",
-      source: "paperclip-env",
+      connectionString: "postgres://file-user:file-pass@db.example.com:6543/valadrien-os",
+      source: "valadrien-os-env",
     });
   });
 
   it("uses config postgres connection string when configured", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
-    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.VALADRIEN_OS_CONFIG = configPath;
     writeJson(configPath, {
       database: {
         mode: "postgres",
-        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/paperclip",
+        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien-os",
       },
     });
 
@@ -79,19 +79,19 @@ describe("resolveDatabaseTarget", () => {
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/paperclip",
+      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien-os",
       source: "config.database.connectionString",
     });
   });
 
   it("falls back to embedded postgres settings from config", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
-    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.VALADRIEN_OS_CONFIG = configPath;
     writeJson(configPath, {
       database: {
         mode: "embedded-postgres",
-        embeddedPostgresDataDir: "~/paperclip-test-db",
+        embeddedPostgresDataDir: "~/valadrien-os-test-db",
         embeddedPostgresPort: 55444,
       },
     });
@@ -100,19 +100,19 @@ describe("resolveDatabaseTarget", () => {
 
     expect(target).toMatchObject({
       mode: "embedded-postgres",
-      dataDir: path.resolve(os.homedir(), "paperclip-test-db"),
+      dataDir: path.resolve(os.homedir(), "valadrien-os-test-db"),
       port: 55444,
       source: "embedded-postgres@55444",
     });
   });
 
   it("uses the instance root for a fresh default embedded postgres target", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-home-"));
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-cwd-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-db-home-"));
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-db-cwd-"));
     process.chdir(cwd);
-    process.env.PAPERCLIP_HOME = home;
-    delete process.env.PAPERCLIP_CONFIG;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.VALADRIEN_OS_HOME = home;
+    delete process.env.VALADRIEN_OS_CONFIG;
+    delete process.env.VALADRIEN_OS_INSTANCE_ID;
     delete process.env.DATABASE_URL;
 
     const target = resolveDatabaseTarget();

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { ValadrienOsPluginManifestV1 } from "@valadrien-os/shared";
 import type { PluginCapabilityValidator } from "./plugin-capability-validator.js";
 
 export class PluginSandboxError extends Error {
@@ -54,7 +54,7 @@ const DEFAULT_GLOBALS: Record<string, unknown> = {
 };
 
 export function createCapabilityScopedInvoker(
-  manifest: PaperclipPluginManifestV1,
+  manifest: ValadrienOsPluginManifestV1,
   validator: PluginCapabilityValidator,
 ): CapabilityScopedInvoker {
   return {
@@ -144,15 +144,15 @@ export async function loadPluginModuleInSandbox(
     // `(fn)(exports, module, ...)` in the script text, the timeout also covers
     // the actual module body execution — preventing infinite loops from hanging.
     const sandboxArgs = {
-      __paperclip_exports: module.exports,
-      __paperclip_module: module,
-      __paperclip_require: requireInSandbox,
-      __paperclip_filename: realPath,
-      __paperclip_dirname: path.dirname(realPath),
+      __valadrien_os_exports: module.exports,
+      __valadrien_os_module: module,
+      __valadrien_os_require: requireInSandbox,
+      __valadrien_os_filename: realPath,
+      __valadrien_os_dirname: path.dirname(realPath),
     };
     // Temporarily inject args into the context, run, then remove to avoid pollution.
     Object.assign(context, sandboxArgs);
-    const wrapped = `(function (exports, module, require, __filename, __dirname) {\n${code}\n})(__paperclip_exports, __paperclip_module, __paperclip_require, __paperclip_filename, __paperclip_dirname)`;
+    const wrapped = `(function (exports, module, require, __filename, __dirname) {\n${code}\n})(__valadrien_os_exports, __valadrien_os_module, __valadrien_os_require, __valadrien_os_filename, __valadrien_os_dirname)`;
     const script = new vm.Script(wrapped, { filename: realPath });
     try {
       script.runInContext(context, { timeout: timeoutMs });

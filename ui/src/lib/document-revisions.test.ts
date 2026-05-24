@@ -1,4 +1,4 @@
-import type { DocumentRevision, IssueDocument } from "@paperclipai/shared";
+import type { DocumentRevision, IssueDocument } from "@valadrien-os/shared";
 import { describe, expect, it } from "vitest";
 import { deriveDocumentRevisionState } from "./document-revisions";
 

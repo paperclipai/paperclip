@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Screenshot utility for Paperclip UI.
+ * Screenshot utility for ValadrienOs UI.
  *
- * Reads the board token from ~/.paperclip/auth.json and injects it as a
+ * Reads the board token from ~/.valadrien-os/auth.json and injects it as a
  * Bearer header so Playwright can access authenticated pages.
  *
  * Usage:
@@ -30,7 +30,7 @@ const height = flag("height", 800);
 const waitMs = flag("wait", 2000);
 
 const rawUrl = args[0];
-const outPath = args[1] || "/tmp/paperclip-screenshot.png";
+const outPath = args[1] || "/tmp/valadrien-os-screenshot.png";
 
 if (!rawUrl) {
   console.error("Usage: node scripts/screenshot.cjs <url-or-path> [output.png]");
@@ -39,7 +39,7 @@ if (!rawUrl) {
 
 // --- Auth ----------------------------------------------------------------
 function loadBoardToken() {
-  const authPath = path.resolve(os.homedir(), ".paperclip/auth.json");
+  const authPath = path.resolve(os.homedir(), ".valadrien-os/auth.json");
   try {
     const auth = JSON.parse(fs.readFileSync(authPath, "utf-8"));
     const creds = auth.credentials || {};
@@ -53,7 +53,7 @@ function loadBoardToken() {
 
 const cred = loadBoardToken();
 if (!cred) {
-  console.error("No board token found in ~/.paperclip/auth.json");
+  console.error("No board token found in ~/.valadrien-os/auth.json");
   process.exit(1);
 }
 
@@ -73,7 +73,7 @@ const origin = new URL(url).origin;
     });
 
     const page = await context.newPage();
-    // Scope the auth header to the Paperclip origin only
+    // Scope the auth header to the ValadrienOs origin only
     await page.route(`${origin}/**`, async (route) => {
       await route.continue({
         headers: { ...route.request().headers(), Authorization: `Bearer ${cred.token}` },

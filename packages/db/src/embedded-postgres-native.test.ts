@@ -14,7 +14,7 @@ describe("embedded Postgres native runtime", () => {
   });
 
   it.runIf(process.platform !== "win32")("creates soname aliases for bundled patch-level shared libraries", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-pg-libs-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-embedded-pg-libs-"));
     tempDirs.push(tempDir);
     fs.writeFileSync(path.join(tempDir, "libicuuc.so.60.2"), "");
     fs.writeFileSync(path.join(tempDir, "libicui18n.so.60.2"), "");
@@ -30,7 +30,7 @@ describe("embedded Postgres native runtime", () => {
   });
 
   it.runIf(process.platform !== "win32")("is idempotent when aliases already exist", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-pg-libs-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-embedded-pg-libs-"));
     tempDirs.push(tempDir);
     fs.writeFileSync(path.join(tempDir, "libicuuc.so.60.2"), "");
 

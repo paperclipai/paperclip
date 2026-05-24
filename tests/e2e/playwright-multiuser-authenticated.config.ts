@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
-const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3105);
-const BASE_URL = process.env.PAPERCLIP_E2E_BASE_URL ?? `http://127.0.0.1:${PORT}`;
+const PORT = Number(process.env.VALADRIEN_OS_E2E_PORT ?? 3105);
+const BASE_URL = process.env.VALADRIEN_OS_E2E_BASE_URL ?? `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: ".",

@@ -1,4 +1,4 @@
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@valadrien-os/adapter-utils";
 
 function parseEnvVars(text: string): Record<string, string> {
   const env: Record<string, string> = {};

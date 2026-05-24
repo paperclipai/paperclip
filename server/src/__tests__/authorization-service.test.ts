@@ -8,7 +8,7 @@ import {
   instanceUserRoles,
   principalPermissionGrants,
   projects,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("authorization service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-authorization-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-authorization-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

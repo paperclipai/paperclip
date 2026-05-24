@@ -41,10 +41,10 @@ import type {
   IssueScheduledRetry,
   SuccessfulRunHandoffState,
   IssueWorkMode,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
-import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { useValadrienOsIssueRuntime, type ValadrienOsIssueRuntimeReassignment } from "../hooks/useValadrienOsIssueRuntime";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -119,7 +119,7 @@ import {
 import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   describeToolInput,
   displayToolName,
@@ -600,7 +600,7 @@ function clearDraft(draftKey: string) {
   }
 }
 
-function parseReassignment(target: string): PaperclipIssueRuntimeReassignment | null {
+function parseReassignment(target: string): ValadrienOsIssueRuntimeReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
@@ -1830,7 +1830,7 @@ function IssueChatFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
+              Choose whether voted AI outputs can be shared with ValadrienOs Labs. This
               answer becomes the default for future thumbs up and thumbs down votes.
             </DialogDescription>
           </DialogHeader>
@@ -2256,12 +2256,12 @@ function SystemNoticeCommentRow({
   const source = (() => {
     const runAgentName = runAgentId ? agentMap?.get(runAgentId)?.name ?? null : null;
     if (authorType === "system") {
-      const label = runAgentName ?? "Paperclip";
+      const label = runAgentName ?? "ValadrienOs";
       if (runAgentId && runId) return { label, href: `/agents/${runAgentId}/runs/${runId}` };
       return { label };
     }
     if (runAgentId && runId) {
-      return { label: authorName ?? runAgentName ?? "Paperclip", href: `/agents/${runAgentId}/runs/${runId}` };
+      return { label: authorName ?? runAgentName ?? "ValadrienOs", href: `/agents/${runAgentId}/runs/${runId}` };
     }
     if (authorName) return { label: authorName };
     return undefined;
@@ -3859,7 +3859,7 @@ export function IssueChatThread({
     return true;
   }
 
-  const runtime = usePaperclipIssueRuntime({
+  const runtime = useValadrienOsIssueRuntime({
     messages,
     isRunning,
     onSend: ({ body, reopen, reassignment }) => {

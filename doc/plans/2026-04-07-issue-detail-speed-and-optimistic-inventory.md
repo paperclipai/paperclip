@@ -22,7 +22,7 @@ Related:
 
 ## 1. Purpose
 
-This note inventories the Paperclip issues that point to the same UX class of problem:
+This note inventories the Valadrien OS issues that point to the same UX class of problem:
 
 - pages feel slow because they over-fetch or refetch too much
 - actions feel slow because the UI waits for the round trip before reflecting obvious local intent
@@ -70,7 +70,7 @@ Pattern: the issue page already has a history of needing both optimistic behavio
 - [PAP-138](/PAP/issues/PAP-138): inbox loading feels stuck
 - [PAP-470](/PAP/issues/PAP-470): create-issue save state felt slow and awkward
 
-Pattern: Paperclip already has several places where the right fix was "show intent immediately, then reconcile," not "wait for refetch."
+Pattern: Valadrien OS already has several places where the right fix was "show intent immediately, then reconcile," not "wait for refetch."
 
 ## 3.3 Broader app-loading siblings
 

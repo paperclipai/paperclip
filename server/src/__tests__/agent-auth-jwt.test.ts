@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
-  const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
+  const secretEnv = "VALADRIEN_OS_AGENT_JWT_SECRET";
   const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
-  const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
-  const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
-  const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
+  const ttlEnv = "VALADRIEN_OS_AGENT_JWT_TTL_SECONDS";
+  const issuerEnv = "VALADRIEN_OS_AGENT_JWT_ISSUER";
+  const audienceEnv = "VALADRIEN_OS_AGENT_JWT_AUDIENCE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -50,8 +50,8 @@ describe("agent local JWT", () => {
       company_id: "company-1",
       adapter_type: "claude_local",
       run_id: "run-1",
-      iss: "paperclip",
-      aud: "paperclip-api",
+      iss: "valadrien-os",
+      aud: "valadrien-os-api",
     });
   });
 
@@ -62,7 +62,7 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
   });
 
-  it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is absent", () => {
+  it("falls back to BETTER_AUTH_SECRET when VALADRIEN_OS_AGENT_JWT_SECRET is absent", () => {
     delete process.env[secretEnv];
     process.env[betterAuthSecretEnv] = "fallback-secret";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -93,8 +93,8 @@ describe("agent local JWT", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
 
-    process.env[issuerEnv] = "paperclip";
-    process.env[audienceEnv] = "paperclip-api";
+    process.env[issuerEnv] = "valadrien-os";
+    process.env[audienceEnv] = "valadrien-os-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 });

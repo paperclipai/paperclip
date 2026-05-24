@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@valadrien-os/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { IssuesList } from "@/components/IssuesList";
 import { queryKeys } from "@/lib/queryKeys";
@@ -11,7 +11,7 @@ import {
   storybookCompanies,
   storybookIssueLabels,
   storybookProjects,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 const companyId = "company-storybook";
 const parentId = "issue-pap-1953";
@@ -185,7 +185,7 @@ function hydrateQueries(client: ReturnType<typeof useQueryClient>) {
         status: "active",
         user: {
           id: "user-board",
-          email: "riley@paperclip.local",
+          email: "riley@valadrien-os.local",
           name: "Riley Board",
           image: null,
         },
@@ -213,11 +213,11 @@ function Hydrated({ children }: { children: React.ReactNode }) {
 
 function SubIssuesWorkflowPanel() {
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner">
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner">
         <div className="mx-auto max-w-5xl space-y-5">
           <header className="space-y-1">
-            <div className="paperclip-story__label">Issue Detail · Sub-issues</div>
+            <div className="valadrien-os-story__label">Issue Detail · Sub-issues</div>
             <h1 className="text-2xl font-semibold tracking-tight">
               Workflow-sorted sub-issues with checklist affordances
             </h1>

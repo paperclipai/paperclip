@@ -7,7 +7,7 @@ const ORIGINAL_ENV = { ...process.env };
 const CI_ENV_VARS = ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI"];
 
 function makeConfigPath(root: string, enabled: boolean): string {
-  const configPath = path.join(root, ".paperclip", "config.json");
+  const configPath = path.join(root, ".valadrien-os", "config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify({
     $meta: {
@@ -51,7 +51,7 @@ function makeConfigPath(root: string, enabled: boolean): string {
         baseDir: path.join(root, "runtime", "storage"),
       },
       s3: {
-        bucket: "paperclip",
+        bucket: "valadrien-os",
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
@@ -84,10 +84,10 @@ describe("cli telemetry", () => {
   });
 
   it("respects telemetry.enabled=false from the config file", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-cli-telemetry-"));
     const configPath = makeConfigPath(root, false);
-    process.env.PAPERCLIP_HOME = path.join(root, "home");
-    process.env.PAPERCLIP_INSTANCE_ID = "telemetry-test";
+    process.env.VALADRIEN_OS_HOME = path.join(root, "home");
+    process.env.VALADRIEN_OS_INSTANCE_ID = "telemetry-test";
 
     const { initTelemetryFromConfigFile } = await import("../telemetry.js");
     const client = initTelemetryFromConfigFile(configPath);
@@ -97,9 +97,9 @@ describe("cli telemetry", () => {
   });
 
   it("creates telemetry state only after the first event is tracked", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-telemetry-"));
-    process.env.PAPERCLIP_HOME = path.join(root, "home");
-    process.env.PAPERCLIP_INSTANCE_ID = "telemetry-test";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-cli-telemetry-"));
+    process.env.VALADRIEN_OS_HOME = path.join(root, "home");
+    process.env.VALADRIEN_OS_INSTANCE_ID = "telemetry-test";
 
     const { initTelemetry, flushTelemetry } = await import("../telemetry.js");
     const client = initTelemetry({ enabled: true });

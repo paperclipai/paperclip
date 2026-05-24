@@ -451,7 +451,7 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
-export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export const SECRET_MANAGED_MODES = ["valadrien_os_managed", "external_reference"] as const;
 export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
 
 export const SECRET_VERSION_STATUSES = [
@@ -847,7 +847,7 @@ export type PluginApiRouteCheckoutPolicy = (typeof PLUGIN_API_ROUTE_CHECKOUT_POL
 
 /**
  * UI extension slot types. Each slot type corresponds to a mount point in the
- * Paperclip UI where plugin components can be rendered.
+ * ValadrienOs UI where plugin components can be rendered.
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */

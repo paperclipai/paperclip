@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound } from "lucide-react";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding } from "@valadrien-os/shared";
 import { Secrets } from "@/pages/Secrets";
 import { SecretBindingPicker, type SecretBindingValue } from "@/components/SecretBindingPicker";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
@@ -10,13 +10,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { storybookCompanies, storybookSecrets } from "../fixtures/paperclipData";
+import { storybookCompanies, storybookSecrets } from "../fixtures/valadrienOsData";
 
 const COMPANY_ID = "company-storybook";
 
 // Seed localStorage before CompanyContext mounts so its `useState` initializer reads the right id.
 if (typeof window !== "undefined") {
-  window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+  window.localStorage.setItem("valadrien-os.selectedCompanyId", COMPANY_ID);
 }
 
 function StorybookSecretsFixtures({ children }: { children: ReactNode }) {

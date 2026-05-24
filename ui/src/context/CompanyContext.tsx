@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@valadrien-os/shared";
 import { companiesApi } from "../api/companies";
 import { companiesListQueryOptions, type CompanyListResult } from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
@@ -31,7 +31,7 @@ interface CompanyContextValue {
   }) => Promise<Company>;
 }
 
-const STORAGE_KEY = "paperclip.selectedCompanyId";
+const STORAGE_KEY = "valadrien-os.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 

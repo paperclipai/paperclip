@@ -10,7 +10,7 @@ const {
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
-  startAdapterExecutionTargetPaperclipBridge,
+  startAdapterExecutionTargetValadrienOsBridge,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 1,
@@ -26,19 +26,19 @@ const {
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   syncDirectoryToSsh: vi.fn(async () => undefined),
-  startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+  startAdapterExecutionTargetValadrienOsBridge: vi.fn(async () => ({
     env: {
-      PAPERCLIP_API_URL: "http://127.0.0.1:4310",
-      PAPERCLIP_API_KEY: "bridge-token",
-      PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+      VALADRIEN_OS_API_URL: "http://127.0.0.1:4310",
+      VALADRIEN_OS_API_KEY: "bridge-token",
+      VALADRIEN_OS_API_BRIDGE_MODE: "queue_v1",
     },
     stop: async () => {},
   })),
 }));
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
-    "@paperclipai/adapter-utils/server-utils",
+vi.mock("@valadrien-os/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@valadrien-os/adapter-utils/server-utils")>(
+    "@valadrien-os/adapter-utils/server-utils",
   );
   return {
     ...actual,
@@ -48,9 +48,9 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/ssh", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/ssh")>(
-    "@paperclipai/adapter-utils/ssh",
+vi.mock("@valadrien-os/adapter-utils/ssh", async () => {
+  const actual = await vi.importActual<typeof import("@valadrien-os/adapter-utils/ssh")>(
+    "@valadrien-os/adapter-utils/ssh",
   );
   return {
     ...actual,
@@ -60,13 +60,13 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@valadrien-os/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@valadrien-os/adapter-utils/execution-target")>(
+    "@valadrien-os/adapter-utils/execution-target",
   );
   return {
     ...actual,
-    startAdapterExecutionTargetPaperclipBridge,
+    startAdapterExecutionTargetValadrienOsBridge,
   };
 });
 
@@ -85,11 +85,11 @@ describe("codex remote execution", () => {
   });
 
   it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-codex-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const managedRemoteWorkspace = "/remote/workspace/.valadrien-os-runtime/runs/run-1/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(codexHomeDir, { recursive: true });
     await writeFile(path.join(rootDir, "instructions.md"), "Use the remote workspace.\n", "utf8");
@@ -119,27 +119,27 @@ describe("codex remote execution", () => {
         },
       },
       context: {
-        paperclipWorkspace: {
+        valadrienOsWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
           strategy: "git_worktree",
           workspaceId: "workspace-1",
-          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
           repoRef: "main",
           branchName: "feature/remote-codex",
           worktreePath: workspaceDir,
         },
-        paperclipWorkspaces: [
+        valadrienOsWorkspaces: [
           {
             workspaceId: "workspace-1",
             cwd: workspaceDir,
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
             repoRef: "main",
           },
           {
             workspaceId: "workspace-2",
             cwd: alternateWorkspaceDir,
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
             repoRef: "feature/other",
           },
         ],
@@ -167,7 +167,7 @@ describe("codex remote execution", () => {
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       localDir: codexHomeDir,
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/codex/home`,
+      remoteDir: `${managedRemoteWorkspace}/.valadrien-os-runtime/codex/home`,
       followSymlinks: true,
     }));
 
@@ -176,26 +176,26 @@ describe("codex remote execution", () => {
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[2]).not.toContain("--skip-git-repo-check");
-    expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
-    expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
-    expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+    expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.valadrien-os-runtime/codex/home`);
+    expect(call?.[3].env.VALADRIEN_OS_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].env.VALADRIEN_OS_WORKSPACE_WORKTREE_PATH).toBeUndefined();
+    expect(JSON.parse(call?.[3].env.VALADRIEN_OS_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
         cwd: managedRemoteWorkspace,
-        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
         repoRef: "main",
       },
       {
         workspaceId: "workspace-2",
-        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
         repoRef: "feature/other",
       },
     ]);
-    expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
-    expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+    expect(call?.[3].env.VALADRIEN_OS_API_URL).toBe("http://127.0.0.1:4310");
+    expect(call?.[3].env.VALADRIEN_OS_API_BRIDGE_MODE).toBe("queue_v1");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
-    expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
+    expect(startAdapterExecutionTargetValadrienOsBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       localDir: workspaceDir,
@@ -204,7 +204,7 @@ describe("codex remote execution", () => {
   });
 
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-codex-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
@@ -237,7 +237,7 @@ describe("codex remote execution", () => {
         },
       },
       context: {
-        paperclipWorkspace: {
+        valadrienOsWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
@@ -267,11 +267,11 @@ describe("codex remote execution", () => {
   });
 
   it("resumes saved Codex sessions for remote SSH execution when the remote identity matches", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-match-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-codex-remote-resume-match-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
+    const managedRemoteWorkspace = "/remote/workspace/.valadrien-os-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(codexHomeDir, { recursive: true });
     await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
@@ -308,7 +308,7 @@ describe("codex remote execution", () => {
         },
       },
       context: {
-        paperclipWorkspace: {
+        valadrienOsWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
@@ -340,11 +340,11 @@ describe("codex remote execution", () => {
   });
 
   it("uses the provider-neutral execution target contract for remote SSH execution", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-target-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-codex-target-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     const codexHomeDir = path.join(rootDir, "codex-home");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-target/workspace";
+    const managedRemoteWorkspace = "/remote/workspace/.valadrien-os-runtime/runs/run-target/workspace";
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(codexHomeDir, { recursive: true });
     await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
@@ -381,7 +381,7 @@ describe("codex remote execution", () => {
         },
       },
       context: {
-        paperclipWorkspace: {
+        valadrienOsWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
         },
@@ -416,7 +416,7 @@ describe("codex remote execution", () => {
       "session-123",
       "-",
     ]);
-    expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
+    expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.valadrien-os-runtime/codex/home`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
   });
 });

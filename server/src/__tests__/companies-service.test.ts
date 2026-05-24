@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { companies, createDb } from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -20,7 +20,7 @@ describeEmbeddedPostgres("companyService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-service-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-company-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

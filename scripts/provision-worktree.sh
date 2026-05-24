@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base_cwd="${PAPERCLIP_WORKSPACE_BASE_CWD:?PAPERCLIP_WORKSPACE_BASE_CWD is required}"
-worktree_cwd="${PAPERCLIP_WORKSPACE_CWD:?PAPERCLIP_WORKSPACE_CWD is required}"
-paperclip_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
-paperclip_instance_id="${PAPERCLIP_INSTANCE_ID:-default}"
-paperclip_dir="$worktree_cwd/.paperclip"
-worktree_config_path="$paperclip_dir/config.json"
-worktree_env_path="$paperclip_dir/.env"
-worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
+base_cwd="${VALADRIEN_OS_WORKSPACE_BASE_CWD:?VALADRIEN_OS_WORKSPACE_BASE_CWD is required}"
+worktree_cwd="${VALADRIEN_OS_WORKSPACE_CWD:?VALADRIEN_OS_WORKSPACE_CWD is required}"
+valadrien_os_home="${VALADRIEN_OS_HOME:-$HOME/.valadrien-os}"
+valadrien_os_instance_id="${VALADRIEN_OS_INSTANCE_ID:-default}"
+valadrien_os_dir="$worktree_cwd/.valadrien-os"
+worktree_config_path="$valadrien_os_dir/config.json"
+worktree_env_path="$valadrien_os_dir/.env"
+worktree_name="${VALADRIEN_OS_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
 
 if [[ ! -d "$base_cwd" ]]; then
   echo "Base workspace does not exist: $base_cwd" >&2
@@ -20,16 +20,16 @@ if [[ ! -d "$worktree_cwd" ]]; then
   exit 1
 fi
 
-source_config_path="${PAPERCLIP_CONFIG:-}"
-if [[ -z "$source_config_path" && ( -e "$base_cwd/.paperclip/config.json" || -L "$base_cwd/.paperclip/config.json" ) ]]; then
-  source_config_path="$base_cwd/.paperclip/config.json"
+source_config_path="${VALADRIEN_OS_CONFIG:-}"
+if [[ -z "$source_config_path" && ( -e "$base_cwd/.valadrien-os/config.json" || -L "$base_cwd/.valadrien-os/config.json" ) ]]; then
+  source_config_path="$base_cwd/.valadrien-os/config.json"
 fi
 if [[ -z "$source_config_path" ]]; then
-  source_config_path="$paperclip_home/instances/$paperclip_instance_id/config.json"
+  source_config_path="$valadrien_os_home/instances/$valadrien_os_instance_id/config.json"
 fi
 source_env_path="$(dirname "$source_config_path")/.env"
 
-mkdir -p "$paperclip_dir"
+mkdir -p "$valadrien_os_dir"
 
 run_isolated_worktree_init() {
   local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
@@ -43,18 +43,18 @@ run_isolated_worktree_init() {
     return 0
   fi
 
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+  if command -v pnpm >/dev/null 2>&1 && pnpm valadrien-os --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
-      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      pnpm valadrien-os worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if command -v valadrien-os >/dev/null 2>&1; then
     (
       cd "$worktree_cwd"
-      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      valadrien-os worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
     return 0
   fi
@@ -62,8 +62,8 @@ run_isolated_worktree_init() {
   return 127
 }
 
-paperclipai_command_available() {
-  if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
+valadrien_os_command_available() {
+  if command -v pnpm >/dev/null 2>&1 && pnpm valadrien-os --help >/dev/null 2>&1; then
     return 0
   fi
 
@@ -73,7 +73,7 @@ paperclipai_command_available() {
     return 0
   fi
 
-  if command -v paperclipai >/dev/null 2>&1; then
+  if command -v valadrien-os >/dev/null 2>&1; then
     return 0
   fi
 
@@ -84,10 +84,10 @@ write_fallback_worktree_config() {
   WORKTREE_NAME="$worktree_name" \
   BASE_CWD="$base_cwd" \
   WORKTREE_CWD="$worktree_cwd" \
-  PAPERCLIP_DIR="$paperclip_dir" \
+  VALADRIEN_OS_DIR="$valadrien_os_dir" \
   SOURCE_CONFIG_PATH="$source_config_path" \
   SOURCE_ENV_PATH="$source_env_path" \
-  PAPERCLIP_WORKTREES_DIR="${PAPERCLIP_WORKTREES_DIR:-}" \
+  VALADRIEN_OS_WORKTREES_DIR="${VALADRIEN_OS_WORKTREES_DIR:-}" \
   node <<'EOF'
 const fs = require("node:fs");
 const os = require("node:os");
@@ -197,14 +197,14 @@ function resolveRuntimeLikePath(value, configPath) {
 
 async function main() {
   const worktreeName = process.env.WORKTREE_NAME;
-  const paperclipDir = process.env.PAPERCLIP_DIR;
+  const valadrienOsDir = process.env.VALADRIEN_OS_DIR;
   const sourceConfigPath = process.env.SOURCE_CONFIG_PATH;
   const sourceEnvPath = process.env.SOURCE_ENV_PATH;
-  const worktreeHome = path.resolve(expandHomePrefix(nonEmpty(process.env.PAPERCLIP_WORKTREES_DIR) ?? "~/.paperclip-worktrees"));
+  const worktreeHome = path.resolve(expandHomePrefix(nonEmpty(process.env.VALADRIEN_OS_WORKTREES_DIR) ?? "~/.valadrien-os-worktrees"));
   const instanceId = sanitizeInstanceId(worktreeName);
   const instanceRoot = path.resolve(worktreeHome, "instances", instanceId);
-  const configPath = path.resolve(paperclipDir, "config.json");
-  const envPath = path.resolve(paperclipDir, ".env");
+  const configPath = path.resolve(valadrienOsDir, "config.json");
+  const envPath = path.resolve(valadrienOsDir, ".env");
 
   let sourceConfig = null;
   if (sourceConfigPath && fs.existsSync(sourceConfigPath)) {
@@ -269,7 +269,7 @@ async function main() {
         baseDir: path.resolve(instanceRoot, "data", "storage"),
       },
       s3: {
-        bucket: sourceConfig?.storage?.s3?.bucket ?? "paperclip",
+        bucket: sourceConfig?.storage?.s3?.bucket ?? "valadrien-os",
         region: sourceConfig?.storage?.s3?.region ?? "us-east-1",
         endpoint: sourceConfig?.storage?.s3?.endpoint,
         prefix: sourceConfig?.storage?.s3?.prefix ?? "",
@@ -287,7 +287,7 @@ async function main() {
 
   fs.writeFileSync(configPath, `${JSON.stringify(targetConfig, null, 2)}\n`, { mode: 0o600 });
 
-  const inlineMasterKey = nonEmpty(sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY);
+  const inlineMasterKey = nonEmpty(sourceEnvEntries.VALADRIEN_OS_SECRETS_MASTER_KEY);
   if (inlineMasterKey) {
     fs.mkdirSync(path.resolve(instanceRoot, "secrets"), { recursive: true });
     fs.writeFileSync(targetConfig.secrets.localEncrypted.keyFilePath, inlineMasterKey, {
@@ -295,8 +295,8 @@ async function main() {
       mode: 0o600,
     });
   } else {
-    const sourceKeyFilePath = nonEmpty(sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY_FILE)
-      ? resolveRuntimeLikePath(sourceEnvEntries.PAPERCLIP_SECRETS_MASTER_KEY_FILE, sourceConfigPath)
+    const sourceKeyFilePath = nonEmpty(sourceEnvEntries.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE)
+      ? resolveRuntimeLikePath(sourceEnvEntries.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE, sourceConfigPath)
       : nonEmpty(sourceConfig?.secrets?.localEncrypted?.keyFilePath)
         ? resolveRuntimeLikePath(sourceConfig.secrets.localEncrypted.keyFilePath, sourceConfigPath)
         : null;
@@ -309,17 +309,17 @@ async function main() {
   }
 
   const envLines = [
-    "PAPERCLIP_HOME=" + JSON.stringify(worktreeHome),
-    "PAPERCLIP_INSTANCE_ID=" + JSON.stringify(instanceId),
-    "PAPERCLIP_CONFIG=" + JSON.stringify(configPath),
-    "PAPERCLIP_CONTEXT=" + JSON.stringify(path.resolve(worktreeHome, "context.json")),
-    "PAPERCLIP_IN_WORKTREE=true",
-    "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
+    "VALADRIEN_OS_HOME=" + JSON.stringify(worktreeHome),
+    "VALADRIEN_OS_INSTANCE_ID=" + JSON.stringify(instanceId),
+    "VALADRIEN_OS_CONFIG=" + JSON.stringify(configPath),
+    "VALADRIEN_OS_CONTEXT=" + JSON.stringify(path.resolve(worktreeHome, "context.json")),
+    "VALADRIEN_OS_IN_WORKTREE=true",
+    "VALADRIEN_OS_WORKTREE_NAME=" + JSON.stringify(worktreeName),
   ];
 
-  const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
+  const agentJwtSecret = nonEmpty(sourceEnvEntries.VALADRIEN_OS_AGENT_JWT_SECRET);
   if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+    envLines.push("VALADRIEN_OS_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });
@@ -333,12 +333,12 @@ EOF
 }
 
 if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
-  echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
+  echo "Reusing existing isolated Valadrien OS worktree config at $worktree_config_path" >&2
 else
-  if paperclipai_command_available; then
+  if valadrien_os_command_available; then
     run_isolated_worktree_init
   else
-    echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
+    echo "valadrien-os CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config
   fi
 fi
@@ -351,7 +351,7 @@ list_base_node_modules_paths() {
       -type d \
       -name node_modules \
       ! -path './.git/*' \
-      ! -path './.paperclip/*' \
+      ! -path './.valadrien-os/*' \
       | sed 's#^\./##'
 }
 if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
@@ -368,7 +368,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
   done < <(list_base_node_modules_paths)
 
   if [[ "$needs_install" -eq 1 ]]; then
-    backup_suffix=".paperclip-backup-${BASHPID:-$$}"
+    backup_suffix=".valadrien-os-backup-${BASHPID:-$$}"
     moved_symlink_paths=()
 
     while IFS= read -r relative_path; do

@@ -3,7 +3,7 @@ import path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
-import type { FeedbackTrace } from "@paperclipai/shared";
+import type { FeedbackTrace } from "@valadrien-os/shared";
 import { readZipArchive } from "../commands/client/zip.js";
 import {
   buildFeedbackTraceQuery,
@@ -27,7 +27,7 @@ function makeTrace(overrides: Partial<FeedbackTrace> = {}): FeedbackTrace {
     targetId: "comment-123",
     vote: "down",
     status: "pending",
-    destination: "paperclip_labs_feedback_v1",
+    destination: "valadrien_os_labs_feedback_v1",
     exportId: null,
     consentVersion: "feedback-data-sharing-v1",
     schemaVersion: "1",
@@ -119,7 +119,7 @@ describe("renderFeedbackReport", () => {
       includePayloads: false,
     });
 
-    expect(report).toContain("Paperclip Feedback Report");
+    expect(report).toContain("ValadrienOs Feedback Report");
     expect(report).toContain("thumbs up");
     expect(report).toContain("thumbs down");
     expect(report).toContain("Needed more detail");
@@ -128,7 +128,7 @@ describe("renderFeedbackReport", () => {
 
 describe("writeFeedbackExportBundle", () => {
   it("writes votes, traces, a manifest, and a zip archive", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-feedback-export-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-feedback-export-"));
     const outputDir = path.join(tempDir, "feedback-export");
     const traces = [
       makeTrace(),

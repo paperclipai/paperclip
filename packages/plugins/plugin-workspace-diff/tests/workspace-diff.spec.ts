@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import type { PluginExecutionWorkspaceMetadata } from "@paperclipai/plugin-sdk";
+import type { PluginExecutionWorkspaceMetadata } from "@valadrien-os/plugin-sdk";
 import type { WorkspaceDiffQueryOptions } from "../src/contracts.js";
 import { WORKSPACE_DIFF_CAPS, workspaceDiffService } from "../src/workspace-diff.js";
 
@@ -17,11 +17,11 @@ async function runGit(cwd: string, args: string[]) {
 }
 
 async function createTempRepo() {
-  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-workspace-diff-"));
+  const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-plugin-workspace-diff-"));
   tempDirs.add(repoRoot);
   await runGit(repoRoot, ["init"]);
-  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
-  await runGit(repoRoot, ["config", "user.email", "test@paperclip.local"]);
+  await runGit(repoRoot, ["config", "user.name", "ValadrienOs Test"]);
+  await runGit(repoRoot, ["config", "user.email", "test@valadrien-os.local"]);
   await fs.writeFile(path.join(repoRoot, "tracked-staged.txt"), "alpha\n", "utf8");
   await fs.writeFile(path.join(repoRoot, "tracked-unstaged.txt"), "bravo\n", "utf8");
   await fs.writeFile(path.join(repoRoot, "delete-me.txt"), "charlie\n", "utf8");
@@ -157,7 +157,7 @@ describe("plugin workspace diff service", () => {
 
   it("does not follow untracked symlinks outside the repo", async () => {
     const repoRoot = await createTempRepo();
-    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-workspace-diff-secret-"));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-plugin-workspace-diff-secret-"));
     tempDirs.add(outsideDir);
     const secretContent = "external secret should not appear\n";
     const secretPath = path.join(outsideDir, "secret.txt");
@@ -186,7 +186,7 @@ describe("plugin workspace diff service", () => {
     await expect(svc.getDiff(createWorkspace(null), workingTreeQuery()))
       .rejects.toMatchObject({ status: 422, details: { code: "missing_cwd" } });
 
-    const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-workspace-diff-non-git-"));
+    const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-plugin-workspace-diff-non-git-"));
     tempDirs.add(nonGitDir);
     await expect(svc.getDiff(createWorkspace(nonGitDir), workingTreeQuery()))
       .rejects.toMatchObject({ status: 422, details: { code: "non_git_workspace" } });

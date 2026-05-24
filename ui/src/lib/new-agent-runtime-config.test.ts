@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@valadrien-os/shared";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 describe("buildNewAgentRuntimeConfig", () => {

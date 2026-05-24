@@ -1,7 +1,7 @@
 /**
- * Paperclip plugin UI SDK — types for plugin frontend components.
+ * ValadrienOs plugin UI SDK — types for plugin frontend components.
  *
- * Plugin UI bundles import from `@paperclipai/plugin-sdk/ui`.  This subpath
+ * Plugin UI bundles import from `@valadrien-os/plugin-sdk/ui`.  This subpath
  * provides the bridge hooks, component prop interfaces, and error types that
  * plugin React components use to communicate with the host.
  *
@@ -22,7 +22,7 @@ import type {
   PluginBridgeErrorCode,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import type {
   PluginLauncherRenderContextSnapshot,
   PluginModalBoundsRequest,
@@ -34,7 +34,7 @@ export type {
   PluginBridgeErrorCode,
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 export type {
   PluginLauncherRenderContextSnapshot,
   PluginModalBoundsRequest,
@@ -141,7 +141,7 @@ export interface PluginRenderEnvironmentContext
 // ---------------------------------------------------------------------------
 
 /**
- * Options for host-managed Paperclip navigation from plugin UI.
+ * Options for host-managed ValadrienOs navigation from plugin UI.
  */
 export interface HostNavigationOptions {
   /** Replace the current history entry instead of pushing a new one. */
@@ -195,7 +195,7 @@ export interface HostLocation {
  */
 export interface HostNavigation {
   /**
-   * Resolve a Paperclip-internal path using the active company prefix.
+   * Resolve a ValadrienOs-internal path using the active company prefix.
    *
    * For example, in company `PAP`, `resolveHref("/wiki")` returns
    * `"/PAP/wiki"`, while `resolveHref("/PAP/wiki")` stays unchanged.

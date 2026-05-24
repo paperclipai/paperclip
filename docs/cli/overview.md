@@ -3,12 +3,12 @@ title: CLI Overview
 summary: CLI installation and setup
 ---
 
-The Paperclip CLI handles instance setup, diagnostics, and control-plane operations.
+The Valadrien OS CLI handles instance setup, diagnostics, and control-plane operations.
 
 ## Usage
 
 ```sh
-pnpm paperclipai --help
+pnpm valadrien-os --help
 ```
 
 ## Global Options
@@ -17,7 +17,7 @@ All commands support:
 
 | Flag | Description |
 |------|-------------|
-| `--data-dir <path>` | Local Paperclip data root (isolates from `~/.paperclip`) |
+| `--data-dir <path>` | Local Valadrien OS data root (isolates from `~/.valadrien-os`) |
 | `--api-base <url>` | API base URL |
 | `--api-key <token>` | API authentication token |
 | `--context <path>` | Context file path |
@@ -29,7 +29,7 @@ Company-scoped commands also accept `--company-id <id>`.
 For clean local instances, pass `--data-dir` on the command you run:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
+pnpm valadrien-os run --data-dir ./tmp/valadrien-os-dev
 ```
 
 ## Context Profiles
@@ -38,36 +38,36 @@ Store defaults to avoid repeating flags:
 
 ```sh
 # Set defaults
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <id>
+pnpm valadrien-os context set --api-base http://localhost:3100 --company-id <id>
 
 # View current context
-pnpm paperclipai context show
+pnpm valadrien-os context show
 
 # List profiles
-pnpm paperclipai context list
+pnpm valadrien-os context list
 
 # Switch profile
-pnpm paperclipai context use default
+pnpm valadrien-os context use default
 ```
 
 To avoid storing secrets in context, use an env var:
 
 ```sh
-pnpm paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
-export PAPERCLIP_API_KEY=...
+pnpm valadrien-os context set --api-key-env-var-name VALADRIEN_OS_API_KEY
+export VALADRIEN_OS_API_KEY=...
 ```
 
-Secret operations are available under `paperclipai secrets`:
+Secret operations are available under `valadrien-os secrets`:
 
 ```sh
-pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
-pnpm paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
-pnpm paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
-pnpm paperclipai secrets doctor --company-id <company-id>
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+pnpm valadrien-os secrets declarations --company-id <company-id> --kind secret
+pnpm valadrien-os secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
+pnpm valadrien-os secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
+pnpm valadrien-os secrets doctor --company-id <company-id>
+pnpm valadrien-os secrets migrate-inline-env --company-id <company-id> --apply
 ```
 
-Context is stored at `~/.paperclip/context.json`.
+Context is stored at `~/.valadrien-os/context.json`.
 
 ## Command Categories
 

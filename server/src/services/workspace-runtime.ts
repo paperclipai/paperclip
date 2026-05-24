@@ -5,14 +5,14 @@ import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
-import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import type { AdapterRuntimeServiceReport } from "@valadrien-os/adapter-utils";
+import type { Db } from "@valadrien-os/db";
+import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@valadrien-os/db";
 import {
   listWorkspaceServiceCommandDefinitions,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
@@ -184,7 +184,7 @@ function isLinkedGitWorktreeCheckout(rootDir: string) {
 
 function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   const packagePaths = new Map<string, string>();
-  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+  const ignoredDirNames = new Set([".git", ".valadrien-os", "dist", "node_modules"]);
 
   function visit(dirPath: string) {
     if (!existsSync(dirPath)) return;
@@ -286,7 +286,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("VALADRIEN_OS_")) {
       delete env[key];
     }
   }
@@ -399,7 +399,7 @@ function sanitizeBranchName(value: string): string {
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+    .slice(0, 120) || "valadrien-os-work";
 }
 
 function isAbsolutePath(value: string) {
@@ -695,25 +695,25 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.branchName;
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.base.baseCwd;
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.repoRoot;
-  env.PAPERCLIP_WORKSPACE_SOURCE = input.base.source;
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_CREATED = input.created ? "true" : "false";
-  env.PAPERCLIP_PROJECT_ID = input.base.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
-  env.PAPERCLIP_AGENT_ID = input.agent.id ?? "";
-  env.PAPERCLIP_AGENT_NAME = input.agent.name;
-  env.PAPERCLIP_COMPANY_ID = input.agent.companyId;
-  env.PAPERCLIP_ISSUE_ID = input.issue?.id ?? "";
-  env.PAPERCLIP_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
-  env.PAPERCLIP_ISSUE_TITLE = input.issue?.title ?? "";
-  env.PAPERCLIP_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
+  env.VALADRIEN_OS_WORKSPACE_CWD = input.worktreePath;
+  env.VALADRIEN_OS_WORKSPACE_PATH = input.worktreePath;
+  env.VALADRIEN_OS_WORKSPACE_WORKTREE_PATH = input.worktreePath;
+  env.VALADRIEN_OS_WORKSPACE_BRANCH = input.branchName;
+  env.VALADRIEN_OS_WORKSPACE_BASE_CWD = input.base.baseCwd;
+  env.VALADRIEN_OS_WORKSPACE_REPO_ROOT = input.repoRoot;
+  env.VALADRIEN_OS_WORKSPACE_SOURCE = input.base.source;
+  env.VALADRIEN_OS_WORKSPACE_REPO_REF = input.base.repoRef ?? "";
+  env.VALADRIEN_OS_WORKSPACE_REPO_URL = input.base.repoUrl ?? "";
+  env.VALADRIEN_OS_WORKSPACE_CREATED = input.created ? "true" : "false";
+  env.VALADRIEN_OS_PROJECT_ID = input.base.projectId ?? "";
+  env.VALADRIEN_OS_PROJECT_WORKSPACE_ID = input.base.workspaceId ?? "";
+  env.VALADRIEN_OS_AGENT_ID = input.agent.id ?? "";
+  env.VALADRIEN_OS_AGENT_NAME = input.agent.name;
+  env.VALADRIEN_OS_COMPANY_ID = input.agent.companyId;
+  env.VALADRIEN_OS_ISSUE_ID = input.issue?.id ?? "";
+  env.VALADRIEN_OS_ISSUE_IDENTIFIER = input.issue?.identifier ?? "";
+  env.VALADRIEN_OS_ISSUE_TITLE = input.issue?.title ?? "";
+  env.VALADRIEN_OS_ISSUE_WORK_MODE = input.issue?.workMode ?? "";
   return env;
 }
 
@@ -950,18 +950,18 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   projectWorkspaceCwd?: string | null;
 }) {
   const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
-  env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
+  env.VALADRIEN_OS_WORKSPACE_CWD = input.workspace.cwd ?? "";
+  env.VALADRIEN_OS_WORKSPACE_PATH = input.workspace.cwd ?? "";
+  env.VALADRIEN_OS_WORKSPACE_WORKTREE_PATH =
     input.workspace.providerRef ?? input.workspace.cwd ?? "";
-  env.PAPERCLIP_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
-  env.PAPERCLIP_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
-  env.PAPERCLIP_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
-  env.PAPERCLIP_PROJECT_ID = input.workspace.projectId ?? "";
-  env.PAPERCLIP_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
-  env.PAPERCLIP_ISSUE_ID = input.workspace.sourceIssueId ?? "";
+  env.VALADRIEN_OS_WORKSPACE_BRANCH = input.workspace.branchName ?? "";
+  env.VALADRIEN_OS_WORKSPACE_BASE_CWD = input.projectWorkspaceCwd ?? "";
+  env.VALADRIEN_OS_WORKSPACE_REPO_ROOT = input.projectWorkspaceCwd ?? "";
+  env.VALADRIEN_OS_WORKSPACE_REPO_URL = input.workspace.repoUrl ?? "";
+  env.VALADRIEN_OS_WORKSPACE_REPO_REF = input.workspace.baseRef ?? "";
+  env.VALADRIEN_OS_PROJECT_ID = input.workspace.projectId ?? "";
+  env.VALADRIEN_OS_PROJECT_WORKSPACE_ID = input.workspace.projectWorkspaceId ?? "";
+  env.VALADRIEN_OS_ISSUE_ID = input.workspace.sourceIssueId ?? "";
   return env;
 }
 
@@ -1018,7 +1018,7 @@ export async function realizeExecutionWorkspace(input: {
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
-    : path.join(repoRoot, ".paperclip", "worktrees");
+    : path.join(repoRoot, ".valadrien-os", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
   const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
     ? rawStrategy.baseRef
@@ -2779,7 +2779,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: "ValadrienOs", companyId: row.companyId },
         issue: null,
         workspace: {
           baseCwd: row.cwd,
@@ -2827,7 +2827,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: "ValadrienOs", companyId: row.companyId },
         issue: row.sourceIssueId
           ? {
               id: row.sourceIssueId,

@@ -17,7 +17,7 @@ import type {
   CloudUpstreamPreview,
   CloudUpstreamRun,
   CloudUpstreamStep,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cloudUpstreamsApi } from "@/api/cloudUpstreams";
@@ -28,7 +28,7 @@ import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-
 import { Link, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 
-const PENDING_CONNECTION_KEY = "paperclip-cloud-upstream-pending-connection";
+const PENDING_CONNECTION_KEY = "valadrien-os-cloud-upstream-pending-connection";
 const STEPS: Array<{ key: CloudUpstreamStep; label: string }> = [
   { key: "connect", label: "Connect" },
   { key: "scan", label: "Scan" },
@@ -238,7 +238,7 @@ export function CloudUpstream() {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompany.name} into a Paperclip Cloud stack. Automations stay paused until activation.
+            Push {selectedCompany.name} into a ValadrienOs Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (
@@ -298,8 +298,8 @@ export function CloudUpstream() {
               <Input
                 value={remoteUrl}
                 onChange={(event) => setRemoteUrl(event.target.value)}
-                placeholder="https://paperclip.paperclip.app/PC521D/dashboard"
-                aria-label="Paperclip Cloud stack URL"
+                placeholder="https://valadrien-os.valadrien-os.app/PC521D/dashboard"
+                aria-label="ValadrienOs Cloud stack URL"
               />
               <Button onClick={() => startMutation.mutate()} disabled={startMutation.isPending || !remoteUrl.trim()}>
                 {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}

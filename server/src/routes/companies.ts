@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -12,7 +12,7 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -196,7 +196,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const rawImportBody: unknown = req.body;
     const actor = getActorInfo(req);
     const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
-    if (req.header("x-paperclip-cloud-async-import") === "1") {
+    if (req.header("x-valadrien-os-cloud-async-import") === "1") {
       assertCloudTenantCaller(req);
       cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
       const job = createImportJob(cloudTenantRequestKey(req));
@@ -482,8 +482,8 @@ function assertCloudTenantCaller(req: Request) {
 function cloudTenantRequestKey(req: Request) {
   return [
     req.actor.userId ?? "",
-    req.header("x-paperclip-cloud-stack-id")?.trim() ?? "",
-    req.header("x-paperclip-cloud-paperclip-company-id")?.trim() ?? "",
+    req.header("x-valadrien-os-cloud-stack-id")?.trim() ?? "",
+    req.header("x-valadrien-os-cloud-valadrien-os-company-id")?.trim() ?? "",
   ].join(":");
 }
 

@@ -1,0 +1,3 @@
+[Pod]
+PodName=valadrien-os
+PublishPort=3100:3100

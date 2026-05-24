@@ -20,7 +20,7 @@ import type {
   CloudUpstreamStep,
   CloudUpstreamSummaryCount,
   CloudUpstreamWarning,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useLocation } from "@/lib/router";
@@ -159,7 +159,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompanyName} into a Paperclip Cloud stack. Automations stay paused until activation.
+            Push {selectedCompanyName} into a ValadrienOs Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (
@@ -209,9 +209,9 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
           ) : (
             <div className="grid gap-3 md:grid-cols-[1fr_auto]">
               <Input
-                defaultValue="https://paperclip.paperclip.app/PC521D/dashboard"
-                placeholder="https://paperclip.paperclip.app/PC521D/dashboard"
-                aria-label="Paperclip Cloud stack URL"
+                defaultValue="https://valadrien-os.valadrien-os.app/PC521D/dashboard"
+                placeholder="https://valadrien-os.valadrien-os.app/PC521D/dashboard"
+                aria-label="ValadrienOs Cloud stack URL"
                 autoFocus
               />
               <Button disabled>
@@ -489,12 +489,12 @@ function formatBytes(value: number) {
 
 const STACK_TARGET = {
   stackId: "stk_2vKqz9D8mNFqQ7Rp",
-  stackSlug: "paperclip-prod",
-  stackDisplayName: "Paperclip Prod",
+  stackSlug: "valadrien-os-prod",
+  stackDisplayName: "ValadrienOs Prod",
   companyId: "co_4hT2yX",
-  primaryHost: "paperclip.paperclip.app",
-  origin: "https://paperclip.paperclip.app",
-  product: "paperclip-cloud",
+  primaryHost: "valadrien-os.valadrien-os.app",
+  origin: "https://valadrien-os.valadrien-os.app",
+  product: "valadrien-os-cloud",
   schemaMajor: 7,
   maxChunkBytes: 5 * 1024 * 1024,
 };
@@ -508,7 +508,7 @@ function connectedConnection(target = STACK_TARGET): CloudUpstreamConnection {
   return {
     id: "cu_conn_8d3f1b6a",
     companyId: "co_4hT2yX",
-    remoteUrl: "https://paperclip.paperclip.app/PC521D/dashboard",
+    remoteUrl: "https://valadrien-os.valadrien-os.app/PC521D/dashboard",
     target,
     tokenStatus: "connected",
     scopes: ["upstream.push", "upstream.preview"],
@@ -648,7 +648,7 @@ function runningRun(): CloudUpstreamRun {
     warnings: PREVIEW_WARNINGS_NORMAL,
     conflicts: PREVIEW_CONFLICTS,
     events: PROGRESS_EVENTS,
-    targetUrl: "https://paperclip.paperclip.app/PC521D/dashboard",
+    targetUrl: "https://valadrien-os.valadrien-os.app/PC521D/dashboard",
     report: {},
     retryOfRunId: null,
     createdAt: "2026-05-18T19:10:01.000Z",
@@ -679,7 +679,7 @@ function failedRun(): CloudUpstreamRun {
         message: "Apply rejected: cloud rejected chunk 4 of 6 (HTTP 502). Ledger entries from chunks 1–3 retained; chunk 4 not committed.",
       },
     ],
-    targetUrl: "https://paperclip.paperclip.app/PC521D/dashboard",
+    targetUrl: "https://valadrien-os.valadrien-os.app/PC521D/dashboard",
     report: { ledgerCheckpoint: "chunk-3" },
     retryOfRunId: null,
     createdAt: "2026-05-18T19:10:01.000Z",
@@ -717,7 +717,7 @@ function succeededRun(): CloudUpstreamRun {
         message: "Activation checklist pending operator approval — automations remain paused.",
       },
     ],
-    targetUrl: "https://paperclip.paperclip.app/PC521D/dashboard",
+    targetUrl: "https://valadrien-os.valadrien-os.app/PC521D/dashboard",
     report: {
       activationChecklist: {
         agents: { count: 6, status: "paused", activatedAt: null },
@@ -736,7 +736,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
   switch (state) {
     case "settings-pane":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: null,
@@ -746,7 +746,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "connect-wizard":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: null,
         preview: null,
         latestRun: null,
@@ -756,7 +756,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "schema-mismatch":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(STACK_TARGET_SCHEMA_BEHIND),
         preview: schemaMismatchPreview(),
         latestRun: null,
@@ -766,7 +766,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "preview":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: basePreview(),
         latestRun: null,
@@ -776,7 +776,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "preview-clean":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: cleanPreview(),
         latestRun: null,
@@ -786,7 +786,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "progress":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: runningRun(),
@@ -796,7 +796,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "retry":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: failedRun(),
@@ -808,7 +808,7 @@ function buildFixture(state: FixtureStateKey): Fixture {
       };
     case "finish":
       return {
-        selectedCompanyName: "Paperclip · PC521D",
+        selectedCompanyName: "ValadrienOs · PC521D",
         connection: connectedConnection(),
         preview: null,
         latestRun: succeededRun(),

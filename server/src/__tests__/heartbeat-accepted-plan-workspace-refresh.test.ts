@@ -16,7 +16,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -57,10 +57,10 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 async function createGitRepo() {
-  const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-accepted-plan-repo-"));
+  const repoRoot = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-accepted-plan-repo-"));
   await execFileAsync("git", ["init"], { cwd: repoRoot });
-  await execFileAsync("git", ["config", "user.email", "paperclip-test@example.com"], { cwd: repoRoot });
-  await execFileAsync("git", ["config", "user.name", "Paperclip Test"], { cwd: repoRoot });
+  await execFileAsync("git", ["config", "user.email", "valadrien-os-test@example.com"], { cwd: repoRoot });
+  await execFileAsync("git", ["config", "user.name", "ValadrienOs Test"], { cwd: repoRoot });
   await writeFile(path.join(repoRoot, "README.md"), "accepted plan workspace refresh\n");
   await execFileAsync("git", ["add", "README.md"], { cwd: repoRoot });
   await execFileAsync("git", ["commit", "-m", "initial"], { cwd: repoRoot });
@@ -73,7 +73,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   const tempRoots: string[] = [];
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-workspace-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-accepted-plan-workspace-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -244,11 +244,11 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     };
     expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.runtime.sessionParams).toBeNull();
-    expect(adapterInput.context.paperclipWorkspace).toEqual(expect.objectContaining({
+    expect(adapterInput.context.valadrienOsWorkspace).toEqual(expect.objectContaining({
       mode: "isolated_workspace",
       strategy: "git_worktree",
     }));
-    expect((adapterInput.context.paperclipWorkspace as { cwd: string }).cwd).not.toBe(repoRoot);
+    expect((adapterInput.context.valadrienOsWorkspace as { cwd: string }).cwd).not.toBe(repoRoot);
 
     const refreshedIssue = await db
       .select({

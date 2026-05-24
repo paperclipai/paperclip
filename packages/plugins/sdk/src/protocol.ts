@@ -2,7 +2,7 @@
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
  *
- * The Paperclip plugin runtime uses JSON-RPC 2.0 over stdio to communicate
+ * The ValadrienOs plugin runtime uses JSON-RPC 2.0 over stdio to communicate
  * between the host process and each plugin worker process. This module defines:
  *
  * - Core JSON-RPC 2.0 envelope types (request, response, notification, error)
@@ -16,7 +16,7 @@
  */
 
 import type {
-  PaperclipPluginManifestV1,
+  ValadrienOsPluginManifestV1,
   PluginLauncherBounds,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherRenderEnvironment,
@@ -40,8 +40,8 @@ import type {
   Goal,
   PluginLocalFolderDeclaration,
   PrincipalPermissionGrant,
-} from "@paperclipai/shared";
-export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+} from "@valadrien-os/shared";
+export type { PluginLauncherRenderContextSnapshot } from "@valadrien-os/shared";
 
 import type {
   PluginEvent,
@@ -83,7 +83,7 @@ export const JSONRPC_VERSION = "2.0" as const;
 
 /**
  * A unique request identifier. JSON-RPC 2.0 allows strings or numbers;
- * we use strings (UUIDs or monotonic counters) for all Paperclip messages.
+ * we use strings (UUIDs or monotonic counters) for all ValadrienOs messages.
  */
 export type JsonRpcId = string | number;
 
@@ -109,9 +109,9 @@ export interface JsonRpcRequest<
    * executing. The worker treats this as opaque and echoes only the id on
    * worker→host calls made from the same async execution context.
    */
-  readonly paperclipInvocation?: PluginInvocationContext;
+  readonly valadrienOsInvocation?: PluginInvocationContext;
   /** Opaque top-level invocation id echoed by worker→host requests. */
-  readonly paperclipInvocationId?: string;
+  readonly valadrienOsInvocationId?: string;
 }
 
 /**
@@ -174,11 +174,11 @@ export interface JsonRpcNotification<
   readonly params: TParams;
   /**
    * Host-issued metadata for host→worker push notifications such as events.
-   * Worker→host notifications echo only `paperclipInvocationId`.
+   * Worker→host notifications echo only `valadrienOsInvocationId`.
    */
-  readonly paperclipInvocation?: PluginInvocationContext;
+  readonly valadrienOsInvocation?: PluginInvocationContext;
   /** Opaque top-level invocation id echoed by worker→host notifications. */
-  readonly paperclipInvocationId?: string;
+  readonly valadrienOsInvocationId?: string;
 }
 
 /**
@@ -215,7 +215,7 @@ export type JsonRpcErrorCode =
   (typeof JSONRPC_ERROR_CODES)[keyof typeof JSONRPC_ERROR_CODES];
 
 /**
- * Paperclip plugin-specific error codes.
+ * ValadrienOs plugin-specific error codes.
  *
  * These live in the JSON-RPC "server error" reserved range (-32000 to -32099)
  * as specified by JSON-RPC 2.0 for implementation-defined server errors.
@@ -283,14 +283,14 @@ export interface WorkerHostCallContext {
  */
 export interface InitializeParams {
   /** Full plugin manifest snapshot. */
-  manifest: PaperclipPluginManifestV1;
+  manifest: ValadrienOsPluginManifestV1;
   /** Resolved operator configuration (validated against `instanceConfigSchema`). */
   config: Record<string, unknown>;
   /** Instance-level metadata. */
   instanceInfo: {
-    /** UUID of this Paperclip instance. */
+    /** UUID of this ValadrienOs instance. */
     instanceId: string;
-    /** Semver version of the running Paperclip host. */
+    /** Semver version of the running ValadrienOs host. */
     hostVersion: string;
   };
   /** Host API version. */
@@ -373,7 +373,7 @@ export interface GetDataParams {
 export type PluginPerformActionActorType = "user" | "agent" | "system";
 
 export interface PluginPerformActionActorContext {
-  /** Authenticated principal type resolved by the Paperclip host. */
+  /** Authenticated principal type resolved by the ValadrienOs host. */
   type: PluginPerformActionActorType;
   /** Authenticated board user id when `type === "user"`, otherwise null. */
   userId: string | null;

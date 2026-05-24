@@ -52,7 +52,7 @@ const inviteHistory = [
     state: "Active",
     humanRole: "operator",
     invitedBy: "Board User 25",
-    email: "board25@paperclip.local",
+    email: "board25@valadrien-os.local",
     createdAt: "Apr 25, 2026, 9:00 AM",
     action: "Revoke",
     relatedLabel: "Review request",
@@ -62,7 +62,7 @@ const inviteHistory = [
     state: "Accepted",
     humanRole: "viewer",
     invitedBy: "Board User 24",
-    email: "board24@paperclip.local",
+    email: "board24@valadrien-os.local",
     createdAt: "Apr 24, 2026, 8:15 AM",
     action: "Inactive",
     relatedLabel: "—",
@@ -72,7 +72,7 @@ const inviteHistory = [
     state: "Revoked",
     humanRole: "admin",
     invitedBy: "Board User 20",
-    email: "board20@paperclip.local",
+    email: "board20@valadrien-os.local",
     createdAt: "Apr 20, 2026, 2:45 PM",
     action: "Inactive",
     relatedLabel: "—",
@@ -82,7 +82,7 @@ const inviteHistory = [
     state: "Expired",
     humanRole: "owner",
     invitedBy: "Board User 19",
-    email: "board19@paperclip.local",
+    email: "board19@valadrien-os.local",
     createdAt: "Apr 19, 2026, 7:10 PM",
     action: "Inactive",
     relatedLabel: "—",
@@ -200,7 +200,7 @@ function InviteSummaryPanel({
           className="h-16 w-16 rounded-none border border-zinc-800"
         />
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">You&apos;ve been invited to join Paperclip</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">You&apos;ve been invited to join ValadrienOs</p>
           <h3 className="mt-2 text-2xl font-semibold text-zinc-100">{title}</h3>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">{description}</p>
         </div>
@@ -255,8 +255,8 @@ function InlineAuthPreview({
         </h3>
         <p className="mt-1 text-sm text-zinc-400">
           {mode === "sign_up"
-            ? "Start with a Paperclip account. After that, you'll come right back here to accept the invite for Acme Robotics."
-            : "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account."}
+            ? "Start with a ValadrienOs account. After that, you'll come right back here to accept the invite for Acme Robotics."
+            : "Use the ValadrienOs account that already matches this invite. If you do not have one yet, switch back to create account."}
         </p>
       </div>
 
@@ -312,7 +312,7 @@ function InlineAuthPreview({
 
       <p className="text-xs leading-5 text-zinc-500">
         {mode === "sign_up"
-          ? "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user."
+          ? "Already signed up before? Use the existing-account option instead so the invite lands on the right ValadrienOs user."
           : "No account yet? Switch back to create account so you can accept the invite with a new login."}
       </p>
     </div>
@@ -457,10 +457,10 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
           <div className="mx-auto w-full max-w-md">
             <div className="mb-8 flex items-center gap-2">
               <FlaskConical className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Paperclip</span>
+              <span className="text-sm font-medium">ValadrienOs</span>
             </div>
             <h3 className="text-xl font-semibold">
-              {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
+              {mode === "sign_in" ? "Sign in to ValadrienOs" : "Create your ValadrienOs account"}
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
               {mode === "sign_in"
@@ -585,7 +585,7 @@ function CompanyInvitesPreview() {
               <div>
                 <div className="text-sm font-medium">Latest invite link</div>
                 <div className="text-sm text-muted-foreground">
-                  This URL includes the current Paperclip domain returned by the server.
+                  This URL includes the current ValadrienOs domain returned by the server.
                 </div>
               </div>
               <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
@@ -597,7 +597,7 @@ function CompanyInvitesPreview() {
               type="button"
               className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-left text-sm break-all"
             >
-              https://paperclip.local/invite/new-token
+              https://valadrien-os.local/invite/new-token
             </button>
             <div className="flex flex-wrap gap-2">
               <Button type="button" size="sm" variant="outline">
@@ -811,7 +811,7 @@ export function InviteUxLab() {
             left={
               <InviteSummaryPanel
                 title="Join Acme Robotics"
-                description="Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email."
+                description="Create your ValadrienOs account first. If you already have one, switch to sign in and continue the invite with the same email."
                 inviteMessage="Welcome aboard."
                 requestedAccess="Operator"
               />
@@ -823,7 +823,7 @@ export function InviteUxLab() {
             left={
               <InviteSummaryPanel
                 title="Join Acme Robotics"
-                description="Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email."
+                description="Create your ValadrienOs account first. If you already have one, switch to sign in and continue the invite with the same email."
                 inviteMessage="Welcome aboard."
                 requestedAccess="Operator"
               />

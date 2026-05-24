@@ -46,7 +46,7 @@ describe("CodexRpcClient spawn failures", () => {
     // reads $CODEX_HOME/auth.json (default ~/.codex). Point CODEX_HOME at an
     // empty temp directory so we never hit real host auth or the WHAM network.
     previousCodexHome = process.env.CODEX_HOME;
-    isolatedCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-codex-spawn-test-"));
+    isolatedCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-codex-spawn-test-"));
     process.env.CODEX_HOME = isolatedCodexHome;
   });
 

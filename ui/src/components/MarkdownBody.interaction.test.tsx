@@ -74,7 +74,7 @@ describe("MarkdownBody code block interactions", () => {
   it("toggles line wrapping for indented preformatted markdown blocks", () => {
     const node = renderMarkdown("Plan:\n\n    source fetch/sync -> signal inbox");
     const pre = node.querySelector("pre");
-    const wrapButton = node.querySelector<HTMLButtonElement>(".paperclip-markdown-codeblock-wrap");
+    const wrapButton = node.querySelector<HTMLButtonElement>(".valadrien-os-markdown-codeblock-wrap");
 
     expect(pre?.style.whiteSpace).toBe("");
     expect(wrapButton?.getAttribute("aria-label")).toBe("Wrap lines");

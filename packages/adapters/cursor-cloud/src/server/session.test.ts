@@ -9,7 +9,7 @@ describe("cursorCloud sessionCodec", () => {
         runId: "run-456",
         envType: "pool",
         envName: "trusted",
-        repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+        repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
       }),
     ).toEqual({
       cursorAgentId: "agent-123",
@@ -17,7 +17,7 @@ describe("cursorCloud sessionCodec", () => {
       runtime: "cloud",
       envType: "pool",
       envName: "trusted",
-      repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+      repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
     });
   });
 

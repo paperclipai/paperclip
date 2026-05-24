@@ -26,6 +26,6 @@ describe("resolveViteHmrHost", () => {
 
   it("keeps concrete bind hosts", () => {
     expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
-    expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
+    expect(resolveViteHmrHost("valadrien-os-dev")).toBe("valadrien-os-dev");
   });
 });

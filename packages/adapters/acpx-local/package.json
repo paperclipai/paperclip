@@ -1,14 +1,14 @@
 {
-  "name": "@paperclipai/adapter-acpx-local",
+  "name": "@valadrien-os/adapter-acpx-local",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/ValDola-stack/valadrien-os",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/ValDola-stack/valadrien-os/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/ValDola-stack/valadrien-os",
     "directory": "packages/adapters/acpx-local"
   },
   "type": "module",
@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.31.4",
-    "@paperclipai/adapter-utils": "workspace:*",
+    "@valadrien-os/adapter-utils": "workspace:*",
     "@zed-industries/codex-acp": "^0.12.0",
     "acpx": "^0.6.1",
     "picocolors": "^1.1.1"

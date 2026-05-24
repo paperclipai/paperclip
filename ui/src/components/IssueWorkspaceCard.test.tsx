@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 
@@ -44,7 +44,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     cwd: "/tmp/issue-sandbox",
     repoUrl: null,
     baseRef: null,
-    branchName: "paperclip/papa-81",
+    branchName: "valadrien-os/papa-81",
     providerType: "git_worktree",
     providerRef: null,
     derivedFromExecutionWorkspaceId: null,

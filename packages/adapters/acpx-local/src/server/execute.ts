@@ -3,32 +3,32 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@valadrien-os/adapter-utils";
+import { readAdapterExecutionTarget, adapterExecutionTargetSessionIdentity } from "@valadrien-os/adapter-utils/execution-target";
 import {
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  applyPaperclipWorkspaceEnv,
+  DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE,
+  applyValadrienOsWorkspaceEnv,
   asNumber,
   asString,
   buildInvocationEnvForLogs,
-  buildPaperclipEnv,
+  buildValadrienOsEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   joinPromptSections,
-  materializePaperclipSkillCopy,
+  materializeValadrienOsSkillCopy,
   parseObject,
-  readPaperclipRuntimeSkillEntries,
-  readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  readValadrienOsRuntimeSkillEntries,
+  readValadrienOsIssueWorkModeFromContext,
+  renderValadrienOsWakePrompt,
   renderTemplate,
-  resolvePaperclipInstanceRootForAdapter,
-  resolvePaperclipDesiredSkillNames,
+  resolveValadrienOsInstanceRootForAdapter,
+  resolveValadrienOsDesiredSkillNames,
   rewriteWorkspaceCwdEnvVarsForExecution,
-  shapePaperclipWorkspaceEnvForExecution,
-  stringifyPaperclipWakePayload,
-  type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+  shapeValadrienOsWorkspaceEnvForExecution,
+  stringifyValadrienOsWakePayload,
+  type ValadrienOsSkillEntry,
+} from "@valadrien-os/adapter-utils/server-utils";
+import { shellQuote } from "@valadrien-os/adapter-utils/ssh";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -53,7 +53,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const WRAPPER_CLEANUP_RETENTION_MS = 15 * 60 * 1000;
-const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const VALADRIEN_OS_MANAGED_CODEX_SKILLS_MANIFEST = ".valadrien-os-managed-skills.json";
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
 
@@ -95,7 +95,7 @@ interface AcpxPreparedRuntime {
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
-  paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
+  valadrienOsClaudeSettings: ValadrienOsClaudeSettingsResult | null;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -115,21 +115,21 @@ function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
 }
 
-function defaultPaperclipInstanceDir(): string {
-  const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
-  return resolvePaperclipInstanceRootForAdapter({
+function defaultValadrienOsInstanceDir(): string {
+  const home = process.env.VALADRIEN_OS_HOME?.trim() || path.join(os.homedir(), ".valadrien-os");
+  const instanceId = process.env.VALADRIEN_OS_INSTANCE_ID?.trim() || "default";
+  return resolveValadrienOsInstanceRootForAdapter({
     homeDir: home,
     instanceId,
   });
 }
 
 function defaultStateDir(companyId: string, agentId: string): string {
-  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acpx-local", "agents", agentId);
+  return path.join(defaultValadrienOsInstanceDir(), "companies", companyId, "acpx-local", "agents", agentId);
 }
 
 function resolveManagedCodexHomeDir(companyId: string): string {
-  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
+  return path.join(defaultValadrienOsInstanceDir(), "companies", companyId, "codex-home");
 }
 
 function packageRootDir(): string {
@@ -232,7 +232,7 @@ async function prepareManagedCodexHome(input: {
 
   await onLog(
     "stdout",
-    `[paperclip] Using Paperclip-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    `[valadrien-os] Using ValadrienOs-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
   );
   return targetHome;
 }
@@ -278,11 +278,11 @@ async function hashPathContents(
 }
 
 async function buildSkillSetKey(input: {
-  skills: PaperclipSkillEntry[];
+  skills: ValadrienOsSkillEntry[];
   label: string;
 }): Promise<string> {
   const hash = createHash("sha256");
-  hash.update(`paperclip-acpx-${input.label}-skills:v1\n`);
+  hash.update(`valadrien-os-acpx-${input.label}-skills:v1\n`);
   const sorted = [...input.skills].sort((left, right) => left.runtimeName.localeCompare(right.runtimeName));
   for (const entry of sorted) {
     hash.update(`skill:${entry.key}:${entry.runtimeName}\n`);
@@ -293,9 +293,9 @@ async function buildSkillSetKey(input: {
 
 async function resolveSelectedRuntimeSkills(
   config: Record<string, unknown>,
-): Promise<{ allSkills: PaperclipSkillEntry[]; selectedSkills: PaperclipSkillEntry[]; desiredSkillNames: string[] }> {
-  const allSkills = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, allSkills);
+): Promise<{ allSkills: ValadrienOsSkillEntry[]; selectedSkills: ValadrienOsSkillEntry[]; desiredSkillNames: string[] }> {
+  const allSkills = await readValadrienOsRuntimeSkillEntries(config, __moduleDir);
+  const desiredSkillNames = resolveValadrienOsDesiredSkillNames(config, allSkills);
   const desiredSet = new Set(desiredSkillNames);
   return {
     allSkills,
@@ -322,17 +322,17 @@ async function prepareClaudeSkillRuntime(input: {
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await materializePaperclipSkillCopy(entry.source, target);
+      const result = await materializeValadrienOsSkillCopy(entry.source, target);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          `[valadrien-os] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[valadrien-os] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -340,7 +340,7 @@ async function prepareClaudeSkillRuntime(input: {
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
   const promptInstructions = selectedSkills.length > 0
     ? [
-        "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
+        "ValadrienOs has materialized selected runtime skills for this ACPX Claude session.",
         `Skill root: ${skillsHome}`,
         selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
         "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
@@ -357,13 +357,13 @@ async function prepareClaudeSkillRuntime(input: {
     },
     promptInstructions,
     commandNotes: selectedSkills.length > 0
-      ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
+      ? [`Materialized ${selectedSkills.length} ValadrienOs skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
   };
 }
 
 async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<string>> {
-  const manifestPath = path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST);
+  const manifestPath = path.join(skillsHome, VALADRIEN_OS_MANAGED_CODEX_SKILLS_MANIFEST);
   try {
     const raw = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
     const parsed = parseObject(raw);
@@ -379,7 +379,7 @@ async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<s
 async function writeManagedCodexSkillsManifest(skillsHome: string, skillNames: Iterable<string>): Promise<void> {
   const managedSkillNames = Array.from(new Set(skillNames)).sort();
   await fs.writeFile(
-    path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST),
+    path.join(skillsHome, VALADRIEN_OS_MANAGED_CODEX_SKILLS_MANIFEST),
     `${JSON.stringify({ version: 1, managedSkillNames }, null, 2)}\n`,
     "utf8",
   );
@@ -394,8 +394,8 @@ async function removeSkillTarget(target: string): Promise<boolean> {
 
 async function reconcileManagedCodexSkills(input: {
   skillsHome: string;
-  allSkills: PaperclipSkillEntry[];
-  selectedSkills: PaperclipSkillEntry[];
+  allSkills: ValadrienOsSkillEntry[];
+  selectedSkills: ValadrienOsSkillEntry[];
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<void> {
   const desired = new Set(input.selectedSkills.map((entry) => entry.runtimeName));
@@ -405,7 +405,7 @@ async function reconcileManagedCodexSkills(input: {
   for (const name of managed) {
     if (desired.has(name)) continue;
     if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[valadrien-os] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 
@@ -419,14 +419,14 @@ async function reconcileManagedCodexSkills(input: {
     const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
     if (resolvedLinkedPath !== path.resolve(entry.source)) continue;
     if (await removeSkillTarget(target)) {
-      await input.onLog("stdout", `[paperclip] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[valadrien-os] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
     }
   }
 
   for (const name of managed) {
     if (desired.has(name) || availableByRuntimeName.has(name)) continue;
     if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[valadrien-os] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 }
@@ -468,17 +468,17 @@ async function prepareCodexSkillRuntime(input: {
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await materializePaperclipSkillCopy(entry.source, target);
+      const result = await materializeValadrienOsSkillCopy(entry.source, target);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
-          `[paperclip] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          `[valadrien-os] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
         );
       }
     } catch (err) {
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[valadrien-os] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }
@@ -566,7 +566,7 @@ function buildSessionParams(input: {
   };
 }
 
-interface PaperclipClaudeSettingsResult {
+interface ValadrienOsClaudeSettingsResult {
   filePath: string;
   allow: string[];
   additionalDirectories: string[];
@@ -583,28 +583,28 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
 // `.claude/settings.local.json` we override the user's potentially-restrictive
 // `~/.claude/settings.json` (e.g. `defaultMode: "dontAsk"`, which silently
 // denies every non-allowlisted tool and never reaches `canUseTool`), and we
-// widen the SDK's Read sandbox to include the Paperclip state dirs the agent
+// widen the SDK's Read sandbox to include the ValadrienOs state dirs the agent
 // needs to talk to its own control plane.
-async function writePaperclipClaudeSettings(input: {
+async function writeValadrienOsClaudeSettings(input: {
   cwd: string;
   stateDir: string;
   agentHome: string;
   companyId: string;
-}): Promise<PaperclipClaudeSettingsResult> {
+}): Promise<ValadrienOsClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
-  const instanceRoot = defaultPaperclipInstanceDir();
+  const instanceRoot = defaultValadrienOsInstanceDir();
   const companyRoot = path.join(instanceRoot, "companies", input.companyId);
-  const paperclipAdditionalDirectories = uniqueSorted([
+  const valadrienOsAdditionalDirectories = uniqueSorted([
     input.stateDir,
     input.agentHome,
     companyRoot,
   ]);
-  const paperclipAllow = uniqueSorted([
+  const valadrienOsAllow = uniqueSorted([
     "Bash(curl:*)",
     "Bash(env:*)",
     "Bash(env)",
-    `Bash(${input.cwd}/scripts/paperclip-issue-update.sh:*)`,
-    `Bash(${input.cwd}/scripts/paperclip:*)`,
+    `Bash(${input.cwd}/scripts/valadrien-os-issue-update.sh:*)`,
+    `Bash(${input.cwd}/scripts/valadrien-os:*)`,
   ]);
 
   let existing: Record<string, unknown> = {};
@@ -627,10 +627,10 @@ async function writePaperclipClaudeSettings(input: {
   const existingAdditionalDirectories = Array.isArray(existingPerms.additionalDirectories)
     ? (existingPerms.additionalDirectories as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
-  const mergedAllow = uniqueSorted([...existingAllow, ...paperclipAllow]);
+  const mergedAllow = uniqueSorted([...existingAllow, ...valadrienOsAllow]);
   const mergedAdditionalDirectories = uniqueSorted([
     ...existingAdditionalDirectories,
-    ...paperclipAdditionalDirectories,
+    ...valadrienOsAdditionalDirectories,
   ]);
   const existingDefaultMode =
     typeof existingPerms.defaultMode === "string" ? (existingPerms.defaultMode as string) : "";
@@ -690,9 +690,9 @@ async function writeAgentWrapper(input: {
     "  set +a",
     "fi",
     `stderr_dir=${shellQuote(input.childStderrDir)}`,
-    "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
+    "if [[ -n \"${VALADRIEN_OS_RUN_ID:-}\" ]]; then",
     "  mkdir -p \"$stderr_dir\"",
-    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" >&2)",
+    "  exec 2> >(tee -a \"$stderr_dir/$VALADRIEN_OS_RUN_ID.log\" >&2)",
     "fi",
     `exec ${input.agentCommandShell} "$@"`,
     "",
@@ -733,7 +733,7 @@ async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
-  const workspaceContext = parseObject(context.paperclipWorkspace);
+  const workspaceContext = parseObject(context.valadrienOsWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
@@ -757,7 +757,7 @@ async function buildRuntime(input: {
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
   const executionTargetIsRemote = remoteExecutionIdentity !== null;
-  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+  const shapedWorkspaceEnv = shapeValadrienOsWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
     executionTargetIsRemote,
@@ -778,8 +778,8 @@ async function buildRuntime(input: {
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
+    typeof envConfig.VALADRIEN_OS_API_KEY === "string" && envConfig.VALADRIEN_OS_API_KEY.trim().length > 0;
+  const env: Record<string, string> = { ...buildValadrienOsEnv(agent), VALADRIEN_OS_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
     (typeof context.issueId === "string" && context.issueId.trim()) ||
@@ -794,17 +794,17 @@ async function buildRuntime(input: {
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  applyPaperclipWorkspaceEnv(env, {
+  const wakePayloadJson = stringifyValadrienOsWakePayload(context.valadrienOsWake);
+  const issueWorkMode = readValadrienOsIssueWorkModeFromContext(context);
+  if (wakeTaskId) env.VALADRIEN_OS_TASK_ID = wakeTaskId;
+  if (issueWorkMode) env.VALADRIEN_OS_ISSUE_WORK_MODE = issueWorkMode;
+  if (wakeReason) env.VALADRIEN_OS_WAKE_REASON = wakeReason;
+  if (wakeCommentId) env.VALADRIEN_OS_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) env.VALADRIEN_OS_APPROVAL_ID = approvalId;
+  if (approvalStatus) env.VALADRIEN_OS_APPROVAL_STATUS = approvalStatus;
+  if (linkedIssueIds.length > 0) env.VALADRIEN_OS_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakePayloadJson) env.VALADRIEN_OS_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  applyValadrienOsWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,
@@ -824,7 +824,7 @@ async function buildRuntime(input: {
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (!hasExplicitApiKey && authToken) env.VALADRIEN_OS_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -838,7 +838,7 @@ async function buildRuntime(input: {
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
-  let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
+  let valadrienOsClaudeSettings: ValadrienOsClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
       stateDir,
@@ -848,16 +848,16 @@ async function buildRuntime(input: {
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
-    paperclipClaudeSettings = await writePaperclipClaudeSettings({
+    valadrienOsClaudeSettings = await writeValadrienOsClaudeSettings({
       cwd,
       stateDir,
       agentHome,
       companyId: agent.companyId,
     });
     skillCommandNotes.push(
-      `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
-        paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+      `Wrote ValadrienOs-managed Claude settings to ${valadrienOsClaudeSettings.filePath} (defaultMode=${valadrienOsClaudeSettings.defaultMode}${
+        valadrienOsClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
+      }, +${valadrienOsClaudeSettings.additionalDirectories.length} read root(s), +${valadrienOsClaudeSettings.allow.length} allow rule(s)).`,
     );
   } else if (acpxAgent === "codex") {
     const preparedSkills = await prepareCodexSkillRuntime({
@@ -869,10 +869,10 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else {
-    const desired = resolvePaperclipDesiredSkillNames(config, await readPaperclipRuntimeSkillEntries(config, __moduleDir));
+    const desired = resolveValadrienOsDesiredSkillNames(config, await readValadrienOsRuntimeSkillEntries(config, __moduleDir));
     skillsIdentity = { mode: "custom_unsupported", desiredSkillNames: desired };
     if (desired.length > 0) {
-      skillCommandNotes.push("Selected Paperclip skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
+      skillCommandNotes.push("Selected ValadrienOs skills are tracked only; ACPX custom commands do not expose a runtime skill contract yet.");
     }
   }
 
@@ -907,16 +907,16 @@ async function buildRuntime(input: {
     remoteExecutionIdentity,
     skillsIdentity,
     skillPromptInstructions,
-    paperclipClaudeSettings: paperclipClaudeSettings
+    valadrienOsClaudeSettings: valadrienOsClaudeSettings
       ? {
-          allow: paperclipClaudeSettings.allow,
-          additionalDirectories: paperclipClaudeSettings.additionalDirectories,
-          defaultMode: paperclipClaudeSettings.defaultMode,
+          allow: valadrienOsClaudeSettings.allow,
+          additionalDirectories: valadrienOsClaudeSettings.additionalDirectories,
+          defaultMode: valadrienOsClaudeSettings.defaultMode,
         }
       : null,
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
-  const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
+  const sessionKey = `valadrien-os:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
@@ -951,7 +951,7 @@ async function buildRuntime(input: {
       commandNotes: skillCommandNotes,
     },
     childStderrLogPath,
-    paperclipClaudeSettings,
+    valadrienOsClaudeSettings,
   };
 }
 
@@ -989,7 +989,7 @@ async function applySessionConfigOptions(input: {
   if (!input.runtime.setConfigOption) {
     const message =
       "ACPX runtime does not expose session config controls; upgrade ACPX or remove configured model, effort, and fast mode overrides.";
-    await input.onLog("stderr", `[paperclip] ${message}\n`);
+    await input.onLog("stderr", `[valadrien-os] ${message}\n`);
     throw new Error(message);
   }
   for (const option of options) {
@@ -1000,7 +1000,7 @@ async function applySessionConfigOptions(input: {
     });
     await input.onLog(
       "stdout",
-      `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
+      `[valadrien-os] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
 }
@@ -1011,7 +1011,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   commandNotes: string[];
 }> {
   const { agent, runId, config, context, onLog } = ctx;
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const promptTemplate = asString(config.promptTemplate, DEFAULT_VALADRIEN_OS_AGENT_PROMPT_TEMPLATE);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
@@ -1031,7 +1031,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[valadrien-os] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
       );
       commandNotes.push(`Configured instructionsFilePath ${instructionsFilePath}, but file could not be read.`);
     }
@@ -1051,12 +1051,12 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     !resumedSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+  const wakePrompt = renderValadrienOsWakePrompt(context.valadrienOsWake, { resumedSession });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+  const sessionHandoffNote = asString(context.valadrienOsSessionHandoffMarkdown, "").trim();
+  const taskContextNote = asString(context.valadrienOsTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -1271,7 +1271,7 @@ async function emitAcpxFailure(input: {
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
-      `[paperclip] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
+      `[valadrien-os] ACPX child stderr tail (${phase}):\n${childStderrTail}\n`,
     );
   }
   await emitAcpxLog(ctx, {
@@ -1305,7 +1305,7 @@ async function cleanupIdleHandles(input: {
       handles: input.handles,
       key,
       entry,
-      reason: "paperclip idle cleanup",
+      reason: "valadrien-os idle cleanup",
     });
   }
 }
@@ -1358,7 +1358,7 @@ function scheduleIdleHandleCleanup(input: {
         handles: input.handles,
         key: input.key,
         entry: input.entry,
-        reason: "paperclip idle cleanup",
+        reason: "valadrien-os idle cleanup",
       });
     })();
   }, delayMs);
@@ -1405,7 +1405,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
         "stdout",
-        `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+        `[valadrien-os] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
       );
     }
 
@@ -1429,7 +1429,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
           resumedSession = false;
           await ctx.onLog(
             "stdout",
-            `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+            `[valadrien-os] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
           handle = await runtime.ensureSession({
             sessionKey: prepared.sessionKey,
@@ -1490,7 +1490,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       });
       await runtime.close({
         handle: sessionHandle,
-        reason: "paperclip config cleanup",
+        reason: "valadrien-os config cleanup",
         discardPersistentState: false,
       }).catch(() => {});
       const existing = warmHandles.get(prepared.sessionKey);
@@ -1538,7 +1538,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         command: prepared.agentCommand ?? prepared.acpxAgent,
         cwd: prepared.cwd,
         commandNotes: [
-          `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
+          `ACPX runtime embedded in ValadrienOs with ${prepared.mode} session mode.`,
           `Effective ACPX permission mode: ${prepared.permissionMode}.`,
           ...(prepared.requestedModel
             ? [
@@ -1600,13 +1600,13 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
             handles: warmHandles,
             key: prepared.sessionKey,
             entry: existing,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            reason: timedOut ? "valadrien-os timeout cleanup" : `valadrien-os turn ${terminal.status}`,
             discardPersistentState: terminal.status === "cancelled" || timedOut,
           });
         } else {
           await runtime.close({
             handle: sessionHandle,
-            reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
+            reason: timedOut ? "valadrien-os timeout cleanup" : `valadrien-os turn ${terminal.status}`,
             discardPersistentState: terminal.status === "cancelled" || timedOut,
           }).catch(() => {});
         }
@@ -1615,7 +1615,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
         if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
           await runtime.close({
             handle: sessionHandle,
-            reason: "paperclip duplicate warm handle cleanup",
+            reason: "valadrien-os duplicate warm handle cleanup",
             discardPersistentState: false,
           }).catch(() => {});
         } else {
@@ -1641,12 +1641,12 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
             handles: warmHandles,
             key: prepared.sessionKey,
             entry: existing,
-            reason: "paperclip completed turn cleanup",
+            reason: "valadrien-os completed turn cleanup",
           });
         } else {
           await runtime.close({
             handle: sessionHandle,
-            reason: "paperclip completed turn cleanup",
+            reason: "valadrien-os completed turn cleanup",
             discardPersistentState: false,
           }).catch(() => {});
         }
@@ -1696,7 +1696,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
       if (cancel) await cancel(preEmitMessage).catch(() => {});
       await runtime.close({
         handle: sessionHandle,
-        reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
+        reason: timedOut ? "valadrien-os timeout cleanup" : "valadrien-os error cleanup",
         discardPersistentState: timedOut,
       }).catch(() => {});
       const existing = warmHandles.get(prepared.sessionKey);

@@ -11,7 +11,7 @@ The goal is to keep the Kanban mental model while making high-volume boards usab
 
 ## Problem
 
-When Paperclip has many issues, board columns get too tall and slow. The operator loses the ability to scan the board quickly, and rendering or dragging through long columns becomes unpleasant. The first version should solve this by reducing the number of visible cards per column and by collapsing low-signal columns, not by replacing Kanban with a different inventory surface.
+When Valadrien OS has many issues, board columns get too tall and slow. The operator loses the ability to scan the board quickly, and rendering or dragging through long columns becomes unpleasant. The first version should solve this by reducing the number of visible cards per column and by collapsing low-signal columns, not by replacing Kanban with a different inventory surface.
 
 ## Design
 

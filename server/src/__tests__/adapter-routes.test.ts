@@ -93,7 +93,7 @@ describe("adapter routes", () => {
     mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
     mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
     mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/valadrien-os-adapter-routes-test");
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
     mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);

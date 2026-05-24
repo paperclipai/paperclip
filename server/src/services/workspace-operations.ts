@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
-import { workspaceOperations } from "@paperclipai/db";
-import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@paperclipai/shared";
+import type { Db } from "@valadrien-os/db";
+import { workspaceOperations } from "@valadrien-os/db";
+import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@valadrien-os/shared";
 import { asc, desc, eq, inArray, isNull, or, and } from "drizzle-orm";
 import { notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";

@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import type { WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { WorkspaceRuntimeService } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,

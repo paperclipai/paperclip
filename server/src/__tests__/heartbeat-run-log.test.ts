@@ -18,24 +18,24 @@ describe("compactRunLogChunk", () => {
     const compacted = compactRunLogChunk(chunk, 16_384);
 
     expect(compacted.length).toBeLessThan(chunk.length);
-    expect(compacted).toContain("[paperclip truncated run log chunk:");
+    expect(compacted).toContain("[valadrien-os truncated run log chunk:");
     expect(compacted.endsWith("tail")).toBe(true);
   });
 
-  it("redacts Paperclip credential shapes before persisting run-log chunks", () => {
+  it("redacts ValadrienOs credential shapes before persisting run-log chunks", () => {
     const chunk = [
       "Authorization: Bearer live-bearer-token-value",
-      `export PAPERCLIP_API_KEY='paperclip-shell-secret'`,
-      `payload {"PAPERCLIP_API_KEY":"paperclip-json-secret"}`,
-      "--paperclip-api-key=paperclip-flag-secret",
+      `export VALADRIEN_OS_API_KEY='valadrien-os-shell-secret'`,
+      `payload {"VALADRIEN_OS_API_KEY":"valadrien-os-json-secret"}`,
+      "--valadrien-os-api-key=valadrien-os-flag-secret",
     ].join("\n");
 
     const compacted = compactRunLogChunk(chunk);
 
     expect(compacted).toContain("***REDACTED***");
     expect(compacted).not.toContain("live-bearer-token-value");
-    expect(compacted).not.toContain("paperclip-shell-secret");
-    expect(compacted).not.toContain("paperclip-json-secret");
-    expect(compacted).not.toContain("paperclip-flag-secret");
+    expect(compacted).not.toContain("valadrien-os-shell-secret");
+    expect(compacted).not.toContain("valadrien-os-json-secret");
+    expect(compacted).not.toContain("valadrien-os-flag-secret");
   });
 });

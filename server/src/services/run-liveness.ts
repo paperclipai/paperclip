@@ -1,4 +1,4 @@
-import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
+import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@valadrien-os/shared";
 
 export type RunLivenessActionability =
   | "runnable"

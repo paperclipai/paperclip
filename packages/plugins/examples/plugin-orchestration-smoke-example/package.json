@@ -1,35 +1,35 @@
 {
-  "name": "@paperclipai/plugin-orchestration-smoke-example",
+  "name": "@valadrien-os/plugin-orchestration-smoke-example",
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "First-party smoke plugin for orchestration-grade Paperclip plugin APIs",
+  "description": "First-party smoke plugin for orchestration-grade Valadrien OS plugin APIs",
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "node ./esbuild.config.mjs",
     "build:rollup": "rollup -c",
     "dev": "node ./esbuild.config.mjs --watch",
-    "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
+    "dev:ui": "valadrien-os-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
     "test": "vitest run --config ./vitest.config.ts",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+    "typecheck": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
-  "paperclipPlugin": {
+  "valadrienOsPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
     "ui": "./dist/ui/"
   },
   "keywords": [
-    "paperclip",
+    "valadrien-os",
     "plugin",
     "connector"
   ],
-  "author": "Paperclip",
+  "author": "Valadrien OS",
   "license": "MIT",
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*"
+    "@valadrien-os/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
-    "@paperclipai/shared": "workspace:*",
+    "@valadrien-os/shared": "workspace:*",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-typescript": "^12.1.2",
     "@types/node": "^24.6.0",

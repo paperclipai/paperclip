@@ -25,32 +25,32 @@ describe("sandbox managed runtime", () => {
   });
 
   it("preserves excluded local workspace artifacts during restore mirroring", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-sandbox-restore-"));
     cleanupDirs.push(rootDir);
     const sourceDir = path.join(rootDir, "source");
     const targetDir = path.join(rootDir, "target");
     await mkdir(path.join(sourceDir, "src"), { recursive: true });
     await mkdir(path.join(targetDir, ".claude"), { recursive: true });
-    await mkdir(path.join(targetDir, ".paperclip-runtime"), { recursive: true });
+    await mkdir(path.join(targetDir, ".valadrien-os-runtime"), { recursive: true });
     await writeFile(path.join(sourceDir, "src", "app.ts"), "export const value = 2;\n", "utf8");
     await writeFile(path.join(targetDir, "stale.txt"), "remove me\n", "utf8");
     await writeFile(path.join(targetDir, ".claude", "settings.json"), "{\"keep\":true}\n", "utf8");
     await writeFile(path.join(targetDir, ".claude.json"), "{\"keep\":true}\n", "utf8");
-    await writeFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "{}\n", "utf8");
+    await writeFile(path.join(targetDir, ".valadrien-os-runtime", "state.json"), "{}\n", "utf8");
 
     await mirrorDirectory(sourceDir, targetDir, {
-      preserveAbsent: [".paperclip-runtime", ".claude", ".claude.json"],
+      preserveAbsent: [".valadrien-os-runtime", ".claude", ".claude.json"],
     });
 
     await expect(readFile(path.join(targetDir, "src", "app.ts"), "utf8")).resolves.toBe("export const value = 2;\n");
     await expect(readFile(path.join(targetDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
     await expect(readFile(path.join(targetDir, ".claude.json"), "utf8")).resolves.toBe("{\"keep\":true}\n");
-    await expect(readFile(path.join(targetDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(path.join(targetDir, ".valadrien-os-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
     await expect(readFile(path.join(targetDir, "stale.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("syncs workspace and assets through a provider-neutral sandbox client", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-managed-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-sandbox-managed-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
@@ -119,8 +119,8 @@ describe("sandbox managed runtime", () => {
 
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
     await writeFile(path.join(remoteWorkspaceDir, "remote-only.txt"), "sync back\n", "utf8");
-    await mkdir(path.join(localWorkspaceDir, ".paperclip-runtime"), { recursive: true });
-    await writeFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "{}\n", "utf8");
+    await mkdir(path.join(localWorkspaceDir, ".valadrien-os-runtime"), { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, ".valadrien-os-runtime", "state.json"), "{}\n", "utf8");
     await writeFile(path.join(localWorkspaceDir, "local-stale.txt"), "remove\n", "utf8");
     await prepared.restoreWorkspace();
 
@@ -128,6 +128,6 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "remote-only.txt"), "utf8")).resolves.toBe("sync back\n");
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
-    await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
+    await expect(readFile(path.join(localWorkspaceDir, ".valadrien-os-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
   });
 });

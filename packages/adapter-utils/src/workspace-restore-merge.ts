@@ -152,7 +152,7 @@ async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise
       if (code !== "EEXIST") throw error;
       // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
       // the lockDir would otherwise persist forever and stall restores. Mirror
-      // the materializePaperclipSkillCopy lock pattern — remove and retry.
+      // the materializeValadrienOsSkillCopy lock pattern — remove and retry.
       if (!(await isHolderAlive(lockDir))) {
         await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
         continue;
@@ -169,7 +169,7 @@ export async function withDirectoryMergeLock<T>(
   targetDir: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const releaseLock = await acquireDirectoryMergeLock(`${targetDir}.paperclip-restore.lock`);
+  const releaseLock = await acquireDirectoryMergeLock(`${targetDir}.valadrien-os-restore.lock`);
   try {
     return await fn();
   } finally {

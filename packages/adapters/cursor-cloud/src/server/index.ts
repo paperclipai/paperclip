@@ -2,7 +2,7 @@ export { execute } from "./execute.js";
 export { testEnvironment } from "./test.js";
 export { sessionCodec } from "./session.js";
 
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@valadrien-os/adapter-utils";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {

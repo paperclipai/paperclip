@@ -5527,21 +5527,21 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'paperclip-feedback-envelope-v2'"
+          "default": "'valadrien-os-feedback-envelope-v2'"
         },
         "bundle_version": {
           "name": "bundle_version",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'paperclip-feedback-bundle-v2'"
+          "default": "'valadrien-os-feedback-bundle-v2'"
         },
         "payload_version": {
           "name": "payload_version",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'paperclip-feedback-v1'"
+          "default": "'valadrien-os-feedback-v1'"
         },
         "payload_digest": {
           "name": "payload_digest",

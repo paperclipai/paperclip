@@ -17,10 +17,10 @@ describe("issue references", () => {
   it("parses relative and absolute issue hrefs", () => {
     expect(parseIssueReferenceHref("/issues/PAP-123")).toEqual({ identifier: "PAP-123" });
     expect(parseIssueReferenceHref("/PAP/issues/pap-456")).toEqual({ identifier: "PAP-456" });
-    expect(parseIssueReferenceHref("https://paperclip.ing/PAP/issues/pap-789#comment-1")).toEqual({
+    expect(parseIssueReferenceHref("https://TODO_DOMAIN/PAP/issues/pap-789#comment-1")).toEqual({
       identifier: "PAP-789",
     });
-    expect(parseIssueReferenceHref("https://paperclip.ing/projects/PAP-789")).toBeNull();
+    expect(parseIssueReferenceHref("https://TODO_DOMAIN/projects/PAP-789")).toBeNull();
   });
 
   it("builds canonical issue hrefs", () => {

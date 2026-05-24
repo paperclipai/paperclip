@@ -2,21 +2,21 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
+} from "@valadrien-os/adapter-utils";
 import {
   asNumber,
   asString,
   asStringArray,
   ensurePathInEnv,
   parseObject,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@valadrien-os/adapter-utils/server-utils";
 import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@valadrien-os/adapter-utils/execution-target";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { parseGrokJsonl } from "./parse.js";
 

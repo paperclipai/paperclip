@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
-import type { IssueRetryNowOutcome, IssueRetryNowResponse } from "@paperclipai/shared";
+import type { IssueRetryNowOutcome, IssueRetryNowResponse } from "@valadrien-os/shared";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";

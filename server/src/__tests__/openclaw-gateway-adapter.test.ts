@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { execute, testEnvironment } from "@paperclipai/adapter-openclaw-gateway/server";
+import { execute, testEnvironment } from "@valadrien-os/adapter-openclaw-gateway/server";
 import {
   buildOpenClawGatewayConfig,
   parseOpenClawGatewayStdoutLine,
-} from "@paperclipai/adapter-openclaw-gateway/ui";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+} from "@valadrien-os/adapter-openclaw-gateway/ui";
+import type { AdapterExecutionContext } from "@valadrien-os/adapter-utils";
 
 function buildContext(
   config: Record<string, unknown>,
@@ -422,24 +422,24 @@ describe("openclaw gateway adapter execute", () => {
               issueId: "issue-123",
               wakeReason: "issue_assigned",
               issueIds: ["issue-123"],
-              paperclipWorkspace: {
+              valadrienOsWorkspace: {
                 cwd: "/tmp/worktrees/pap-123",
                 strategy: "git_worktree",
                 branchName: "pap-123-test",
               },
-              paperclipWorkspaces: [
+              valadrienOsWorkspaces: [
                 {
                   id: "workspace-1",
                   cwd: "/tmp/project",
                 },
               ],
-              paperclipRuntimeServiceIntents: [
+              valadrienOsRuntimeServiceIntents: [
                 {
                   name: "preview",
                   lifecycle: "ephemeral",
                 },
               ],
-              paperclipWake: {
+              valadrienOsWake: {
                 reason: "issue_commented",
                 issue: {
                   id: "issue-123",
@@ -489,11 +489,11 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
+      expect(payload?.sessionKey).toBe("valadrien-os:issue:issue-123");
       expect(String(payload?.message ?? "")).toContain("wake now");
-      expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
-      expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
-      expect(String(payload?.message ?? "")).toContain("## Paperclip Wake Payload");
+      expect(String(payload?.message ?? "")).toContain("VALADRIEN_OS_RUN_ID=run-123");
+      expect(String(payload?.message ?? "")).toContain("VALADRIEN_OS_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).toContain("## ValadrienOs Wake Payload");
       expect(String(payload?.message ?? "")).toContain(
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
       );
@@ -502,7 +502,7 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
+      expect(payload?.valadrienOs).toMatchObject({
         wake: {
           latestCommentId: "comment-2",
           commentIds: ["comment-1", "comment-2"],

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, Issue } from "@valadrien-os/shared";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { formatAssigneeUserLabel } from "../lib/assignees";

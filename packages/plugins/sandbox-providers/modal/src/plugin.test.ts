@@ -58,7 +58,7 @@ function makeFakeProcess(input: {
 function createFakeSandbox(overrides: FakeSandboxOverrides = {}) {
   const execCalls: Array<{ argv: string[]; params?: unknown }> = [];
   const defaultExec = async (_argv: string[], _params?: unknown): Promise<FakeProcess> =>
-    makeFakeProcess({ exitCode: 0, stdout: "paperclip-probe" });
+    makeFakeProcess({ exitCode: 0, stdout: "valadrien-os-probe" });
   const exec = vi.fn().mockImplementation(async (argv: string[], params?: unknown) => {
     execCalls.push({ argv, params });
     return overrides.execImpl ? overrides.execImpl(argv, params) : defaultExec(argv, params);
@@ -102,7 +102,7 @@ const baseAcquireParams = {
 };
 
 const baseConfig = {
-  appName: "paperclip-app",
+  appName: "valadrien-os-app",
   image: "node:20",
   sandboxTimeoutMs: 3_600_000,
   execTimeoutMs: 300_000,
@@ -244,14 +244,14 @@ describe("Modal sandbox provider plugin", () => {
       config: { ...baseConfig, workdir: "/srv/work" },
     });
 
-    expect(mockAppFromName).toHaveBeenCalledWith("paperclip-app", {
+    expect(mockAppFromName).toHaveBeenCalledWith("valadrien-os-app", {
       createIfMissing: true,
       environment: undefined,
     });
     expect(mockImageFromRegistry).toHaveBeenCalledWith("node:20");
     expect(sandbox.setTags).toHaveBeenCalledWith(expect.objectContaining({
-      "paperclip-provider": "modal",
-      "paperclip-company-id": "c-1",
+      "valadrien-os-provider": "modal",
+      "valadrien-os-company-id": "c-1",
     }));
     // First exec is the mkdir for the workspace, second is the probe command.
     expect(sandbox.execCalls[0]?.argv).toEqual([
@@ -262,7 +262,7 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.execCalls[1]?.argv).toEqual([
       "sh",
       "-lc",
-      "printf paperclip-probe",
+      "printf valadrien-os-probe",
     ]);
     expect(sandbox.terminate).toHaveBeenCalled();
     expect(mockClientClose).toHaveBeenCalled();
@@ -280,7 +280,7 @@ describe("Modal sandbox provider plugin", () => {
   it("returns a failure probe result when the probe command exits non-zero", async () => {
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) => {
-        if (argv[2] === "printf paperclip-probe") {
+        if (argv[2] === "printf valadrien-os-probe") {
           return makeFakeProcess({ exitCode: 7, stdout: "boom" });
         }
         return makeFakeProcess({ exitCode: 0 });
@@ -341,8 +341,8 @@ describe("Modal sandbox provider plugin", () => {
       }),
     });
     expect(sandbox.setTags).toHaveBeenCalledWith(expect.objectContaining({
-      "paperclip-run-id": "run-1",
-      "paperclip-reuse-lease": "true",
+      "valadrien-os-run-id": "run-1",
+      "valadrien-os-reuse-lease": "true",
     }));
     expect(sandbox.execCalls[0]?.argv).toEqual(["sh", "-lc", "mkdir -p '/srv/work'"]);
   });
@@ -386,7 +386,7 @@ describe("Modal sandbox provider plugin", () => {
         config: baseConfig,
       }),
     ).rejects.toThrow(
-      "Failed to create remote workspace directory '/workspace/paperclip': mkdir exited with code 17",
+      "Failed to create remote workspace directory '/workspace/valadrien-os': mkdir exited with code 17",
     );
     expect(sandbox.terminate).toHaveBeenCalledTimes(1);
   });
@@ -603,16 +603,16 @@ describe("Modal sandbox provider plugin", () => {
     });
 
     expect(sandbox.openedFiles).toHaveLength(1);
-    expect(sandbox.openedFiles[0]?.path).toMatch(/^\/tmp\/paperclip-stdin-/);
+    expect(sandbox.openedFiles[0]?.path).toMatch(/^\/tmp\/valadrien-os-stdin-/);
     expect(sandbox.openedFiles[0]?.mode).toBe("w");
     expect(sandbox.openedFiles[0]?.written).not.toBeNull();
     expect(new TextDecoder().decode(sandbox.openedFiles[0]!.written!)).toBe("input payload");
 
     // First exec is the user command; second is the rm cleanup.
     const userCall = sandbox.execCalls[0]!;
-    expect(userCall.argv[2]).toMatch(/&& exec 'cat' < '\/tmp\/paperclip-stdin-/);
+    expect(userCall.argv[2]).toMatch(/&& exec 'cat' < '\/tmp\/valadrien-os-stdin-/);
     const cleanupCall = sandbox.execCalls[1]!;
-    expect(cleanupCall.argv[2]).toMatch(/^rm -f '\/tmp\/paperclip-stdin-/);
+    expect(cleanupCall.argv[2]).toMatch(/^rm -f '\/tmp\/valadrien-os-stdin-/);
     expect(result?.exitCode).toBe(0);
   });
 

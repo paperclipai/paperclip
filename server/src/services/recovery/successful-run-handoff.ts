@@ -1,16 +1,16 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
+import type { Db } from "@valadrien-os/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@valadrien-os/db";
+import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@valadrien-os/shared";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
-  "Paperclip needs a disposition before this issue can continue.";
+  "ValadrienOs needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+  "ValadrienOs could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
 export const LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES = [
   "## This issue still needs a next step",
   "## Successful run missing issue disposition",
@@ -309,9 +309,9 @@ export function buildSuccessfulRunHandoffInstruction(input: {
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
   return [
-    `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
+    `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and ValadrienOs cannot identify a valid issue disposition.`,
     "",
-    "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
+    "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching ValadrienOs action:",
     "",
     "**Is the issue finished?**",
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",

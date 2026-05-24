@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { testEnvironment } from "@paperclipai/adapter-acpx-local/server";
-import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
+import { testEnvironment } from "@valadrien-os/adapter-acpx-local/server";
+import type { AdapterEnvironmentCheck } from "@valadrien-os/adapter-utils";
 
 function credentialChecks(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentCheck[] {
   return checks.filter((check) => check.code.startsWith("acpx_claude_") || check.code.startsWith("acpx_codex_"));
@@ -43,7 +43,7 @@ describe("acpx_local environment credential diagnostics", () => {
   });
 
   it("emits an info-level Claude missing credential hint without changing diagnostic health", async () => {
-    const root = path.join(os.tmpdir(), `paperclip-acpx-claude-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const root = path.join(os.tmpdir(), `valadrien-os-acpx-claude-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const claudeConfigDir = path.join(root, ".claude");
 
     try {
@@ -71,7 +71,7 @@ describe("acpx_local environment credential diagnostics", () => {
   });
 
   it("emits an info-level Codex credential hint when native auth is present", async () => {
-    const root = path.join(os.tmpdir(), `paperclip-acpx-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const root = path.join(os.tmpdir(), `valadrien-os-acpx-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const codexHome = path.join(root, ".codex");
 
     try {
@@ -100,7 +100,7 @@ describe("acpx_local environment credential diagnostics", () => {
   });
 
   it("emits an info-level Codex missing credential hint without changing diagnostic health", async () => {
-    const root = path.join(os.tmpdir(), `paperclip-acpx-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const root = path.join(os.tmpdir(), `valadrien-os-acpx-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const codexHome = path.join(root, ".codex");
 
     try {

@@ -54,7 +54,7 @@ function DefaultPanel() {
 }
 
 const meta = {
-  title: "Paperclip/Source-resolved Fold",
+  title: "ValadrienOs/Source-resolved Fold",
   component: DefaultPanel,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof DefaultPanel>;

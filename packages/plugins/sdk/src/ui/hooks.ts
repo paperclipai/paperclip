@@ -122,7 +122,7 @@ export function useHostContext(): PluginHostContext {
 // ---------------------------------------------------------------------------
 
 /**
- * Navigate within the Paperclip host without forcing a full document reload.
+ * Navigate within the ValadrienOs host without forcing a full document reload.
  *
  * Use `linkProps()` for links so browser-native behavior still works:
  * modifier-click, middle-click, copy-link, and open-in-new-tab all use the

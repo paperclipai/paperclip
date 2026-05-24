@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@valadrien-os/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;

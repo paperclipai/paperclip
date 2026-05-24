@@ -38,7 +38,7 @@ function parseWorkspaceRoots(workspaceText) {
     .map((entry) => entry.replace(/\*+$/, ""))
     .filter((entry) => entry.length > 0)
     .filter((entry) => !entry.includes("examples"))
-    .filter((entry) => !entry.includes("create-paperclip-plugin"));
+    .filter((entry) => !entry.includes("create-valadrien-os-plugin"));
 }
 
 function walkPackageJsonFiles(rootRelative, maxDepth) {
@@ -64,7 +64,7 @@ function walkPackageJsonFiles(rootRelative, maxDepth) {
       if (
         entry.name === "package.json" &&
         !relative.includes("/examples/") &&
-        !relative.includes("/create-paperclip-plugin/")
+        !relative.includes("/create-valadrien-os-plugin/")
       ) {
         results.push(relative);
       }

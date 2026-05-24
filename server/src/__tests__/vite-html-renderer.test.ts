@@ -33,7 +33,7 @@ describe("createCachedViteHtmlRenderer", () => {
   });
 
   it("reuses the injected dev html shell until index.html changes", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vite-html-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-vite-html-"));
     tempDirs.push(tempDir);
     const indexPath = path.join(tempDir, "index.html");
     fs.writeFileSync(
@@ -76,7 +76,7 @@ describe("createCachedViteHtmlRenderer", () => {
   });
 
   it("does not duplicate the vite client tag or react refresh preamble when already present", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vite-html-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-vite-html-"));
     tempDirs.push(tempDir);
     fs.writeFileSync(
       path.join(tempDir, "index.html"),

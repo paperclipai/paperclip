@@ -1,7 +1,7 @@
 import type {
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";

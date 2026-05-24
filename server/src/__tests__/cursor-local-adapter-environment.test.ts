@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { testEnvironment } from "@paperclipai/adapter-cursor-local/server";
+import { runChildProcess } from "@valadrien-os/adapter-utils/server-utils";
+import { testEnvironment } from "@valadrien-os/adapter-cursor-local/server";
 
 async function writeFakeAgentCommand(binDir: string, argsCapturePath: string): Promise<string> {
   const commandPath = path.join(binDir, "agent");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
-const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
+const outPath = process.env.VALADRIEN_OS_TEST_ARGS_PATH;
 if (outPath) {
   fs.writeFileSync(outPath, JSON.stringify(process.argv.slice(2)), "utf8");
 }
@@ -31,7 +31,7 @@ console.log(JSON.stringify({
 async function writeFakeCursorAgentCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
-const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
+const outPath = process.env.VALADRIEN_OS_TEST_ARGS_PATH;
 if (outPath) {
   fs.writeFileSync(outPath, JSON.stringify({
     command: process.argv[1],
@@ -94,7 +94,7 @@ describe("cursor environment diagnostics", () => {
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
-      `paperclip-cursor-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-local-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       "workspace",
     );
 
@@ -119,7 +119,7 @@ describe("cursor environment diagnostics", () => {
   it("adds --yolo to hello probe args by default", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-cursor-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
@@ -135,7 +135,7 @@ describe("cursor environment diagnostics", () => {
         cwd,
         env: {
           CURSOR_API_KEY: "test-key",
-          PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+          VALADRIEN_OS_TEST_ARGS_PATH: argsCapturePath,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
       },
@@ -150,7 +150,7 @@ describe("cursor environment diagnostics", () => {
   it("does not auto-add --yolo when extraArgs already bypass trust", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-cursor-local-probe-extra-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-local-probe-extra-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const binDir = path.join(root, "bin");
     const cwd = path.join(root, "workspace");
@@ -167,7 +167,7 @@ describe("cursor environment diagnostics", () => {
         extraArgs: ["--yolo"],
         env: {
           CURSOR_API_KEY: "test-key",
-          PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+          VALADRIEN_OS_TEST_ARGS_PATH: argsCapturePath,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
       },
@@ -183,7 +183,7 @@ describe("cursor environment diagnostics", () => {
   it("prefers ~/.local/bin/cursor-agent for remote sandbox probes when using the default command", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-cursor-sandbox-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-sandbox-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const homeDir = path.join(root, "home");
     const remoteCwd = path.join(root, "workspace");
@@ -211,7 +211,7 @@ describe("cursor environment diagnostics", () => {
           cwd: remoteCwd,
           env: {
             CURSOR_API_KEY: "test-key",
-            PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
+            VALADRIEN_OS_TEST_ARGS_PATH: argsCapturePath,
           },
         },
       });
@@ -234,7 +234,7 @@ describe("cursor environment diagnostics", () => {
   it("emits cursor_native_auth_present when cli-config.json has authInfo and CURSOR_API_KEY is unset", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-cursor-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const cursorHome = path.join(root, ".cursor");
     const cwd = path.join(root, "workspace");
@@ -274,7 +274,7 @@ describe("cursor environment diagnostics", () => {
   it("emits cursor_api_key_missing when neither env var nor native auth exists", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-cursor-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `valadrien-os-cursor-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     );
     const cursorHome = path.join(root, ".cursor");
     const cwd = path.join(root, "workspace");

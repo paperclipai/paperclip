@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveValadrienOsInstanceRoot } from "../home-paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +60,7 @@ function sanitizeServiceKeySegment(value: string, fallback: string): string {
 }
 
 function getRuntimeServicesDir() {
-  return path.resolve(resolvePaperclipInstanceRoot(), "runtime-services");
+  return path.resolve(resolveValadrienOsInstanceRoot(), "runtime-services");
 }
 
 function getRuntimeServiceRegistryPath(serviceKey: string) {

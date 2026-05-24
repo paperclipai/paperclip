@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { resolvePaperclipInstanceRoot } from "../../config/home.js";
+import { resolveValadrienOsInstanceRoot } from "../../config/home.js";
 
 export interface CloudConnectionTokenRecord {
   id: string;
@@ -47,7 +47,7 @@ function defaultStore(): CloudConnectionStore {
 }
 
 export function resolveCloudConnectionStorePath(): string {
-  return path.resolve(resolvePaperclipInstanceRoot(), "secrets", "cloud-upstream-connections.json");
+  return path.resolve(resolveValadrienOsInstanceRoot(), "secrets", "cloud-upstream-connections.json");
 }
 
 export function readCloudConnectionStore(storePath = resolveCloudConnectionStorePath()): CloudConnectionStore {

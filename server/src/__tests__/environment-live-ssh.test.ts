@@ -9,7 +9,7 @@ import {
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
   type SshConnectionConfig,
-} from "@paperclipai/adapter-utils/ssh";
+} from "@valadrien-os/adapter-utils/ssh";
 
 async function readOptionalSecret(
   value: string | undefined,
@@ -30,23 +30,23 @@ async function readOptionalSecret(
  */
 function resolveEnvLabStatePath(): string {
   const instanceRoot =
-    process.env.PAPERCLIP_INSTANCE_ROOT?.trim() ||
-    path.join(process.env.HOME ?? "/tmp", ".paperclip-worktrees", "instances", "live-ssh-test");
+    process.env.VALADRIEN_OS_INSTANCE_ROOT?.trim() ||
+    path.join(process.env.HOME ?? "/tmp", ".valadrien-os-worktrees", "instances", "live-ssh-test");
   return path.join(instanceRoot, "env-lab", "ssh-fixture", "state.json");
 }
 
-/** Attempt to build config from explicit PAPERCLIP_ENV_LIVE_SSH_* env vars. */
+/** Attempt to build config from explicit VALADRIEN_OS_ENV_LIVE_SSH_* env vars. */
 function tryExplicitConfig(): {
   host: string;
   port: number;
   username: string;
   remoteWorkspacePath: string;
 } | null {
-  const host = process.env.PAPERCLIP_ENV_LIVE_SSH_HOST?.trim() ?? "";
-  const username = process.env.PAPERCLIP_ENV_LIVE_SSH_USERNAME?.trim() ?? "";
+  const host = process.env.VALADRIEN_OS_ENV_LIVE_SSH_HOST?.trim() ?? "";
+  const username = process.env.VALADRIEN_OS_ENV_LIVE_SSH_USERNAME?.trim() ?? "";
   const remoteWorkspacePath =
-    process.env.PAPERCLIP_ENV_LIVE_SSH_REMOTE_WORKSPACE_PATH?.trim() ?? "";
-  const port = Number.parseInt(process.env.PAPERCLIP_ENV_LIVE_SSH_PORT ?? "22", 10);
+    process.env.VALADRIEN_OS_ENV_LIVE_SSH_REMOTE_WORKSPACE_PATH?.trim() ?? "";
+  const port = Number.parseInt(process.env.VALADRIEN_OS_ENV_LIVE_SSH_PORT ?? "22", 10);
 
   if (!host || !username || !remoteWorkspacePath || !Number.isInteger(port) || port < 1 || port > 65535) {
     return null;
@@ -91,7 +91,7 @@ let envLabCleanup: (() => Promise<void>) | null = null;
 
 /**
  * Resolve an SSH connection config from (in order):
- * 1. Explicit PAPERCLIP_ENV_LIVE_SSH_* env vars
+ * 1. Explicit VALADRIEN_OS_ENV_LIVE_SSH_* env vars
  * 2. An already-running env-lab fixture
  * 3. Auto-starting an env-lab fixture
  */
@@ -102,15 +102,15 @@ async function resolveSshConfig(): Promise<SshConnectionConfig | null> {
     return {
       ...explicit,
       privateKey: await readOptionalSecret(
-        process.env.PAPERCLIP_ENV_LIVE_SSH_PRIVATE_KEY,
-        process.env.PAPERCLIP_ENV_LIVE_SSH_PRIVATE_KEY_PATH,
+        process.env.VALADRIEN_OS_ENV_LIVE_SSH_PRIVATE_KEY,
+        process.env.VALADRIEN_OS_ENV_LIVE_SSH_PRIVATE_KEY_PATH,
       ),
       knownHosts: await readOptionalSecret(
-        process.env.PAPERCLIP_ENV_LIVE_SSH_KNOWN_HOSTS,
-        process.env.PAPERCLIP_ENV_LIVE_SSH_KNOWN_HOSTS_PATH,
+        process.env.VALADRIEN_OS_ENV_LIVE_SSH_KNOWN_HOSTS,
+        process.env.VALADRIEN_OS_ENV_LIVE_SSH_KNOWN_HOSTS_PATH,
       ),
       strictHostKeyChecking:
-        (process.env.PAPERCLIP_ENV_LIVE_SSH_STRICT_HOST_KEY_CHECKING ?? "true").toLowerCase() !== "false",
+        (process.env.VALADRIEN_OS_ENV_LIVE_SSH_STRICT_HOST_KEY_CHECKING ?? "true").toLowerCase() !== "false",
     };
   }
 
@@ -119,7 +119,7 @@ async function resolveSshConfig(): Promise<SshConnectionConfig | null> {
   if (running) return running;
 
   // 3. Auto-start env-lab
-  if (process.env.PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE !== "true") {
+  if (process.env.VALADRIEN_OS_ENV_LIVE_SSH_NO_AUTO_FIXTURE !== "true") {
     const started = await startEnvLabForTest();
     if (started) {
       envLabCleanup = started.cleanup;
@@ -137,9 +137,9 @@ const describeLiveSsh = (() => {
   // If explicit vars are set, use them. Otherwise, we'll attempt env-lab in beforeAll.
   if (tryExplicitConfig()) return describe;
   // If NO_AUTO_FIXTURE is set and no explicit config, skip immediately
-  if (process.env.PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE === "true") {
+  if (process.env.VALADRIEN_OS_ENV_LIVE_SSH_NO_AUTO_FIXTURE === "true") {
     console.warn(
-      "Skipping live SSH smoke test. Set PAPERCLIP_ENV_LIVE_SSH_HOST, PAPERCLIP_ENV_LIVE_SSH_USERNAME, and PAPERCLIP_ENV_LIVE_SSH_REMOTE_WORKSPACE_PATH to enable it, or remove PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE to auto-start env-lab.",
+      "Skipping live SSH smoke test. Set VALADRIEN_OS_ENV_LIVE_SSH_HOST, VALADRIEN_OS_ENV_LIVE_SSH_USERNAME, and VALADRIEN_OS_ENV_LIVE_SSH_REMOTE_WORKSPACE_PATH to enable it, or remove VALADRIEN_OS_ENV_LIVE_SSH_NO_AUTO_FIXTURE to auto-start env-lab.",
     );
     return describe.skip;
   }
@@ -162,7 +162,7 @@ describeLiveSsh("live SSH environment smoke", () => {
 
     if (!resolvedConfig) {
       console.warn(
-        "Live SSH smoke test could not resolve SSH config from env vars or env-lab fixture. Set PAPERCLIP_ENV_LIVE_SSH_NO_AUTO_FIXTURE=true to mark this suite skipped intentionally.",
+        "Live SSH smoke test could not resolve SSH config from env vars or env-lab fixture. Set VALADRIEN_OS_ENV_LIVE_SSH_NO_AUTO_FIXTURE=true to mark this suite skipped intentionally.",
       );
       return;
     }

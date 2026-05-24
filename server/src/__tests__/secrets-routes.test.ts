@@ -85,7 +85,7 @@ describe("secret routes", () => {
   it("rejects managed secret creation when externalRef is supplied", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
       name: "OpenAI API Key",
-      managedMode: "paperclip_managed",
+      managedMode: "valadrien_os_managed",
       value: "secret-value",
       externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
     });
@@ -171,7 +171,7 @@ describe("secret routes", () => {
       provider: "aws_secrets_manager",
       nextToken: null,
       sampledSecretCount: 2,
-      skippedForeignPaperclipSampleCount: 0,
+      skippedForeignValadrienOsSampleCount: 0,
       candidates: [
         {
           provider: "aws_secrets_manager",
@@ -179,25 +179,25 @@ describe("secret routes", () => {
           config: {
             region: "us-east-1",
             namespace: "prod-use1",
-            secretNamePrefix: "paperclip",
+            secretNamePrefix: "valadrien-os",
             environmentTag: "production",
             ownerTag: "platform",
             kmsKeyId: null,
           },
           sampleCount: 2,
           samples: [
-            { name: "paperclip/prod-use1/company-1/openai", hasKmsKey: false, tagKeys: ["environment"] },
+            { name: "valadrien-os/prod-use1/company-1/openai", hasKmsKey: false, tagKeys: ["environment"] },
           ],
           signals: {
             namespace: "prod-use1",
-            secretNamePrefix: "paperclip",
+            secretNamePrefix: "valadrien-os",
             environmentTag: "production",
             ownerTag: "platform",
             kmsKeyId: null,
             hasKmsKey: false,
             sampleCount: 2,
-            paperclipManagedSampleCount: 0,
-            skippedForeignPaperclipSampleCount: 0,
+            valadrienOsManagedSampleCount: 0,
+            skippedForeignValadrienOsSampleCount: 0,
           },
           warnings: [],
         },
@@ -210,7 +210,7 @@ describe("secret routes", () => {
       .send({
         provider: "aws_secrets_manager",
         config: { region: "us-east-1" },
-        query: "paperclip",
+        query: "valadrien-os",
         pageSize: 25,
       });
 
@@ -218,7 +218,7 @@ describe("secret routes", () => {
     expect(mockSecretService.previewProviderConfigDiscovery).toHaveBeenCalledWith("company-1", {
       provider: "aws_secrets_manager",
       config: { region: "us-east-1" },
-      query: "paperclip",
+      query: "valadrien-os",
       nextToken: undefined,
       pageSize: 25,
     });
@@ -233,7 +233,7 @@ describe("secret routes", () => {
         warningCount: 0,
       },
     }));
-    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("paperclip/prod-use1/company-1/openai");
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("valadrien-os/prod-use1/company-1/openai");
   });
 
   it("rejects ready status for coming-soon provider vaults", async () => {
@@ -502,7 +502,7 @@ describe("secret routes", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "openai-api-key",
-            description: "Operator-entered Paperclip description",
+            description: "Operator-entered ValadrienOs description",
           },
         ],
       });
@@ -517,7 +517,7 @@ describe("secret routes", () => {
             externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai",
             name: "OpenAI API key",
             key: "openai-api-key",
-            description: "Operator-entered Paperclip description",
+            description: "Operator-entered ValadrienOs description",
           },
         ],
       },
@@ -573,7 +573,7 @@ describe("secret routes", () => {
       name: "OpenAI API Key__deleted__33333333-3333-4333-8333-333333333333",
       key: "openai-api-key__deleted__33333333-3333-4333-8333-333333333333",
       provider: "aws_secrets_manager",
-      managedMode: "paperclip_managed",
+      managedMode: "valadrien_os_managed",
       status: "deleted",
     };
     mockSecretService.getById.mockResolvedValue(secret);

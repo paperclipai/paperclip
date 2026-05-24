@@ -43,7 +43,7 @@ function clickEvent(
 }
 
 afterEach(() => {
-  delete globalThis.__paperclipPluginBridge__;
+  delete globalThis.__valadrienOsPluginBridge__;
 });
 
 describe("plugin host navigation", () => {
@@ -242,7 +242,7 @@ describe("plugin SDK FileTree bridge", () => {
   });
 
   it("throws a clear error when the host FileTree implementation is missing", () => {
-    globalThis.__paperclipPluginBridge__ = {
+    globalThis.__valadrienOsPluginBridge__ = {
       react: React,
       reactDom: ReactDOM,
       sdkUi: {},
@@ -257,7 +257,7 @@ describe("plugin SDK FileTree bridge", () => {
           onSelectFile: () => undefined,
         }),
       ),
-    ).toThrow('Paperclip plugin UI runtime is not initialized for "FileTree"');
+    ).toThrow('ValadrienOs plugin UI runtime is not initialized for "FileTree"');
   });
 });
 
@@ -265,7 +265,7 @@ describe("plugin SDK markdown component bridge", () => {
   it("injects markdown display and editor components through the bridge runtime", () => {
     initPluginBridge(React, ReactDOM);
 
-    const registry = globalThis.__paperclipPluginBridge__?.sdkUi ?? {};
+    const registry = globalThis.__valadrienOsPluginBridge__?.sdkUi ?? {};
     expect(registry.MarkdownBlock).toBeTypeOf("function");
     expect(registry.MarkdownEditor).toBeTypeOf("function");
     expect(registry.IssuesList).toBeTypeOf("function");
@@ -275,7 +275,7 @@ describe("plugin SDK markdown component bridge", () => {
   });
 
   it("renders plugin-provided markdown components when registered by the host", () => {
-    globalThis.__paperclipPluginBridge__ = {
+    globalThis.__valadrienOsPluginBridge__ = {
       react: React,
       reactDom: ReactDOM,
       sdkUi: {

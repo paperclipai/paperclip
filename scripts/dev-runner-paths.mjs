@@ -26,7 +26,7 @@ export function shouldTrackDevServerPath(relativePath) {
   if (nodeDiagnosticReportPattern.test(basename)) {
     return false;
   }
-  if (segments.includes(".paperclip")) {
+  if (segments.includes(".valadrien-os")) {
     return false;
   }
   if (ignoredTestConfigBasenames.has(basename)) {

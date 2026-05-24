@@ -37,7 +37,7 @@ function shellQuote(value: string) {
 }
 
 function mergeRuntimeExcludes(entries: string[] | undefined): string[] {
-  return [...new Set([".paperclip-runtime", ...(entries ?? [])])];
+  return [...new Set([".valadrien-os-runtime", ...(entries ?? [])])];
 }
 
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
@@ -81,7 +81,7 @@ export function createCommandManagedRuntimeClient(input: {
     writeFile: async (remotePath, bytes) => {
       const body = toBuffer(bytes).toString("base64");
       const remoteDir = path.posix.dirname(remotePath);
-      const remoteTempPath = `${remotePath}.paperclip-upload.b64`;
+      const remoteTempPath = `${remotePath}.valadrien-os-upload.b64`;
 
       await runShell(
         `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
@@ -213,7 +213,7 @@ export async function prepareCommandManagedRuntime(input: {
         text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-3).join(" | ").slice(0, 480);
       const reason = result.timedOut ? "timed out" : `exited ${result.exitCode ?? "?"}`;
       console.warn(
-        `[paperclip] managed-runtime install command ${reason}: ${installCommand} :: ${tail(result.stderr || result.stdout)}`,
+        `[valadrien-os] managed-runtime install command ${reason}: ${installCommand} :: ${tail(result.stderr || result.stdout)}`,
       );
     }
   }

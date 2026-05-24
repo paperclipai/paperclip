@@ -36,7 +36,7 @@ export const acceptInviteSchema = z.object({
   responsesWebhookUrl: z.string().max(4000).optional().nullable(),
   responsesWebhookMethod: z.string().max(32).optional().nullable(),
   responsesWebhookHeaders: z.record(z.string(), z.unknown()).optional().nullable(),
-  paperclipApiUrl: z.string().max(4000).optional().nullable(),
+  valadrienOsApiUrl: z.string().max(4000).optional().nullable(),
   webhookAuthHeader: z.string().max(4000).optional().nullable(),
 });
 

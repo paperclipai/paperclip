@@ -5,7 +5,7 @@ import type {
   CloudUpstreamPreview,
   CloudUpstreamRun,
   CloudUpstreamsState,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { api } from "./client";
 
 export const cloudUpstreamsApi = {

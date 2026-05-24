@@ -1,4 +1,4 @@
-import { z } from "@paperclipai/plugin-sdk";
+import { z } from "@valadrien-os/plugin-sdk";
 
 export const workspaceDiffViewSchema = z.enum(["working-tree", "head"]);
 

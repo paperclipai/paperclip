@@ -8,7 +8,7 @@ import type {
   CompanySecretProviderConfig,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderVaultsTab, Secrets } from "./Secrets";
 import { ApiError } from "../api/client";
@@ -147,7 +147,7 @@ function makeDiscoveryPreview(
     provider: "aws_secrets_manager",
     nextToken: null,
     sampledSecretCount: 2,
-    skippedForeignPaperclipSampleCount: 0,
+    skippedForeignValadrienOsSampleCount: 0,
     warnings: [],
     candidates: [
       {
@@ -156,29 +156,29 @@ function makeDiscoveryPreview(
         config: {
           region: "us-east-1",
           namespace: "prod-use1",
-          secretNamePrefix: "paperclip",
-          kmsKeyId: "alias/paperclip-secrets",
+          secretNamePrefix: "valadrien-os",
+          kmsKeyId: "alias/valadrien-os-secrets",
           ownerTag: "platform",
           environmentTag: "production",
         },
         sampleCount: 2,
         samples: [
           {
-            name: "paperclip/prod-use1/company-1/openai",
+            name: "valadrien-os/prod-use1/company-1/openai",
             hasKmsKey: true,
             tagKeys: ["owner", "environment"],
           },
         ],
         signals: {
           namespace: "prod-use1",
-          secretNamePrefix: "paperclip",
+          secretNamePrefix: "valadrien-os",
           environmentTag: "production",
           ownerTag: "platform",
-          kmsKeyId: "alias/paperclip-secrets",
+          kmsKeyId: "alias/valadrien-os-secrets",
           hasKmsKey: true,
           sampleCount: 2,
-          paperclipManagedSampleCount: 0,
-          skippedForeignPaperclipSampleCount: 0,
+          valadrienOsManagedSampleCount: 0,
+          skippedForeignValadrienOsSampleCount: 0,
         },
         warnings: [],
       },
@@ -300,7 +300,7 @@ describe("Secrets page layout", () => {
     });
   });
 
-  it("warns that removing a provider vault only removes Paperclip config", async () => {
+  it("warns that removing a provider vault only removes ValadrienOs config", async () => {
     mockSecretsApi.removeProviderConfig.mockResolvedValueOnce(providerConfigs[1]);
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -338,12 +338,12 @@ describe("Secrets page layout", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Remove provider vault");
-    expect(document.body.textContent).toContain("from Paperclip only");
+    expect(document.body.textContent).toContain("from ValadrienOs only");
     expect(document.body.textContent).toContain("does not delete");
     expect(document.body.textContent).toContain("AWS Secrets Manager");
 
     const confirmButton = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Remove from Paperclip"),
+      (button) => button.textContent?.includes("Remove from ValadrienOs"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
       confirmButton?.click();
@@ -367,7 +367,7 @@ describe("Secrets page layout", () => {
         name: "OPENAI_API_KEY",
         provider: "local_encrypted",
         status: "active",
-        managedMode: "paperclip_managed",
+        managedMode: "valadrien_os_managed",
         externalRef: null,
         providerConfigId: null,
         providerMetadata: null,
@@ -516,7 +516,7 @@ describe("Secrets page layout", () => {
     expect(regionInput).not.toBeNull();
     await act(async () => {
       setInputValue(regionInput!, "us-east-1");
-      setInputValue(prefixInput!, "paperclip");
+      setInputValue(prefixInput!, "valadrien-os");
     });
     await flushReact();
 
@@ -532,12 +532,12 @@ describe("Secrets page layout", () => {
       config: {
         region: "us-east-1",
         namespace: null,
-        secretNamePrefix: "paperclip",
+        secretNamePrefix: "valadrien-os",
         kmsKeyId: null,
         ownerTag: null,
         environmentTag: null,
       },
-      query: "paperclip",
+      query: "valadrien-os",
       pageSize: 25,
     });
     expect(document.body.textContent).toContain("AWS production");
@@ -552,8 +552,8 @@ describe("Secrets page layout", () => {
 
     expect((document.getElementById("vault-name") as HTMLInputElement).value).toBe("AWS production");
     expect((document.getElementById("provider-vault-namespace") as HTMLInputElement).value).toBe("prod-use1");
-    expect((document.getElementById("provider-vault-secret-name-prefix") as HTMLInputElement).value).toBe("paperclip");
-    expect((document.getElementById("provider-vault-kms-key-id") as HTMLInputElement).value).toBe("alias/paperclip-secrets");
+    expect((document.getElementById("provider-vault-secret-name-prefix") as HTMLInputElement).value).toBe("valadrien-os");
+    expect((document.getElementById("provider-vault-kms-key-id") as HTMLInputElement).value).toBe("alias/valadrien-os-secrets");
     expect((document.getElementById("provider-vault-owner-tag") as HTMLInputElement).value).toBe("platform");
     expect((document.getElementById("provider-vault-environment-tag") as HTMLInputElement).value).toBe("production");
     expect(mockSecretsApi.createProviderConfig).not.toHaveBeenCalled();

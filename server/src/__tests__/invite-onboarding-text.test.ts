@@ -39,22 +39,22 @@ describe("buildInviteOnboardingTextDocument", () => {
       allowedHostnames: [],
     });
 
-    expect(text).toContain("Paperclip Agent Onboarding");
+    expect(text).toContain("ValadrienOs Agent Onboarding");
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");
-    expect(text).toContain("/api/invites/token-123/skills/paperclip");
-    expect(text).toContain("Suggested Paperclip base URLs to try");
+    expect(text).toContain("/api/invites/token-123/skills/valadrien-os");
+    expect(text).toContain("Suggested ValadrienOs base URLs to try");
     expect(text).toContain("http://localhost:3100");
     expect(text).toContain("host.docker.internal");
-    expect(text).toContain("paperclipApiUrl");
+    expect(text).toContain("valadrienOsApiUrl");
     expect(text).toContain('"adapterType": "openclaw_gateway"');
     expect(text).toContain("headers.x-openclaw-token");
     expect(text).toContain("Do NOT use /v1/responses or /hooks/*");
-    expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl");
-    expect(text).toContain("PAPERCLIP_API_KEY");
+    expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.valadrienOsApiUrl");
+    expect(text).toContain("VALADRIEN_OS_API_KEY");
     expect(text).toContain("Use your runtime's normal skill or instruction installation path.");
-    expect(text).toContain("Decide which Paperclip adapter type matches your runtime.");
+    expect(text).toContain("Decide which ValadrienOs adapter type matches your runtime.");
   });
 
   it("includes loopback diagnostics for authenticated/private onboarding", () => {
@@ -150,7 +150,7 @@ describe("buildInviteOnboardingTextDocument", () => {
     });
 
     try {
-      const req = buildReq("paperclip.example.test:3103");
+      const req = buildReq("valadrien-os.example.test:3103");
       const invite = {
         id: "invite-4",
         companyId: "company-1",
@@ -170,7 +170,7 @@ describe("buildInviteOnboardingTextDocument", () => {
         deploymentMode: "authenticated",
         deploymentExposure: "private",
         bindHost: "0.0.0.0",
-        allowedHostnames: ["paperclip.example.test", "203.0.113.42"],
+        allowedHostnames: ["valadrien-os.example.test", "203.0.113.42"],
       });
 
       expect(text).toContain("http://192.168.6.178:3103");

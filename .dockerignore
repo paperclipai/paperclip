@@ -1,6 +1,6 @@
 .git
 .github
-.paperclip
+.valadrien-os
 .pnpm-store
 node_modules
 **/node_modules

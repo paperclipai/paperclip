@@ -6,13 +6,13 @@ Companion analysis: `doc/plans/2026-04-08-agent-os-technical-report.md`
 
 ## Goal
 
-Turn the `agent-os` research into a low-risk Paperclip execution plan that preserves Paperclip's control-plane model while testing the few runtime ideas that appear worth adopting.
+Turn the `agent-os` research into a low-risk Valadrien OS execution plan that preserves Valadrien OS's control-plane model while testing the few runtime ideas that appear worth adopting.
 
 ## Decision summary
 
-Paperclip should not absorb `agent-os` as a product model or orchestration layer.
+Valadrien OS should not absorb `agent-os` as a product model or orchestration layer.
 
-Paperclip should evaluate `agent-os` in three narrow areas:
+Valadrien OS should evaluate `agent-os` in three narrow areas:
 
 1. optional agent runtime for selected local adapters
 2. capability-based runtime permission vocabulary
@@ -22,23 +22,23 @@ Everything else should stay out of scope unless those three experiments produce 
 
 ## Success condition
 
-This work is successful when Paperclip has:
+This work is successful when Valadrien OS has:
 
 - a clear yes/no answer on whether `agent-os` is worth supporting as an execution substrate
 - a concrete adapter/runtime experiment with measurable results
-- a proposed runtime capability model that fits current Paperclip adapters
+- a proposed runtime capability model that fits current Valadrien OS adapters
 - a clear decision on whether snapshot-backed execution roots are worth integrating
 
 ## Non-goals
 
 Do not:
 
-- replace Paperclip heartbeats, issues, comments, approvals, or budgets with `agent-os` primitives
+- replace Valadrien OS heartbeats, issues, comments, approvals, or budgets with `agent-os` primitives
 - introduce Rust/sidecar requirements for all local execution paths
 - migrate all adapters at once
-- add runtime workflow/queue abstractions to Paperclip core
+- add runtime workflow/queue abstractions to Valadrien OS core
 
-## Existing Paperclip integration points
+## Existing Valadrien OS integration points
 
 The plan should stay anchored to these existing surfaces:
 
@@ -91,13 +91,13 @@ Recommended metrics:
 
 Objective:
 
-- prove that Paperclip can drive one local agent through an `agent-os` runtime without breaking heartbeat semantics
+- prove that Valadrien OS can drive one local agent through an `agent-os` runtime without breaking heartbeat semantics
 
 Suggested scope:
 
 - implement a new experimental adapter, `agentos_local`, or a feature-flagged runtime path under one existing adapter
 - start with `pi_local` or `opencode_local`
-- keep Paperclip's existing heartbeat, issue, workspace, and comment flow authoritative
+- keep Valadrien OS's existing heartbeat, issue, workspace, and comment flow authoritative
 
 Minimum implementation shape:
 
@@ -123,7 +123,7 @@ Exit criteria:
 
 Objective:
 
-- introduce a Paperclip-native capability vocabulary without coupling the product to `agent-os`
+- introduce a Valadrien OS-native capability vocabulary without coupling the product to `agent-os`
 
 Suggested scope:
 
@@ -158,7 +158,7 @@ Exit criteria:
 
 Objective:
 
-- determine whether a layered/snapshotted root model improves some Paperclip workloads
+- determine whether a layered/snapshotted root model improves some Valadrien OS workloads
 
 Suggested scope:
 
@@ -187,7 +187,7 @@ Exit criteria:
 
 Objective:
 
-- identify where Paperclip should prefer explicit typed tools over ambient shell access
+- identify where Valadrien OS should prefer explicit typed tools over ambient shell access
 
 Suggested scope:
 
@@ -203,7 +203,7 @@ Good candidates:
 
 Exit criteria:
 
-- one concrete proposal for typed-tool adoption in Paperclip
+- one concrete proposal for typed-tool adoption in Valadrien OS
 - clear statement on whether this belongs in plugins, adapters, or core services
 
 ## Recommended sequencing
@@ -231,7 +231,7 @@ Reasoning:
 
 ### Product risk
 
-- runtime experimentation could blur the boundary between Paperclip as control plane and Paperclip as execution platform
+- runtime experimentation could blur the boundary between Valadrien OS as control plane and Valadrien OS as execution platform
 
 ### Integration risk
 

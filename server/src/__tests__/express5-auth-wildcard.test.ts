@@ -3,7 +3,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 
 /**
- * Regression test for https://github.com/paperclipai/paperclip/issues/2898
+ * Regression test for https://github.com/ValDola-stack/valadrien-os/issues/2898
  *
  * Express 5 (path-to-regexp v8+) dropped support for the `*paramName`
  * wildcard syntax used in Express 4. Routes declared with the old syntax

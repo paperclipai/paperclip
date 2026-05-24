@@ -273,7 +273,7 @@ export function parseSystemActivity(text: string): TranscriptActivity | null {
 
 export function shouldHideNiceModeStderr(text: string): boolean {
   const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  return normalized.startsWith("[valadrien-os] skipping saved session resume");
 }
 
 export function summarizeNotice(text: string, max = 160): string {

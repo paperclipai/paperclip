@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionTarget } from "@valadrien-os/adapter-utils/execution-target";
+import { runChildProcess } from "@valadrien-os/adapter-utils/server-utils";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { execute } from "./execute.js";
 
@@ -35,13 +35,13 @@ const {
   return { setPrepareCursorSandboxCommand };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@valadrien-os/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@valadrien-os/adapter-utils/execution-target")>(
+    "@valadrien-os/adapter-utils/execution-target",
   );
   return {
     ...actual,
-    startAdapterExecutionTargetPaperclipBridge: async () => null,
+    startAdapterExecutionTargetValadrienOsBridge: async () => null,
   };
 });
 
@@ -144,7 +144,7 @@ describe("cursor execute", () => {
       return actual.prepareCursorSandboxCommand(input);
     });
 
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-fresh-lease-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-cursor-fresh-lease-"));
     const homeDir = path.join(root, "home");
     const workspace = path.join(root, "workspace");
     const remoteWorkspace = path.join(root, "remote-workspace");
@@ -188,7 +188,7 @@ describe("cursor execute", () => {
         config: {
           command: "agent",
           cwd: workspace,
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the valadrien-os heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -204,7 +204,7 @@ describe("cursor execute", () => {
       const prompt = await fs.readFile(path.join(captureDir, "prompt.txt"), "utf8");
       expect(command).toBe(agentPath);
       expect(runtimePath.split(path.delimiter)).toContain(path.join(homeDir, ".local", "bin"));
-      expect(prompt).toContain("Follow the paperclip heartbeat.");
+      expect(prompt).toContain("Follow the valadrien-os heartbeat.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -217,7 +217,7 @@ describe("cursor execute", () => {
     const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
     let finalPreparedCommand: string | null = null;
 
-    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-fresh-lease-managed-"));
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-cursor-fresh-lease-managed-"));
     const workspaceDir = path.join(rootDir, "workspace");
     const remoteWorkspace = path.join(rootDir, "remote-workspace");
     const systemHomeDir = path.join(rootDir, "system-home");

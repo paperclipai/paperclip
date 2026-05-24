@@ -12,13 +12,13 @@ function toDisplayLines(records: Awaited<ReturnType<typeof listLocalServiceRegis
 
 const command = process.argv[2] ?? "list";
 const records = await listLocalServiceRegistryRecords({
-  profileKind: "paperclip-dev",
+  profileKind: "valadrien-os-dev",
   metadata: { repoRoot },
 });
 
 if (command === "list") {
   if (records.length === 0) {
-    console.log("No Paperclip dev services registered for this repo.");
+    console.log("No ValadrienOs dev services registered for this repo.");
     process.exit(0);
   }
   for (const line of toDisplayLines(records)) {
@@ -29,7 +29,7 @@ if (command === "list") {
 
 if (command === "stop") {
   if (records.length === 0) {
-    console.log("No Paperclip dev services registered for this repo.");
+    console.log("No ValadrienOs dev services registered for this repo.");
     process.exit(0);
   }
   for (const record of records) {

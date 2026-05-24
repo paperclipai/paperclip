@@ -5,7 +5,7 @@ import type {
   FakeSandboxEnvironmentConfig,
   SandboxEnvironmentConfig,
   SandboxEnvironmentProvider,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 
 export interface SandboxProviderValidationResult {
   ok: boolean;

@@ -1,4 +1,4 @@
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueRelationIssueSummary } from "@valadrien-os/shared";
 
 export function isAssignedBacklogBlocker(blocker: IssueRelationIssueSummary): boolean {
   return blocker.status === "backlog" && Boolean(blocker.assigneeAgentId);

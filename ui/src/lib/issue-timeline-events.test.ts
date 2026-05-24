@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent } from "@valadrien-os/shared";
 import { extractIssueTimelineEvents } from "./issue-timeline-events";
 
 describe("extractIssueTimelineEvents", () => {

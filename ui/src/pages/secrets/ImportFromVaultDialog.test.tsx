@@ -9,7 +9,7 @@ import type {
   RemoteSecretImportCandidate,
   RemoteSecretImportPreviewResult,
   RemoteSecretImportResult,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 
@@ -269,7 +269,7 @@ describe("ImportFromVaultDialog", () => {
     });
   });
 
-  it("blocks import when a review row collides with an existing Paperclip secret", async () => {
+  it("blocks import when a review row collides with an existing ValadrienOs secret", async () => {
     const conflictCandidate = makeCandidate({
       externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:prod/openai-XYZ",
       remoteName: "prod/openai",
@@ -344,7 +344,7 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     // Review step: error message visible, Import button disabled.
-    expect(document.body.textContent?.toLowerCase()).toContain("a paperclip secret already uses this");
+    expect(document.body.textContent?.toLowerCase()).toContain("a valadrien-os secret already uses this");
 
     const importBtn = Array.from(document.querySelectorAll("button")).find(
       (btn) => btn.textContent?.startsWith("Import "),
@@ -725,7 +725,7 @@ describe("ImportFromVaultDialog", () => {
 
   it("renders sanitized preview provider errors without raw AWS exception text", async () => {
     const rawProviderMessage =
-      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/ValadrienOs is not authorized";
     mockSecretsApi.remoteImportPreview.mockRejectedValueOnce(
       new ApiError(
         "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",

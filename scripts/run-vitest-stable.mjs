@@ -8,15 +8,15 @@ const repoRoot = process.cwd();
 const serverRoot = path.join(repoRoot, "server");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
 const nonServerProjects = [
-  "@paperclipai/shared",
-  "@paperclipai/db",
-  "@paperclipai/adapter-utils",
-  "@paperclipai/adapter-acpx-local",
-  "@paperclipai/adapter-codex-local",
-  "@paperclipai/adapter-opencode-local",
-  "@paperclipai/plugin-sdk",
-  "@paperclipai/ui",
-  "paperclipai",
+  "@valadrien-os/shared",
+  "@valadrien-os/db",
+  "@valadrien-os/adapter-utils",
+  "@valadrien-os/adapter-acpx-local",
+  "@valadrien-os/adapter-codex-local",
+  "@valadrien-os/adapter-opencode-local",
+  "@valadrien-os/plugin-sdk",
+  "@valadrien-os/ui",
+  "valadrien-os",
 ];
 const routeTestPattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
 const additionalSerializedServerTests = new Set([
@@ -52,7 +52,7 @@ const allModeName = "all";
 const generalServerGroupName = "general-server";
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
-const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
+const generalWorkspacesAProjects = ["@valadrien-os/ui", "valadrien-os"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
 
@@ -241,11 +241,11 @@ function runVitest(args, label) {
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {
     ...process.env,
-    PAPERCLIP_HOME: path.join(testRoot, "h"),
-    PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
+    VALADRIEN_OS_HOME: path.join(testRoot, "h"),
+    VALADRIEN_OS_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
-  mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
+  mkdirSync(env.VALADRIEN_OS_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
     cwd: repoRoot,
@@ -277,7 +277,7 @@ function runGeneralGroup(routeTests, groupName) {
   if (groupName === generalServerGroupName) {
     const excludeRouteArgs = routeTests.flatMap((file) => ["--exclude", file.serverPath]);
     runVitest(
-      ["--project", "@paperclipai/server", ...excludeRouteArgs],
+      ["--project", "@valadrien-os/server", ...excludeRouteArgs],
       `${groupName} server suites excluding ${routeTests.length} serialized suites`,
     );
     return;
@@ -306,7 +306,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
     runVitest(
       [
         "--project",
-        "@paperclipai/server",
+        "@valadrien-os/server",
         routeTest.repoPath,
         "--pool=forks",
         "--poolOptions.forks.isolate=true",

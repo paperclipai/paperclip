@@ -144,7 +144,7 @@ function collectReleasePackagesForChangedPaths(
 
 function main(changedPaths) {
   const releasePackages = buildReleasePackagePlan();
-  const baseReleaseState = getBaseReleaseState(process.env.PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA, releasePackages);
+  const baseReleaseState = getBaseReleaseState(process.env.VALADRIEN_OS_RELEASE_BOOTSTRAP_BASE_SHA, releasePackages);
   const changedReleasePackages = collectReleasePackagesForChangedPaths(changedPaths, releasePackages, baseReleaseState);
 
   if (changedReleasePackages.length === 0) {

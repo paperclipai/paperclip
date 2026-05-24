@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@valadrien-os/shared";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import { IssueQuicklookCard } from "./IssueLinkQuicklook";

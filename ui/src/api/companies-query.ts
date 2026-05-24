@@ -1,4 +1,4 @@
-import type { Company } from "@paperclipai/shared";
+import type { Company } from "@valadrien-os/shared";
 import { companiesApi } from "./companies";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";

@@ -3,7 +3,7 @@
 import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunActivityChart, SuccessRateChart } from "./ActivityCharts";
 

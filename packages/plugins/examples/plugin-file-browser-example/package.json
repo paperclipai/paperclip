@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-file-browser-example",
+  "name": "@valadrien-os/plugin-file-browser-example",
   "version": "0.1.0",
   "description": "Example plugin: project sidebar Files link + project detail tab with workspace selector and file browser",
   "type": "module",
@@ -7,16 +7,16 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "paperclipPlugin": {
+  "valadrienOsPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
     "ui": "./dist/ui/"
   },
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "tsc && node ./scripts/build-ui.mjs",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+    "typecheck": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.2",
@@ -24,7 +24,7 @@
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.28.0",
     "@lezer/highlight": "^1.2.1",
-    "@paperclipai/plugin-sdk": "workspace:*",
+    "@valadrien-os/plugin-sdk": "workspace:*",
     "codemirror": "^6.0.1"
   },
   "devDependencies": {

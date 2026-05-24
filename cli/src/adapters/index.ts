@@ -1,2 +1,2 @@
 export { getCLIAdapter } from "./registry.js";
-export type { CLIAdapterModule } from "@paperclipai/adapter-utils";
+export type { CLIAdapterModule } from "@valadrien-os/adapter-utils";

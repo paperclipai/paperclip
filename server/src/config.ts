@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
-import { resolvePaperclipEnvPath } from "./paths.js";
+import { resolveValadrienOsEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
   AUTH_BASE_URL_MODES,
@@ -21,7 +21,7 @@ import {
   inferBindModeFromHost,
   resolveRuntimeBind,
   validateConfiguredBindMode,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   resolveDefaultBackupDir,
   resolveDefaultEmbeddedPostgresDir,
@@ -30,15 +30,15 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
-const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
-if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-  loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+const VALADRIEN_OS_ENV_FILE_PATH = resolveValadrienOsEnvPath();
+if (existsSync(VALADRIEN_OS_ENV_FILE_PATH)) {
+  loadDotenv({ path: VALADRIEN_OS_ENV_FILE_PATH, override: false, quiet: true });
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");
-const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(PAPERCLIP_ENV_FILE_PATH)
-  ? realpathSync(CWD_ENV_PATH) === realpathSync(PAPERCLIP_ENV_FILE_PATH)
-  : CWD_ENV_PATH === PAPERCLIP_ENV_FILE_PATH;
+const isSameFile = existsSync(CWD_ENV_PATH) && existsSync(VALADRIEN_OS_ENV_FILE_PATH)
+  ? realpathSync(CWD_ENV_PATH) === realpathSync(VALADRIEN_OS_ENV_FILE_PATH)
+  : CWD_ENV_PATH === VALADRIEN_OS_ENV_FILE_PATH;
 if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
@@ -90,7 +90,7 @@ export interface Config {
 }
 
 function detectTailnetBindHost(): string | undefined {
-  const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
+  const explicit = process.env.VALADRIEN_OS_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
 
   try {
@@ -121,7 +121,7 @@ export function loadConfig(): Config {
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
 
-  const providerFromEnvRaw = process.env.PAPERCLIP_SECRETS_PROVIDER;
+  const providerFromEnvRaw = process.env.VALADRIEN_OS_SECRETS_PROVIDER;
   const providerFromEnv =
     providerFromEnvRaw && SECRET_PROVIDERS.includes(providerFromEnvRaw as SecretProvider)
       ? (providerFromEnvRaw as SecretProvider)
@@ -129,46 +129,46 @@ export function loadConfig(): Config {
   const providerFromFile = fileSecrets?.provider;
   const secretsProvider: SecretProvider = providerFromEnv ?? providerFromFile ?? "local_encrypted";
 
-  const storageProviderFromEnvRaw = process.env.PAPERCLIP_STORAGE_PROVIDER;
+  const storageProviderFromEnvRaw = process.env.VALADRIEN_OS_STORAGE_PROVIDER;
   const storageProviderFromEnv =
     storageProviderFromEnvRaw && STORAGE_PROVIDERS.includes(storageProviderFromEnvRaw as StorageProvider)
       ? (storageProviderFromEnvRaw as StorageProvider)
       : null;
   const storageProvider: StorageProvider = storageProviderFromEnv ?? fileStorage?.provider ?? "local_disk";
   const storageLocalDiskBaseDir = resolveHomeAwarePath(
-    process.env.PAPERCLIP_STORAGE_LOCAL_DIR ??
+    process.env.VALADRIEN_OS_STORAGE_LOCAL_DIR ??
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
   );
-  const storageS3Bucket = process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
-  const storageS3Region = process.env.PAPERCLIP_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
-  const storageS3Endpoint = process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
-  const storageS3Prefix = process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
+  const storageS3Bucket = process.env.VALADRIEN_OS_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "valadrien-os";
+  const storageS3Region = process.env.VALADRIEN_OS_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
+  const storageS3Endpoint = process.env.VALADRIEN_OS_STORAGE_S3_ENDPOINT ?? fileStorage?.s3?.endpoint ?? undefined;
+  const storageS3Prefix = process.env.VALADRIEN_OS_STORAGE_S3_PREFIX ?? fileStorage?.s3?.prefix ?? "";
   const storageS3ForcePathStyle =
-    process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
-      ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
+    process.env.VALADRIEN_OS_STORAGE_S3_FORCE_PATH_STYLE !== undefined
+      ? process.env.VALADRIEN_OS_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
   const feedbackExportBackendUrl =
-    process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
-    process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
+    process.env.VALADRIEN_OS_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
+    process.env.VALADRIEN_OS_TELEMETRY_BACKEND_URL?.trim() ||
     undefined;
   const feedbackExportBackendToken =
-    process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_TOKEN?.trim() ||
-    process.env.PAPERCLIP_TELEMETRY_BACKEND_TOKEN?.trim() ||
+    process.env.VALADRIEN_OS_FEEDBACK_EXPORT_BACKEND_TOKEN?.trim() ||
+    process.env.VALADRIEN_OS_TELEMETRY_BACKEND_TOKEN?.trim() ||
     undefined;
 
-  const deploymentModeFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_MODE;
+  const deploymentModeFromEnvRaw = process.env.VALADRIEN_OS_DEPLOYMENT_MODE;
   const deploymentModeFromEnv =
     deploymentModeFromEnvRaw && DEPLOYMENT_MODES.includes(deploymentModeFromEnvRaw as DeploymentMode)
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
-  const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+  const strictModeFromEnv = process.env.VALADRIEN_OS_SECRETS_STRICT_MODE;
   const secretsStrictMode =
     strictModeFromEnv !== undefined
       ? strictModeFromEnv === "true"
       : (fileSecrets?.strictMode ?? deploymentMode === "authenticated");
-  const deploymentExposureFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
+  const deploymentExposureFromEnvRaw = process.env.VALADRIEN_OS_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
     DEPLOYMENT_EXPOSURES.includes(deploymentExposureFromEnvRaw as DeploymentExposure)
@@ -178,7 +178,7 @@ export function loadConfig(): Config {
     deploymentMode === "local_trusted"
       ? "private"
       : (deploymentExposureFromEnv ?? fileConfig?.server.exposure ?? "private");
-  const bindFromEnvRaw = process.env.PAPERCLIP_BIND;
+  const bindFromEnvRaw = process.env.VALADRIEN_OS_BIND;
   const bindFromEnv =
     bindFromEnvRaw && BIND_MODES.includes(bindFromEnvRaw as BindMode)
       ? (bindFromEnvRaw as BindMode)
@@ -189,16 +189,16 @@ export function loadConfig(): Config {
     bindFromEnv ??
     fileConfig?.server.bind ??
     inferBindModeFromHost(configuredHost, { tailnetBindHost });
-  const customBindHost = process.env.PAPERCLIP_BIND_HOST ?? fileConfig?.server.customBindHost;
-  const authBaseUrlModeFromEnvRaw = process.env.PAPERCLIP_AUTH_BASE_URL_MODE;
+  const customBindHost = process.env.VALADRIEN_OS_BIND_HOST ?? fileConfig?.server.customBindHost;
+  const authBaseUrlModeFromEnvRaw = process.env.VALADRIEN_OS_AUTH_BASE_URL_MODE;
   const authBaseUrlModeFromEnv =
     authBaseUrlModeFromEnvRaw &&
     AUTH_BASE_URL_MODES.includes(authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       ? (authBaseUrlModeFromEnvRaw as AuthBaseUrlMode)
       : null;
-  const publicUrlFromEnv = process.env.PAPERCLIP_PUBLIC_URL;
+  const publicUrlFromEnv = process.env.VALADRIEN_OS_PUBLIC_URL;
   const authPublicBaseUrlRaw =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
+    process.env.VALADRIEN_OS_AUTH_PUBLIC_BASE_URL ??
     process.env.BETTER_AUTH_URL ??
     process.env.BETTER_AUTH_BASE_URL ??
     publicUrlFromEnv ??
@@ -208,12 +208,12 @@ export function loadConfig(): Config {
     authBaseUrlModeFromEnv ??
     fileConfig?.auth?.baseUrlMode ??
     (authPublicBaseUrl ? "explicit" : "auto");
-  const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+  const disableSignUpFromEnv = process.env.VALADRIEN_OS_AUTH_DISABLE_SIGN_UP;
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
-  const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
+  const allowedHostnamesFromEnvRaw = process.env.VALADRIEN_OS_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
       .split(",")
@@ -239,29 +239,29 @@ export function loadConfig(): Config {
         .filter(Boolean),
     ),
   );
-  const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
+  const companyDeletionEnvRaw = process.env.VALADRIEN_OS_ENABLE_COMPANY_DELETION;
   const companyDeletionEnabled =
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
   const databaseBackupEnabled =
-    process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
-      ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
+    process.env.VALADRIEN_OS_DB_BACKUP_ENABLED !== undefined
+      ? process.env.VALADRIEN_OS_DB_BACKUP_ENABLED === "true"
       : (fileDatabaseBackup?.enabled ?? true);
   const databaseBackupIntervalMinutes = Math.max(
     1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ||
+    Number(process.env.VALADRIEN_OS_DB_BACKUP_INTERVAL_MINUTES) ||
       fileDatabaseBackup?.intervalMinutes ||
       60,
   );
   const databaseBackupRetentionDays = Math.max(
     1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ||
+    Number(process.env.VALADRIEN_OS_DB_BACKUP_RETENTION_DAYS) ||
       fileDatabaseBackup?.retentionDays ||
       7,
   );
   const databaseBackupDir = resolveHomeAwarePath(
-    process.env.PAPERCLIP_DB_BACKUP_DIR ??
+    process.env.VALADRIEN_OS_DB_BACKUP_DIR ??
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
@@ -311,12 +311,12 @@ export function loadConfig(): Config {
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"
         : fileConfig?.server.serveUi ?? true,
-    uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
+    uiDevMiddleware: process.env.VALADRIEN_OS_UI_DEV_MIDDLEWARE === "true",
     secretsProvider,
     secretsStrictMode,
     secretsMasterKeyFilePath:
       resolveHomeAwarePath(
-        process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
+        process.env.VALADRIEN_OS_SECRETS_MASTER_KEY_FILE ??
           fileSecrets?.localEncrypted.keyFilePath ??
           resolveDefaultSecretsKeyFilePath(),
       ),

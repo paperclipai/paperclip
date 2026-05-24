@@ -1,16 +1,16 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { ValadrienOsPluginManifestV1 } from "@valadrien-os/plugin-sdk";
 
-const PLUGIN_ID = "paperclip.exe-dev-sandbox-provider";
+const PLUGIN_ID = "valadrien-os.exe-dev-sandbox-provider";
 const PLUGIN_VERSION = "0.1.0";
 
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: ValadrienOsPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "exe.dev Sandbox Provider",
   description:
-    "Sandbox provider plugin that provisions exe.dev VMs as Paperclip execution environments.",
-  author: "Paperclip",
+    "Sandbox provider plugin that provisions exe.dev VMs as ValadrienOs execution environments.",
+  author: "ValadrienOs",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
   entrypoints: {
@@ -22,7 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
       kind: "sandbox_provider",
       displayName: "exe.dev VM",
       description:
-        "Provisions exe.dev VMs through the HTTPS API, then runs commands over direct SSH for long-lived Paperclip workloads.",
+        "Provisions exe.dev VMs through the HTTPS API, then runs commands over direct SSH for long-lived ValadrienOs workloads.",
       configSchema: {
         type: "object",
         properties: {
@@ -30,7 +30,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Environment-specific exe.dev API token. Needs `/exec` permission for at least `new`, `ls`, and `rm`. Paste a token or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Falls back to EXE_API_KEY if omitted.",
+              "Environment-specific exe.dev API token. Needs `/exec` permission for at least `new`, `ls`, and `rm`. Paste a token or an existing ValadrienOs secret reference; saved environments store pasted values as company secrets. Falls back to EXE_API_KEY if omitted.",
           },
           apiUrl: {
             type: "string",
@@ -40,7 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
           namePrefix: {
             type: "string",
             description: "Optional prefix used when generating VM names.",
-            default: "paperclip",
+            default: "valadrien-os",
           },
           image: {
             type: "string",
@@ -109,12 +109,12 @@ const manifest: PaperclipPluginManifestV1 = {
             format: "secret-ref",
             maxLength: 4096,
             description:
-              "Optional exe.dev-registered SSH private key. Paste the private key or an existing Paperclip secret reference; saved environments store pasted values as company secrets. If omitted, Paperclip falls back to sshIdentityFile, then the host's default SSH agent/keychain.",
+              "Optional exe.dev-registered SSH private key. Paste the private key or an existing ValadrienOs secret reference; saved environments store pasted values as company secrets. If omitted, ValadrienOs falls back to sshIdentityFile, then the host's default SSH agent/keychain.",
           },
           sshIdentityFile: {
             type: "string",
             description:
-              "Optional absolute path to the SSH private key the Paperclip host should use for VM access when sshPrivateKey is omitted. Leave both blank to rely on the host's default SSH agent/keychain.",
+              "Optional absolute path to the SSH private key the ValadrienOs host should use for VM access when sshPrivateKey is omitted. Leave both blank to rely on the host's default SSH agent/keychain.",
           },
           sshPort: {
             type: "number",

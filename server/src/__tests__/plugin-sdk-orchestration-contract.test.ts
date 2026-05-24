@@ -1,16 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { Issue, PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Issue, ValadrienOsPluginManifestV1 } from "@valadrien-os/shared";
 import { createTestHarness } from "../../../packages/plugins/sdk/src/testing.js";
 
-function manifest(capabilities: PaperclipPluginManifestV1["capabilities"]): PaperclipPluginManifestV1 {
+function manifest(capabilities: ValadrienOsPluginManifestV1["capabilities"]): ValadrienOsPluginManifestV1 {
   return {
-    id: "paperclip.test-orchestration",
+    id: "valadrien-os.test-orchestration",
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Test Orchestration",
     description: "Test plugin",
-    author: "Paperclip",
+    author: "ValadrienOs",
     categories: ["automation"],
     capabilities,
     entrypoints: { worker: "./dist/worker.js" },
@@ -77,7 +77,7 @@ describe("plugin SDK orchestration contract", () => {
       blockedByIssueIds: [blockerIssueId],
     });
 
-    expect(created.originKind).toBe("plugin:paperclip.test-orchestration");
+    expect(created.originKind).toBe("plugin:valadrien-os.test-orchestration");
     expect(created.originId).toBe("mission-alpha");
     expect(created.billingCode).toBe("mission:alpha");
     expect(created.assigneeUserId).toBe("board-user");
@@ -124,14 +124,14 @@ describe("plugin SDK orchestration contract", () => {
     const created = await harness.ctx.issues.create({
       companyId,
       title: "Generated issue",
-      originKind: "plugin:paperclip.test-orchestration:feature",
+      originKind: "plugin:valadrien-os.test-orchestration:feature",
     });
 
-    expect(created.originKind).toBe("plugin:paperclip.test-orchestration:feature");
+    expect(created.originKind).toBe("plugin:valadrien-os.test-orchestration:feature");
     await expect(
       harness.ctx.issues.list({
         companyId,
-        originKind: "plugin:paperclip.test-orchestration:feature",
+        originKind: "plugin:valadrien-os.test-orchestration:feature",
       }),
     ).resolves.toHaveLength(1);
     await expect(
@@ -140,14 +140,14 @@ describe("plugin SDK orchestration contract", () => {
         title: "Spoofed issue",
         originKind: "plugin:other.plugin:feature",
       }),
-    ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
+    ).rejects.toThrow("Plugin may only use originKind values under plugin:valadrien-os.test-orchestration");
     await expect(
       harness.ctx.issues.update(
         created.id,
         { originKind: "plugin:other.plugin:feature" },
         companyId,
       ),
-    ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
+    ).rejects.toThrow("Plugin may only use originKind values under plugin:valadrien-os.test-orchestration");
   });
 
   it("supports generic plugin operation issue visibility in the test harness", async () => {
@@ -163,7 +163,7 @@ describe("plugin SDK orchestration contract", () => {
       originId: "operation-1",
     });
 
-    expect(created.originKind).toBe("plugin:paperclip.test-orchestration:operation");
+    expect(created.originKind).toBe("plugin:valadrien-os.test-orchestration:operation");
     expect(created.originId).toBe("operation-1");
   });
 

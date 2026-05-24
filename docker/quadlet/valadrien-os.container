@@ -1,0 +1,23 @@
+[Unit]
+Description=Valadrien OS Agent Orchestrator
+Requires=valadrien-os-db.service
+After=valadrien-os-db.service
+
+[Container]
+Image=valadrien-os-local
+ContainerName=valadrien-os
+Pod=valadrien-os.pod
+Volume=%h/.local/share/valadrien-os:/valadrien-os:Z
+Environment=HOST=0.0.0.0
+Environment=VALADRIEN_OS_HOME=/valadrien-os
+Environment=VALADRIEN_OS_DEPLOYMENT_MODE=authenticated
+Environment=VALADRIEN_OS_DEPLOYMENT_EXPOSURE=private
+Environment=VALADRIEN_OS_PUBLIC_URL=http://localhost:3100
+EnvironmentFile=%h/.config/containers/systemd/valadrien-os.env
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

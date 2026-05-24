@@ -1,13 +1,13 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   agents,
   companyMemberships,
   instanceUserRoles,
   issues,
   principalPermissionGrants,
-} from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+} from "@valadrien-os/db";
+import type { PermissionKey, PrincipalType } from "@valadrien-os/shared";
 import { conflict } from "../errors.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";

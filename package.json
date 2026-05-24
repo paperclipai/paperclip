@@ -1,32 +1,32 @@
 {
-  "name": "paperclip",
+  "name": "valadrien-os",
   "private": true,
   "type": "module",
   "scripts": {
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
-    "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
-    "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
-    "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
-    "dev:list": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts list",
-    "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
-    "dev:server": "pnpm --filter @paperclipai/server dev",
-    "dev:ui": "pnpm --filter @paperclipai/ui dev",
-    "storybook": "pnpm --filter @paperclipai/ui storybook",
-    "build-storybook": "pnpm --filter @paperclipai/ui build-storybook",
+    "dev": "pnpm --filter @valadrien-os/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:watch": "pnpm --filter @valadrien-os/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:once": "pnpm --filter @valadrien-os/server exec tsx ../scripts/dev-runner.ts dev",
+    "dev:list": "pnpm --filter @valadrien-os/server exec tsx ../scripts/dev-service.ts list",
+    "dev:stop": "pnpm --filter @valadrien-os/server exec tsx ../scripts/dev-service.ts stop",
+    "dev:server": "pnpm --filter @valadrien-os/server dev",
+    "dev:ui": "pnpm --filter @valadrien-os/ui dev",
+    "storybook": "pnpm --filter @valadrien-os/ui storybook",
+    "build-storybook": "pnpm --filter @valadrien-os/ui build-storybook",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "typecheck:build-gaps": "pnpm run preflight:workspace-links && node scripts/run-typecheck-build-gaps.mjs",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
-    "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
-    "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
-    "db:generate": "pnpm --filter @paperclipai/db generate",
-    "db:migrate": "pnpm --filter @paperclipai/db migrate",
+    "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
+    "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
+    "db:generate": "pnpm --filter @valadrien-os/db generate",
+    "db:migrate": "pnpm --filter @valadrien-os/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
-    "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
+    "valadrien-os": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",
@@ -47,7 +47,7 @@
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
-    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
+    "metrics:valadrien-os-commits": "tsx scripts/valadrien-os-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
   },
   "devDependencies": {
@@ -66,7 +66,8 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "@paperclipai/adapter-utils": "workspace:@valadrien-os/adapter-utils@*"
     }
   }
 }

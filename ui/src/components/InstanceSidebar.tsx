@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@valadrien-os/shared";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";

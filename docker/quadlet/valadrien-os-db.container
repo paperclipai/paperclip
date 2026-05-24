@@ -1,0 +1,20 @@
+[Unit]
+Description=PostgreSQL for Valadrien OS
+
+[Container]
+Image=docker.io/library/postgres:17-alpine
+ContainerName=valadrien-os-db
+Pod=valadrien-os.pod
+Volume=valadrien-os-pgdata:/var/lib/postgresql/data
+EnvironmentFile=%h/.config/containers/systemd/valadrien-os.env
+HealthCmd=pg_isready -U $POSTGRES_USER -d $POSTGRES_DB -h localhost || exit 1
+HealthInterval=15s
+HealthTimeout=5s
+HealthRetries=5
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

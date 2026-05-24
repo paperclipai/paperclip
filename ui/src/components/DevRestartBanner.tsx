@@ -51,8 +51,8 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
   async function requestRestartNow() {
     const warning =
       currentDevServer.activeRunCount > 0
-        ? `Restart Paperclip now? This may interrupt ${activeRunLabel}.`
-        : "Restart Paperclip now?";
+        ? `Restart ValadrienOs now? This may interrupt ${activeRunLabel}.`
+        : "Restart ValadrienOs now?";
     if (!window.confirm(warning)) return;
 
     setRestartPending(true);

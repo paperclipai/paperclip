@@ -23,7 +23,7 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@valadrien-os/shared/telemetry", () => ({
     trackSkillImported: mockTrackSkillImported,
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -75,7 +75,7 @@ async function createApp(actor: Record<string, unknown>) {
 describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@valadrien-os/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");

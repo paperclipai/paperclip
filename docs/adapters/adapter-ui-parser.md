@@ -1,9 +1,9 @@
 ---
 title: Adapter UI Parser Contract
-summary: Ship a custom run-log parser so the Paperclip UI renders your adapter's output correctly
+summary: Ship a custom run-log parser so the Valadrien OS UI renders your adapter's output correctly
 ---
 
-When Paperclip runs an agent, stdout is streamed to the UI in real time. The UI needs a **parser** to convert raw stdout lines into structured transcript entries (tool calls, tool results, assistant messages, system events). Without a custom parser, the UI falls back to a generic shell parser that treats every non-system line as `assistant` output — tool commands leak as plain text, durations are lost, and errors are invisible.
+When Valadrien OS runs an agent, stdout is streamed to the UI in real time. The UI needs a **parser** to convert raw stdout lines into structured transcript entries (tool calls, tool results, assistant messages, system events). Without a custom parser, the UI falls back to a generic shell parser that treats every non-system line as `assistant` output — tool commands leak as plain text, durations are lost, and errors are invisible.
 
 ## The Problem
 
@@ -41,13 +41,13 @@ With a parser, the UI renders:
                                                        │ plugin-loader reads at startup
                                                        ▼
 ┌──────────────────┐   GET /api/:type/ui-parser.js   ┌──────────────────┐
-│  Paperclip Server  │◄────────────────────────────────│  uiParserCache    │
+│  Valadrien OS Server  │◄────────────────────────────────│  uiParserCache    │
 │  (in-memory)      │                                 └──────────────────┘
 └────────┬─────────┘
          │ serves JS to browser
          ▼
 ┌──────────────────┐   fetch() + eval   ┌──────────────────┐
-│  Paperclip UI     │─────────────────────→│  parseStdoutLine │
+│  Valadrien OS UI     │─────────────────────→│  parseStdoutLine │
 │  (dynamic loader) │   registers parser  │  (per-adapter)   │
 └──────────────────┘                     └──────────────────┘
 ```
@@ -59,17 +59,17 @@ With a parser, the UI renders:
 
 ## Contract: package.json
 
-### 1. `paperclip.adapterUiParser` — contract version
+### 1. `valadrien-os.adapterUiParser` — contract version
 
 ```json
 {
-  "paperclip": {
+  "valadrien-os": {
     "adapterUiParser": "1.0.0"
   }
 }
 ```
 
-The Paperclip host checks this field. If the major version is unsupported, the host logs a warning and falls back to the generic parser instead of executing potentially incompatible code.
+The Valadrien OS host checks this field. If the major version is unsupported, the host logs a warning and falls back to the generic parser instead of executing potentially incompatible code.
 
 | Host expects | Adapter declares | Result |
 |---|---|---|

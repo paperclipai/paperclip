@@ -15,7 +15,7 @@ The underlying pattern is described in `IDEA.md` (Karpathy's "LLM Wiki" gist). R
     ├── index.md      # catalog of all pages
     ├── log.md        # append-only timeline of operations
     ├── sources/      # one summary page per source
-    ├── projects/     # Paperclip project overviews, standups, decisions, and history
+    ├── projects/     # Valadrien OS project overviews, standups, decisions, and history
     │   └── <slug>/
     │       ├── index.md
     │       ├── standup.md
@@ -28,13 +28,13 @@ The underlying pattern is described in `IDEA.md` (Karpathy's "LLM Wiki" gist). R
 
 The subdirectories under `wiki/` are conventional, not enforced. Add new categories (e.g. `wiki/papers/`) as the domain demands — and update this file when you do.
 
-Paperclip project material lives only under `wiki/projects/<project-slug>/`. Do not create a top-level `projects/` directory.
+Valadrien OS project material lives only under `wiki/projects/<project-slug>/`. Do not create a top-level `projects/` directory.
 
 - `wiki/projects/<project-slug>/standup.md` is the executive-level project standup. It answers where the project stands today, what changed recently, current blockers/risks, and the next concrete actions.
 - `wiki/projects/<project-slug>/index.md` is the durable knowledge page. It explains what the project is, why it exists, decisions made, history, and long-lived context.
 - Keep the two linked. A standup should link to the durable project page, and the durable project page should point at the current standup for live status.
-- Update `standup.md` whenever Paperclip project, issue, plan, comment, blocker, approval, or status history materially changes the project's current state. Do not append endless dated sections; rewrite it as today's concise status.
-- Project writing should be editorial and concept-grouped. Do not dump issue queues, UUIDs, raw metadata, or date-heavy ledgers into project pages. Reference Paperclip tasks with human issue links where useful, but make headings and paragraphs explain the concepts, decisions, completed work, next work, and blockers in plain executive language.
+- Update `standup.md` whenever Valadrien OS project, issue, plan, comment, blocker, approval, or status history materially changes the project's current state. Do not append endless dated sections; rewrite it as today's concise status.
+- Project writing should be editorial and concept-grouped. Do not dump issue queues, UUIDs, raw metadata, or date-heavy ledgers into project pages. Reference Valadrien OS tasks with human issue links where useful, but make headings and paragraphs explain the concepts, decisions, completed work, next work, and blockers in plain executive language.
 
 ## Page conventions
 
@@ -78,13 +78,13 @@ When new information contradicts an existing page, do **not** silently overwrite
 
 ### Project updates
 
-Triggered when Paperclip project, issue, plan, comment, blocker, or status history is distilled into the wiki.
+Triggered when Valadrien OS project, issue, plan, comment, blocker, or status history is distilled into the wiki.
 
-1. Create or update `wiki/projects/<project-slug>/standup.md` first. Every Paperclip project represented in the wiki must have one. Keep stable sections for executive readout, what changed, decisions, blockers/risks, next actions, and links.
+1. Create or update `wiki/projects/<project-slug>/standup.md` first. Every Valadrien OS project represented in the wiki must have one. Keep stable sections for executive readout, what changed, decisions, blockers/risks, next actions, and links.
 2. Create or update `wiki/projects/<project-slug>/index.md` as the durable project overview. Keep stable sections for overview, current direction, workstreams, decisions, open risks/blockers, and references.
 3. Use `wiki/projects/<project-slug>/decisions.md` for accepted/rejected plans, architectural decisions, approval outcomes, and reversals when a project has enough decision history to warrant a separate page.
 4. Use `wiki/projects/<project-slug>/history.md` for compact narrative history of meaningful project movement. Group by phase or concept; do not mirror every issue comment.
-5. Always cite Paperclip source material with readable links to issue identifiers, document keys, issue documents, approvals, and raw/source pages. Do not put UUIDs in prose unless the UUID itself is the subject.
+5. Always cite Valadrien OS source material with readable links to issue identifiers, document keys, issue documents, approvals, and raw/source pages. Do not put UUIDs in prose unless the UUID itself is the subject.
 6. Update `wiki/index.md` under Projects and append a `project` log entry to `wiki/log.md`.
 
 ### Query

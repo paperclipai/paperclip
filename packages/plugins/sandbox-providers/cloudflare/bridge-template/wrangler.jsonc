@@ -1,5 +1,5 @@
 {
-  "name": "paperclip-cloudflare-sandbox-bridge",
+  "name": "valadrien-os-cloudflare-sandbox-bridge",
   "main": "src/index.ts",
   "compatibility_date": "2026-05-09",
   "compatibility_flags": ["nodejs_compat"],

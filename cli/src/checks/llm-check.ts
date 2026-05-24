@@ -1,7 +1,7 @@
-import type { PaperclipConfig } from "../config/schema.js";
+import type { ValadrienOsConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
-export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
+export async function llmCheck(config: ValadrienOsConfig): Promise<CheckResult> {
   if (!config.llm) {
     return {
       name: "LLM provider",
@@ -42,7 +42,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
           status: "fail",
           message: "Claude API key is invalid (401)",
           canRepair: false,
-          repairHint: "Run `paperclipai configure --section llm`",
+          repairHint: "Run `valadrien-os configure --section llm`",
         };
       }
       return {
@@ -63,7 +63,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
           status: "fail",
           message: "OpenAI API key is invalid (401)",
           canRepair: false,
-          repairHint: "Run `paperclipai configure --section llm`",
+          repairHint: "Run `valadrien-os configure --section llm`",
         };
       }
       return {

@@ -33,7 +33,7 @@ import {
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
 
-const SEARCH_ALL_VALUE = "__paperclip-search-all__";
+const SEARCH_ALL_VALUE = "__valadrien-os-search-all__";
 
 export function buildFullSearchPath(query: string) {
   const trimmed = query.trim();

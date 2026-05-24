@@ -21,7 +21,7 @@ import type {
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueDocument,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { api } from "./client";
 
 export type IssueUpdateResponse = Issue & {

@@ -2,17 +2,17 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-gemini-local/server";
+import { execute } from "@valadrien-os/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 
-const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const capturePath = process.env.VALADRIEN_OS_TEST_CAPTURE_PATH;
 const payload = {
   argv: process.argv.slice(2),
-  paperclipEnvKeys: Object.keys(process.env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+  valadrienOsEnvKeys: Object.keys(process.env)
+    .filter((key) => key.startsWith("VALADRIEN_OS_"))
     .sort(),
 };
 if (capturePath) {
@@ -70,12 +70,12 @@ process.exit(${exit});
 
 type CapturePayload = {
   argv: string[];
-  paperclipEnvKeys: string[];
+  valadrienOsEnvKeys: string[];
 };
 
 describe("gemini execute", () => {
-  it("passes prompt via --prompt and injects paperclip env vars", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
+  it("passes prompt via --prompt and injects valadrien-os env vars", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -107,9 +107,9 @@ describe("gemini execute", () => {
           cwd: workspace,
           model: "gemini-2.5-pro",
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            VALADRIEN_OS_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the valadrien-os heartbeat.",
         },
         context: {},
         authToken: "run-jwt-token",
@@ -130,20 +130,20 @@ describe("gemini execute", () => {
       expect(capture.argv).toContain("yolo");
       const promptFlagIndex = capture.argv.indexOf("--prompt");
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
-      expect(promptArg).toContain("Follow the paperclip heartbeat.");
-      expect(promptArg).toContain("Paperclip runtime note:");
-      expect(capture.paperclipEnvKeys).toEqual(
+      expect(promptArg).toContain("Follow the valadrien-os heartbeat.");
+      expect(promptArg).toContain("ValadrienOs runtime note:");
+      expect(capture.valadrienOsEnvKeys).toEqual(
         expect.arrayContaining([
-          "PAPERCLIP_AGENT_ID",
-          "PAPERCLIP_API_KEY",
-          "PAPERCLIP_API_URL",
-          "PAPERCLIP_COMPANY_ID",
-          "PAPERCLIP_RUN_ID",
+          "VALADRIEN_OS_AGENT_ID",
+          "VALADRIEN_OS_API_KEY",
+          "VALADRIEN_OS_API_URL",
+          "VALADRIEN_OS_COMPANY_ID",
+          "VALADRIEN_OS_RUN_ID",
         ]),
       );
-      expect(invocationPrompt).toContain("Paperclip runtime note:");
-      expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
-      expect(invocationPrompt).toContain("Paperclip API access note:");
+      expect(invocationPrompt).toContain("ValadrienOs runtime note:");
+      expect(invocationPrompt).toContain("VALADRIEN_OS_API_URL");
+      expect(invocationPrompt).toContain("ValadrienOs API access note:");
       expect(invocationPrompt).toContain("run_shell_command");
       expect(result.question).toBeNull();
     } finally {
@@ -157,7 +157,7 @@ describe("gemini execute", () => {
   });
 
   it("always passes --approval-mode yolo", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -175,7 +175,7 @@ describe("gemini execute", () => {
         config: {
           command: commandPath,
           cwd: workspace,
-          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          env: { VALADRIEN_OS_TEST_CAPTURE_PATH: capturePath },
         },
         context: {},
         authToken: "t",
@@ -199,7 +199,7 @@ describe("gemini execute", () => {
   });
 
   it("normalizes turn-limit exhaustion into scheduler stop metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-max-turns-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-max-turns-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     await fs.mkdir(workspace, { recursive: true });
@@ -247,7 +247,7 @@ describe("gemini execute", () => {
   });
 
   it("normalizes Gemini exit code 53 as max-turn exhaustion", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-exit-53-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-exit-53-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     await fs.mkdir(workspace, { recursive: true });
@@ -288,7 +288,7 @@ describe("gemini execute", () => {
   });
 
   it("does not normalize unstructured turn-limit text into scheduler stop metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-max-turn-text-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-max-turn-text-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     await fs.mkdir(workspace, { recursive: true });
@@ -337,7 +337,7 @@ describe("gemini execute", () => {
   });
 
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
@@ -368,16 +368,16 @@ describe("gemini execute", () => {
           cwd: workspace,
           model: "gemini-2.5-pro",
           env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            VALADRIEN_OS_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: "Follow the valadrien-os heartbeat.",
         },
         context: {
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
-          paperclipWake: {
+          valadrienOsWake: {
             reason: "issue_commented",
             issue: {
               id: "issue-1",
@@ -419,10 +419,10 @@ describe("gemini execute", () => {
       const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
       expect(capture.argv).toContain("--resume");
       expect(capture.argv).toContain("gemini-session-1");
-      expect(promptArg).toContain("## Paperclip Resume Delta");
+      expect(promptArg).toContain("## ValadrienOs Resume Delta");
       expect(promptArg).toContain("Do not switch to another issue until you have handled this wake.");
       expect(promptArg).toContain("Second comment");
-      expect(promptArg).not.toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).not.toContain("Follow the valadrien-os heartbeat.");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

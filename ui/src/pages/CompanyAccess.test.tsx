@@ -57,7 +57,7 @@ vi.mock("@/plugins/slots", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "ValadrienOs" },
   }),
 }));
 
@@ -98,7 +98,7 @@ describe("CompanyAccess", () => {
           updatedAt: "2026-04-10T00:00:00.000Z",
           user: {
             id: "user-1",
-            email: "codexcoder@paperclip.local",
+            email: "codexcoder@valadrien-os.local",
             name: "Codex Coder",
             image: null,
           },
@@ -115,7 +115,7 @@ describe("CompanyAccess", () => {
           updatedAt: "2026-04-10T00:00:00.000Z",
           user: {
             id: "user-2",
-            email: "board@paperclip.local",
+            email: "board@valadrien-os.local",
             name: "Board User",
             image: null,
           },
@@ -136,11 +136,11 @@ describe("CompanyAccess", () => {
         createdAt: "2026-04-10T00:00:00.000Z",
         requesterUser: {
           id: "user-2",
-          email: "board@paperclip.local",
+          email: "board@valadrien-os.local",
           name: "Board User",
           image: null,
         },
-        requestEmailSnapshot: "board@paperclip.local",
+        requestEmailSnapshot: "board@valadrien-os.local",
         requestingUserId: "user-2",
         invite: {
           allowedJoinTypes: "human",
@@ -207,7 +207,7 @@ describe("CompanyAccess", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Manage the people who can work in Paperclip");
+    expect(container.textContent).toContain("Manage the people who can work in ValadrienOs");
     expect(container.textContent).toContain("Members can collaborate across the company by default");
     expect(container.textContent).toContain("Core keeps this page focused on membership");
     expect(container.textContent).toContain("Humans");
@@ -358,7 +358,7 @@ describe("CompanyAccess", () => {
           updatedAt: "2026-04-10T00:00:00.000Z",
           user: {
             id: "admin-user",
-            email: "admin@paperclip.local",
+            email: "admin@valadrien-os.local",
             name: "Admin User",
             image: null,
           },

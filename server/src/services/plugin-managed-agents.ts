@@ -1,17 +1,17 @@
 import { and, eq, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   agents,
   companies,
   pluginEntities,
   pluginManagedResources,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import type {
   Agent,
-  PaperclipPluginManifestV1,
+  ValadrienOsPluginManifestV1,
   PluginManagedAgentDeclaration,
   PluginManagedAgentResolution,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { notFound } from "../errors.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
@@ -24,7 +24,7 @@ const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
 interface PluginManagedAgentServiceOptions {
   pluginId: string;
   pluginKey: string;
-  manifest?: PaperclipPluginManifestV1 | null;
+  manifest?: ValadrienOsPluginManifestV1 | null;
   instructionTemplateVariables?: (companyId: string) => Promise<Record<string, string | null | undefined>>;
 }
 
@@ -40,7 +40,7 @@ function managedMetadata(
 ) {
   return {
     ...(existing ?? {}),
-    paperclipManagedResource: {
+    valadrienOsManagedResource: {
       pluginId,
       pluginKey,
       resourceKind: "agent",
@@ -160,7 +160,7 @@ function rowIsManagedAgent(
 ) {
   const metadata = row.metadata;
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
-  const marker = (metadata as Record<string, unknown>).paperclipManagedResource;
+  const marker = (metadata as Record<string, unknown>).valadrienOsManagedResource;
   if (!marker || typeof marker !== "object" || Array.isArray(marker)) return false;
   const record = marker as Record<string, unknown>;
   return (

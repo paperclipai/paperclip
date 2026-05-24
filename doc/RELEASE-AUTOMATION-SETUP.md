@@ -1,6 +1,6 @@
 # Release Automation Setup
 
-This document covers the GitHub and npm setup required for the current Paperclip release model:
+This document covers the GitHub and npm setup required for the current Valadrien OS release model:
 
 - automatic canaries from `master`
 - manual stable promotion from a chosen source ref
@@ -29,13 +29,13 @@ Required files:
 
 ## 2. Configure npm Trusted Publishing
 
-Do this for every public package that Paperclip publishes.
+Do this for every public package that Valadrien OS publishes.
 
 At minimum that includes:
 
-- `paperclipai`
-- `@paperclipai/server`
-- `@paperclipai/ui`
+- `valadrien-os`
+- `@valadrien-os/server`
+- `@valadrien-os/ui`
 - public packages under `packages/`
 
 ### 2.1. In npm, open each package settings page
@@ -44,7 +44,7 @@ For each package:
 
 1. open npm as an owner of the package
 2. go to the package settings / publishing access area
-3. add a trusted publisher for the GitHub repository `paperclipai/paperclip`
+3. add a trusted publisher for the GitHub repository `ValDola-stack/valadrien-os`
 
 ### 2.2. Add one trusted publisher entry per package
 
@@ -56,7 +56,7 @@ Configure:
 
 Repository:
 
-- `paperclipai/paperclip`
+- `ValDola-stack/valadrien-os`
 
 Environment name:
 
@@ -82,7 +82,7 @@ Repo policy:
 Bootstrap sequence for a new package:
 
 1. publish the package once from a trusted maintainer machine using normal npm auth
-2. open that package on npm and add the `paperclipai/paperclip` trusted publisher for `.github/workflows/release.yml`
+2. open that package on npm and add the `ValDola-stack/valadrien-os` trusted publisher for `.github/workflows/release.yml`
 3. rerun or dry-run the release flow as needed to confirm CI publishing now works
 4. only then enable `"publishFromCi": true`
 
@@ -104,7 +104,7 @@ Only after that should you remove old token-based access.
 After trusted publishing works:
 
 1. revoke any repository or organization `NPM_TOKEN` secrets used for publish
-2. revoke any personal automation token that used to publish Paperclip
+2. revoke any personal automation token that used to publish Valadrien OS
 3. if npm offers a package-level setting to restrict publishing to trusted publishers, enable it
 
 Goal:
@@ -232,7 +232,7 @@ After setup:
 Install-path check:
 
 ```bash
-npx paperclipai@canary onboard
+npx valadrien-os@canary onboard
 ```
 
 ## 12. Verify the Stable Workflow

@@ -5,6 +5,6 @@ Server tests that need a real PostgreSQL process must use
 directly.
 
 The shared helper creates a throwaway data directory and a reserved-safe
-loopback port for each test database. This protects the live Paperclip
+loopback port for each test database. This protects the live Valadrien OS
 control-plane Postgres from server vitest runs; see PAP-2033 for the incident
 that introduced this guard.

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
+import type { Issue, ExecutionWorkspace } from "@valadrien-os/shared";
 import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { environmentsApi } from "../api/environments";

@@ -22,15 +22,15 @@ describe("command managed runtime", () => {
   });
 
   it("keeps the runtime overlay out of sandbox workspace sync by default", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-command-runtime-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
-    await mkdir(path.join(localWorkspaceDir, ".paperclip-runtime"), { recursive: true });
+    await mkdir(path.join(localWorkspaceDir, ".valadrien-os-runtime"), { recursive: true });
     await mkdir(remoteWorkspaceDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
-    await writeFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "{\"keep\":true}\n", "utf8");
+    await writeFile(path.join(localWorkspaceDir, ".valadrien-os-runtime", "state.json"), "{\"keep\":true}\n", "utf8");
 
     const calls: Array<{
       command: string;
@@ -64,8 +64,8 @@ describe("command managed runtime", () => {
           (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
-          env.PAPERCLIP_TEST_STDIN = input.stdin;
-          args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
+          env.VALADRIEN_OS_TEST_STDIN = input.stdin;
+          args[1] = `printf '%s' \"$VALADRIEN_OS_TEST_STDIN\" | (${args[1]})`;
         }
         try {
           const result = await execFile(command, args, {
@@ -115,30 +115,30 @@ describe("command managed runtime", () => {
     });
 
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
-    await expect(readFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).rejects
+    await expect(readFile(path.join(remoteWorkspaceDir, ".valadrien-os-runtime", "state.json"), "utf8")).rejects
       .toMatchObject({ code: "ENOENT" });
     expect(calls.every((call) => call.stdin == null)).toBe(true);
 
-    await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
+    await mkdir(path.join(remoteWorkspaceDir, ".valadrien-os-runtime"), { recursive: true });
     await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote workspace\n", "utf8");
-    await writeFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "remote-state.json"), "{\"remote\":true}\n", "utf8");
+    await writeFile(path.join(remoteWorkspaceDir, ".valadrien-os-runtime", "remote-state.json"), "{\"remote\":true}\n", "utf8");
     await prepared.restoreWorkspace();
 
     await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("remote workspace\n");
-    await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves
+    await expect(readFile(path.join(localWorkspaceDir, ".valadrien-os-runtime", "state.json"), "utf8")).resolves
       .toBe("{\"keep\":true}\n");
-    await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "remote-state.json"), "utf8")).rejects
+    await expect(readFile(path.join(localWorkspaceDir, ".valadrien-os-runtime", "remote-state.json"), "utf8")).rejects
       .toMatchObject({ code: "ENOENT" });
     expect(calls.every((call) => call.stdin == null)).toBe(true);
   });
 
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-command-runtime-nested-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteBaseDir = path.join(rootDir, "remote-base");
-    const remoteWorkspaceDir = path.join(remoteBaseDir, ".paperclip-runtime", "runs", "test", "workspace");
+    const remoteWorkspaceDir = path.join(remoteBaseDir, ".valadrien-os-runtime", "runs", "test", "workspace");
     await mkdir(localWorkspaceDir, { recursive: true });
     await mkdir(remoteBaseDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");

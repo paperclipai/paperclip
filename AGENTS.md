@@ -4,7 +4,7 @@ Guidance for human and AI contributors working in this repository.
 
 ## 1. Purpose
 
-Paperclip is a control plane for AI-agent companies.
+Valadrien OS is a control plane for AI-agent companies.
 The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
 
 ## 2. Read This First
@@ -82,7 +82,7 @@ If you change schema/API behavior, update all impacted layers:
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
 5. Keep repo plan docs dated and centralized.
-When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
+When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Valadrien OS issue planning: if a Valadrien OS issue asks for a plan, update the issue `plan` document per the `valadrien-os` skill instead of creating a repo markdown file.
 
 ## 6. Database Change Workflow
 
@@ -176,9 +176,9 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 11. Fork-Specific: HenkDz/valadrien-os
 
-This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This is a fork of `ValDola-stack/valadrien-os` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/valadrien-os/tree/feat/externalize-hermes-adapter)).
 
 ### Branch Strategy
 
@@ -189,14 +189,14 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 
 - Register through **Board → Adapter manager** (same as Droid). Type remains `hermes_local` once the package is loaded.
 - UI uses generic **config-schema** + **ui-parser.js** from the package — no Hermes imports in `server/` or `ui/` source.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` for local dev of the adapter repo.
+- Optional: `file:` entry in `~/.valadrien-os/adapter-plugins.json` for local dev of the adapter repo.
 
 ### Local Dev
 
 - Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
 - `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
 - Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
+- Kill ALL valadrien-os processes before starting: `pkill -f "valadrien-os"; pkill -f "tsx.*index.ts"`
 - Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
 
 ### Fork QoL Patches (not in upstream)
@@ -211,7 +211,7 @@ These are local modifications in the fork's UI. If re-copying source, these must
 
 PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
 
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
+- Adapters can be loaded as external plugins via `~/.valadrien-os/adapter-plugins.json`
 - The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing

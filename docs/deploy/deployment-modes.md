@@ -3,7 +3,7 @@ title: Deployment Modes
 summary: local_trusted vs authenticated (private/public)
 ---
 
-Paperclip supports two runtime modes with different security profiles. Reachability is configured separately with `bind`.
+Valadrien OS supports two runtime modes with different security profiles. Reachability is configured separately with `bind`.
 
 ## `local_trusted`
 
@@ -17,7 +17,7 @@ The default mode. Optimized for single-operator local use.
 
 ```sh
 # Set during onboard
-pnpm paperclipai onboard
+pnpm valadrien-os onboard
 # Choose "local_trusted"
 ```
 
@@ -35,14 +35,14 @@ For private network access (Tailscale, VPN, LAN).
 - **Bind**: choose `loopback`, `lan`, `tailnet`, or `custom`
 
 ```sh
-pnpm paperclipai onboard
+pnpm valadrien-os onboard
 # Choose "authenticated" -> "private"
 ```
 
 Allow custom Tailscale hostnames:
 
 ```sh
-pnpm paperclipai allowed-hostname my-machine
+pnpm valadrien-os allowed-hostname my-machine
 ```
 
 ### `authenticated` + `public`
@@ -55,13 +55,13 @@ For internet-facing deployment.
 - **Bind**: usually `loopback` behind a reverse proxy; `lan/custom` is advanced
 
 ```sh
-pnpm paperclipai onboard
+pnpm valadrien-os onboard
 # Choose "authenticated" -> "public"
 ```
 
 ## Board Claim Flow
 
-When migrating from `local_trusted` to `authenticated`, Paperclip emits a one-time claim URL at startup:
+When migrating from `local_trusted` to `authenticated`, Valadrien OS emits a one-time claim URL at startup:
 
 ```
 /board-claim/<token>?code=<code>
@@ -78,11 +78,11 @@ A signed-in user visits this URL to claim board ownership. This:
 Update the deployment mode:
 
 ```sh
-pnpm paperclipai configure --section server
+pnpm valadrien-os configure --section server
 ```
 
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan pnpm paperclipai run
+VALADRIEN_OS_DEPLOYMENT_MODE=authenticated VALADRIEN_OS_BIND=lan pnpm valadrien-os run
 ```

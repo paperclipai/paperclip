@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatRetryReason } from "@/lib/runRetryState";
-import type { IssueScheduledRetry } from "@paperclipai/shared";
+import type { IssueScheduledRetry } from "@valadrien-os/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
@@ -105,7 +105,7 @@ export function IssueScheduledRetryCard({
           ) : null}
           {scheduledRetry.error ? (
             <div className="mt-1 text-xs text-muted-foreground">
-              Last attempt failed: {scheduledRetry.error}. Paperclip will retry automatically.
+              Last attempt failed: {scheduledRetry.error}. ValadrienOs will retry automatically.
             </div>
           ) : null}
           {isError ? (

@@ -60,7 +60,7 @@ FROM ranked
 WHERE "company_secrets"."id" = ranked."id"
 	AND ranked.rn > 1;--> statement-breakpoint
 ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "status" text DEFAULT 'active' NOT NULL;--> statement-breakpoint
-ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "managed_mode" text DEFAULT 'paperclip_managed' NOT NULL;--> statement-breakpoint
+ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "managed_mode" text DEFAULT 'valadrien_os_managed' NOT NULL;--> statement-breakpoint
 ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "provider_config_id" text;--> statement-breakpoint
 ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "provider_metadata" jsonb;--> statement-breakpoint
 ALTER TABLE "company_secrets" ADD COLUMN IF NOT EXISTS "last_resolved_at" timestamp with time zone;--> statement-breakpoint

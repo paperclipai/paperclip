@@ -18,11 +18,11 @@ describe("describeToolInput", () => {
       describeToolInput("command_execution", {
         description: "Inspect the issue chat thread layout classes",
         command: "zsh -lc 'sed -n \"1,220p\" ui/src/components/IssueChatThread.tsx'",
-        cwd: "/workspace/paperclip",
+        cwd: "/workspace/valadrien-os",
       }),
     ).toEqual([
       { label: "Intent", value: "Inspect the issue chat thread layout classes", tone: "default" },
-      { label: "Directory", value: "/workspace/paperclip", tone: "default" },
+      { label: "Directory", value: "/workspace/valadrien-os", tone: "default" },
     ]);
   });
 

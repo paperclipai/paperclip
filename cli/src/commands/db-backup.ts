@@ -1,14 +1,14 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import { formatDatabaseBackupResult, runDatabaseBackup } from "@valadrien-os/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
-  resolvePaperclipInstanceId,
+  resolveValadrienOsInstanceId,
 } from "../config/home.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printValadrienOsCliBanner } from "../utils/banner.js";
 
 type DbBackupOptions = {
   config?: string;
@@ -29,7 +29,7 @@ function resolveConnectionString(configPath?: string): { value: string; source: 
 
   const port = config?.database.embeddedPostgresPort ?? 54329;
   return {
-    value: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+    value: `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`,
     source: `embedded-postgres@${port}`,
   };
 }
@@ -47,20 +47,20 @@ function resolveBackupDir(raw: string): string {
 }
 
 export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
+  printValadrienOsCliBanner();
+  p.intro(pc.bgCyan(pc.black(" valadrien-os db:backup ")));
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);
   const connection = resolveConnectionString(opts.config);
-  const defaultDir = resolveDefaultBackupDir(resolvePaperclipInstanceId());
+  const defaultDir = resolveDefaultBackupDir(resolveValadrienOsInstanceId());
   const configuredDir = opts.dir?.trim() || config?.database.backup.dir || defaultDir;
   const backupDir = resolveBackupDir(configuredDir);
   const retentionDays = normalizeRetentionDays(
     opts.retentionDays,
     config?.database.backup.retentionDays ?? 30,
   );
-  const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
+  const filenamePrefix = opts.filenamePrefix?.trim() || "valadrien-os";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));

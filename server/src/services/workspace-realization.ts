@@ -4,7 +4,7 @@ import type {
   ExecutionWorkspaceConfig,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 
 function parseObject(value: unknown): Record<string, unknown> {

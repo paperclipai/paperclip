@@ -9,7 +9,7 @@ describe("parseCodexStdoutLine", () => {
         id: "tool-1",
         type: "tool_use",
         name: "search",
-        input: { query: "paperclip" },
+        input: { query: "valadrien-os" },
       },
     }), "2026-04-08T12:00:00.000Z");
 
@@ -28,7 +28,7 @@ describe("parseCodexStdoutLine", () => {
       ts: "2026-04-08T12:00:00.000Z",
       name: "search",
       toolUseId: "tool-1",
-      input: { query: "paperclip" },
+      input: { query: "valadrien-os" },
     }]);
     expect(completed).toEqual([{
       kind: "tool_result",

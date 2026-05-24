@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin } from "@valadrien-os/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -24,7 +24,7 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
-} from "@paperclipai/plugin-sdk";
+} from "@valadrien-os/plugin-sdk";
 
 interface DaytonaDriverConfig {
   apiKey: string | null;
@@ -144,11 +144,11 @@ function buildSandboxLabels(input: {
   reuseLease: boolean;
 }): Record<string, string> {
   return {
-    "paperclip-provider": "daytona",
-    "paperclip-company-id": input.companyId,
-    "paperclip-environment-id": input.environmentId,
-    "paperclip-reuse-lease": input.reuseLease ? "true" : "false",
-    ...(input.runId ? { "paperclip-run-id": input.runId } : {}),
+    "valadrien-os-provider": "daytona",
+    "valadrien-os-company-id": input.companyId,
+    "valadrien-os-environment-id": input.environmentId,
+    "valadrien-os-reuse-lease": input.reuseLease ? "true" : "false",
+    ...(input.runId ? { "valadrien-os-run-id": input.runId } : {}),
   };
 }
 
@@ -191,7 +191,7 @@ async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string>
   const root = (await sandbox.getWorkDir())?.trim()
     || (await sandbox.getUserHomeDir())?.trim()
     || "/home/daytona";
-  const remoteCwd = path.posix.join(root, "paperclip-workspace");
+  const remoteCwd = path.posix.join(root, "valadrien-os-workspace");
   await sandbox.fs.createFolder(remoteCwd, "755");
   return remoteCwd;
 }
@@ -340,7 +340,7 @@ async function executeOneShot(
 ): Promise<PluginEnvironmentExecuteResult> {
   const timeoutMs = resolveTimeoutMs(params.timeoutMs, config);
   const timeoutSeconds = toTimeoutSeconds(timeoutMs);
-  const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
+  const stdinPath = params.stdin != null ? `/tmp/valadrien-os-stdin-${randomUUID()}` : null;
 
   try {
     if (stdinPath) {
@@ -579,7 +579,7 @@ const plugin = definePlugin({
       typeof params.lease.metadata?.remoteCwd === "string" &&
       params.lease.metadata.remoteCwd.trim().length > 0
         ? params.lease.metadata.remoteCwd.trim()
-        : params.workspace.remotePath ?? params.workspace.localPath ?? "/paperclip-workspace";
+        : params.workspace.remotePath ?? params.workspace.localPath ?? "/valadrien-os-workspace";
 
     if (params.lease.providerLeaseId) {
       const sandbox = await getSandbox(config, params.lease.providerLeaseId);

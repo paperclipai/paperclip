@@ -9,7 +9,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   QuotaWindow,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { AlertTriangle, CheckCircle2, CreditCard, Landmark, ReceiptText, WalletCards } from "lucide-react";
 import { AccountingModelCard } from "@/components/AccountingModelCard";
 import { BillerSpendCard } from "@/components/BillerSpendCard";
@@ -39,9 +39,9 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -105,7 +105,7 @@ const budgetIncidents: BudgetIncident[] = [
     policyId: "budget-project-app",
     scopeType: "project",
     scopeId: "project-board-ui",
-    scopeName: "Paperclip App",
+    scopeName: "ValadrienOs App",
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     windowStart,
@@ -126,7 +126,7 @@ const budgetIncidents: BudgetIncident[] = [
     policyId: "budget-company",
     scopeType: "company",
     scopeId: "company-storybook",
-    scopeName: "Paperclip Storybook",
+    scopeName: "ValadrienOs Storybook",
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     windowStart,
@@ -550,12 +550,12 @@ const sidebarMarkers: Array<{
 
 function BudgetFinanceMatrix() {
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner space-y-6">
-        <section className="paperclip-story__frame p-6">
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner space-y-6">
+        <section className="valadrien-os-story__frame p-6">
           <div className="flex flex-wrap items-start justify-between gap-5">
             <div>
-              <div className="paperclip-story__label">Budget and finance</div>
+              <div className="valadrien-os-story__label">Budget and finance</div>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Spend controls, quotas, and accounting surfaces</h1>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
                 Fixture-backed coverage for the board's cost-control components: active incidents, sidebar budget markers,

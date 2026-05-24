@@ -6,14 +6,14 @@ Related issue: `PAP-1377`
 
 ## Summary
 
-Paperclip should not replace its workspace runtime service model with VS Code tasks.
+Valadrien OS should not replace its workspace runtime service model with VS Code tasks.
 It should add a narrow interoperability layer that can discover and adopt supported entries from `.vscode/tasks.json`.
 
 The core product model should stay:
 
-- Paperclip owns long-running workspace services and their desired state
-- Paperclip shows operators exactly which named thing they are starting or stopping
-- Paperclip distinguishes long-running services from one-shot jobs
+- Valadrien OS owns long-running workspace services and their desired state
+- Valadrien OS shows operators exactly which named thing they are starting or stopping
+- Valadrien OS distinguishes long-running services from one-shot jobs
 
 VS Code tasks should be treated as:
 
@@ -38,7 +38,7 @@ Relevant files:
 - `ui/src/pages/ProjectWorkspaceDetail.tsx`
 - `ui/src/pages/ExecutionWorkspaceDetail.tsx`
 
-This is directionally correct for Paperclip because it gives the control plane an explicit model for service lifecycle, health, reuse, and restart behavior.
+This is directionally correct for Valadrien OS because it gives the control plane an explicit model for service lifecycle, health, reuse, and restart behavior.
 
 ## Problem To Solve
 
@@ -50,11 +50,11 @@ The current UX is still too raw:
 - there is no interoperability with repos that already define useful local workflows in `.vscode/tasks.json`
 
 The issue is not that services are the wrong abstraction.
-The issue is that the configuration surface is too low-level and Paperclip does not yet leverage existing workspace metadata.
+The issue is that the configuration surface is too low-level and Valadrien OS does not yet leverage existing workspace metadata.
 
 ## Recommendation
 
-Keep Paperclip runtime services as the source of truth for service supervision.
+Keep Valadrien OS runtime services as the source of truth for service supervision.
 Add a new workspace command model above the raw JSON layer, with VS Code task discovery as one input.
 
 The product model should become:
@@ -69,32 +69,32 @@ The product model should become:
    A workspace command that runs once and exits.
 
 4. `Runtime service instance`
-   The live process record that already exists today in Paperclip.
+   The live process record that already exists today in Valadrien OS.
 
 In that model, VS Code tasks are a way to populate workspace commands.
-Only commands that map cleanly to Paperclip service or job semantics should become runnable in Paperclip.
+Only commands that map cleanly to Valadrien OS service or job semantics should become runnable in Valadrien OS.
 
 ## Why Not Fully Adopt VS Code Tasks
 
-VS Code tasks are broader than Paperclip runtime services.
+VS Code tasks are broader than Valadrien OS runtime services.
 They include shell/process tasks, compound tasks, background/watch tasks, presentation settings, extension/task-provider types, variable substitution, and problem-matcher-driven lifecycle.
 
-That creates a bad fit if Paperclip tries to use `tasks.json` as its only runtime model:
+That creates a bad fit if Valadrien OS tries to use `tasks.json` as its only runtime model:
 
 - many tasks are one-shot jobs, not long-running services
 - some tasks depend on VS Code task providers or editor-only variable resolution
 - compound task graphs are useful, but they are not the same thing as a supervised service
-- problem matcher readiness is useful metadata, but it is not enough to replace Paperclip's persisted service lifecycle model
+- problem matcher readiness is useful metadata, but it is not enough to replace Valadrien OS's persisted service lifecycle model
 
 The right boundary is interoperability, not replacement.
 
 ## Interoperability Contract
 
-Paperclip should support a conservative subset of VS Code tasks and clearly mark unsupported entries.
+Valadrien OS should support a conservative subset of VS Code tasks and clearly mark unsupported entries.
 
 ### Supported in phase 1
 
-- `shell` and `process` tasks with a concrete command Paperclip can resolve
+- `shell` and `process` tasks with a concrete command Valadrien OS can resolve
 - optional task `options.cwd`
 - optional task environment values that can be flattened safely
 - task labels and detail text for naming and display
@@ -104,31 +104,31 @@ Paperclip should support a conservative subset of VS Code tasks and clearly mark
 ### Maybe supported in later phases
 
 - grouping and default task metadata for better UX
-- selected variable substitution when Paperclip can resolve it safely from workspace context
-- mapping task metadata into Paperclip readiness/expose hints
+- selected variable substitution when Valadrien OS can resolve it safely from workspace context
+- mapping task metadata into Valadrien OS readiness/expose hints
 - limited compound-task launch flows
 
 ### Not supported initially
 
-- extension-provided task types Paperclip cannot execute directly
+- extension-provided task types Valadrien OS cannot execute directly
 - arbitrary VS Code variable substitution semantics
 - problem matcher parsing as the main source of service health
 - full parity with VS Code task execution behavior
 
 ## Long-Running Service Detection
 
-Paperclip needs an explicit classification layer instead of assuming every VS Code task is a service.
+Valadrien OS needs an explicit classification layer instead of assuming every VS Code task is a service.
 
 Recommended classification:
 
 - `service`
-  Explicitly marked by Paperclip metadata, or confidently inferred from background/watch task semantics
+  Explicitly marked by Valadrien OS metadata, or confidently inferred from background/watch task semantics
 
 - `job`
   One-shot command expected to exit
 
 - `unsupported`
-  Present in `tasks.json`, but not safely runnable by Paperclip
+  Present in `tasks.json`, but not safely runnable by Valadrien OS
 
 The important product decision is that service classification must be visible and editable by the operator.
 Inference can help, but it should not be the only source of truth.
@@ -143,7 +143,7 @@ Default UI should show:
 
 - workspace commands
 - command type: service or job
-- source: Paperclip or VS Code
+- source: Valadrien OS or VS Code
 - exact command and cwd
 - current state for services
 - explicit start, stop, restart, and run-now actions
@@ -152,7 +152,7 @@ Raw JSON should remain available behind an advanced section.
 
 ### 2. Add VS Code task discovery on workspaces
 
-For a workspace with `cwd`, Paperclip should look for `.vscode/tasks.json`.
+For a workspace with `cwd`, Valadrien OS should look for `.vscode/tasks.json`.
 
 The workspace UI should show:
 
@@ -195,7 +195,7 @@ Suggested workspace metadata shape:
 
 ```ts
 type WorkspaceCommandSource =
-  | { type: "paperclip" }
+  | { type: "valadrien-os" }
   | { type: "vscode_task"; taskLabel: string; taskPath: ".vscode/tasks.json" };
 
 type WorkspaceCommandKind = "service" | "job";
@@ -224,19 +224,19 @@ type WorkspaceCommandDefinition = {
 
 ## VS Code Mapping Rules
 
-Paperclip should map imported tasks with explicit, documented rules.
+Valadrien OS should map imported tasks with explicit, documented rules.
 
 Recommended rules:
 
 1. A task becomes a `job` by default.
 2. A task becomes a `service` only when:
-   - Paperclip metadata marks it as a service, or
+   - Valadrien OS metadata marks it as a service, or
    - the task clearly represents a background/watch process and the operator confirms the classification.
 3. Unsupported tasks stay visible but disabled.
 4. Task labels become default command names.
 5. `dependsOn` is preserved as metadata, not silently flattened into hidden behavior.
 
-Paperclip-specific metadata can live in a namespaced field on the imported task definition, for example:
+Valadrien OS-specific metadata can live in a namespaced field on the imported task definition, for example:
 
 ```json
 {
@@ -244,7 +244,7 @@ Paperclip-specific metadata can live in a namespaced field on the imported task 
   "type": "shell",
   "command": "pnpm dev",
   "isBackground": true,
-  "paperclip": {
+  "valadrien-os": {
     "kind": "service",
     "readiness": {
       "type": "http",
@@ -289,7 +289,7 @@ Work:
 - show parse warnings and unsupported reasons
 
 Success condition:
-an operator can see what Paperclip would import and why.
+an operator can see what Valadrien OS would import and why.
 
 ### Phase 2: Command model and explicit classification
 
@@ -309,7 +309,7 @@ the workspace UI is command-first, and raw runtime JSON is advanced-only.
 ### Phase 3: Service execution backed by existing runtime supervisor
 
 Goal:
-run supported imported service commands through the current Paperclip supervisor.
+run supported imported service commands through the current Valadrien OS supervisor.
 
 Work:
 
@@ -319,7 +319,7 @@ Work:
 - make the active command name explicit everywhere control actions appear
 
 Success condition:
-imported service commands behave like native Paperclip services once adopted.
+imported service commands behave like native Valadrien OS services once adopted.
 
 ### Phase 4: Job execution and optional dependency handling
 
@@ -353,12 +353,12 @@ agents, operators, and workspaces all refer to the same named commands.
 
 - full VS Code task-runner parity
 - support for every VS Code task type
-- removal of Paperclip's own runtime supervision model
+- removal of Valadrien OS's own runtime supervision model
 - editor-dependent execution semantics inside the control plane
 
 ## Risks
 
-- overfitting Paperclip to VS Code and making the model worse for non-VS-Code repos
+- overfitting Valadrien OS to VS Code and making the model worse for non-VS-Code repos
 - misclassifying watch tasks as durable services
 - hiding too much detail and making debugging harder
 - allowing imported task graphs to become implicit magic
@@ -367,7 +367,7 @@ These risks are manageable if the import layer stays explicit, conservative, and
 
 ## Decision
 
-Paperclip should adopt VS Code tasks as an optional workspace command source, not as the canonical runtime model.
+Valadrien OS should adopt VS Code tasks as an optional workspace command source, not as the canonical runtime model.
 
 The main UX change should be:
 
@@ -379,4 +379,4 @@ The main UX change should be:
 ## External References
 
 - VS Code tasks documentation: https://code.visualstudio.com/docs/debugtest/tasks
-- Existing Paperclip workspace plan: `doc/plans/2026-03-10-workspace-strategy-and-git-worktrees.md`
+- Existing Valadrien OS workspace plan: `doc/plans/2026-03-10-workspace-strategy-and-git-worktrees.md`

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { normalizeIssueIdentifier } from "@paperclipai/shared";
+import type { Db } from "@valadrien-os/db";
+import { normalizeIssueIdentifier } from "@valadrien-os/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";

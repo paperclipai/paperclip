@@ -27,10 +27,10 @@ describe("routine variable helpers", () => {
   it("preserves existing metadata when syncing variables from a template", () => {
     expect(
       syncRoutineVariablesWithTemplate(["Triage {{repo}}", "Review {{repo}} and {{priority}}"], [
-        { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+        { name: "repo", label: "Repository", type: "text", defaultValue: "valadrien-os", required: true, options: [] },
       ]),
     ).toEqual([
-      { name: "repo", label: "Repository", type: "text", defaultValue: "paperclip", required: true, options: [] },
+      { name: "repo", label: "Repository", type: "text", defaultValue: "valadrien-os", required: true, options: [] },
       { name: "priority", label: null, type: "text", defaultValue: null, required: true, options: [] },
     ]);
   });
@@ -38,10 +38,10 @@ describe("routine variable helpers", () => {
   it("interpolates provided variable values into the routine template", () => {
     expect(
       interpolateRoutineTemplate("Review {{repo}} for {{priority}}", {
-        repo: "paperclip",
+        repo: "valadrien-os",
         priority: "high",
       }),
-    ).toBe("Review paperclip for high");
+    ).toBe("Review valadrien-os for high");
   });
 
   it("identifies built-in variable names", () => {
@@ -78,9 +78,9 @@ describe("routine variable helpers", () => {
 
   it("interpolates built-in variables alongside user variables", () => {
     const builtins = getBuiltinRoutineVariableValues();
-    const allVars = { ...builtins, repo: "paperclip" };
+    const allVars = { ...builtins, repo: "valadrien-os" };
     expect(
       interpolateRoutineTemplate("Report for {{date}} ({{timestamp}}) on {{repo}}", allVars),
-    ).toBe(`Report for ${builtins.date} (${builtins.timestamp}) on paperclip`);
+    ).toBe(`Report for ${builtins.date} (${builtins.timestamp}) on valadrien-os`);
   });
 });

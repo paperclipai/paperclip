@@ -1,4 +1,4 @@
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@valadrien-os/shared";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 
 export function buildNewAgentRuntimeConfig(input?: {

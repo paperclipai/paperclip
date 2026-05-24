@@ -8,7 +8,7 @@ import { createAcpxLocalExecutor } from "./execute.js";
 const tempRoots: string[] = [];
 
 async function makeTempRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-skills-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-acpx-skills-"));
   tempRoots.push(root);
   return root;
 }
@@ -32,7 +32,7 @@ async function createSkill(root: string, name: string, body = `---\nrequired: fa
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(path.join(skillDir, "SKILL.md"), body, "utf8");
   return {
-    key: `paperclipai/test/${name}`,
+    key: `valadrien-os/test/${name}`,
     runtimeName: name,
     source: skillDir,
     required: false,
@@ -111,8 +111,8 @@ describe("acpx_local runtime skill isolation", () => {
     const { meta } = await runExecutor({
       agent: "claude",
       stateDir,
-      paperclipRuntimeSkills: [skill],
-      paperclipSkillSync: { desiredSkills: [skill.key] },
+      valadrienOsRuntimeSkills: [skill],
+      valadrienOsSkillSync: { desiredSkills: [skill.key] },
     });
 
     const mountedRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
@@ -140,18 +140,18 @@ describe("acpx_local runtime skill isolation", () => {
       agent: "codex",
       stateDir: path.join(root, "state"),
       env: { CODEX_HOME: codexHome },
-      paperclipRuntimeSkills: [keep, remove],
+      valadrienOsRuntimeSkills: [keep, remove],
     };
 
     await runExecutor({
       ...baseConfig,
-      paperclipSkillSync: { desiredSkills: [keep.key, remove.key] },
+      valadrienOsSkillSync: { desiredSkills: [keep.key, remove.key] },
     });
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName, "SKILL.md"))).toBe(true);
 
     await runExecutor({
       ...baseConfig,
-      paperclipSkillSync: { desiredSkills: [keep.key] },
+      valadrienOsSkillSync: { desiredSkills: [keep.key] },
     });
 
     expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "SKILL.md"))).toBe(true);
@@ -173,8 +173,8 @@ describe("acpx_local runtime skill isolation", () => {
       agent: "codex",
       stateDir: path.join(root, "state"),
       env: { CODEX_HOME: codexHome },
-      paperclipRuntimeSkills: [legacy],
-      paperclipSkillSync: { desiredSkills: [] },
+      valadrienOsRuntimeSkills: [legacy],
+      valadrienOsSkillSync: { desiredSkills: [] },
     });
 
     expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
@@ -183,12 +183,12 @@ describe("acpx_local runtime skill isolation", () => {
   it.skipIf(process.platform === "win32")("replaces stale managed Codex auth files with source symlinks", async () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
-    const paperclipInstanceId = "test-instance";
+    const valadrienOsHome = path.join(root, "valadrien-os-home");
+    const valadrienOsInstanceId = "test-instance";
     const managedCodexHome = path.join(
-      paperclipHome,
+      valadrienOsHome,
       "instances",
-      paperclipInstanceId,
+      valadrienOsInstanceId,
       "companies",
       "company-1",
       "codex-home",
@@ -201,25 +201,25 @@ describe("acpx_local runtime skill isolation", () => {
     await fs.writeFile(managedAuth, "{\"stale\":true}", "utf8");
 
     const previousCodexHome = process.env.CODEX_HOME;
-    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
-    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousValadrienOsHome = process.env.VALADRIEN_OS_HOME;
+    const previousValadrienOsInstanceId = process.env.VALADRIEN_OS_INSTANCE_ID;
     try {
       process.env.CODEX_HOME = sourceCodexHome;
-      process.env.PAPERCLIP_HOME = paperclipHome;
-      process.env.PAPERCLIP_INSTANCE_ID = paperclipInstanceId;
+      process.env.VALADRIEN_OS_HOME = valadrienOsHome;
+      process.env.VALADRIEN_OS_INSTANCE_ID = valadrienOsInstanceId;
       await runExecutor({
         agent: "codex",
         stateDir: path.join(root, "state"),
-        paperclipRuntimeSkills: [],
-        paperclipSkillSync: { desiredSkills: [] },
+        valadrienOsRuntimeSkills: [],
+        valadrienOsSkillSync: { desiredSkills: [] },
       });
     } finally {
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
-      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
-      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
-      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
-      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousValadrienOsHome === undefined) delete process.env.VALADRIEN_OS_HOME;
+      else process.env.VALADRIEN_OS_HOME = previousValadrienOsHome;
+      if (previousValadrienOsInstanceId === undefined) delete process.env.VALADRIEN_OS_INSTANCE_ID;
+      else process.env.VALADRIEN_OS_INSTANCE_ID = previousValadrienOsInstanceId;
     }
 
     const authStat = await fs.lstat(managedAuth);
@@ -238,12 +238,12 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
+      env: { VALADRIEN_OS_API_KEY: "old-key" },
     });
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
+      env: { VALADRIEN_OS_API_KEY: "new-key" },
     });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
@@ -258,10 +258,10 @@ describe("acpx_local runtime skill isolation", () => {
     expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(wrapperPath)).mode & 0o777).toBe(0o700);
     expect(wrapper).toContain("node ./fake-acp.js");
-    expect(wrapper).not.toContain("PAPERCLIP_API_KEY");
+    expect(wrapper).not.toContain("VALADRIEN_OS_API_KEY");
     expect(wrapper).not.toContain("new-key");
     expect(wrapper).not.toContain("old-key");
-    expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
+    expect(env).toContain("VALADRIEN_OS_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
   });
 
@@ -278,12 +278,12 @@ describe("acpx_local runtime skill isolation", () => {
       },
       {
         context: {
-          paperclipWorkspace: {
+          valadrienOsWorkspace: {
             cwd: workspaceDir,
             source: "project_primary",
             strategy: "git_worktree",
             workspaceId: "workspace-1",
-            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
             repoRef: "main",
             branchName: "feature/remote-acpx",
             worktreePath: workspaceDir,
@@ -312,8 +312,8 @@ describe("acpx_local runtime skill isolation", () => {
     );
     const env = await fs.readFile(envPath, "utf8");
 
-    expect(env).toContain("PAPERCLIP_WORKSPACE_CWD='/remote/workspace'");
-    expect(env).not.toContain("PAPERCLIP_WORKSPACE_WORKTREE_PATH=");
+    expect(env).toContain("VALADRIEN_OS_WORKSPACE_CWD='/remote/workspace'");
+    expect(env).not.toContain("VALADRIEN_OS_WORKSPACE_WORKTREE_PATH=");
   });
 
   it("cleans aged credential wrapper scripts across ACPX agent changes", async () => {
@@ -328,7 +328,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
+      env: { VALADRIEN_OS_API_KEY: "old-key" },
     });
     const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
@@ -340,7 +340,7 @@ describe("acpx_local runtime skill isolation", () => {
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
+      env: { VALADRIEN_OS_API_KEY: "new-key" },
     });
 
     const wrappers = await fs.readdir(wrappersDir);
@@ -361,11 +361,11 @@ describe("acpx_local runtime skill isolation", () => {
 
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "first-key" },
+      env: { VALADRIEN_OS_API_KEY: "first-key" },
     });
     await runExecutor({
       ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "second-key" },
+      env: { VALADRIEN_OS_API_KEY: "second-key" },
     });
 
     const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
@@ -373,8 +373,8 @@ describe("acpx_local runtime skill isolation", () => {
     const envFiles = await Promise.all(
       envFileNames.map(async (name) => fs.readFile(path.join(stateDir, "wrappers", name), "utf8")),
     );
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='first-key'"))).toHaveLength(1);
-    expect(envFiles.filter((contents) => contents.includes("PAPERCLIP_API_KEY='second-key'"))).toHaveLength(1);
+    expect(envFiles.filter((contents) => contents.includes("VALADRIEN_OS_API_KEY='first-key'"))).toHaveLength(1);
+    expect(envFiles.filter((contents) => contents.includes("VALADRIEN_OS_API_KEY='second-key'"))).toHaveLength(1);
   });
 
   it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
@@ -492,12 +492,12 @@ describe("acpx_local runtime skill isolation", () => {
     const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
     expect(wrapper).toContain("stderr_dir=");
     expect(wrapper).toContain("run-stderr");
-    expect(wrapper).toContain("PAPERCLIP_RUN_ID");
+    expect(wrapper).toContain("VALADRIEN_OS_RUN_ID");
     expect(wrapper).toContain("tee -a");
     expect(wrapper).toContain("exec node ./fake-acp.js");
   });
 
-  it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
+  it("passes ValadrienOs env through the ACP agent wrapper instead of process.env", async () => {
     let observedApiKeyDuringStream: string | undefined;
     const execute = createAcpxLocalExecutor({
       createRuntime: () => ({
@@ -509,7 +509,7 @@ describe("acpx_local runtime skill isolation", () => {
         startTurn: () => ({
           events: (async function* () {
             await Promise.resolve();
-            observedApiKeyDuringStream = process.env.PAPERCLIP_API_KEY;
+            observedApiKeyDuringStream = process.env.VALADRIEN_OS_API_KEY;
             yield { type: "done", stopReason: "end_turn" };
           })(),
           result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
@@ -519,9 +519,9 @@ describe("acpx_local runtime skill isolation", () => {
       }) as never,
     });
 
-    const previousApiKey = process.env.PAPERCLIP_API_KEY;
+    const previousApiKey = process.env.VALADRIEN_OS_API_KEY;
     try {
-      delete process.env.PAPERCLIP_API_KEY;
+      delete process.env.VALADRIEN_OS_API_KEY;
       const result = await execute({
         runId: "run-1",
         agent: {
@@ -539,12 +539,12 @@ describe("acpx_local runtime skill isolation", () => {
       expect(result.exitCode).toBe(0);
       expect(observedApiKeyDuringStream).toBeUndefined();
     } finally {
-      if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
-      else process.env.PAPERCLIP_API_KEY = previousApiKey;
+      if (previousApiKey === undefined) delete process.env.VALADRIEN_OS_API_KEY;
+      else process.env.VALADRIEN_OS_API_KEY = previousApiKey;
     }
   });
 
-  it("writes a Paperclip-managed .claude/settings.local.json for the claude agent so it can reach the Paperclip API", async () => {
+  it("writes a ValadrienOs-managed .claude/settings.local.json for the claude agent so it can reach the ValadrienOs API", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const cwd = path.join(root, "worktree");
@@ -552,7 +552,7 @@ describe("acpx_local runtime skill isolation", () => {
 
     const { meta } = await runExecutor(
       { agent: "claude", stateDir, cwd },
-      { context: { paperclipWorkspace: { cwd, agentHome: path.join(root, "agent-home") } } },
+      { context: { valadrienOsWorkspace: { cwd, agentHome: path.join(root, "agent-home") } } },
     );
 
     const settingsPath = path.join(cwd, ".claude", "settings.local.json");
@@ -567,19 +567,19 @@ describe("acpx_local runtime skill isolation", () => {
     const allow = written.permissions?.allow;
     expect(Array.isArray(allow)).toBe(true);
     expect(allow).toContain("Bash(curl:*)");
-    expect(allow).toContain(`Bash(${cwd}/scripts/paperclip-issue-update.sh:*)`);
+    expect(allow).toContain(`Bash(${cwd}/scripts/valadrien-os-issue-update.sh:*)`);
     const additionalDirectories = written.permissions?.additionalDirectories as string[] | undefined;
     expect(Array.isArray(additionalDirectories)).toBe(true);
     expect(additionalDirectories).toContain(stateDir);
     expect(additionalDirectories).toContain(path.join(root, "agent-home"));
 
     const note = (meta[0]?.commandNotes as string[] | undefined)?.find((entry) =>
-      entry.includes("Paperclip-managed Claude settings"),
+      entry.includes("ValadrienOs-managed Claude settings"),
     );
     expect(note).toBeTruthy();
   });
 
-  it("merges Paperclip allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
+  it("merges ValadrienOs allowlist into an existing .claude/settings.local.json without losing user entries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const cwd = path.join(root, "worktree");
@@ -603,7 +603,7 @@ describe("acpx_local runtime skill isolation", () => {
 
     await runExecutor(
       { agent: "claude", stateDir, cwd },
-      { context: { paperclipWorkspace: { cwd } } },
+      { context: { valadrienOsWorkspace: { cwd } } },
     );
 
     const written = JSON.parse(
@@ -637,7 +637,7 @@ describe("acpx_local runtime skill isolation", () => {
 
     const { meta } = await runExecutor(
       { agent: "claude", stateDir, cwd },
-      { context: { paperclipWorkspace: { cwd } } },
+      { context: { valadrienOsWorkspace: { cwd } } },
     );
 
     const written = JSON.parse(
@@ -673,7 +673,7 @@ describe("acpx_local runtime skill isolation", () => {
           agent === "custom"
             ? { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, `state-${agent}`), cwd }
             : { agent, stateDir: path.join(root, `state-${agent}`), cwd },
-        context: { paperclipWorkspace: { cwd } },
+        context: { valadrienOsWorkspace: { cwd } },
         onLog: async () => {},
         onMeta: async () => {},
       } as never);
@@ -694,7 +694,7 @@ describe("acpx_local runtime skill isolation", () => {
 
     await runExecutor(
       { agent: "codex", stateDir, cwd },
-      { context: { paperclipWorkspace: { cwd } } },
+      { context: { valadrienOsWorkspace: { cwd } } },
     );
 
     expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);

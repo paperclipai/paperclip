@@ -1,18 +1,18 @@
 services:
-  paperclip:
+  valadrien-os:
     build:
       context: ..
       dockerfile: Dockerfile
     ports:
-      - "${PAPERCLIP_PORT:-3100}:3100"
+      - "${VALADRIEN_OS_PORT:-3100}:3100"
     environment:
       HOST: "0.0.0.0"
-      PAPERCLIP_HOME: "/paperclip"
+      VALADRIEN_OS_HOME: "/valadrien-os"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
-      PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      VALADRIEN_OS_DEPLOYMENT_MODE: "authenticated"
+      VALADRIEN_OS_DEPLOYMENT_EXPOSURE: "private"
+      VALADRIEN_OS_PUBLIC_URL: "${VALADRIEN_OS_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
-      - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      - "${VALADRIEN_OS_DATA_DIR:-../data/docker-valadrien-os}:/valadrien-os"

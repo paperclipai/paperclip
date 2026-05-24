@@ -1,5 +1,5 @@
 export {
-  paperclipConfigSchema,
+  valadrienOsConfigSchema,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,
@@ -13,7 +13,7 @@ export {
   storageS3ConfigSchema,
   secretsConfigSchema,
   secretsLocalEncryptedConfigSchema,
-  type PaperclipConfig,
+  type ValadrienOsConfig,
   type LlmConfig,
   type DatabaseBackupConfig,
   type DatabaseConfig,

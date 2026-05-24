@@ -2,12 +2,12 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
+} from "@valadrien-os/adapter-utils";
 import {
   asString,
   parseObject,
   ensurePathInEnv,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@valadrien-os/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
@@ -16,7 +16,7 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   prepareAdapterExecutionTargetRuntime,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@valadrien-os/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -92,7 +92,7 @@ async function prepareCodexHelloProbe(input: {
       apiKey: null,
     });
     preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
+      path.join(os.tmpdir(), `valadrien-os-codex-envtest-${input.runId}-`),
     );
     preparedRuntime = await prepareAdapterExecutionTargetRuntime({
       runId: input.runId,
@@ -101,7 +101,7 @@ async function prepareCodexHelloProbe(input: {
       workspaceLocalDir: preparedRuntimeWorkspaceLocalDir,
       // Pass `input.cwd` as the base (not a pre-built per-run subdir).
       // `prepareRemoteManagedRuntime` itself appends
-      // `.paperclip-runtime/runs/<runId>/workspace` to whatever it gets, so
+      // `.valadrien-os-runtime/runs/<runId>/workspace` to whatever it gets, so
       // pre-building a per-run path here would double-nest the run ID.
       workspaceRemoteDir: input.cwd,
       installCommand: SANDBOX_INSTALL_COMMAND,
@@ -127,20 +127,20 @@ async function prepareCodexHelloProbe(input: {
 
   if (input.probeApiKey) {
     const probeHome = input.targetIsRemote
-      ? path.posix.join(input.cwd, ".paperclip-runtime", "codex", `probe-home-${input.runId}`)
-      : path.join(os.tmpdir(), `paperclip-codex-probe-${input.runId}`);
+      ? path.posix.join(input.cwd, ".valadrien-os-runtime", "codex", `probe-home-${input.runId}`)
+      : path.join(os.tmpdir(), `valadrien-os-codex-probe-${input.runId}`);
     return {
       command: "sh",
       args: [
         "-c",
-        'set -e; mkdir -p "$CODEX_HOME"; umask 077; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; trap \'rm -rf "$CODEX_HOME"\' EXIT INT TERM; "$0" "$@"',
+        'set -e; mkdir -p "$CODEX_HOME"; umask 077; printf "%s" "$_VALADRIEN_OS_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _VALADRIEN_OS_CODEX_AUTH_JSON; trap \'rm -rf "$CODEX_HOME"\' EXIT INT TERM; "$0" "$@"',
         input.command,
         ...input.args,
       ],
       env: {
         ...input.env,
         CODEX_HOME: probeHome,
-        _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+        _VALADRIEN_OS_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
       },
       cleanup,
     };
@@ -365,7 +365,7 @@ export async function testEnvironment(
             ...(detail ? { detail } : {}),
             hint: probeApiKey
               ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
-              : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
+              : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so ValadrienOs writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
           });
         } else {
           checks.push({

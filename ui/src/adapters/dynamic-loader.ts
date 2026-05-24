@@ -1,7 +1,7 @@
 /**
  * Dynamic UI parser loading for external adapters — sandboxed execution.
  *
- * When the Paperclip UI encounters an adapter type that doesn't have a
+ * When the ValadrienOs UI encounters an adapter type that doesn't have a
  * built-in parser (e.g., an external adapter loaded via the plugin system),
  * it fetches the parser JS from `/api/adapters/:type/ui-parser.js` and
  * executes it **inside a dedicated Web Worker** so it cannot access the
@@ -27,7 +27,7 @@
  * Security: see `sandboxed-parser-worker.ts` for the full lockdown.
  */
 
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@valadrien-os/adapter-utils";
 import type { StdoutLineParser, StdoutParserFactory } from "./types";
 import { createSandboxedWorker } from "./sandboxed-parser-worker";
 import type { SandboxRequest, SandboxResponse } from "./sandboxed-parser-worker";

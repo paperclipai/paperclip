@@ -38,7 +38,7 @@ import {
   storybookIssues,
   storybookProjects,
   storybookSidebarBadges,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 function Section({
   eyebrow,
@@ -50,9 +50,9 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -219,13 +219,13 @@ function CommandEmptySurface() {
 
 function NavigationLayoutStories() {
   return (
-    <div className="paperclip-story">
+    <div className="valadrien-os-story">
       <RouteSetter to="/PAP/projects/board-ui/issues" />
-      <main className="paperclip-story__inner max-w-[1320px] space-y-6">
-        <section className="paperclip-story__frame p-6">
+      <main className="valadrien-os-story__inner max-w-[1320px] space-y-6">
+        <section className="valadrien-os-story__frame p-6">
           <div className="flex flex-wrap items-start justify-between gap-5">
             <div>
-              <div className="paperclip-story__label">Navigation and layout</div>
+              <div className="valadrien-os-story__label">Navigation and layout</div>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Sidebar, command, tabs, and mobile chrome</h1>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
                 Fixture-backed navigation states for the board shell: company switching, dense work navigation,

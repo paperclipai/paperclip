@@ -51,9 +51,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -66,13 +66,13 @@ function FoundationsMatrix() {
   const [boardApproval, setBoardApproval] = useState(true);
 
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner space-y-6">
-        <section className="paperclip-story__frame p-6">
-          <div className="paperclip-story__label">Foundations</div>
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner space-y-6">
+        <section className="valadrien-os-story__frame p-6">
+          <div className="valadrien-os-story__label">Foundations</div>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Primitives and interaction states</h1>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-            A dense pass over the base controls that Paperclip pages use for operational actions, filtering,
+            A dense pass over the base controls that ValadrienOs pages use for operational actions, filtering,
             approvals, and settings.
           </p>
         </section>
@@ -126,7 +126,7 @@ function FoundationsMatrix() {
           </div>
         </Section>
 
-        <Section eyebrow="Inputs" title="Form controls with real Paperclip copy">
+        <Section eyebrow="Inputs" title="Form controls with real ValadrienOs copy">
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
             <div className="space-y-4">
               <div className="grid gap-2">
@@ -287,7 +287,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Foundation stories keep base shadcn/Radix primitives visible in every variant and key interaction state used by Paperclip.",
+          "Foundation stories keep base shadcn/Radix primitives visible in every variant and key interaction state used by ValadrienOs.",
       },
     },
   },

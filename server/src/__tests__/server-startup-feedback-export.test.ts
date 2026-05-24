@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
-const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
-const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
-const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
-const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_VALADRIEN_OS_API_URL = process.env.VALADRIEN_OS_API_URL;
+const ORIGINAL_VALADRIEN_OS_RUNTIME_API_URL = process.env.VALADRIEN_OS_RUNTIME_API_URL;
+const ORIGINAL_VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON = process.env.VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_VALADRIEN_OS_LISTEN_HOST = process.env.VALADRIEN_OS_LISTEN_HOST;
+const ORIGINAL_VALADRIEN_OS_LISTEN_PORT = process.env.VALADRIEN_OS_LISTEN_PORT;
 
 const {
   createAppMock,
@@ -63,21 +63,21 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     authPublicBaseUrl: undefined,
     authDisableSignUp: false,
     databaseMode: "postgres",
-    databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:5432/paperclip",
-    embeddedPostgresDataDir: "/tmp/paperclip-test-db",
+    databaseUrl: "postgres://valadrien-os:valadrien-os@127.0.0.1:5432/valadrien-os",
+    embeddedPostgresDataDir: "/tmp/valadrien-os-test-db",
     embeddedPostgresPort: 54329,
     databaseBackupEnabled: false,
     databaseBackupIntervalMinutes: 60,
     databaseBackupRetentionDays: 30,
-    databaseBackupDir: "/tmp/paperclip-test-backups",
+    databaseBackupDir: "/tmp/valadrien-os-test-backups",
     serveUi: false,
     uiDevMiddleware: false,
     secretsProvider: "local_encrypted",
     secretsStrictMode: false,
-    secretsMasterKeyFilePath: "/tmp/paperclip-master.key",
+    secretsMasterKeyFilePath: "/tmp/valadrien-os-master.key",
     storageProvider: "local_disk",
-    storageLocalDiskBaseDir: "/tmp/paperclip-storage",
-    storageS3Bucket: "paperclip-test",
+    storageLocalDiskBaseDir: "/tmp/valadrien-os-storage",
+    storageS3Bucket: "valadrien-os-test",
     storageS3Region: "us-east-1",
     storageS3Endpoint: undefined,
     storageS3Prefix: "",
@@ -99,7 +99,7 @@ vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", () => ({
+vi.mock("@valadrien-os/db", () => ({
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
@@ -242,7 +242,7 @@ describe("startServer feedback export wiring", () => {
       deploymentExposure: "public",
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "https://tenant.example.com",
-      databaseUrl: "secret://paperclip-cloud/stacks/alpha/database/runtime-url",
+      databaseUrl: "secret://valadrien-os-cloud/stacks/alpha/database/runtime-url",
     }));
 
     await expect(startServer()).rejects.toThrow(
@@ -298,52 +298,52 @@ describe("startServer authenticated auth origin setup", () => {
   });
 });
 
-describe("startServer PAPERCLIP_API_URL handling", () => {
+describe("startServer VALADRIEN_OS_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
-    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.VALADRIEN_OS_API_URL;
   });
 
   afterEach(() => {
-    if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
-    else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+    if (ORIGINAL_VALADRIEN_OS_API_URL === undefined) delete process.env.VALADRIEN_OS_API_URL;
+    else process.env.VALADRIEN_OS_API_URL = ORIGINAL_VALADRIEN_OS_API_URL;
 
-    if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
-    else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+    if (ORIGINAL_VALADRIEN_OS_RUNTIME_API_URL === undefined) delete process.env.VALADRIEN_OS_RUNTIME_API_URL;
+    else process.env.VALADRIEN_OS_RUNTIME_API_URL = ORIGINAL_VALADRIEN_OS_RUNTIME_API_URL;
 
-    if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
-      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    if (ORIGINAL_VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON === undefined) {
+      delete process.env.VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON;
     } else {
-      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      process.env.VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON;
     }
 
-    if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
-    else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
+    if (ORIGINAL_VALADRIEN_OS_LISTEN_HOST === undefined) delete process.env.VALADRIEN_OS_LISTEN_HOST;
+    else process.env.VALADRIEN_OS_LISTEN_HOST = ORIGINAL_VALADRIEN_OS_LISTEN_HOST;
 
-    if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
-    else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+    if (ORIGINAL_VALADRIEN_OS_LISTEN_PORT === undefined) delete process.env.VALADRIEN_OS_LISTEN_PORT;
+    else process.env.VALADRIEN_OS_LISTEN_PORT = ORIGINAL_VALADRIEN_OS_LISTEN_PORT;
   });
 
-  it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
-    process.env.PAPERCLIP_API_URL = "http://custom-api:3100";
+  it("uses the externally set VALADRIEN_OS_API_URL when provided", async () => {
+    process.env.VALADRIEN_OS_API_URL = "http://custom-api:3100";
 
     const started = await startServer();
 
     expect(started.apiUrl).toBe("http://custom-api:3100");
-    expect(process.env.PAPERCLIP_API_URL).toBe("http://custom-api:3100");
-    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
+    expect(process.env.VALADRIEN_OS_API_URL).toBe("http://custom-api:3100");
+    expect(JSON.parse(process.env.VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
       expect.arrayContaining(["http://custom-api:3100"]),
     );
-    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+    expect(JSON.parse(process.env.VALADRIEN_OS_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
   });
 
-  it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
+  it("falls back to host-based URL when VALADRIEN_OS_API_URL is not set", async () => {
     const started = await startServer();
 
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
-    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+    expect(process.env.VALADRIEN_OS_API_URL).toBe("http://127.0.0.1:3210");
   });
 
   it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
@@ -358,21 +358,21 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("http://my-host.ts.net:3110");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
+    expect(process.env.VALADRIEN_OS_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
-      authPublicBaseUrl: "https://paperclip.example",
+      authPublicBaseUrl: "https://valadrien-os.example",
     }));
     detectPortMock.mockResolvedValueOnce(3110);
 
     const started = await startServer();
 
     expect(started.listenPort).toBe(3110);
-    expect(started.apiUrl).toBe("https://paperclip.example");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+    expect(started.apiUrl).toBe("https://valadrien-os.example");
+    expect(process.env.VALADRIEN_OS_RUNTIME_API_URL).toBe("https://valadrien-os.example");
   });
 });

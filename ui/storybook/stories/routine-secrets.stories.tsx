@@ -9,18 +9,18 @@ import type {
   RoutineEnvConfig,
   RoutineRevision,
   RoutineRevisionSnapshotV1,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { EnvVarEditor } from "@/components/EnvVarEditor";
 import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { storybookCompanies, storybookSecrets } from "../fixtures/paperclipData";
+import { storybookCompanies, storybookSecrets } from "../fixtures/valadrienOsData";
 
 const COMPANY_ID = "company-storybook";
 
 if (typeof window !== "undefined") {
-  window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+  window.localStorage.setItem("valadrien-os.selectedCompanyId", COMPANY_ID);
 }
 
 function StorybookRoutineFixtures({
@@ -80,7 +80,7 @@ function SecretsTabSurface({
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
           Routine secrets apply to every issue this routine creates. They override matching keys in
-          project and agent env. <span className="font-mono">PAPERCLIP_*</span> variables are reserved.
+          project and agent env. <span className="font-mono">VALADRIEN_OS_*</span> variables are reserved.
         </p>
         <EnvVarEditor
           value={env}

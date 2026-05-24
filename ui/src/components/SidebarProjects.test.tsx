@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProjects } from "./SidebarProjects";
 
@@ -324,7 +324,7 @@ describe("SidebarProjects", () => {
     await chooseSortMode("Alphabetical");
 
     expect(projectLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
-    expect(localStorage.getItem("paperclip.projectSortMode:company-1:user-1")).toBe("alphabetical");
+    expect(localStorage.getItem("valadrien-os.projectSortMode:company-1:user-1")).toBe("alphabetical");
   });
 
   it("sorts recent projects by updated time descending", async () => {

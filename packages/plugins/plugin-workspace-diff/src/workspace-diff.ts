@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { PluginExecutionWorkspaceMetadata } from "@paperclipai/plugin-sdk";
+import type { PluginExecutionWorkspaceMetadata } from "@valadrien-os/plugin-sdk";
 import type {
   WorkspaceDiffCaps,
   WorkspaceDiffFile,
@@ -103,7 +103,7 @@ async function resolveWorkspacePaths(workspace: WorkspaceDiffTarget) {
   if (!workspace.cwd?.trim()) {
     throw workspaceDiffError(
       "missing_cwd",
-      "Execution workspace needs a local path before Paperclip can inspect diffs",
+      "Execution workspace needs a local path before ValadrienOs can inspect diffs",
       { workspaceId: workspace.id },
     );
   }

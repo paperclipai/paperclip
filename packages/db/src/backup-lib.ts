@@ -71,7 +71,7 @@ const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
-const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
+const STATEMENT_BREAKPOINT = "-- valadrien-os statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
 function sanitizeRestoreErrorMessage(error: unknown): string {
   if (error && typeof error === "object") {
@@ -187,9 +187,9 @@ function formatBackupSize(sizeBytes: number): string {
 
 function formatSqlLiteral(value: string): string {
   const sanitized = value.replace(/\u0000/g, "");
-  let tag = "$paperclip$";
+  let tag = "$valadrien-os$";
   while (sanitized.includes(tag)) {
-    tag = `$paperclip_${Math.random().toString(36).slice(2, 8)}$`;
+    tag = `$valadrien_os_${Math.random().toString(36).slice(2, 8)}$`;
   }
   return `${tag}${sanitized}${tag}`;
 }
@@ -316,7 +316,7 @@ async function runPgDumpBackup(opts: {
   backupFile: string;
   connectTimeout: number;
 }): Promise<void> {
-  const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
+  const pgDumpBin = process.env.VALADRIEN_OS_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
     pgDumpBin,
     [
@@ -347,7 +347,7 @@ async function runPgDumpBackup(opts: {
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
-  const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
+  const psqlBin = process.env.VALADRIEN_OS_PSQL_PATH || "psql";
   const child = spawn(
     psqlBin,
     [
@@ -519,7 +519,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
-  const filenamePrefix = opts.filenamePrefix ?? "paperclip";
+  const filenamePrefix = opts.filenamePrefix ?? "valadrien-os";
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
@@ -579,7 +579,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit(STATEMENT_BREAKPOINT);
     };
 
-    emit("-- Paperclip database backup");
+    emit("-- ValadrienOs database backup");
     emit(`-- Created: ${new Date().toISOString()}`);
     emit("");
     emitStatement("BEGIN;");

@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 const packageDir = process.cwd();
 const sdkDir = join(repoRoot, "packages", "plugins", "sdk");
-const scopeDir = join(packageDir, "node_modules", "@paperclipai");
+const scopeDir = join(packageDir, "node_modules", "@valadrien-os");
 const linkTarget = join(scopeDir, "plugin-sdk");
 
 if (!existsSync(join(packageDir, "package.json"))) {
@@ -22,7 +22,7 @@ try {
   if (stat.isSymbolicLink()) {
     rmSync(linkTarget, { force: true });
   } else {
-    console.log("  i Keeping existing installed @paperclipai/plugin-sdk directory in place");
+    console.log("  i Keeping existing installed @valadrien-os/plugin-sdk directory in place");
     process.exit(0);
   }
 } catch {
@@ -32,4 +32,4 @@ try {
 const relativeSdkDir = relative(scopeDir, sdkDir);
 symlinkSync(relativeSdkDir, linkTarget, "dir");
 
-console.log(`  ✓ Linked local @paperclipai/plugin-sdk for ${packageDir}`);
+console.log(`  ✓ Linked local @valadrien-os/plugin-sdk for ${packageDir}`);

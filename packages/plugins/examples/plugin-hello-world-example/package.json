@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-hello-world-example",
+  "name": "@valadrien-os/plugin-hello-world-example",
   "version": "0.1.0",
   "description": "First-party reference plugin that adds a Hello World dashboard widget",
   "type": "module",
@@ -7,19 +7,19 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "paperclipPlugin": {
+  "valadrienOsPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
     "ui": "./dist/ui/"
   },
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+    "typecheck": "pnpm --filter @valadrien-os/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*"
+    "@valadrien-os/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

@@ -8,7 +8,7 @@ import {
   type BindMode,
   type DeploymentExposure,
   type DeploymentMode,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import type { AuthConfig, ServerConfig } from "./schema.js";
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
@@ -25,7 +25,7 @@ export function inferConfiguredBind(server?: Partial<ServerConfig>): BindMode {
 }
 
 export function detectTailnetBindHost(): string | undefined {
-  const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
+  const explicit = process.env.VALADRIEN_OS_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
 
   try {

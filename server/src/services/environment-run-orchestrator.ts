@@ -15,7 +15,7 @@
  * and transport logic.
  */
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import type {
   Environment,
   EnvironmentLease,
@@ -23,7 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -39,7 +39,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@valadrien-os/adapter-utils/execution-target";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";

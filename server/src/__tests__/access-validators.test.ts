@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   updateCompanyMemberWithPermissionsSchema,
   updateCurrentUserProfileSchema,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 
 describe("access validators", () => {
-  it("accepts HTTP(S) and Paperclip asset image URLs", () => {
+  it("accepts HTTP(S) and ValadrienOs asset image URLs", () => {
     expect(updateCurrentUserProfileSchema.safeParse({
       name: "Ada Lovelace",
       image: "https://example.com/avatar.png",

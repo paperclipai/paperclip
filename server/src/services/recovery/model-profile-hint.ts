@@ -11,7 +11,7 @@ export const STATUS_ONLY_RECOVERY_GUARD_CONTEXT = {
 
 const RECOVERY_MODEL_PROFILE_HINT_KEYS = [
   "modelProfile",
-  "paperclipModelProfile",
+  "valadrienOsModelProfile",
   "recoveryIntent",
   "allowDeliverableWork",
   "allowDocumentUpdates",

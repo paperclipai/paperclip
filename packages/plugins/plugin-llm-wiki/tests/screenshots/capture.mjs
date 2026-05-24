@@ -58,8 +58,8 @@ const desktopTargets = [
   { slug: "20-spaces-sidebar", view: "wiki-sidebar", section: null },
   { slug: "21-spaces-ingest", view: "wiki-sidebar", section: "ingest" },
   { slug: "21a-spaces-ingest-with-disclaimer", view: "wiki-sidebar", section: "ingest" },
-  { slug: "22-spaces-edit", view: "wiki-sidebar", section: "settings/spaces/team-research", scrollToText: "Paperclip ingestion" },
-  { slug: "22a-spaces-edit-default", view: "wiki-sidebar", section: "settings/spaces/default", scrollToText: "Paperclip ingestion" },
+  { slug: "22-spaces-edit", view: "wiki-sidebar", section: "settings/spaces/team-research", scrollToText: "ValadrienOs ingestion" },
+  { slug: "22a-spaces-edit-default", view: "wiki-sidebar", section: "settings/spaces/default", scrollToText: "ValadrienOs ingestion" },
   { slug: "23-spaces-non-default-route", view: "wiki-sidebar", section: "spaces/team-research" },
   { slug: "24-spaces-create-modal", view: "wiki-sidebar", section: null, openCreateSpaceModal: true },
 ];

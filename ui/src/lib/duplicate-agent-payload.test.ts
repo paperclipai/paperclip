@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { buildDuplicateAgentPayload, duplicateAgentName } from "./duplicate-agent-payload";
-import type { AgentDetail } from "@paperclipai/shared";
+import type { AgentDetail } from "@valadrien-os/shared";
 
 const baseAgent: AgentDetail = {
   id: "agent-1",

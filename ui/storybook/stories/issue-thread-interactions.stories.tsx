@@ -32,7 +32,7 @@ import type {
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "@/lib/issue-thread-interactions";
-import { storybookAgentMap } from "../fixtures/paperclipData";
+import { storybookAgentMap } from "../fixtures/valadrienOsData";
 
 const boardUserLabels = new Map<string, string>([
   [issueThreadInteractionFixtureMeta.currentUserId, "Riley Board"],
@@ -41,8 +41,8 @@ const boardUserLabels = new Map<string, string>([
 
 function StoryFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner space-y-6">{children}</main>
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner space-y-6">{children}</main>
     </div>
   );
 }
@@ -57,10 +57,10 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div>
-          <div className="paperclip-story__label">{eyebrow}</div>
+          <div className="valadrien-os-story__label">{eyebrow}</div>
           <h2 className="mt-1 text-xl font-semibold">{title}</h2>
         </div>
       </div>
@@ -527,8 +527,8 @@ export const RequestConfirmationRejected = RequestConfirmationDeclinedWithReason
 export const ReviewSurface: Story = {
   render: () => (
     <StoryFrame>
-      <section className="paperclip-story__frame p-6">
-        <div className="paperclip-story__label">Thread interactions</div>
+      <section className="valadrien-os-story__frame p-6">
+        <div className="valadrien-os-story__label">Thread interactions</div>
         <div className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
           This review surface pressure-tests the thread interaction kinds directly inside the issue
           chat surface. The card language leans closer to

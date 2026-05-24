@@ -19,14 +19,14 @@ describe("prepareClaudeConfigSeed", () => {
   function createEnv(root: string, sourceDir: string): NodeJS.ProcessEnv {
     return {
       HOME: root,
-      PAPERCLIP_HOME: path.join(root, "paperclip-home"),
-      PAPERCLIP_INSTANCE_ID: "test-instance",
+      VALADRIEN_OS_HOME: path.join(root, "valadrien-os-home"),
+      VALADRIEN_OS_INSTANCE_ID: "test-instance",
       CLAUDE_CONFIG_DIR: sourceDir,
     };
   }
 
   it("reuses the same snapshot path when the seeded files are unchanged", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-seed-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-claude-config-seed-"));
     cleanupDirs.push(root);
     const sourceDir = path.join(root, "claude-source");
     await fs.mkdir(sourceDir, { recursive: true });
@@ -44,7 +44,7 @@ describe("prepareClaudeConfigSeed", () => {
   });
 
   it("keeps an existing snapshot intact when the seeded files change", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-race-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-claude-config-race-"));
     cleanupDirs.push(root);
     const sourceDir = path.join(root, "claude-source");
     await fs.mkdir(sourceDir, { recursive: true });

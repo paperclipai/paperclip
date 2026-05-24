@@ -1,11 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
 import { CircleDot, Flag, MoreHorizontal, Paperclip } from "lucide-react";
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueRelationIssueSummary } from "@valadrien-os/shared";
 import { IssueAssignedBacklogNotice } from "@/components/IssueAssignedBacklogNotice";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
 import { IssueRow } from "@/components/IssueRow";
-import { storybookAgents, createIssue } from "../fixtures/paperclipData";
+import { storybookAgents, createIssue } from "../fixtures/valadrienOsData";
 
 const codexAgent = storybookAgents.find((agent) => agent.id === "agent-codex") ?? storybookAgents[0]!;
 const qaAgent = storybookAgents.find((agent) => agent.id === "agent-qa") ?? storybookAgents[0]!;
@@ -37,7 +37,7 @@ function CreationFormPanel() {
           </span>
           <span>in</span>
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
-            Paperclip App
+            ValadrienOs App
           </span>
         </div>
         <div className="space-y-1.5">
@@ -205,7 +205,7 @@ function AllStates() {
 }
 
 const meta = {
-  title: "Paperclip/Assigned Backlog Safeguards",
+  title: "ValadrienOs/Assigned Backlog Safeguards",
   component: AllStates,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof AllStates>;

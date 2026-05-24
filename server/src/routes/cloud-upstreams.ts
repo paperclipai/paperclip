@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import { badRequest, notFound } from "../errors.js";
 import { assertBoardOrgAccess } from "./authz.js";
 import { cloudUpstreamService, instanceSettingsService } from "../services/index.js";

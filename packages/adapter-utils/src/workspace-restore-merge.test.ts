@@ -18,7 +18,7 @@ describe("workspace restore merge", () => {
   });
 
   it("preserves sibling files when sequential stale-baseline restores create the same nested directory tree", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-restore-merge-"));
     cleanupDirs.push(rootDir);
 
     const targetDir = path.join(rootDir, "target");
@@ -63,7 +63,7 @@ describe("workspace restore merge", () => {
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-restore-merge-"));
     cleanupDirs.push(rootDir);
     const socketPath = path.join(rootDir, "runtime.sock");
     const server = net.createServer();

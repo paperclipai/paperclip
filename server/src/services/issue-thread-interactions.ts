@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   documents,
   heartbeatRuns,
@@ -8,7 +8,7 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -22,7 +22,7 @@ import type {
   RespondIssueThreadInteraction,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
@@ -34,7 +34,7 @@ import {
   requestConfirmationResultSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { issueService } from "./issues.js";
 

@@ -8,7 +8,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -32,7 +32,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-authz-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-workspace-runtime-authz-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -53,7 +53,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix: `PAP-${companyId.slice(0, 8)}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -75,7 +75,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
       projectId,
       name: "Primary",
       sourceType: "local_path",
-      cwd: "/tmp/paperclip-authz-project",
+      cwd: "/tmp/valadrien-os-authz-project",
       isPrimary: true,
     });
     return { projectId, projectWorkspaceId };
@@ -93,7 +93,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
       name: "Execution workspace",
       status: "active",
       providerType: "local_fs",
-      cwd: "/tmp/paperclip-authz-execution",
+      cwd: "/tmp/valadrien-os-authz-execution",
     });
     return executionWorkspaceId;
   }

@@ -1,4 +1,4 @@
-import type { AdapterModel } from "@paperclipai/adapter-utils";
+import type { AdapterModel } from "@valadrien-os/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
 
 /** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */

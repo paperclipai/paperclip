@@ -374,7 +374,7 @@ async function createSshAuthArgs(
 
   if (config.strictHostKeyChecking) {
     if (config.knownHosts) {
-      const knownHosts = await withTempFile("paperclip-ssh-known-hosts-", config.knownHosts, 0o600);
+      const knownHosts = await withTempFile("valadrien-os-ssh-known-hosts-", config.knownHosts, 0o600);
       tempFiles.push(knownHosts.cleanup);
       sshArgs.push("-o", `UserKnownHostsFile=${knownHosts.path}`);
     }
@@ -383,7 +383,7 @@ async function createSshAuthArgs(
   }
 
   if (config.privateKey) {
-    const privateKey = await withTempFile("paperclip-ssh-key-", config.privateKey, 0o600);
+    const privateKey = await withTempFile("valadrien-os-ssh-key-", config.privateKey, 0o600);
     tempFiles.push(privateKey.cleanup);
     sshArgs.push("-i", privateKey.path);
   }
@@ -595,11 +595,11 @@ async function importGitWorkspaceToSsh(input: {
   remoteDir: string;
   snapshot: LocalGitWorkspaceSnapshot;
 }): Promise<void> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
   // Per-import unique ref so concurrent imports against the same local repo
   // can't race on `update-ref` between this run's update and bundle create.
-  const tempRef = `refs/paperclip/ssh-sync/import/${randomUUID()}`;
+  const tempRef = `refs/valadrien-os/ssh-sync/import/${randomUUID()}`;
 
   try {
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
@@ -613,8 +613,8 @@ async function importGitWorkspaceToSsh(input: {
 
     const remoteSetupScript = [
       "set -e",
-      `mkdir -p ${shellQuote(path.posix.join(input.remoteDir, ".paperclip-runtime"))}`,
-      `tmp_bundle=$(mktemp ${shellQuote(path.posix.join(input.remoteDir, ".paperclip-runtime", "import-XXXXXX.bundle"))})`,
+      `mkdir -p ${shellQuote(path.posix.join(input.remoteDir, ".valadrien-os-runtime"))}`,
+      `tmp_bundle=$(mktemp ${shellQuote(path.posix.join(input.remoteDir, ".valadrien-os-runtime", "import-XXXXXX.bundle"))})`,
       'trap \'rm -f "$tmp_bundle"\' EXIT',
       'cat > "$tmp_bundle"',
       `if [ ! -d ${shellQuote(path.posix.join(input.remoteDir, ".git"))} ]; then git init ${shellQuote(input.remoteDir)} >/dev/null; fi`,
@@ -623,7 +623,7 @@ async function importGitWorkspaceToSsh(input: {
         ? `git -C ${shellQuote(input.remoteDir)} checkout --force -B ${shellQuote(input.snapshot.branchName)} ${shellQuote(input.snapshot.headCommit)} >/dev/null`
         : `git -C ${shellQuote(input.remoteDir)} -c advice.detachedHead=false checkout --force --detach ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
       `git -C ${shellQuote(input.remoteDir)} reset --hard ${shellQuote(input.snapshot.headCommit)} >/dev/null`,
-      `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .paperclip-runtime >/dev/null`,
+      `git -C ${shellQuote(input.remoteDir)} clean -fdx -e .valadrien-os-runtime >/dev/null`,
       // Drop the per-import ref on the remote side too so it can't accumulate.
       `git -C ${shellQuote(input.remoteDir)} update-ref -d ${shellQuote(tempRef)} >/dev/null 2>&1 || true`,
     ].join("\n");
@@ -649,19 +649,19 @@ async function exportGitWorkspaceFromSsh(input: {
   importedRef?: string;
   resetLocalWorkspace?: boolean;
 }): Promise<string> {
-  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-bundle-"));
+  const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-ssh-bundle-"));
   const bundlePath = path.join(bundleDir, "workspace.bundle");
-  const importedRef = input.importedRef ?? `refs/paperclip/ssh-sync/imported/${randomUUID()}`;
+  const importedRef = input.importedRef ?? `refs/valadrien-os/ssh-sync/imported/${randomUUID()}`;
 
   try {
     const exportScript = [
       "set -e",
-      `git -C ${shellQuote(input.remoteDir)} update-ref refs/paperclip/ssh-sync/export HEAD`,
-      `mkdir -p ${shellQuote(path.posix.join(input.remoteDir, ".paperclip-runtime"))}`,
-      `tmp_bundle=$(mktemp ${shellQuote(path.posix.join(input.remoteDir, ".paperclip-runtime", "export-XXXXXX.bundle"))})`,
-      'cleanup() { rm -f "$tmp_bundle"; git -C ' + shellQuote(input.remoteDir) + ' update-ref -d refs/paperclip/ssh-sync/export >/dev/null 2>&1 || true; }',
+      `git -C ${shellQuote(input.remoteDir)} update-ref refs/valadrien-os/ssh-sync/export HEAD`,
+      `mkdir -p ${shellQuote(path.posix.join(input.remoteDir, ".valadrien-os-runtime"))}`,
+      `tmp_bundle=$(mktemp ${shellQuote(path.posix.join(input.remoteDir, ".valadrien-os-runtime", "export-XXXXXX.bundle"))})`,
+      'cleanup() { rm -f "$tmp_bundle"; git -C ' + shellQuote(input.remoteDir) + ' update-ref -d refs/valadrien-os/ssh-sync/export >/dev/null 2>&1 || true; }',
       'trap cleanup EXIT',
-      `git -C ${shellQuote(input.remoteDir)} bundle create "$tmp_bundle" refs/paperclip/ssh-sync/export >/dev/null`,
+      `git -C ${shellQuote(input.remoteDir)} bundle create "$tmp_bundle" refs/valadrien-os/ssh-sync/export >/dev/null`,
       'cat "$tmp_bundle"',
     ].join("\n");
 
@@ -671,7 +671,7 @@ async function exportGitWorkspaceFromSsh(input: {
       localFile: bundlePath,
     });
 
-    await runLocalGit(input.localDir, ["fetch", "--force", bundlePath, `refs/paperclip/ssh-sync/export:${importedRef}`], {
+    await runLocalGit(input.localDir, ["fetch", "--force", bundlePath, `refs/valadrien-os/ssh-sync/export:${importedRef}`], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
@@ -753,7 +753,7 @@ async function integrateImportedGitHead(input: {
       "-p",
       input.importedHead,
       "-m",
-      `Paperclip SSH sync merge ${input.importedHead.slice(0, 12)}`,
+      `ValadrienOs SSH sync merge ${input.importedHead.slice(0, 12)}`,
     ],
     {
       timeout: 60_000,
@@ -887,10 +887,10 @@ async function isSshEnvLabFixtureProcess(state: Pick<SshEnvLabFixtureState, "pid
 }
 
 export async function getSshEnvLabSupport(): Promise<SshEnvLabSupport> {
-  if (process.platform === "darwin" && process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB !== "1") {
+  if (process.platform === "darwin" && process.env.VALADRIEN_OS_ENABLE_DARWIN_SSH_ENV_LAB !== "1") {
     return {
       supported: false,
-      reason: "SSH env-lab fixture is disabled on macOS; set PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB=1 to opt in.",
+      reason: "SSH env-lab fixture is disabled on macOS; set VALADRIEN_OS_ENABLE_DARWIN_SSH_ENV_LAB=1 to opt in.",
     };
   }
 
@@ -1122,7 +1122,7 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-ssh-sync-back-"));
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
@@ -1224,7 +1224,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: [".git", ".valadrien-os-runtime"],
     });
     await removeDeletedPathsOnSsh({
       spec: input.spec,
@@ -1237,13 +1237,13 @@ export async function prepareWorkspaceForSshExecution(input: {
   await clearRemoteDirectory({
     spec: input.spec,
     remoteDir,
-    preserveEntries: [".paperclip-runtime"],
+    preserveEntries: [".valadrien-os-runtime"],
   });
   await syncDirectoryToSsh({
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".valadrien-os-runtime"],
   });
   return { gitBacked: false };
 }
@@ -1257,9 +1257,9 @@ export async function restoreWorkspaceFromSshExecution(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-ssh-sync-back-"));
     const importedRef = input.restoreGitHistory
-      ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
+      ? `refs/valadrien-os/ssh-sync/imported/${randomUUID()}`
       : null;
     try {
       const importedHead = input.restoreGitHistory
@@ -1315,7 +1315,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: [".git", ".valadrien-os-runtime"],
       preserveLocalEntries: [".git"],
     });
     return;
@@ -1325,7 +1325,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     spec: input.spec,
     remoteDir,
     localDir: input.localDir,
-    exclude: [".paperclip-runtime"],
+    exclude: [".valadrien-os-runtime"],
   });
 }
 

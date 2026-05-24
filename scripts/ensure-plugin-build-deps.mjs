@@ -8,18 +8,18 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, "..");
 const tscCliPath = path.join(rootDir, "node_modules", "typescript", "bin", "tsc");
-const lockDir = path.join(rootDir, "node_modules", ".cache", "paperclip-plugin-build-deps.lock");
+const lockDir = path.join(rootDir, "node_modules", ".cache", "valadrien-os-plugin-build-deps.lock");
 const lockTimeoutMs = 60_000;
 const lockPollMs = 100;
 
 const buildTargets = [
   {
-    name: "@paperclipai/shared",
+    name: "@valadrien-os/shared",
     output: path.join(rootDir, "packages/shared/dist/index.js"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
   },
   {
-    name: "@paperclipai/plugin-sdk",
+    name: "@valadrien-os/plugin-sdk",
     output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
   },

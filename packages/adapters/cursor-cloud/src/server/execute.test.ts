@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@valadrien-os/adapter-utils";
 import { execute } from "./execute.js";
 
 type MockRunOptions = {
@@ -100,7 +100,7 @@ function createContext(
       CURSOR_API_KEY: "cursor-secret",
       EXTRA_FLAG: "1",
     },
-    repoUrl: "https://github.com/paperclipai/paperclip.git",
+    repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
     repoStartingRef: "main",
     runtimeEnvType: "cloud",
     promptTemplate: "Do the work for {{agent.name}}",
@@ -118,7 +118,7 @@ function createContext(
     runtime,
     config,
     context,
-    authToken: "paperclip-run-jwt",
+    authToken: "valadrien-os-run-jwt",
     onLog: async (stream, chunk) => {
       logs.push({ stream, chunk });
     },
@@ -142,7 +142,7 @@ describe("cursor_cloud execute", () => {
     getRunMock.mockReset();
   });
 
-  it("creates a fresh Cursor agent and injects Paperclip env without CURSOR_API_KEY", async () => {
+  it("creates a fresh Cursor agent and injects ValadrienOs env without CURSOR_API_KEY", async () => {
     const run = createMockRun({
       agentId: "agent-fresh",
       streamMessages: [
@@ -165,19 +165,19 @@ describe("cursor_cloud execute", () => {
     expect(getRunMock).not.toHaveBeenCalled();
     expect(createMock.mock.calls[0]?.[0]).toMatchObject({
       apiKey: "cursor-secret",
-      name: "Paperclip Cursor Cloud Agent",
+      name: "ValadrienOs Cursor Cloud Agent",
       model: { id: "gpt-5.4" },
       cloud: {
         env: { type: "cloud" },
-        repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+        repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
       },
     });
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).toMatchObject({
       EXTRA_FLAG: "1",
-      PAPERCLIP_RUN_ID: "run-heartbeat-1",
-      PAPERCLIP_TASK_ID: "issue-1",
-      PAPERCLIP_WAKE_REASON: "issue_commented",
-      PAPERCLIP_API_KEY: "paperclip-run-jwt",
+      VALADRIEN_OS_RUN_ID: "run-heartbeat-1",
+      VALADRIEN_OS_TASK_ID: "issue-1",
+      VALADRIEN_OS_WAKE_REASON: "issue_commented",
+      VALADRIEN_OS_API_KEY: "valadrien-os-run-jwt",
     });
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("CURSOR_API_KEY");
 
@@ -192,7 +192,7 @@ describe("cursor_cloud execute", () => {
         latestRunId: "run-123",
         runtime: "cloud",
         envType: "cloud",
-        repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+        repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
       },
     });
     expect(ctx.logs.map((entry) => entry.chunk)).toEqual(
@@ -219,7 +219,7 @@ describe("cursor_cloud execute", () => {
           latestRunId: "run-previous",
           runtime: "cloud",
           envType: "cloud",
-          repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+          repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
         },
       },
     });
@@ -279,7 +279,7 @@ describe("cursor_cloud execute", () => {
           latestRunId: "run-attached",
           runtime: "cloud",
           envType: "cloud",
-          repos: [{ url: "https://github.com/paperclipai/paperclip.git", startingRef: "main" }],
+          repos: [{ url: "https://github.com/ValDola-stack/valadrien-os.git", startingRef: "main" }],
         },
       },
     });
@@ -311,12 +311,12 @@ describe("cursor_cloud execute", () => {
     expect(ctx.meta[0]?.context).toMatchObject({
       cursorCloud: {
         canReuseSession: true,
-        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoUrl: "https://github.com/ValDola-stack/valadrien-os.git",
       },
     });
   });
 
-  it("maps non-finished Cursor results to failing Paperclip runs", async () => {
+  it("maps non-finished Cursor results to failing ValadrienOs runs", async () => {
     const cancelledRun = createMockRun({
       id: "run-cancelled",
       agentId: "agent-cancelled",

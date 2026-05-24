@@ -11,7 +11,7 @@ import {
   shouldArmIssueDetailInboxQuickArchive,
   withIssueDetailHeaderSeed,
 } from "./issueDetailBreadcrumb";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@valadrien-os/shared";
 
 const sessionStorageMock = (() => {
   const store = new Map<string, string>();
@@ -72,11 +72,11 @@ describe("issueDetailBreadcrumb", () => {
       project: {
         id: "project-1",
         companyId: "company-1",
-        urlKey: "paperclip-app",
+        urlKey: "valadrien-os-app",
         goalId: null,
         goalIds: [],
         goals: [],
-        name: "Paperclip App",
+        name: "ValadrienOs App",
         description: null,
         status: "in_progress",
         leadAgentId: null,
@@ -93,8 +93,8 @@ describe("issueDetailBreadcrumb", () => {
           defaultRef: null,
           repoName: null,
           localFolder: null,
-          managedFolder: "/tmp/paperclip-app",
-          effectiveLocalFolder: "/tmp/paperclip-app",
+          managedFolder: "/tmp/valadrien-os-app",
+          effectiveLocalFolder: "/tmp/valadrien-os-app",
           origin: "local_folder",
         },
         workspaces: [],
@@ -179,7 +179,7 @@ describe("issueDetailBreadcrumb", () => {
       status: "todo",
       priority: "medium",
       projectId: "project-1",
-      projectName: "Paperclip App",
+      projectName: "ValadrienOs App",
       originKind: "manual",
       originId: null,
     });
@@ -202,7 +202,7 @@ describe("issueDetailBreadcrumb", () => {
       status: "todo",
       priority: "medium",
       projectId: "project-1",
-      projectName: "Paperclip App",
+      projectName: "ValadrienOs App",
       originKind: "manual",
       originId: null,
     });

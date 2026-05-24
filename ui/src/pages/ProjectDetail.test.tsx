@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@valadrien-os/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,7 +122,7 @@ function project(overrides: Partial<Project> = {}): Project {
     managedByPlugin: {
       id: "managed-1",
       pluginId: "plugin-1",
-      pluginKey: "paperclip.missions",
+      pluginKey: "valadrien-os.missions",
       pluginDisplayName: "Missions",
       resourceKind: "project",
       resourceKey: "operations",
@@ -181,7 +181,7 @@ describe("ProjectDetail", () => {
     expect(container.textContent).toContain("Plugin operations");
     expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",
-      originKindPrefix: "plugin:paperclip.missions",
+      originKindPrefix: "plugin:valadrien-os.missions",
     });
   });
 });

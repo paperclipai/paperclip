@@ -49,8 +49,8 @@ describe("sandbox callback bridge", () => {
           (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
-          env.PAPERCLIP_TEST_STDIN = input.stdin;
-          args[1] = `printf '%s' \"$PAPERCLIP_TEST_STDIN\" | (${args[1]})`;
+          env.VALADRIEN_OS_TEST_STDIN = input.stdin;
+          args[1] = `printf '%s' \"$VALADRIEN_OS_TEST_STDIN\" | (${args[1]})`;
         }
         try {
           const result = await execFile(command, args, {
@@ -115,7 +115,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("round-trips localhost bridge requests over the sandbox queue without forwarding the bridge token", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-runtime-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -145,7 +145,7 @@ describe("sandbox callback bridge", () => {
       ],
     });
 
-    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "valadrien-os-bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenRequests: Array<{
@@ -205,7 +205,7 @@ describe("sandbox callback bridge", () => {
         authorization: `Bearer ${bridgeToken}`,
         accept: "application/json",
         "if-none-match": '"client-cache-key"',
-        "x-paperclip-run-id": "run-bridge-1",
+        "x-valadrien-os-run-id": "run-bridge-1",
         "x-bridge-debug": "drop-me",
       },
     });
@@ -254,12 +254,12 @@ describe("sandbox callback bridge", () => {
       },
     });
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
-    expect(seenRequests[0]?.headers["x-paperclip-run-id"]).toBeUndefined();
+    expect(seenRequests[0]?.headers["x-valadrien-os-run-id"]).toBeUndefined();
 
   });
 
   it("denies non-allowlisted requests by default", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-default-policy-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-default-policy-"));
     cleanupDirs.push(rootDir);
 
     const queueDir = path.posix.join(rootDir, "queue");
@@ -305,7 +305,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("drains already-queued requests on stop", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-drain-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-drain-"));
     cleanupDirs.push(rootDir);
 
     const queueDir = path.posix.join(rootDir, "queue");
@@ -361,7 +361,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("writes fast 503 responses for queued requests that miss the drain deadline", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-drain-timeout-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-drain-timeout-"));
     cleanupDirs.push(rootDir);
 
     const queueDir = path.posix.join(rootDir, "queue");
@@ -423,7 +423,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("handles SSH queue polling failures without emitting an unhandled rejection", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-ssh-failure-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-ssh-failure-"));
     cleanupDirs.push(rootDir);
 
     const queueDir = path.posix.join(rootDir, "queue");
@@ -439,7 +439,7 @@ describe("sandbox callback bridge", () => {
           makeDir: async () => {},
           listJsonFiles: async () => {
             throw new Error(
-              "list /remote/.paperclip-runtime/gemini/paperclip-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
+              "list /remote/.valadrien-os-runtime/gemini/valadrien-os-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
             );
           },
           readTextFile: async () => {
@@ -470,7 +470,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-response-lock-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -493,7 +493,7 @@ describe("sandbox callback bridge", () => {
       assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
     });
 
-    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "valadrien-os-bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenRequestIds: string[] = [];
@@ -556,13 +556,13 @@ describe("sandbox callback bridge", () => {
     await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
     await expect(
       readdir(directories.responsesDir).then((entries) =>
-        entries.filter((entry) => entry.endsWith(".tmp") || entry.includes(".paperclip-write.lock")),
+        entries.filter((entry) => entry.endsWith(".tmp") || entry.includes(".valadrien-os-write.lock")),
       ),
     ).resolves.toEqual([]);
   });
 
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-server-guards-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -586,7 +586,7 @@ describe("sandbox callback bridge", () => {
       assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
     });
 
-    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "valadrien-os-bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
 
@@ -644,7 +644,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("returns a 502 when the host response times out", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-timeout-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-timeout-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -667,7 +667,7 @@ describe("sandbox callback bridge", () => {
       assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
     });
 
-    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "valadrien-os-bridge");
     const bridgeToken = createSandboxCallbackBridgeToken();
     const bridge = await startSandboxCallbackBridgeServer({
       runner,
@@ -696,7 +696,7 @@ describe("sandbox callback bridge", () => {
   });
 
   it("returns a 502 for malformed host response files", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-malformed-response-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-malformed-response-"));
     cleanupDirs.push(rootDir);
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -719,7 +719,7 @@ describe("sandbox callback bridge", () => {
       assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
     });
 
-    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "valadrien-os-bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
     const bridge = await startSandboxCallbackBridgeServer({
@@ -757,15 +757,15 @@ describe("sandbox callback bridge", () => {
   });
 
   it("reuses an already-uploaded bridge entrypoint when the remote file hash matches", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-sync-"));
     cleanupDirs.push(rootDir);
 
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     const remoteAssetDir = path.posix.join(
       remoteWorkspaceDir,
-      ".paperclip-runtime",
+      ".valadrien-os-runtime",
       "codex",
-      "paperclip-bridge",
+      "valadrien-os-bridge",
       "server",
     );
     await mkdir(remoteWorkspaceDir, { recursive: true });
@@ -795,29 +795,29 @@ describe("sandbox callback bridge", () => {
 
     expect(first.uploaded).toBe(true);
     expect(second.uploaded).toBe(false);
-    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).resolves.toBe(expandedSource);
+    await expect(readFile(path.posix.join(remoteAssetDir, "valadrien-os-bridge-server.mjs"), "utf8")).resolves.toBe(expandedSource);
     await expect(
       readdir(remoteAssetDir).then((entries) =>
         entries.filter(
           (entry) =>
-            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".valadrien-os-upload.b64") ||
             entry.endsWith(".partial") ||
-            entry === ".paperclip-bridge-upload.lock",
+            entry === ".valadrien-os-bridge-upload.lock",
         ),
       ),
     ).resolves.toEqual([]);
   });
 
   it("rejects a corrupted bridge entrypoint upload without committing a torn remote file", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-corrupt-"));
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "valadrien-os-bridge-sync-corrupt-"));
     cleanupDirs.push(rootDir);
 
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     const remoteAssetDir = path.posix.join(
       remoteWorkspaceDir,
-      ".paperclip-runtime",
+      ".valadrien-os-runtime",
       "codex",
-      "paperclip-bridge",
+      "valadrien-os-bridge",
       "server",
     );
     await mkdir(remoteWorkspaceDir, { recursive: true });
@@ -849,14 +849,14 @@ describe("sandbox callback bridge", () => {
       }),
     ).rejects.toThrow(/sha mismatch/i);
 
-    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.posix.join(remoteAssetDir, "valadrien-os-bridge-server.mjs"), "utf8")).rejects.toThrow();
     await expect(
       readdir(remoteAssetDir).then((entries) =>
         entries.filter(
           (entry) =>
-            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".valadrien-os-upload.b64") ||
             entry.endsWith(".partial") ||
-            entry === ".paperclip-bridge-upload.lock",
+            entry === ".valadrien-os-bridge-upload.lock",
         ),
       ),
     ).resolves.toEqual([]);
@@ -972,11 +972,11 @@ describe("sandbox callback bridge", () => {
       timeoutMs: 30_000,
     });
 
-    await client.makeDir("/workspace/.paperclip-runtime/codex/paperclip-bridge/queue");
+    await client.makeDir("/workspace/.valadrien-os-runtime/codex/valadrien-os-bridge/queue");
 
     expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
       env: {
-        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+        VALADRIEN_OS_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
   });

@@ -18,7 +18,7 @@ describe("createHostClientHandlers invocation company scope", () => {
     } as unknown as HostServices;
 
     const handlers = createHostClientHandlers({
-      pluginId: "paperclip.test",
+      pluginId: "valadrien-os.test",
       capabilities: ["projects.read"],
       services,
     });
@@ -51,7 +51,7 @@ describe("createHostClientHandlers invocation company scope", () => {
     } as unknown as HostServices;
 
     const handlers = createHostClientHandlers({
-      pluginId: "paperclip.test",
+      pluginId: "valadrien-os.test",
       capabilities: ["companies.read"],
       services,
     });
@@ -73,7 +73,7 @@ describe("createHostClientHandlers invocation company scope", () => {
     } as unknown as HostServices;
 
     const handlers = createHostClientHandlers({
-      pluginId: "paperclip.test",
+      pluginId: "valadrien-os.test",
       capabilities: ["plugin.state.read"],
       services,
     });
@@ -133,7 +133,7 @@ describe("createHostClientHandlers invocation company scope", () => {
         },
       } as unknown as HostServices;
       const handlers = createHostClientHandlers({
-        pluginId: "paperclip.test",
+        pluginId: "valadrien-os.test",
         capabilities: [],
         services,
       });
@@ -159,7 +159,7 @@ describe("createHostClientHandlers invocation company scope", () => {
       },
     } as unknown as HostServices;
     const handlers = createHostClientHandlers({
-      pluginId: "paperclip.test",
+      pluginId: "valadrien-os.test",
       capabilities: ["authorization.audit.read"],
       services,
     });

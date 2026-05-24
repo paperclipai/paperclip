@@ -1,7 +1,7 @@
 import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
-import type { Agent, Project } from "@paperclipai/shared";
+import type { Agent, Project } from "@valadrien-os/shared";
 
 export interface CompanyUserProfile {
   label: string;

@@ -4,11 +4,11 @@ import { SecretProviderClientError } from "../secrets/types.js";
 
 describe("awsSecretsManagerProvider", () => {
   const previousEnv = {
-    PAPERCLIP_SECRETS_AWS_REGION: process.env.PAPERCLIP_SECRETS_AWS_REGION,
+    VALADRIEN_OS_SECRETS_AWS_REGION: process.env.VALADRIEN_OS_SECRETS_AWS_REGION,
     AWS_REGION: process.env.AWS_REGION,
     AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION,
-    PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID: process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID,
-    PAPERCLIP_SECRETS_AWS_KMS_KEY_ID: process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID,
+    VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID: process.env.VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID,
+    VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID: process.env.VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID,
     AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
     AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
@@ -25,24 +25,24 @@ describe("awsSecretsManagerProvider", () => {
     }
   });
 
-  it("creates Paperclip-managed AWS secrets without persisting plaintext in provider material", async () => {
+  it("creates ValadrienOs-managed AWS secrets without persisting plaintext in provider material", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
       config: {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
         async createSecret(input) {
           calls.push({ op: "createSecret", input });
           return {
-            ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+            ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
             VersionId: "aws-version-1",
           };
         },
@@ -76,22 +76,22 @@ describe("awsSecretsManagerProvider", () => {
       expect.objectContaining({
         op: "createSecret",
         input: expect.objectContaining({
-          Name: "paperclip/prod-use1/company-1/openai-api-key",
+          Name: "valadrien-os/prod-use1/company-1/openai-api-key",
           KmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         }),
       }),
     ]);
     expect(JSON.stringify(prepared)).not.toContain("super-secret-value");
-    expect(prepared.externalRef).toContain("paperclip/prod-use1/company-1/openai-api-key");
+    expect(prepared.externalRef).toContain("valadrien-os/prod-use1/company-1/openai-api-key");
     expect(prepared.providerVersionRef).toBe("aws-version-1");
   });
 
   it("creates AWS secrets from selected provider vault config without deployment env fallback", async () => {
-    delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_REGION;
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
-    delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
-    delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID;
 
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
@@ -157,8 +157,8 @@ describe("awsSecretsManagerProvider", () => {
           Name: "clip/prod-us-west/company-1/openai-api-key",
           SecretString: "super-secret-value",
           Tags: expect.arrayContaining([
-            { Key: "paperclip:provider-owner", Value: "platform" },
-            { Key: "paperclip:environment", Value: "production" },
+            { Key: "valadrien-os:provider-owner", Value: "platform" },
+            { Key: "valadrien-os:environment", Value: "production" },
           ]),
         }),
       }),
@@ -176,7 +176,7 @@ describe("awsSecretsManagerProvider", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/openai-api-key",
+          ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod/company-1/openai-api-key",
           VersionId: "aws-version-1",
         }),
         { status: 200 },
@@ -187,10 +187,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
     });
@@ -225,10 +225,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -238,7 +238,7 @@ describe("awsSecretsManagerProvider", () => {
         async putSecretValue(input) {
           calls.push({ op: "putSecretValue", input });
           return {
-            ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+            ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
             VersionId: "aws-version-2",
           };
         },
@@ -254,7 +254,7 @@ describe("awsSecretsManagerProvider", () => {
     const prepared = await provider.createVersion({
       value: "rotated-secret-value",
       externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
       context: {
         companyId: "company-1",
         secretKey: "openai-api-key",
@@ -268,9 +268,9 @@ describe("awsSecretsManagerProvider", () => {
         op: "putSecretValue",
         input: {
           SecretId:
-            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
           SecretString: "rotated-secret-value",
-          VersionStages: ["PAPERCLIP_PENDING"],
+          VersionStages: ["VALADRIEN_OS_PENDING"],
         },
       },
     ]);
@@ -285,10 +285,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -330,10 +330,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
     });
@@ -350,16 +350,16 @@ describe("awsSecretsManagerProvider", () => {
     expect(prepared.valueSha256).toBeTruthy();
   });
 
-  it("rejects linked external references under the Paperclip-managed namespace", async () => {
+  it("rejects linked external references under the ValadrienOs-managed namespace", async () => {
     const provider = createAwsSecretsManagerProvider({
       config: {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
     });
@@ -367,10 +367,10 @@ describe("awsSecretsManagerProvider", () => {
     await expect(
       provider.linkExternalSecret({
         externalRef:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-2/openai-api-key",
         providerVersionRef: "linked-version-7",
       }),
-    ).rejects.toThrow(/Paperclip-managed namespace/i);
+    ).rejects.toThrow(/ValadrienOs-managed namespace/i);
   });
 
   it("lists remote AWS secrets with metadata only and never resolves plaintext", async () => {
@@ -380,10 +380,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -476,23 +476,23 @@ describe("awsSecretsManagerProvider", () => {
             NextToken: "next-page",
             SecretList: [
               {
-                ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai",
-                Name: "paperclip/prod-use1/company-1/openai",
+                ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai",
+                Name: "valadrien-os/prod-use1/company-1/openai",
                 KmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/prod",
                 Tags: [
-                  { Key: "paperclip:managed-by", Value: "paperclip" },
-                  { Key: "paperclip:deployment-id", Value: "prod-use1" },
-                  { Key: "paperclip:company-id", Value: "company-1" },
-                  { Key: "paperclip:environment", Value: "production" },
-                  { Key: "paperclip:provider-owner", Value: "platform" },
+                  { Key: "valadrien-os:managed-by", Value: "valadrien-os" },
+                  { Key: "valadrien-os:deployment-id", Value: "prod-use1" },
+                  { Key: "valadrien-os:company-id", Value: "company-1" },
+                  { Key: "valadrien-os:environment", Value: "production" },
+                  { Key: "valadrien-os:provider-owner", Value: "platform" },
                 ],
               },
               {
-                ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/stripe",
-                Name: "paperclip/prod-use1/company-2/stripe",
+                ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-2/stripe",
+                Name: "valadrien-os/prod-use1/company-2/stripe",
                 Tags: [
-                  { Key: "paperclip:managed-by", Value: "paperclip" },
-                  { Key: "paperclip:company-id", Value: "company-2" },
+                  { Key: "valadrien-os:managed-by", Value: "valadrien-os" },
+                  { Key: "valadrien-os:company-id", Value: "company-2" },
                 ],
               },
             ],
@@ -509,7 +509,7 @@ describe("awsSecretsManagerProvider", () => {
         status: "ready",
         config: { region: "us-east-1" },
       },
-      query: "paperclip",
+      query: "valadrien-os",
       pageSize: 25,
     });
 
@@ -520,7 +520,7 @@ describe("awsSecretsManagerProvider", () => {
           MaxResults: 25,
           NextToken: undefined,
           IncludePlannedDeletion: false,
-          Filters: [{ Key: "all", Values: ["paperclip"] }],
+          Filters: [{ Key: "all", Values: ["valadrien-os"] }],
         },
       },
     ]);
@@ -528,21 +528,21 @@ describe("awsSecretsManagerProvider", () => {
       provider: "aws_secrets_manager",
       nextToken: "next-page",
       sampledSecretCount: 1,
-      skippedForeignPaperclipSampleCount: 1,
+      skippedForeignValadrienOsSampleCount: 1,
       candidates: [
         expect.objectContaining({
           displayName: "AWS production",
           config: expect.objectContaining({
             region: "us-east-1",
             namespace: "prod-use1",
-            secretNamePrefix: "paperclip",
+            secretNamePrefix: "valadrien-os",
             kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/prod",
             ownerTag: "platform",
             environmentTag: "production",
           }),
           signals: expect.objectContaining({
-            paperclipManagedSampleCount: 1,
-            skippedForeignPaperclipSampleCount: 1,
+            valadrienOsManagedSampleCount: 1,
+            skippedForeignValadrienOsSampleCount: 1,
           }),
         }),
       ],
@@ -553,16 +553,16 @@ describe("awsSecretsManagerProvider", () => {
 
   it("redacts AWS provider exception text when remote listing fails", async () => {
     const rawProviderMessage =
-      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/ValadrienOs is not authorized to perform secretsmanager:ListSecrets on arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/openai";
     const provider = createAwsSecretsManagerProvider({
       config: {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -609,10 +609,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -635,12 +635,12 @@ describe("awsSecretsManagerProvider", () => {
     const resolved = await provider.resolveVersion({
       material: {
         scheme: "aws_secrets_manager_v1",
-        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
         versionId: "aws-version-2",
         source: "managed",
       },
       externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
       providerVersionRef: "aws-version-2",
       context: {
         companyId: "company-1",
@@ -656,7 +656,7 @@ describe("awsSecretsManagerProvider", () => {
         op: "getSecretValue",
         input: {
           SecretId:
-            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
           VersionId: "aws-version-2",
           VersionStage: undefined,
         },
@@ -670,10 +670,10 @@ describe("awsSecretsManagerProvider", () => {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -697,12 +697,12 @@ describe("awsSecretsManagerProvider", () => {
         material: {
           scheme: "aws_secrets_manager_v1",
           secretId:
-            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-2/openai-api-key",
           versionId: "aws-version-2",
           source: "managed",
         },
         externalRef:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-2/openai-api-key",
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-2/openai-api-key",
         providerVersionRef: "aws-version-2",
         context: {
           companyId: "company-1",
@@ -715,17 +715,17 @@ describe("awsSecretsManagerProvider", () => {
   });
 
   it("warns when AWS provider configuration is incomplete and blocks managed writes", async () => {
-    delete process.env.PAPERCLIP_SECRETS_AWS_REGION;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_REGION;
     delete process.env.AWS_REGION;
     delete process.env.AWS_DEFAULT_REGION;
-    delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
-    delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID;
+    delete process.env.VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID;
 
     const provider = createAwsSecretsManagerProvider();
     const health = await provider.healthCheck();
 
     expect(health.status).toBe("warn");
-    expect(health.message).toContain("missing PAPERCLIP_SECRETS_AWS_REGION");
+    expect(health.message).toContain("missing VALADRIEN_OS_SECRETS_AWS_REGION");
     expect(health.warnings).toEqual(
       expect.arrayContaining([
         expect.stringContaining("Missing required non-secret AWS provider config"),
@@ -735,9 +735,9 @@ describe("awsSecretsManagerProvider", () => {
     );
     expect(health.details).toMatchObject({
       missingConfig: [
-        "PAPERCLIP_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
-        "PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID",
-        "PAPERCLIP_SECRETS_AWS_KMS_KEY_ID",
+        "VALADRIEN_OS_SECRETS_AWS_REGION or AWS_REGION/AWS_DEFAULT_REGION",
+        "VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID",
+        "VALADRIEN_OS_SECRETS_AWS_KMS_KEY_ID",
       ],
       credentialSource: "AWS SDK default credential provider chain",
     });
@@ -751,20 +751,20 @@ describe("awsSecretsManagerProvider", () => {
           version: 1,
         },
       }),
-    ).rejects.toThrow(/PAPERCLIP_SECRETS_AWS_REGION|AWS_REGION/i);
+    ).rejects.toThrow(/VALADRIEN_OS_SECRETS_AWS_REGION|AWS_REGION/i);
   });
 
-  it("deletes only Paperclip-managed AWS secrets", async () => {
+  it("deletes only ValadrienOs-managed AWS secrets", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
       config: {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -787,11 +787,11 @@ describe("awsSecretsManagerProvider", () => {
     await provider.deleteOrArchive({
       mode: "delete",
       externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
         versionId: null,
         source: "managed",
       },
@@ -842,24 +842,24 @@ describe("awsSecretsManagerProvider", () => {
         op: "deleteSecret",
         input: {
           SecretId:
-            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
           RecoveryWindowInDays: 30,
         },
       },
     ]);
   });
 
-  it("archives pending Paperclip-managed AWS versions without deleting the secret", async () => {
+  it("archives pending ValadrienOs-managed AWS versions without deleting the secret", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
       config: {
         region: "us-east-1",
         endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
         deploymentId: "prod-use1",
-        prefix: "paperclip",
+        prefix: "valadrien-os",
         kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
         environmentTag: "production",
-        providerOwnerTag: "paperclip",
+        providerOwnerTag: "valadrien-os",
         deleteRecoveryWindowDays: 30,
       },
       gateway: {
@@ -886,11 +886,11 @@ describe("awsSecretsManagerProvider", () => {
     await provider.deleteOrArchive({
       mode: "archive",
       externalRef:
-        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
       material: {
         scheme: "aws_secrets_manager_v1",
         secretId:
-          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
         versionId: "aws-version-2",
         source: "managed",
       },
@@ -907,8 +907,8 @@ describe("awsSecretsManagerProvider", () => {
         op: "updateSecretVersionStage",
         input: {
           SecretId:
-            "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
-          VersionStage: "PAPERCLIP_PENDING",
+            "arn:aws:secretsmanager:us-east-1:123456789012:secret:valadrien-os/prod-use1/company-1/openai-api-key",
+          VersionStage: "VALADRIEN_OS_PENDING",
           RemoveFromVersionId: "aws-version-2",
         },
       },

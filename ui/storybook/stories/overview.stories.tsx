@@ -109,20 +109,20 @@ const coverageRows = [
 
 function StorybookGuide() {
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner space-y-8">
-        <section className="paperclip-story__frame overflow-hidden p-6 sm:p-8">
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner space-y-8">
+        <section className="valadrien-os-story__frame overflow-hidden p-6 sm:p-8">
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div className="max-w-3xl">
-              <div className="paperclip-story__label flex items-center gap-2">
+              <div className="valadrien-os-story__label flex items-center gap-2">
                 <BookOpen className="h-4 w-4" />
-                Paperclip Storybook
+                ValadrienOs Storybook
               </div>
               <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">
                 Board UI stories for real control-plane states
               </h1>
               <p className="mt-4 text-sm leading-6 text-muted-foreground sm:text-base">
-                This Storybook is organized as a review workspace for Paperclip's operator UI: primitives first,
+                This Storybook is organized as a review workspace for ValadrienOs's operator UI: primitives first,
                 product surfaces second, and the former UX test routes as isolated fixture-backed stories.
               </p>
             </div>
@@ -139,7 +139,7 @@ function StorybookGuide() {
           {storyGroups.map((group) => {
             const Icon = group.icon;
             return (
-              <Card key={group.title} className="paperclip-story__frame shadow-none">
+              <Card key={group.title} className="valadrien-os-story__frame shadow-none">
                 <CardHeader>
                   <div className="flex h-10 w-10 items-center justify-center border border-border bg-background">
                     <Icon className="h-4 w-4 text-muted-foreground" />
@@ -155,9 +155,9 @@ function StorybookGuide() {
           })}
         </section>
 
-        <section className="paperclip-story__frame overflow-hidden">
+        <section className="valadrien-os-story__frame overflow-hidden">
           <div className="border-b border-border px-5 py-4">
-            <div className="paperclip-story__label flex items-center gap-2">
+            <div className="valadrien-os-story__label flex items-center gap-2">
               <Route className="h-4 w-4" />
               Coverage Map
             </div>
@@ -190,7 +190,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "The overview story explains the local organization and the coverage contract for Paperclip's Storybook.",
+          "The overview story explains the local organization and the coverage contract for ValadrienOs's Storybook.",
       },
     },
   },

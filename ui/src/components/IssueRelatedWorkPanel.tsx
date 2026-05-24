@@ -1,4 +1,4 @@
-import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@valadrien-os/shared";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {

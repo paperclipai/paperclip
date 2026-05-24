@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { runChildProcess } from "@valadrien-os/adapter-utils/server-utils";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 
 function createLocalSandboxRunner() {
@@ -45,7 +45,7 @@ printf '%s\\n' ok
 
 describe("prepareCursorSandboxCommand", () => {
   it("prefers the Cursor installer bin directory when the default agent entrypoint is installed there", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-remote-command-cursor-bin-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-cursor-remote-command-cursor-bin-"));
     const systemHomeDir = path.join(root, "system-home");
     const managedHomeDir = path.join(root, "managed-home");
     const remoteWorkspace = path.join(root, "workspace");
@@ -91,7 +91,7 @@ describe("prepareCursorSandboxCommand", () => {
   });
 
   it("keeps probing the original sandbox home after managed HOME overrides", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-remote-command-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-cursor-remote-command-"));
     const systemHomeDir = path.join(root, "system-home");
     const managedHomeDir = path.join(root, "managed-home");
     const remoteWorkspace = path.join(root, "workspace");

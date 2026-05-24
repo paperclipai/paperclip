@@ -29,7 +29,7 @@ export function useDismissedInboxAlerts() {
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== "paperclip:inbox:dismissed") return;
+      if (event.key !== "valadrien-os:inbox:dismissed") return;
       setDismissed(loadDismissedInboxAlerts());
     };
     window.addEventListener("storage", handleStorage);

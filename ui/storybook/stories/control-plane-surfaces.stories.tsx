@@ -18,7 +18,7 @@ import {
   storybookEntityNameMap,
   storybookEntityTitleMap,
   storybookIssues,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 function Section({
   eyebrow,
@@ -30,9 +30,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -42,15 +42,15 @@ function Section({
 
 function ControlPlaneSurfaces() {
   return (
-    <div className="paperclip-story">
-      <main className="paperclip-story__inner space-y-6">
-        <section className="paperclip-story__frame p-6">
+    <div className="valadrien-os-story">
+      <main className="valadrien-os-story__inner space-y-6">
+        <section className="valadrien-os-story__frame p-6">
           <div className="flex flex-wrap items-start justify-between gap-5">
             <div>
-              <div className="paperclip-story__label">Product surfaces</div>
+              <div className="valadrien-os-story__label">Product surfaces</div>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight">Control-plane boards and cards</h1>
               <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
-                Paperclip's common board surfaces are deliberately dense: task rows, approvals, budget policy cards,
+                ValadrienOs's common board surfaces are deliberately dense: task rows, approvals, budget policy cards,
                 and audit rows all need to scan quickly while preserving enough state to make autonomous work governable.
               </p>
             </div>
@@ -253,7 +253,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Product-surface stories exercise the board UI components that carry Paperclip's task, approval, budget, activity, and agent governance workflows.",
+          "Product-surface stories exercise the board UI components that carry ValadrienOs's task, approval, budget, activity, and agent governance workflows.",
       },
     },
   },

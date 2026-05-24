@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Goal, Project } from "@paperclipai/shared";
+import type { Goal, Project } from "@valadrien-os/shared";
 import { Archive, Boxes, FolderGit2, GitBranch, Network, Play, RotateCcw, Square } from "lucide-react";
 import { GoalProperties } from "@/components/GoalProperties";
 import { GoalTree } from "@/components/GoalTree";
@@ -27,7 +27,7 @@ import {
   storybookIssues,
   storybookProjectWorkspaces,
   storybookProjects,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 const COMPANY_ID = "company-storybook";
 const boardProject = storybookProjects.find((project) => project.id === "project-board-ui") ?? storybookProjects[0]!;
@@ -54,9 +54,9 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -256,7 +256,7 @@ function GoalPropertiesMatrix() {
         <div className="rounded-lg border border-border bg-background p-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="paperclip-story__label">Goal detail composition</div>
+              <div className="valadrien-os-story__label">Goal detail composition</div>
               <h3 className="mt-2 text-xl font-semibold">{selectedGoal.title}</h3>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{selectedGoal.description}</p>
             </div>
@@ -299,7 +299,7 @@ function GoalTreeMatrix() {
         />
       </div>
       <div className="rounded-lg border border-border bg-background p-4">
-        <div className="paperclip-story__label">Selected goal</div>
+        <div className="valadrien-os-story__label">Selected goal</div>
         {selectedGoal ? (
           <div className="mt-3 space-y-3">
             <div>
@@ -413,10 +413,10 @@ function setWorktreeMeta(name: string, content: string) {
 }
 
 function WorktreeBannerMatrix() {
-  setWorktreeMeta("paperclip-worktree-enabled", "true");
-  setWorktreeMeta("paperclip-worktree-name", "PAP-1675-projects-goals-workspaces");
-  setWorktreeMeta("paperclip-worktree-color", "#0f766e");
-  setWorktreeMeta("paperclip-worktree-text-color", "#ecfeff");
+  setWorktreeMeta("valadrien-os-worktree-enabled", "true");
+  setWorktreeMeta("valadrien-os-worktree-name", "PAP-1675-projects-goals-workspaces");
+  setWorktreeMeta("valadrien-os-worktree-color", "#0f766e");
+  setWorktreeMeta("valadrien-os-worktree-text-color", "#ecfeff");
 
   return (
     <div className="space-y-4">
@@ -446,12 +446,12 @@ function WorktreeBannerMatrix() {
 function ProjectsGoalsWorkspacesStories() {
   return (
     <StorybookData>
-      <div className="paperclip-story">
-        <main className="paperclip-story__inner space-y-6">
-          <section className="paperclip-story__frame p-6">
+      <div className="valadrien-os-story">
+        <main className="valadrien-os-story__inner space-y-6">
+          <section className="valadrien-os-story__frame p-6">
             <div className="flex flex-wrap items-start justify-between gap-5">
               <div>
-                <div className="paperclip-story__label">Projects, goals, and workspaces</div>
+                <div className="valadrien-os-story__label">Projects, goals, and workspaces</div>
                 <h1 className="mt-2 text-3xl font-semibold tracking-tight">Hierarchical planning and runtime surfaces</h1>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
                   Fixture-backed project and goal stories cover editable project properties, local and remote workspace

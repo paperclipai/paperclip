@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@valadrien-os/adapter-utils";
 
 import type { AdapterConfigFieldsProps } from "./types";
 import {

@@ -24,7 +24,7 @@ describe("project-mentions", () => {
       projectId: "project-123",
       color: "#336699",
     });
-    expect(extractProjectMentionIds(`[@Paperclip App](${href})`)).toEqual(["project-123"]);
+    expect(extractProjectMentionIds(`[@ValadrienOs App](${href})`)).toEqual(["project-123"]);
   });
 
   it("round-trips agent mentions with icon metadata", () => {

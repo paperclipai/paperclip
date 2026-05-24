@@ -21,7 +21,7 @@ export function buildLeaseSandboxId(input: {
 }
 
 export function buildSentinelPath(remoteCwd: string): string {
-  return `${remoteCwd.replace(/\/+$/, "")}/.paperclip-lease.json`;
+  return `${remoteCwd.replace(/\/+$/, "")}/.valadrien-os-lease.json`;
 }
 
 export function isTimeoutError(error: unknown): boolean {

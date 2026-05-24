@@ -11,7 +11,7 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
-.paperclip/
+.valadrien-os/
 .pnpm-store/
 tmp-*
 cli/tmp/
@@ -42,7 +42,7 @@ diagnostics/
 *.tmp
 .vscode/
 .claude/settings.local.json
-.paperclip-local/
+.valadrien-os-local/
 /.idea/
 /.agents/
 

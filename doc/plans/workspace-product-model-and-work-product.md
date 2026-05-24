@@ -2,12 +2,12 @@
 
 ## Context
 
-Paperclip needs to support two very different but equally valid ways of working:
+Valadrien OS needs to support two very different but equally valid ways of working:
 
 - a solo developer working directly on `master`, or in a folder that is not even a git repo
 - a larger engineering workflow with isolated branches, previews, pull requests, and cleanup automation
 
-Today, Paperclip already has the beginnings of this model:
+Today, Valadrien OS already has the beginnings of this model:
 
 - `projects` can carry execution workspace policy
 - `project_workspaces` already exist as a durable project-scoped object
@@ -21,7 +21,7 @@ The main product risk is overloading one concept to do too much:
 - making subissues do the job of branches or PRs
 - making projects too infrastructure-heavy
 - making workspaces so hidden that users cannot form a mental model
-- making Paperclip feel like a code review tool instead of a control plane
+- making Valadrien OS feel like a code review tool instead of a control plane
 
 ## Goals
 
@@ -38,12 +38,12 @@ The main product risk is overloading one concept to do too much:
    - commits
    - documents and artifacts
 5. Keep the main navigation and task board simple.
-6. Seamlessly upgrade existing Paperclip users to the new model without forcing disruptive reconfiguration.
-7. Support cloud-hosted Paperclip deployments where execution happens in remote or adapter-managed environments rather than local workers.
+6. Seamlessly upgrade existing Valadrien OS users to the new model without forcing disruptive reconfiguration.
+7. Support cloud-hosted Valadrien OS deployments where execution happens in remote or adapter-managed environments rather than local workers.
 
 ## Non-Goals
 
-- Turning Paperclip into a full code review product
+- Turning Valadrien OS into a full code review product
 - Requiring every issue to have its own branch or PR
 - Requiring every project to configure code/workspace automation
 - Making workspaces a top-level global navigation primitive in V1
@@ -91,7 +91,7 @@ Examples:
 - an adapter-managed remote sandbox
 - a cloud agent provider's isolated branch/session environment
 
-This object must be recorded explicitly so that Paperclip can:
+This object must be recorded explicitly so that Valadrien OS can:
 
 - show where work happened
 - attach previews and runtime services
@@ -103,7 +103,7 @@ This object must be recorded explicitly so that Paperclip can:
 
 A PR is an output of work, not the planning unit.
 
-Paperclip should treat PRs as a type of work product linked back to:
+Valadrien OS should treat PRs as a type of work product linked back to:
 
 - the issue
 - the execution workspace
@@ -113,7 +113,7 @@ Git-specific automation should live under workspace policy, not under the core i
 
 ### 5. Existing users must upgrade automatically
 
-Paperclip already has users and existing project/task data. Any new model must preserve continuity.
+Valadrien OS already has users and existing project/task data. Any new model must preserve continuity.
 
 The product should default existing installs into a sensible compatibility mode:
 
@@ -124,11 +124,11 @@ The product should default existing installs into a sensible compatibility mode:
 
 This migration should feel additive, not like a mandatory re-onboarding flow.
 
-### 6. Cloud-hosted Paperclip must be a first-class deployment mode
+### 6. Cloud-hosted Valadrien OS must be a first-class deployment mode
 
-Paperclip cannot assume that it is running on the same machine as the code.
+Valadrien OS cannot assume that it is running on the same machine as the code.
 
-In cloud deployments, Paperclip may:
+In cloud deployments, Valadrien OS may:
 
 - run on Vercel or another serverless host
 - have no long-lived local worker process
@@ -164,7 +164,7 @@ Use these terms consistently in product copy:
 - `Execution workspace`: actual runtime workspace used for issue execution
 - `Isolated issue workspace`: user-facing term for an issue-specific derived workspace
 - `Work product`: previews, PRs, branches, commits, artifacts, docs
-- `Runtime service`: a process or service Paperclip owns or tracks for a workspace
+- `Runtime service`: a process or service Valadrien OS owns or tracks for a workspace
 
 Use these terms consistently in migration and deployment messaging:
 
@@ -216,7 +216,7 @@ from:
 - "what temporary execution environment did this issue run in?"
 
 That keeps the model simple for solo users while still supporting advanced automation.
-It also lets cloud-hosted Paperclip deployments point at codebases and remotes without pretending the Paperclip host has direct filesystem access.
+It also lets cloud-hosted Valadrien OS deployments point at codebases and remotes without pretending the Valadrien OS host has direct filesystem access.
 
 ### Proposed fields
 
@@ -257,7 +257,7 @@ This is the main operator-facing configuration surface.
 
 ### Motivation
 
-This lets Paperclip support:
+This lets Valadrien OS support:
 
 - direct editing in a shared workspace
 - isolated workspaces for issue parallelism
@@ -358,7 +358,7 @@ This is the missing object that makes cleanup, previews, PRs, and branch reuse t
 
 ### Motivation
 
-Without an explicit `execution workspace` record, Paperclip has nowhere stable to attach:
+Without an explicit `execution workspace` record, Valadrien OS has nowhere stable to attach:
 
 - derived branch/worktree identity
 - active preview ownership
@@ -455,7 +455,7 @@ User-facing umbrella concept for outputs of work.
 
 ### Motivation
 
-Paperclip needs a single place to show:
+Valadrien OS needs a single place to show:
 
 - "here is the preview"
 - "here is the PR"
@@ -486,7 +486,7 @@ without turning issues into a raw dump of adapter details.
   - `artifact`
   - `document`
 - `provider`
-  - `paperclip`
+  - `valadrien-os`
   - `github`
   - `gitlab`
   - `vercel`
@@ -522,9 +522,9 @@ without turning issues into a raw dump of adapter details.
 
 - PRs are stored here as `type=pull_request`
 - previews are stored here as `type=preview_url` or `runtime_service`
-- Paperclip-owned processes should update health/status automatically
+- Valadrien OS-owned processes should update health/status automatically
 - external providers should at least store link, provider, external id, and latest known state
-- cloud agents should be able to create work product records without Paperclip owning the execution host
+- cloud agents should be able to create work product records without Valadrien OS owning the execution host
 
 ## Page and UI Model
 
@@ -965,9 +965,9 @@ Avoid migration copy that implies users were previously using the product "wrong
 
 ## Cloud Deployment Requirements
 
-## 1. Paperclip host and execution host must be decoupled
+## 1. Valadrien OS host and execution host must be decoupled
 
-Paperclip may run:
+Valadrien OS may run:
 
 - locally with direct filesystem access
 - in a cloud app host such as Vercel
@@ -986,7 +986,7 @@ A cloud agent should be able to:
 - emit preview URLs
 - register artifacts
 
-without the Paperclip host itself running local git or local preview processes.
+without the Valadrien OS host itself running local git or local preview processes.
 
 ## 3. Local-only assumptions must be optional
 
@@ -1015,7 +1015,7 @@ Instead:
 
 Worktrunk is a useful reference point because it is unapologetically focused on git-worktree-based developer workflows.
 
-Paperclip should not copy its product framing wholesale, but there are several good patterns worth applying.
+Valadrien OS should not copy its product framing wholesale, but there are several good patterns worth applying.
 
 References:
 
@@ -1031,7 +1031,7 @@ Worktrunk treats a derived workspace as something that can deterministically own
 - databases
 - runtime process identity
 
-This is a strong pattern for Paperclip.
+This is a strong pattern for Valadrien OS.
 
 ### Recommendation
 
@@ -1052,7 +1052,7 @@ The main lesson is not to build a huge workflow engine. The lesson is to give us
 
 ### Recommendation
 
-Paperclip should keep workspace automation centered on a small set of hooks:
+Valadrien OS should keep workspace automation centered on a small set of hooks:
 
 - `setup`
 - `cleanup`
@@ -1072,7 +1072,7 @@ Worktrunk's listing/status experience is doing important product work:
 
 ### Recommendation
 
-Paperclip should provide the equivalent visibility in the project `Code` surface:
+Valadrien OS should provide the equivalent visibility in the project `Code` surface:
 
 - active execution workspaces
 - linked issues
@@ -1088,7 +1088,7 @@ One of Worktrunk's strongest implicit ideas is that a worktree is not only code.
 
 ### Recommendation
 
-Paperclip should treat execution workspaces as the natural home for:
+Valadrien OS should treat execution workspaces as the natural home for:
 
 - dev servers
 - preview processes
@@ -1104,7 +1104,7 @@ Worktrunk exposes structured state that can be consumed by tools and automation.
 
 ### Recommendation
 
-Paperclip should ensure that execution workspaces and work product have clean structured API surfaces, not just UI-only representation.
+Valadrien OS should ensure that execution workspaces and work product have clean structured API surfaces, not just UI-only representation.
 
 That is important for:
 
@@ -1119,7 +1119,7 @@ Worktrunk makes create/remove/merge cleanup part of the workflow.
 
 ### Recommendation
 
-Paperclip should continue treating cleanup policy as part of the core workspace model:
+Valadrien OS should continue treating cleanup policy as part of the core workspace model:
 
 - when is cleanup allowed
 - what blocks cleanup
@@ -1132,16 +1132,16 @@ This validates the explicit cleanup policy proposed earlier in this plan.
 
 There are also important limits to the analogy.
 
-Paperclip should not adopt these Worktrunk assumptions as universal product rules:
+Valadrien OS should not adopt these Worktrunk assumptions as universal product rules:
 
 - every execution workspace is a local git worktree
-- the Paperclip host has direct shell and filesystem access
+- the Valadrien OS host has direct shell and filesystem access
 - every workflow is merge-centric
 - every user wants developer-tool-level workspace detail in the main navigation
 
 ### Product implication
 
-Paperclip should borrow Worktrunk's good execution patterns while keeping the broader Paperclip model:
+Valadrien OS should borrow Worktrunk's good execution patterns while keeping the broader Valadrien OS model:
 
 - project plans the work
 - workspace defines where work happens
@@ -1167,7 +1167,7 @@ Archived or idle workspaces should be hidden from default lists before they are 
 
 ## 2. Multiple issues may intentionally share one execution workspace
 
-This is how Paperclip supports:
+This is how Valadrien OS supports:
 
 - solo dev on a shared branch
 - operator integration branches
@@ -1200,7 +1200,7 @@ The issue should only:
 
 Previews, PRs, commits, and artifacts should all be discoverable through one consistent issue-level affordance.
 
-That keeps Paperclip focused on coordination and visibility instead of splitting outputs across many hidden subsystems.
+That keeps Valadrien OS focused on coordination and visibility instead of splitting outputs across many hidden subsystems.
 
 ## Recommended Implementation Order
 
@@ -1255,9 +1255,9 @@ It also keeps the rollout practical:
 
 - existing users can upgrade without workflow breakage
 - local-first installs stay simple
-- cloud-hosted Paperclip deployments remain first-class
+- cloud-hosted Valadrien OS deployments remain first-class
 
-That is a better fit for Paperclip than either extreme:
+That is a better fit for Valadrien OS than either extreme:
 
 - hiding workspace behavior until nobody understands it
 - or making the whole app revolve around code-host mechanics

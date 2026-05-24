@@ -1,4 +1,4 @@
-# @paperclipai/adapter-utils
+# @valadrien-os/adapter-utils
 
 ## 0.3.1
 

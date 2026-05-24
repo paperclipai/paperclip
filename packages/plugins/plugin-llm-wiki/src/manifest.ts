@@ -1,25 +1,25 @@
 import { readFileSync } from "node:fs";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { ValadrienOsPluginManifestV1 } from "@valadrien-os/plugin-sdk";
 import { DEFAULT_AGENT_INSTRUCTION_FILES, DEFAULT_AGENT_INSTRUCTIONS } from "./templates.js";
 
-export const PLUGIN_ID = "paperclipai.plugin-llm-wiki";
+export const PLUGIN_ID = "valadrien-os.plugin-llm-wiki";
 export const WIKI_ROOT_FOLDER_KEY = "wiki-root";
 export const WIKI_MAINTAINER_AGENT_KEY = "wiki-maintainer";
 export const WIKI_MAINTAINER_SKILL_KEY = "wiki-maintainer";
 export const WIKI_INGEST_SKILL_KEY = "wiki-ingest";
 export const WIKI_QUERY_SKILL_KEY = "wiki-query";
 export const WIKI_LINT_SKILL_KEY = "wiki-lint";
-export const PAPERCLIP_DISTILL_SKILL_KEY = "paperclip-distill";
+export const VALADRIEN_OS_DISTILL_SKILL_KEY = "valadrien-os-distill";
 export const INDEX_REFRESH_SKILL_KEY = "index-refresh";
 export const WIKI_PROJECT_KEY = "llm-wiki";
 export const CURSOR_WINDOW_ROUTINE_KEY = "cursor-window-processing";
 export const NIGHTLY_LINT_ROUTINE_KEY = "nightly-wiki-lint";
 export const INDEX_REFRESH_ROUTINE_KEY = "index-refresh";
 export const DEFAULT_MAX_SOURCE_BYTES = 250000;
-export const DEFAULT_MAX_PAPERCLIP_ISSUE_SOURCE_CHARS = 12000;
-export const DEFAULT_MAX_PAPERCLIP_CURSOR_WINDOW_CHARS = 60000;
-export const DEFAULT_MAX_PAPERCLIP_ROUTINE_RUN_CHARS = 120000;
-export const DEFAULT_PAPERCLIP_COST_CENTS_PER_1K_CHARS = 1;
+export const DEFAULT_MAX_VALADRIEN_OS_ISSUE_SOURCE_CHARS = 12000;
+export const DEFAULT_MAX_VALADRIEN_OS_CURSOR_WINDOW_CHARS = 60000;
+export const DEFAULT_MAX_VALADRIEN_OS_ROUTINE_RUN_CHARS = 120000;
+export const DEFAULT_VALADRIEN_OS_COST_CENTS_PER_1K_CHARS = 1;
 export const WIKI_MAINTENANCE_ROUTINE_KEYS = [
   CURSOR_WINDOW_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
@@ -30,12 +30,12 @@ export const WIKI_MANAGED_SKILL_KEYS = [
   WIKI_INGEST_SKILL_KEY,
   WIKI_QUERY_SKILL_KEY,
   WIKI_LINT_SKILL_KEY,
-  PAPERCLIP_DISTILL_SKILL_KEY,
+  VALADRIEN_OS_DISTILL_SKILL_KEY,
   INDEX_REFRESH_SKILL_KEY,
 ] as const;
 
 function canonicalSkillKey(skillKey: string) {
-  return `plugin/paperclipai-plugin-llm-wiki/${skillKey}`;
+  return `plugin/valadrien-os-plugin-llm-wiki/${skillKey}`;
 }
 
 function skillMarkdown(skillKey: (typeof WIKI_MANAGED_SKILL_KEYS)[number]) {
@@ -45,13 +45,13 @@ function skillMarkdown(skillKey: (typeof WIKI_MANAGED_SKILL_KEYS)[number]) {
 export const WIKI_MAINTAINER_SKILL_CANONICAL_KEY = canonicalSkillKey(WIKI_MAINTAINER_SKILL_KEY);
 export const WIKI_MANAGED_SKILL_CANONICAL_KEYS = WIKI_MANAGED_SKILL_KEYS.map(canonicalSkillKey);
 
-const CURSOR_WINDOW_ROUTINE_DESCRIPTION = `Process bounded Paperclip issue-history windows into the LLM Wiki.
+const CURSOR_WINDOW_ROUTINE_DESCRIPTION = `Process bounded ValadrienOs issue-history windows into the LLM Wiki.
 
 Run procedure:
-Target space: default (slug: default). Paperclip-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space Paperclip ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
+Target space: default (slug: default). ValadrienOs-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space ValadrienOs ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
 1. Resolve the configured wiki root, then read the default space AGENTS.md, wiki/index.md, and the recent entries in wiki/log.md.
-2. Review recent Paperclip issue, comment, and document activity for non-plugin-operation work. Skip LLM Wiki operation issues so routine output does not feed back into itself.
-3. Synthesize Paperclip project state into wiki/projects/<slug>/standup.md for the executive current-state view, then durable project or root-issue knowledge into focused pages under wiki/projects/<slug>/index.md, wiki/concepts/, or wiki/synthesis/. Keep transient run logs out of durable pages unless they change the project's state or decisions.
+2. Review recent ValadrienOs issue, comment, and document activity for non-plugin-operation work. Skip LLM Wiki operation issues so routine output does not feed back into itself.
+3. Synthesize ValadrienOs project state into wiki/projects/<slug>/standup.md for the executive current-state view, then durable project or root-issue knowledge into focused pages under wiki/projects/<slug>/index.md, wiki/concepts/, or wiki/synthesis/. Keep transient run logs out of durable pages unless they change the project's state or decisions.
 4. Write project material as concept-grouped executive synthesis. Link readable issue identifiers when useful, but do not turn project pages into issue-ID lists, UUID dumps, date ledgers, or metadata reports. Always pass wikiId \`default\` and spaceSlug \`default\` to LLM Wiki tools.
 5. Refresh wiki/index.md and append a short wiki/log.md entry listing the source window, affected pages, skipped windows, warnings, and any follow-up issue needed.
 6. If there is no new durable signal, record that in wiki/log.md and close the routine issue with a concise note.`;
@@ -59,18 +59,18 @@ Target space: default (slug: default). Paperclip-derived indexing currently writ
 const NIGHTLY_LINT_ROUTINE_DESCRIPTION = `Lint the LLM Wiki for structure, provenance, and stale synthesis.
 
 Run procedure:
-Target space: default (slug: default). Paperclip-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space Paperclip ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
+Target space: default (slug: default). ValadrienOs-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space ValadrienOs ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
 1. Resolve the configured wiki root, then read the default space AGENTS.md, wiki/index.md, wiki/log.md, and the current page list.
 2. Check for orphan pages, missing backlinks, stale source provenance, weak citations, duplicate concepts, contradictory claims, and index/log drift.
 3. Inspect the relevant wiki pages and raw sources before changing content. Do not invent missing provenance.
 4. Apply low-risk fixes directly: refresh backlinks, repair index entries, add missing source links, and append a wiki/log.md lint entry. Always pass wikiId \`default\` and spaceSlug \`default\` to LLM Wiki tools.
-5. For ambiguous contradictions or major rewrites, leave the pages unchanged and create or comment a follow-up Paperclip issue with the exact files and evidence.
+5. For ambiguous contradictions or major rewrites, leave the pages unchanged and create or comment a follow-up ValadrienOs issue with the exact files and evidence.
 6. Close the routine issue with counts by severity, files changed, and unresolved findings.`;
 
 const INDEX_REFRESH_ROUTINE_DESCRIPTION = `Refresh the LLM Wiki navigation and change log.
 
 Run procedure:
-Target space: default (slug: default). Paperclip-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space Paperclip ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
+Target space: default (slug: default). ValadrienOs-derived indexing currently writes only into the default space, so this routine never sweeps other spaces. Per-space ValadrienOs ingestion profiles are a later phase; until they ship, treat any prompt to operate on a non-default space here as a bug and stop.
 1. Resolve the configured wiki root, then read the default space AGENTS.md, wiki/index.md, wiki/log.md, and the current page list.
 2. Rebuild wiki/index.md so it lists current wiki pages by category with concise summaries and valid wikilinks, and attaches wiki/projects/<slug>/standup.md links to matching project entries.
 3. Verify recently changed wiki pages and project standups are present in the index and that removed or renamed pages no longer appear.
@@ -78,13 +78,13 @@ Target space: default (slug: default). Paperclip-derived indexing currently writ
 5. Append a wiki/log.md entry with the index refresh time, page counts by category, and any unresolved indexing problems.
 6. Close the routine issue with the index changes and any follow-up needed.`;
 
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: ValadrienOsPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: "0.1.0",
   displayName: "LLM Wiki",
   description: "Local-file LLM Wiki plugin for source ingestion, wiki browsing, query, lint, and maintenance workflows.",
-  author: "Paperclip",
+  author: "ValadrienOs",
   categories: ["automation", "ui"],
   capabilities: [
     "events.subscribe",
@@ -135,7 +135,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       folderKey: WIKI_ROOT_FOLDER_KEY,
       displayName: "Wiki root",
-      description: "Company-scoped local folder that stores raw sources, wiki pages, Paperclip project standups under wiki/projects/, AGENTS.md, IDEA.md, wiki/index.md, and wiki/log.md.",
+      description: "Company-scoped local folder that stores raw sources, wiki pages, ValadrienOs project standups under wiki/projects/, AGENTS.md, IDEA.md, wiki/index.md, and wiki/log.md.",
       access: "readWrite",
       requiredDirectories: [
         "raw",
@@ -163,7 +163,7 @@ const manifest: PaperclipPluginManifestV1 = {
         dangerouslySkipPermissions: false,
         dangerouslyBypassApprovalsAndSandbox: false,
         sandbox: true,
-        paperclipSkillSync: {
+        valadrienOsSkillSync: {
           desiredSkills: WIKI_MANAGED_SKILL_CANONICAL_KEYS
         }
       },
@@ -226,11 +226,11 @@ const manifest: PaperclipPluginManifestV1 = {
       markdown: skillMarkdown(WIKI_LINT_SKILL_KEY)
     },
     {
-      skillKey: PAPERCLIP_DISTILL_SKILL_KEY,
-      displayName: "Paperclip Distill",
-      slug: PAPERCLIP_DISTILL_SKILL_KEY,
-      description: "Turn Paperclip cursor-window, distill, or backfill source bundles into wiki-insightful project knowledge.",
-      markdown: skillMarkdown(PAPERCLIP_DISTILL_SKILL_KEY)
+      skillKey: VALADRIEN_OS_DISTILL_SKILL_KEY,
+      displayName: "ValadrienOs Distill",
+      slug: VALADRIEN_OS_DISTILL_SKILL_KEY,
+      description: "Turn ValadrienOs cursor-window, distill, or backfill source bundles into wiki-insightful project knowledge.",
+      markdown: skillMarkdown(VALADRIEN_OS_DISTILL_SKILL_KEY)
     },
     {
       skillKey: INDEX_REFRESH_SKILL_KEY,

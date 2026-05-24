@@ -1,10 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@valadrien-os/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@valadrien-os/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -33,7 +33,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = req.header("x-valadrien-os-run-id");
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -200,20 +200,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 }
 
 async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
-  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+  const expectedToken = process.env.VALADRIEN_OS_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
-  const token = req.header("x-paperclip-cloud-tenant-token")?.trim();
+  const token = req.header("x-valadrien-os-cloud-tenant-token")?.trim();
   if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
 
-  const userId = requiredCloudHeader(req, "x-paperclip-cloud-user-id");
-  const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
-  const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
-  const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
-  const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
-  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
+  const userId = requiredCloudHeader(req, "x-valadrien-os-cloud-user-id");
+  const userEmail = requiredCloudHeader(req, "x-valadrien-os-cloud-user-email").toLowerCase();
+  const stackId = requiredCloudHeader(req, "x-valadrien-os-cloud-stack-id");
+  const stackRole = stackMembershipRole(req.header("x-valadrien-os-cloud-stack-role"));
+  const userName = req.header("x-valadrien-os-cloud-user-name")?.trim() || userEmail;
+  const valadrienOsCompanyId = req.header("x-valadrien-os-cloud-valadrien-os-company-id")?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const companyName = valadrienOsCompanyId || `${stackId} ValadrienOs`;
   const now = new Date();
 
   await db
@@ -253,7 +253,7 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
     .values({
       id: companyId,
       name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
+      description: `Provisioned by ValadrienOs Cloud for stack ${stackId}.`,
       status: "active",
       issuePrefix: issuePrefixForCloudStack(stackId),
       updatedAt: now,
@@ -330,7 +330,7 @@ function constantTimeStringEqual(left: string, right: string): boolean {
 }
 
 function cloudTenantCompanyId(stackId: string): string {
-  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  const bytes = createHash("sha256").update(`valadrien-os-cloud-tenant-company:${stackId}`).digest();
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.subarray(0, 16).toString("hex");

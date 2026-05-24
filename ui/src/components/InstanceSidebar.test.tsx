@@ -4,7 +4,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PluginRecord } from "@paperclipai/shared";
+import type { PluginRecord } from "@valadrien-os/shared";
 
 const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -125,7 +125,7 @@ describe("InstanceSidebar", () => {
   it("filters out sandbox-provider-only plugins from the sidebar", async () => {
     const sandboxPlugin = makePlugin({
       id: "e2b",
-      packageName: "@paperclipai/plugin-e2b",
+      packageName: "@valadrien-os/plugin-e2b",
       manifestJson: {
         id: "e2b",
         name: "E2B Sandbox Provider",
@@ -144,7 +144,7 @@ describe("InstanceSidebar", () => {
     });
     const regularPlugin = makePlugin({
       id: "linear",
-      packageName: "@paperclipai/plugin-linear",
+      packageName: "@valadrien-os/plugin-linear",
       manifestJson: {
         id: "linear",
         name: "Linear",
@@ -206,7 +206,7 @@ describe("InstanceSidebar", () => {
     mockPluginsApi.list.mockResolvedValue([
       makePlugin({
         id: "linear",
-        packageName: "@paperclipai/plugin-linear",
+        packageName: "@valadrien-os/plugin-linear",
         manifestJson: {
           id: "linear",
           name: "Linear",
@@ -247,7 +247,7 @@ describe("InstanceSidebar", () => {
     mockPluginsApi.list.mockResolvedValue([
       makePlugin({
         id: "e2b",
-        packageName: "@paperclipai/plugin-e2b",
+        packageName: "@valadrien-os/plugin-e2b",
         manifestJson: {
           id: "e2b",
           name: "E2B",

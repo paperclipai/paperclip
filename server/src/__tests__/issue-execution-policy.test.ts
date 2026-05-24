@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import type { IssueExecutionPolicy, IssueExecutionState } from "@valadrien-os/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";

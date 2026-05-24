@@ -46,7 +46,7 @@ describe("privateHostnameGuard", () => {
     const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
     const res = await request(app).get("/api/health").set("Host", `${unknownHostname}:3100`);
     expect(res.status).toBe(403);
-    expect(res.body?.error).toContain(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`);
+    expect(res.body?.error).toContain(`please run pnpm valadrien-os allowed-hostname ${unknownHostname}`);
   });
 
   it("blocks unknown hostnames on page routes with plain-text remediation command", async () => {
@@ -73,7 +73,7 @@ describe("privateHostnameGuard", () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.send).toHaveBeenCalledWith(
-      expect.stringContaining(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`),
+      expect.stringContaining(`please run pnpm valadrien-os allowed-hostname ${unknownHostname}`),
     );
   }, 20_000);
 });

@@ -15,31 +15,31 @@ export function buildAgentOnboardingPrompt(input: AgentOnboardingPromptInput) {
 
   const connectivityBlock =
     candidateUrls.length === 0
-      ? `No candidate URLs are available. Ask the operator to configure a reachable Paperclip hostname, then retry.
+      ? `No candidate URLs are available. Ask the operator to configure a reachable ValadrienOs hostname, then retry.
 Suggested steps for the operator:
-- choose a hostname that resolves to the Paperclip host from your runtime
-- run: pnpm paperclipai allowed-hostname <host>
-- restart Paperclip
+- choose a hostname that resolves to the ValadrienOs host from your runtime
+- run: pnpm valadrien-os allowed-hostname <host>
+- restart ValadrienOs
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this agent onboarding prompt`
-      : `If none are reachable, ask the operator to add a reachable Paperclip hostname, restart, and retry.
+      : `If none are reachable, ask the operator to add a reachable ValadrienOs hostname, restart, and retry.
 Suggested command for the operator:
-- pnpm paperclipai allowed-hostname <host>
+- pnpm valadrien-os allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
-    ? `\nIf your runtime exposes a callback or gateway URL, test Paperclip-to-agent reachability with: ${resolutionTestUrl}?url=<urlencoded-agent-url>.`
+    ? `\nIf your runtime exposes a callback or gateway URL, test ValadrienOs-to-agent reachability with: ${resolutionTestUrl}?url=<urlencoded-agent-url>.`
     : "";
 
-  return `You're invited to join a Paperclip company as an agent.
+  return `You're invited to join a ValadrienOs company as an agent.
 
-First, respond to your user that you understand the request and are going to onboard into Paperclip. Then work through the steps below.
+First, respond to your user that you understand the request and are going to onboard into ValadrienOs. Then work through the steps below.
 
-Paperclip onboarding documents to try:
+ValadrienOs onboarding documents to try:
 ${candidateList}
 
 Connectivity guidance:
-Paperclip must be reachable from your runtime. Verify a base URL with: GET <base-url>/api/health
+ValadrienOs must be reachable from your runtime. Verify a base URL with: GET <base-url>/api/health
 ${connectivityBlock}${resolutionLine}
 
 Join flow:
@@ -47,15 +47,15 @@ Join flow:
 2. Submit an agent join request to the invite registration endpoint.
 3. Use your own agent name for \`agentName\`.
 4. Include a concise \`capabilities\` summary so the board knows what work to assign you.
-5. Set \`adapterType\` to the Paperclip adapter that matches your runtime when one exists.
+5. Set \`adapterType\` to the ValadrienOs adapter that matches your runtime when one exists.
 6. Put runtime-specific settings in \`agentDefaultsPayload\`.
 7. Wait for board approval before claiming the API key.
-8. Claim the API key once, store it securely, and use it for future Paperclip API calls.
+8. Claim the API key once, store it securely, and use it for future ValadrienOs API calls.
 
 OpenClaw Gateway note:
 If you are an OpenClaw Gateway agent, use \`adapterType: "openclaw_gateway"\`, set \`agentDefaultsPayload.url\` to your \`ws://\` or \`wss://\` gateway URL, and include \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token. Do not use \`/v1/responses\` or \`/hooks/*\` in that join flow.
 
-After you have connected to Paperclip, review and follow the full onboarding instructions in onboarding.txt.
+After you have connected to ValadrienOs, review and follow the full onboarding instructions in onboarding.txt.
 `;
 }
 

@@ -1,5 +1,5 @@
 import type { UIAdapterModule } from "../types";
-import { parseAcpxStdoutLine, buildAcpxLocalConfig } from "@paperclipai/adapter-acpx-local/ui";
+import { parseAcpxStdoutLine, buildAcpxLocalConfig } from "@valadrien-os/adapter-acpx-local/ui";
 import { SchemaConfigFields } from "../schema-config-fields";
 
 export const acpxLocalUIAdapter: UIAdapterModule = {

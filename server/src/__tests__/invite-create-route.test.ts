@@ -122,7 +122,7 @@ describe("POST /companies/:companyId/invites", () => {
 
     const res = await request(app)
       .post("/api/companies/company-1/invites")
-      .set("host", "paperclip.example")
+      .set("host", "valadrien-os.example")
       .set("x-forwarded-proto", "https")
       .send({
         allowedJoinTypes: "human",
@@ -132,6 +132,6 @@ describe("POST /companies/:companyId/invites", () => {
     expect(res.status).toBe(201);
     expect(res.body.companyName).toBe("Acme Robotics");
     expect(res.body.invitePath).toMatch(/^\/invite\/pcp_invite_/);
-    expect(res.body.inviteUrl).toMatch(/^https:\/\/paperclip\.example\/invite\/pcp_invite_/);
+    expect(res.body.inviteUrl).toMatch(/^https:\/\/valadrien-os\.example\/invite\/pcp_invite_/);
   });
 });

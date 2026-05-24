@@ -13,7 +13,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -36,7 +36,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-issue-blocker-attention-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
   }, 20_000);

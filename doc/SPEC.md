@@ -1,12 +1,12 @@
-# Paperclip Specification
+# Valadrien OS Specification
 
-Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
+Target specification for the Valadrien OS control plane. Living document — updated incrementally during spec interviews.
 
 ---
 
 ## 1. Company Model [DRAFT]
 
-A Company is a first-order object. One Paperclip instance runs multiple Companies. A Company does not have a standalone "goal" field — its direction is defined by its set of Initiatives (see Task Hierarchy Mapping).
+A Company is a first-order object. One Valadrien OS instance runs multiple Companies. A Company does not have a standalone "goal" field — its direction is defined by its set of Initiatives (see Task Hierarchy Mapping).
 
 ### Fields (Draft)
 
@@ -67,17 +67,17 @@ Every employee is an agent. Agents are the workforce.
 
 ### Agent Identity (Adapter-Level)
 
-Concepts like SOUL.md (identity/mission) and HEARTBEAT.md (loop definition) are **not part of the Paperclip protocol**. They are adapter-specific configurations. For example, an OpenClaw adapter might use SOUL.md and HEARTBEAT.md files. A Claude Code adapter might use CLAUDE.md. A bare Python script might use command-line args.
+Concepts like SOUL.md (identity/mission) and HEARTBEAT.md (loop definition) are **not part of the Valadrien OS protocol**. They are adapter-specific configurations. For example, an OpenClaw adapter might use SOUL.md and HEARTBEAT.md files. A Claude Code adapter might use CLAUDE.md. A bare Python script might use command-line args.
 
-Paperclip doesn't prescribe how an agent defines its identity or behavior. It provides the control plane; the adapter defines the agent's inner workings.
+Valadrien OS doesn't prescribe how an agent defines its identity or behavior. It provides the control plane; the adapter defines the agent's inner workings.
 
 ### Agent Configuration [DRAFT]
 
 Each agent has an **adapter type** and an **adapter-specific configuration blob**. The adapter defines what config fields exist.
 
-#### Paperclip Protocol (What Paperclip Knows)
+#### Valadrien OS Protocol (What Valadrien OS Knows)
 
-At the protocol level, Paperclip tracks:
+At the protocol level, Valadrien OS tracks:
 
 - Agent identity (id, name, role, title)
 - Org position (who they report to, who reports to them)
@@ -105,22 +105,22 @@ A key goal: **the entire org's agent configurations are exportable.** You can ex
 
 Configurable per agent. Two ends of the spectrum:
 
-- **Fat payload** — Paperclip bundles relevant context (current tasks, messages, company state, metrics) into the heartbeat invocation. Suited for simple/stateless agents that can't call back to Paperclip.
-- **Thin ping** — Heartbeat is just a wake-up signal. Agent calls Paperclip's API to fetch whatever context it needs. Suited for sophisticated agents that manage their own state.
+- **Fat payload** — Valadrien OS bundles relevant context (current tasks, messages, company state, metrics) into the heartbeat invocation. Suited for simple/stateless agents that can't call back to Valadrien OS.
+- **Thin ping** — Heartbeat is just a wake-up signal. Agent calls Valadrien OS's API to fetch whatever context it needs. Suited for sophisticated agents that manage their own state.
 
 #### Minimum Contract
 
-The minimum requirement to be a Paperclip agent: **be callable.** That's it. Paperclip can invoke you via command or webhook. No requirement to report back — Paperclip infers basic status from process liveness when it can.
+The minimum requirement to be a Valadrien OS agent: **be callable.** That's it. Valadrien OS can invoke you via command or webhook. No requirement to report back — Valadrien OS infers basic status from process liveness when it can.
 
 #### Integration Levels
 
-Beyond the minimum, Paperclip provides progressively richer integration:
+Beyond the minimum, Valadrien OS provides progressively richer integration:
 
-1. **Callable** (minimum) — Paperclip can start you. That's the only contract.
+1. **Callable** (minimum) — Valadrien OS can start you. That's the only contract.
 2. **Status reporting** — Agent reports back success/failure/in-progress after execution.
 3. **Fully instrumented** — Agent reports status, cost/token usage, task updates, and logs. Bidirectional integration with the control plane.
 
-Paperclip ships **default agents** that demonstrate full integration: progress tracking, cost instrumentation, and a **Paperclip skill** (a Claude Code skill for interacting with the Paperclip API) for task management. These serve as both useful defaults and reference implementations for adapter authors.
+Valadrien OS ships **default agents** that demonstrate full integration: progress tracking, cost instrumentation, and a **Valadrien OS skill** (a Claude Code skill for interacting with the Valadrien OS API) for task management. These serve as both useful defaults and reference implementations for adapter authors.
 
 #### Export Formats
 
@@ -147,7 +147,7 @@ Each agent publishes a short description of their responsibilities and capabilit
 
 ### Cross-Team Work
 
-Agents can create tasks and assign them to agents outside their reporting line. This is the mechanism for cross-team collaboration. These rules are primarily encoded in the Paperclip SKILL.md which is recommended for all agents. Paperclip the app enforces the tooling and some light governance, but the cross-team rules below are mainly implemented by agent decisions.
+Agents can create tasks and assign them to agents outside their reporting line. This is the mechanism for cross-team collaboration. These rules are primarily encoded in the Valadrien OS SKILL.md which is recommended for all agents. Valadrien OS the app enforces the tooling and some light governance, but the cross-team rules below are mainly implemented by agent decisions.
 
 #### Task Acceptance Rules
 
@@ -184,11 +184,11 @@ Tasks carry a **billing code** so that token spend during execution can be attri
 
 ## 4. Heartbeat System [DRAFT]
 
-The heartbeat is a protocol, not a runtime. Paperclip defines how to initiate an agent's cycle. What the agent does with that cycle — how long it runs, whether it's task-scoped or continuous — is entirely up to the agent.
+The heartbeat is a protocol, not a runtime. Valadrien OS defines how to initiate an agent's cycle. What the agent does with that cycle — how long it runs, whether it's task-scoped or continuous — is entirely up to the agent.
 
 ### Execution Adapters
 
-Agent configuration includes an **adapter** that defines how Paperclip invokes the agent. Built-in adapters include:
+Agent configuration includes an **adapter** that defines how Valadrien OS invokes the agent. Built-in adapters include:
 
 | Adapter | Mechanism | Example |
 | ---------------- | -------------------------- | -------------------------------------------------- |
@@ -214,15 +214,15 @@ status(agentConfig) → AgentStatus        // Is it running? finished? errored?
 cancel(agentConfig) → void               // Graceful stop signal (for pause/resume)
 ```
 
-This is the full adapter contract. `invoke` starts the agent, `status` lets Paperclip check on it, `cancel` enables the board's pause functionality. Everything else (cost reporting, task updates) is optional and flows through the Paperclip REST API.
+This is the full adapter contract. `invoke` starts the agent, `status` lets Valadrien OS check on it, `cancel` enables the board's pause functionality. Everything else (cost reporting, task updates) is optional and flows through the Valadrien OS REST API.
 
-### What Paperclip Controls
+### What Valadrien OS Controls
 
 - **When** to fire the heartbeat (schedule/frequency, per-agent)
 - **How** to fire it (adapter selection + config)
 - **What context** to include (thin ping vs. fat payload, per-agent)
 
-### What Paperclip Does NOT Control
+### What Valadrien OS Does NOT Control
 
 - How long the agent runs
 - What the agent does during its cycle
@@ -243,7 +243,7 @@ This is "graceful signal + stop future heartbeats." The current run gets a chanc
 
 - Heartbeat frequency — who controls it? Fixed? Per-agent? Cron-like?
 - What happens when a heartbeat invocation fails? (process crashes, HTTP 500)
-- Health monitoring — how does Paperclip distinguish "stuck" from "working on a long task"?
+- Health monitoring — how does Valadrien OS distinguish "stuck" from "working on a long task"?
 - Can agents self-trigger their next heartbeat? ("I'm done, wake me again in 5 min")
 - Grace period duration — fixed? configurable per agent?
 
@@ -277,11 +277,11 @@ Full hierarchy: **Initiative** (company goal) → Projects → Milestones → Is
 
 ## 6. Cost Tracking [DRAFT]
 
-Token/LLM cost budgeting is a core part of Paperclip. External revenue and expense tracking is a future plugin.
+Token/LLM cost budgeting is a core part of Valadrien OS. External revenue and expense tracking is a future plugin.
 
 ### Cost Reporting
 
-Fully-instrumented Agents report token/API usage back to Paperclip. Costs are tracked at every level:
+Fully-instrumented Agents report token/API usage back to Valadrien OS. Costs are tracked at every level:
 
 - **Per Agent** — how much is this employee costing?
 - **Per task** — how much did this unit of work cost?
@@ -325,9 +325,9 @@ How a Company goes from "created" to "running":
 
 ### Default Agents
 
-Paperclip ships default Agent templates:
+Valadrien OS ships default Agent templates:
 
-- **Default Agent** — a basic Claude Code or Codex loop. Knows the **Paperclip Skill** (SKILL.md) so it can interact with the task system, read Company context, report status.
+- **Default Agent** — a basic Claude Code or Codex loop. Knows the **Valadrien OS Skill** (SKILL.md) so it can interact with the task system, read Company context, report status.
 - **Default CEO** — extends the Default Agent with CEO-specific behavior: strategic planning, delegation to reports, progress review, Board communication.
 
 These are starting points. Users can customize or replace them entirely.
@@ -338,9 +338,9 @@ The default agent's loop is **config-driven**. The adapter config contains the i
 
 This means the default CEO config tells the CEO to review strategy, check on reports, etc. The default engineer config tells the engineer to check assigned tasks, pick the highest priority, and work it. But these are config choices, not protocol requirements.
 
-### Paperclip Skill (SKILL.md)
+### Valadrien OS Skill (SKILL.md)
 
-A skill definition that teaches agents how to interact with Paperclip. Provides:
+A skill definition that teaches agents how to interact with Valadrien OS. Provides:
 
 - Task CRUD (create, read, update, complete tasks)
 - Status reporting (check in, report progress)
@@ -364,16 +364,16 @@ This skill is adapter-agnostic — it can be loaded into Claude Code, injected i
 2. **Hosted** — Deploy to Vercel/Supabase/AWS/anywhere. Remote agents connect to your server with a shared database. The UI is accessible via the web.
 3. **Open company** — Optionally make parts public (e.g. a job board visible to the public for open companies).
 
-The key constraint: it must be trivial to go from "I'm trying this on my machine" to "my agents are running on remote servers talking to my Paperclip instance."
+The key constraint: it must be trivial to go from "I'm trying this on my machine" to "my agents are running on remote servers talking to my Valadrien OS instance."
 
 #### Agent Authentication
 
-When a user creates an Agent, Paperclip generates a **connection string** containing: the server URL, an API key, and instructions for how to authenticate. The Agent is assumed to be capable of figuring out how to call the API with its token/key from there.
+When a user creates an Agent, Valadrien OS generates a **connection string** containing: the server URL, an API key, and instructions for how to authenticate. The Agent is assumed to be capable of figuring out how to call the API with its token/key from there.
 
 Flow:
 
 1. Human creates an Agent in the UI
-2. Paperclip generates a connection string (URL + key + instructions)
+2. Valadrien OS generates a connection string (URL + key + instructions)
 3. Human provides this string to the Agent (e.g. in its adapter config, environment, etc.)
 4. Agent uses the key to authenticate API calls to the control plane
 
@@ -400,9 +400,9 @@ No optimistic locking or CRDTs needed. The single-assignment model + atomic chec
 
 Agents can create tasks assigned to humans. The board member (or any human with access) can complete these tasks through the UI.
 
-When a human completes a task, if the requesting agent's adapter supports **pingbacks** (e.g. OpenClaw hooks), Paperclip sends a notification to wake that agent. This keeps humans rare but possible participants in the workflow.
+When a human completes a task, if the requesting agent's adapter supports **pingbacks** (e.g. OpenClaw hooks), Valadrien OS sends a notification to wake that agent. This keeps humans rare but possible participants in the workflow.
 
-The agents are discouraged from assigning tasks to humans in the Paperclip SKILL, but sometimes it's unavoidable.
+The agents are discouraged from assigning tasks to humans in the Valadrien OS SKILL, but sometimes it's unavoidable.
 
 ### API Design
 
@@ -412,7 +412,7 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 ### Work Artifacts
 
-Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
+Valadrien OS manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Valadrien OS orchestrates the work, not the build pipeline.
 
 ### Open Questions
 
@@ -421,24 +421,24 @@ Paperclip manages task-linked work artifacts: issue documents (rich-text plans, 
 
 ### Crash Recovery: Manual, Not Automatic
 
-When an agent crashes or disappears mid-task, Paperclip does **not** auto-reassign or auto-release the task. Instead:
+When an agent crashes or disappears mid-task, Valadrien OS does **not** auto-reassign or auto-release the task. Instead:
 
-- Paperclip surfaces stale tasks (tasks in `in_progress` with no recent activity) through dashboards and reporting
-- Paperclip does not fail silently — the auditing and visibility tools make problems obvious
+- Valadrien OS surfaces stale tasks (tasks in `in_progress` with no recent activity) through dashboards and reporting
+- Valadrien OS does not fail silently — the auditing and visibility tools make problems obvious
 - Recovery is handled by humans or by emergent processes (e.g. a project manager agent whose job is to monitor for stale work and surface it)
 
-**Principle: Paperclip reports problems, it doesn't silently fix them.** Automatic recovery hides failures. Good visibility lets the right entity (human or agent) decide what to do.
+**Principle: Valadrien OS reports problems, it doesn't silently fix them.** Automatic recovery hides failures. Good visibility lets the right entity (human or agent) decide what to do.
 
 ### Plugin / Extension Architecture
 
-The core Paperclip system must be extensible. Features like knowledge bases, external revenue tracking, and new Agent Adapters should be addable as **plugins** without modifying core. This means:
+The core Valadrien OS system must be extensible. Features like knowledge bases, external revenue tracking, and new Agent Adapters should be addable as **plugins** without modifying core. This means:
 
 - Well-defined API boundaries that plugins can hook into
 - Event system or hooks for reacting to task/Agent lifecycle events
 - **Agent Adapter plugins** — new Adapter types can be registered via the plugin system
 - Plugin-registrable UI components (future)
 
-The plugin framework has shipped. Plugins can register new adapter types, hook into lifecycle events, and contribute UI components (e.g. global toolbar buttons). A plugin SDK and CLI commands (`paperclipai plugin`) are available for authoring and installing plugins.
+The plugin framework has shipped. Plugins can register new adapter types, hook into lifecycle events, and contribute UI components (e.g. global toolbar buttons). A plugin SDK and CLI commands (`valadrien-os plugin`) are available for authoring and installing plugins.
 
 ---
 
@@ -466,7 +466,7 @@ Each is a distinct page/route:
 
 ## 10. V1 Scope (MVP) [DRAFT]
 
-**Full loop with one adapter.** V1 must demonstrate the complete Paperclip cycle end-to-end, even if narrow.
+**Full loop with one adapter.** V1 must demonstrate the complete Valadrien OS cycle end-to-end, even if narrow.
 
 ### Must Have (V1)
 
@@ -479,9 +479,9 @@ Each is a distinct page/route:
 - [ ] **Board governance** — human approves hires, pauses Agents, sets budgets, full PM access
 - [ ] **Cost tracking** — Agents report token usage, per-Agent/task/Company visibility
 - [ ] **Budget controls** — soft alerts + hard ceiling with auto-pause
-- [ ] **Default agent** — basic Claude Code/Codex loop with Paperclip skill
+- [ ] **Default agent** — basic Claude Code/Codex loop with Valadrien OS skill
 - [ ] **Default CEO** — strategic planning, delegation, board communication
-- [ ] **Paperclip skill (SKILL.md)** — teaches agents to interact with the API
+- [ ] **Valadrien OS skill (SKILL.md)** — teaches agents to interact with the API
 - [ ] **REST API** — full API for agent interaction (Express)
 - [ ] **Web UI** — React/Vite: org chart, task board, dashboard, cost views
 - [ ] **Agent auth** — connection string generation with URL + key + instructions
@@ -499,7 +499,7 @@ Each is a distinct page/route:
 
 ## 11. Knowledge Base
 
-**Anti-goal for core.** The knowledge base is not part of the Paperclip core — it will be a plugin. The task system + comments + agent descriptions provide sufficient shared context.
+**Anti-goal for core.** The knowledge base is not part of the Valadrien OS core — it will be a plugin. The task system + comments + agent descriptions provide sufficient shared context.
 
 The architecture must support adding a knowledge base plugin later (clean API boundaries, hookable lifecycle events) but the core system explicitly does not include one.
 
@@ -507,9 +507,9 @@ The architecture must support adding a knowledge base plugin later (clean API bo
 
 ## 12. Anti-Requirements
 
-Things Paperclip explicitly does **not** do:
+Things Valadrien OS explicitly does **not** do:
 
-- **Not an Agent runtime** — Paperclip orchestrates, Agents run elsewhere
+- **Not an Agent runtime** — Valadrien OS orchestrates, Agents run elsewhere
 - **Not a knowledge base** — core has no wiki/docs/vector-DB (plugin territory)
 - **Not a SaaS** — single-tenant, self-hosted
 - **Not opinionated about Agent implementation** — any language, any framework, any runtime
@@ -522,7 +522,7 @@ Things Paperclip explicitly does **not** do:
 
 ## 13. Principles (Consolidated)
 
-1. **Unopinionated about how you run your Agents.** Any language, any framework, any runtime. Paperclip is the control plane, not the execution plane.
+1. **Unopinionated about how you run your Agents.** Any language, any framework, any runtime. Valadrien OS is the control plane, not the execution plane.
 2. **Company is the unit of organization.** Everything lives under a Company.
 3. **Tasks are the communication channel.** All Agent communication flows through tasks + comments. No side channels.
 4. **All work traces to the goal.** Hierarchical task management — nothing exists in isolation.

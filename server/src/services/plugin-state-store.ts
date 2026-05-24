@@ -1,11 +1,11 @@
 import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { plugins, pluginState } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
+import { plugins, pluginState } from "@valadrien-os/db";
 import type {
   PluginStateScopeKind,
   SetPluginState,
   ListPluginState,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------

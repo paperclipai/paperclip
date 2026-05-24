@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { IssueBlockerAttention } from "@paperclipai/shared";
+import type { IssueBlockerAttention } from "@valadrien-os/shared";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";

@@ -7,7 +7,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_ENDPOINTS = [
-  "https://telemetry.paperclip.ing/ingest",
+  "https://telemetry.todo-domain.example/ingest",
   "https://rusqrrg391.execute-api.us-east-1.amazonaws.com/ingest",
 ] as const;
 const BATCH_SIZE = 50;
@@ -48,7 +48,7 @@ export class TelemetryClient {
     const events = this.queue.splice(0);
     const state = this.getState();
     const endpoints = this.resolveEndpoints();
-    const app = this.config.app ?? "paperclip";
+    const app = this.config.app ?? "valadrien-os";
     const schemaVersion = this.config.schemaVersion ?? "1";
     const body = JSON.stringify({
       app,

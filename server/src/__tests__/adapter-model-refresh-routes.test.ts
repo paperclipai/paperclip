@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { models as openCodeFallbackModels } from "@paperclipai/adapter-opencode-local";
+import { models as openCodeFallbackModels } from "@valadrien-os/adapter-opencode-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -67,8 +67,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
-  vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
-    const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
+  vi.doMock("@valadrien-os/adapter-opencode-local/server", async () => {
+    const actual = await vi.importActual<typeof import("@valadrien-os/adapter-opencode-local/server")>("@valadrien-os/adapter-opencode-local/server");
     return {
       ...actual,
       listOpenCodeModels: mockListOpenCodeModels,

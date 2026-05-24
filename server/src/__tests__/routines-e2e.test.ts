@@ -21,7 +21,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-routines-e2e-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -119,7 +119,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@valadrien-os/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/issues.js");
@@ -181,7 +181,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
     });
@@ -354,13 +354,13 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     const runRes = await postRoutineRun(app, createRes.body.id, {
       source: "manual",
-      variables: { repo: "paperclip" },
+      variables: { repo: "valadrien-os" },
     });
 
     expect(runRes.status).toBe(202);
     expect(runRes.body.triggerPayload).toEqual({
       variables: {
-        repo: "paperclip",
+        repo: "valadrien-os",
         priority: "high",
       },
     });
@@ -370,7 +370,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       .from(issues)
       .where(eq(issues.id, runRes.body.linkedIssueId));
 
-    expect(issue?.description).toBe("Review paperclip for high bugs");
+    expect(issue?.description).toBe("Review valadrien-os for high bugs");
   });
 
   it("allows drafting a routine without defaults and running it with one-off overrides", async () => {

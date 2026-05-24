@@ -1,7 +1,7 @@
 /**
  * Shared UI component declarations for plugin frontends.
  *
- * These components are exported from `@paperclipai/plugin-sdk/ui` and are
+ * These components are exported from `@valadrien-os/plugin-sdk/ui` and are
  * provided by the host at runtime.  They match the host's design tokens and
  * visual language, reducing the boilerplate needed to build consistent plugin UIs.
  *
@@ -13,7 +13,7 @@
  * only the type declarations; the runtime implementations are injected via the
  * host module registry.
  *
- * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@paperclipai/plugin-sdk/ui`
+ * @see PLUGIN_SPEC.md §19.6 — Shared Components In `@valadrien-os/plugin-sdk/ui`
  */
 
 import type React from "react";
@@ -473,7 +473,7 @@ export interface ManagedRoutinesListProps {
  * @see PLUGIN_SPEC.md §19.6 — Shared Components
  */
 function createSdkUiComponent<TProps>(name: string): React.ComponentType<TProps> {
-  return function PaperclipSdkUiComponent(props: TProps) {
+  return function ValadrienOsSdkUiComponent(props: TProps) {
     return renderSdkUiComponent(name, props) as React.ReactNode;
   };
 }
@@ -509,7 +509,7 @@ export const TimeseriesChart = createSdkUiComponent<TimeseriesChartProps>("Times
 export const MarkdownBlock = createSdkUiComponent<MarkdownBlockProps>("MarkdownBlock");
 
 /**
- * Renders Paperclip's shared Markdown editor.
+ * Renders ValadrienOs's shared Markdown editor.
  *
  * @see PLUGIN_SPEC.md §19.6 — Shared Components
  */
@@ -563,7 +563,7 @@ export const ErrorBoundary = createSdkUiComponent<ErrorBoundaryProps>("ErrorBoun
  *
  * @example
  * ```tsx
- * import { FileTree, type FileTreeNode } from "@paperclipai/plugin-sdk/ui";
+ * import { FileTree, type FileTreeNode } from "@valadrien-os/plugin-sdk/ui";
  *
  * const nodes: FileTreeNode[] = [
  *   { name: "README.md", path: "README.md", kind: "file", children: [] },
@@ -575,7 +575,7 @@ export const ErrorBoundary = createSdkUiComponent<ErrorBoundaryProps>("ErrorBoun
 export const FileTree = createSdkUiComponent<FileTreeProps>("FileTree");
 
 /**
- * Renders Paperclip's native issue list component for company-scoped plugin
+ * Renders ValadrienOs's native issue list component for company-scoped plugin
  * pages that need a standard board issue view.
  */
 export const IssuesList = createSdkUiComponent<IssuesListProps>("IssuesList");
@@ -591,6 +591,6 @@ export const AssigneePicker = createSdkUiComponent<AssigneePickerProps>("Assigne
 export const ProjectPicker = createSdkUiComponent<ProjectPickerProps>("ProjectPicker");
 
 /**
- * Renders Paperclip's native managed routines list for plugin settings pages.
+ * Renders ValadrienOs's native managed routines list for plugin settings pages.
  */
 export const ManagedRoutinesList = createSdkUiComponent<ManagedRoutinesListProps>("ManagedRoutinesList");

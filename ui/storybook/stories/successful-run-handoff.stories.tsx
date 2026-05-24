@@ -13,7 +13,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION,
   successfulRunHandoffActivityTone,
 } from "@/lib/successful-run-handoff";
-import { createIssue, storybookAgents } from "../fixtures/paperclipData";
+import { createIssue, storybookAgents } from "../fixtures/valadrienOsData";
 
 function ActivityExample({ action }: { action: string }) {
   const tone = successfulRunHandoffActivityTone(action);
@@ -140,7 +140,7 @@ function EscalationCommentPanel() {
       <div className="mb-3 text-sm font-medium text-muted-foreground">D. Escalation comment callout</div>
       <SuccessfulRunHandoffCommentCallout
         text={[
-          "Paperclip exhausted the bounded successful-run handoff correction for this issue, but it still has no valid issue disposition.",
+          "ValadrienOs exhausted the bounded successful-run handoff correction for this issue, but it still has no valid issue disposition.",
           "",
           "This is not a runtime/adapter crash report. The source run succeeded; the remaining problem is the missing `done`, `in_review`, `blocked`, delegated follow-up, or explicit continuation path.",
           "",
@@ -178,7 +178,7 @@ function SuccessfulRunHandoffEscalationComment() {
 }
 
 const meta = {
-  title: "Paperclip/Successful Run Handoff",
+  title: "ValadrienOs/Successful Run Handoff",
   component: SuccessfulRunHandoffStates,
   parameters: {
     layout: "fullscreen",

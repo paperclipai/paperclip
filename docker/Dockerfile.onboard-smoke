@@ -1,20 +1,20 @@
 FROM ubuntu:24.04
 
 ARG NODE_MAJOR=20
-ARG PAPERCLIPAI_VERSION=latest
+ARG VALADRIEN OS_VERSION=latest
 ARG HOST_UID=10001
 
 ENV DEBIAN_FRONTEND=noninteractive \
-  PAPERCLIP_HOME=/paperclip \
-  PAPERCLIP_OPEN_ON_LISTEN=false \
+  VALADRIEN_OS_HOME=/valadrien-os \
+  VALADRIEN_OS_OPEN_ON_LISTEN=false \
   HOST=0.0.0.0 \
   PORT=3100 \
-  HOME=/home/paperclip \
+  HOME=/home/valadrien-os \
   LANG=en_US.UTF-8 \
   LC_ALL=en_US.UTF-8 \
   NPM_CONFIG_UPDATE_NOTIFIER=false \
   NODE_MAJOR=${NODE_MAJOR} \
-  PAPERCLIPAI_VERSION=${PAPERCLIPAI_VERSION}
+  VALADRIEN OS_VERSION=${VALADRIEN OS_VERSION}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl gnupg locales \
@@ -26,15 +26,15 @@ RUN apt-get update \
   && apt-get update \
   && apt-get install -y --no-install-recommends nodejs \
   && locale-gen en_US.UTF-8 \
-  && groupadd --gid 10001 paperclip \
-  && useradd --create-home --shell /bin/bash --uid "${HOST_UID}" --gid 10001 paperclip \
-  && mkdir -p /paperclip /home/paperclip/workspace \
-  && chown -R paperclip:paperclip /paperclip /home/paperclip \
+  && groupadd --gid 10001 valadrien-os \
+  && useradd --create-home --shell /bin/bash --uid "${HOST_UID}" --gid 10001 valadrien-os \
+  && mkdir -p /valadrien-os /home/valadrien-os/workspace \
+  && chown -R valadrien-os:valadrien-os /valadrien-os /home/valadrien-os \
   && rm -rf /var/lib/apt/lists/*
 
-VOLUME ["/paperclip"]
-WORKDIR /home/paperclip/workspace
+VOLUME ["/valadrien-os"]
+WORKDIR /home/valadrien-os/workspace
 EXPOSE 3100
-USER paperclip
+USER valadrien-os
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$PAPERCLIP_HOME\"; npx --yes \"paperclipai@${PAPERCLIPAI_VERSION}\" onboard --yes --data-dir \"$PAPERCLIP_HOME\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$VALADRIEN_OS_HOME\"; npx --yes \"valadrien-os@${VALADRIEN OS_VERSION}\" onboard --yes --data-dir \"$VALADRIEN_OS_HOME\""]

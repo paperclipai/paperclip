@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompanyPortabilityExportResult } from "@paperclipai/shared";
+import type { CompanyPortabilityExportResult } from "@valadrien-os/shared";
 import {
   assertDiscoveryCompatible,
   buildBundleFromLocalCompany,
@@ -24,8 +24,8 @@ describe("cloud CLI helpers", () => {
   let tempHome: string;
 
   beforeEach(() => {
-    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cloud-cli-"));
-    process.env = { ...originalEnv, PAPERCLIP_HOME: tempHome };
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "valadrien-os-cloud-cli-"));
+    process.env = { ...originalEnv, VALADRIEN_OS_HOME: tempHome };
   });
 
   afterEach(() => {
@@ -38,7 +38,7 @@ describe("cloud CLI helpers", () => {
   it("connects with the device-code flow and stores the resulting cloud connection", async () => {
     globalThis.fetch = vi.fn(async (url, init) => {
       const requestUrl = String(url);
-      if (requestUrl.endsWith("/.well-known/paperclip-upstream")) {
+      if (requestUrl.endsWith("/.well-known/valadrien-os-upstream")) {
         return jsonResponse(discovery());
       }
       if (requestUrl.endsWith("/api/upstream-sync/device-code")) {
@@ -62,7 +62,7 @@ describe("cloud CLI helpers", () => {
             id: "token-1",
             companyStackId: "stack-1",
             targetOrigin: "https://cloud.example.test",
-            sourceInstanceId: "paperclip-local-default",
+            sourceInstanceId: "valadrien-os-local-default",
             sourceInstanceFingerprint: "sha256:test",
             scopes: ["upstream_import:preview"],
             expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -106,7 +106,7 @@ describe("cloud CLI helpers", () => {
     const calls: Array<{ path: string; body: unknown }> = [];
     const coordinator = new LocalUpstreamPushCoordinator({
       targetOrigin: "https://cloud.example.test",
-      paperclipCompanyId: "target-company-1",
+      valadrienOsCompanyId: "target-company-1",
       fetch: async (url, init) => {
         const parsed = new URL(String(url));
         const body = init?.body ? JSON.parse(String(init.body)) as unknown : {};
@@ -143,14 +143,14 @@ async function buildTestBundle(): Promise<LocalUpstreamExportBundle> {
         id: "token-1",
         companyStackId: "stack-1",
         targetOrigin: "https://cloud.example.test",
-        sourceInstanceId: "paperclip-local-default",
+        sourceInstanceId: "valadrien-os-local-default",
         sourceInstanceFingerprint: "sha256:test",
         scopes: ["upstream_import:preview"],
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       },
       privateKeyPem: "unused",
       sourcePublicKey: "unused",
-      sourceInstanceId: "paperclip-local-default",
+      sourceInstanceId: "valadrien-os-local-default",
       sourceInstanceFingerprint: "sha256:test",
       scopes: ["upstream_import:preview"],
       createdAt: "2026-05-18T00:00:00.000Z",
@@ -167,7 +167,7 @@ async function buildTestBundle(): Promise<LocalUpstreamExportBundle> {
 
 function discovery(overrides: Partial<{ supportedSchemaMajor: number }> = {}) {
   return {
-    schema: "paperclip-upstream-discovery-v1",
+    schema: "valadrien-os-upstream-discovery-v1",
     stack: {
       id: "stack-1",
       slug: "cloud-test",
@@ -193,7 +193,7 @@ function discovery(overrides: Partial<{ supportedSchemaMajor: number }> = {}) {
 function portabilityExport(): CompanyPortabilityExportResult {
   return {
     rootPath: ".",
-    paperclipExtensionPath: ".paperclip.yaml",
+    valadrienOsExtensionPath: ".valadrien-os.yaml",
     manifest: {
       schemaVersion: 1,
       generatedAt: "2026-05-18T00:00:00.000Z",

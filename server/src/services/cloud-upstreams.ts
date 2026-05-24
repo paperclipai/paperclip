@@ -15,8 +15,8 @@ import type {
   CloudUpstreamWarning,
   CompanyPortabilityExportResult,
   CompanyPortabilityFileEntry,
-} from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+} from "@valadrien-os/shared";
+import type { Db } from "@valadrien-os/db";
 import {
   agents,
   cloudUpstreamConnections,
@@ -27,14 +27,14 @@ import {
   issues,
   projects,
   routines,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import { badRequest, conflict, HttpError, notFound } from "../errors.js";
 import { companyPortabilityService } from "./company-portability.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 
 const DEFAULT_SCOPES = ["upstream_import:preview", "upstream_import:write", "upstream_import:read"];
 const TRANSFER_SCHEMA = {
-  family: "paperclip-upstream-transfer",
+  family: "valadrien-os-upstream-transfer",
   version: "1.0.0",
   major: 1,
   minor: 0,
@@ -42,7 +42,7 @@ const TRANSFER_SCHEMA = {
 const DEFAULT_MAX_ENTITIES_PER_CHUNK = 100;
 const DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 const REMOTE_FETCH_TIMEOUT_MS = 120_000;
-const CLOUD_CREDENTIAL_PREFIX = "paperclip-cloud-credential:";
+const CLOUD_CREDENTIAL_PREFIX = "valadrien-os-cloud-credential:";
 
 type NormalizedSha256 = `sha256:${string}`;
 
@@ -120,7 +120,7 @@ type ConnectionRow = typeof cloudUpstreamConnections.$inferSelect;
 type RunRow = typeof cloudUpstreamRuns.$inferSelect;
 
 export function cloudUpstreamService(db: Db, options: { instanceId?: string } = {}) {
-  const sourceInstanceId = `paperclip-local-${options.instanceId ?? "default"}`;
+  const sourceInstanceId = `valadrien-os-local-${options.instanceId ?? "default"}`;
   const portability = companyPortabilityService(db);
 
   return {
@@ -282,14 +282,14 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       await assertNoRunningRun(input.connectionId, input.companyId, db);
       const preview = await localPreview(connection);
       if (!preview.schemaCompatible) {
-        throw badRequest("Cloud stack schema is not compatible with this local Paperclip version");
+        throw badRequest("Cloud stack schema is not compatible with this local ValadrienOs version");
       }
 
       const bundle = await buildBundle(connection, "apply");
       const runId = crypto.randomUUID();
       const now = new Date();
       const initialEvents = [
-        event(now.toISOString(), "connect", "completed", "Connected to the target Paperclip Cloud stack."),
+        event(now.toISOString(), "connect", "completed", "Connected to the target ValadrienOs Cloud stack."),
         event(now.toISOString(), "scan", "completed", "Scanned the local company inventory."),
         event(now.toISOString(), "preview", "completed", "Generated the transfer manifest."),
         ...(input.retryOfRunId
@@ -611,7 +611,7 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       sourceInstanceId: connection.sourceInstanceId,
       sourceCompanyId: connection.companyId,
       sourceInstanceKeyFingerprint: connection.sourceInstanceFingerprint,
-      exporterVersion: "paperclip-local-cloud-ui-v1",
+      exporterVersion: "valadrien-os-local-cloud-ui-v1",
       sourceSchemaVersion: TRANSFER_SCHEMA.version,
     };
     const target = {
@@ -650,7 +650,7 @@ async function fetchDiscovery(remoteUrl: string): Promise<Record<string, unknown
     throw badRequest("Cloud upstream targets require HTTPS except localhost development");
   }
   const stackId = firstPathSegment(parsed.pathname);
-  const discoveryUrl = new URL("/.well-known/paperclip-upstream", parsed.origin);
+  const discoveryUrl = new URL("/.well-known/valadrien-os-upstream", parsed.origin);
   if (stackId) {
     discoveryUrl.searchParams.set("stackId", stackId);
   }
@@ -691,7 +691,7 @@ export async function reconcileCloudUpstreamRunsOnStartup(db: Db, now = new Date
           ...report,
           error: optionalString(report.error) ?? "orphaned_running_run",
           errorMessage: optionalString(report.errorMessage)
-            ?? "The server restarted while this cloud upstream run was running, so Paperclip marked it failed instead of leaving it stuck.",
+            ?? "The server restarted while this cloud upstream run was running, so ValadrienOs marked it failed instead of leaving it stuck.",
           reconciledAt: now.toISOString(),
         },
       })
@@ -718,7 +718,7 @@ function targetFromDiscovery(discovery: Record<string, unknown>): CloudUpstreamT
     companyId: stringField(stack, "companyId"),
     primaryHost: optionalString(stack.primaryHost) ?? new URL(origin).host,
     origin,
-    product: optionalString(discovery.product) ?? "Paperclip Cloud",
+    product: optionalString(discovery.product) ?? "ValadrienOs Cloud",
     schemaMajor: optionalNumber(schema?.major) ?? numberField(transfer, "supportedSchemaMajor"),
     maxChunkBytes: optionalNumber(transfer.maxChunkBytes) ?? 8 * 1024 * 1024,
   };
@@ -847,10 +847,10 @@ function buildEntitiesFromPortableExport(
     {
       key: companyKey,
       body: {
-        kind: "paperclip_company_portability_manifest",
+        kind: "valadrien_os_company_portability_manifest",
         manifest: exported.manifest,
         rootPath: exported.rootPath,
-        paperclipExtensionPath: exported.paperclipExtensionPath,
+        valadrienOsExtensionPath: exported.valadrienOsExtensionPath,
         fileCount: Object.keys(exported.files).length,
       },
       conflictKeys: [`company:${companyKey.sourceNaturalKey ?? localCompanyId}`],
@@ -867,7 +867,7 @@ function buildEntitiesFromPortableExport(
         sourceNaturalKey: filePath,
       },
       body: {
-        kind: "paperclip_portable_file",
+        kind: "valadrien_os_portable_file",
         path: filePath,
         entry: normalizePortableFileEntry(entry),
       },
@@ -995,10 +995,10 @@ async function proofHeaders(connection: ConnectionRow, method: string, pathAndSe
   ].join("\n");
   return {
     Authorization: `Bearer ${accessToken}`,
-    "X-Paperclip-Upstream-Source-Instance-Id": connection.sourceInstanceId,
-    "X-Paperclip-Upstream-Proof-Timestamp": timestamp,
-    "X-Paperclip-Upstream-Proof-Nonce": nonce,
-    "X-Paperclip-Upstream-Proof-Signature": sign(
+    "X-ValadrienOs-Upstream-Source-Instance-Id": connection.sourceInstanceId,
+    "X-ValadrienOs-Upstream-Proof-Timestamp": timestamp,
+    "X-ValadrienOs-Upstream-Proof-Nonce": nonce,
+    "X-ValadrienOs-Upstream-Proof-Signature": sign(
       null,
       Buffer.from(payload, "utf8"),
       privateKeyPem,

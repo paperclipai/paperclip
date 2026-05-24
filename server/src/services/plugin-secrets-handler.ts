@@ -1,6 +1,6 @@
 /**
  * Plugin secrets host-side handler — resolves secret references through the
- * Paperclip secret provider system.
+ * ValadrienOs secret provider system.
  *
  * When a plugin worker calls `ctx.secrets.resolve(secretRef)`, the JSON-RPC
  * request arrives at the host with `{ secretRef }`. This module provides the
@@ -33,7 +33,7 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,

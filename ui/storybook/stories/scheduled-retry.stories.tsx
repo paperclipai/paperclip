@@ -1,12 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Issue, IssueScheduledRetry } from "@paperclipai/shared";
+import type { Issue, IssueScheduledRetry } from "@valadrien-os/shared";
 import { IssueScheduledRetryCard } from "@/components/IssueScheduledRetryCard";
 import { IssueProperties } from "@/components/IssueProperties";
 import {
   storybookExecutionWorkspaces,
   storybookIssueDocuments,
   storybookIssues,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 const issueDocumentSummaries = storybookIssueDocuments.map(({ body: _body, ...summary }) => summary);
 

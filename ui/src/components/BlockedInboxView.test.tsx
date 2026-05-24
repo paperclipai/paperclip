@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
+import type { Issue, IssueBlockedInboxAttention } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssuesApi = vi.hoisted(() => ({

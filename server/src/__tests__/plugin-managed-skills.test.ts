@@ -8,8 +8,8 @@ import {
   createDb,
   pluginManagedResources,
   plugins,
-} from "@paperclipai/db";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+} from "@valadrien-os/db";
+import type { ValadrienOsPluginManifestV1 } from "@valadrien-os/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -34,14 +34,14 @@ function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 }
 
-function manifest(): PaperclipPluginManifestV1 {
+function manifest(): ValadrienOsPluginManifestV1 {
   return {
-    id: "paperclip.managed-skills-test",
+    id: "valadrien-os.managed-skills-test",
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Managed Skills Test",
     description: "Test plugin",
-    author: "Paperclip",
+    author: "ValadrienOs",
     categories: ["automation"],
     capabilities: ["skills.managed"],
     entrypoints: { worker: "./dist/worker.js" },
@@ -68,7 +68,7 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-managed-skills-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-plugin-managed-skills-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -89,13 +89,13 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     const pluginId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix: issuePrefix(companyId),
     });
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: pluginManifest.id,
-      packageName: "@paperclipai/plugin-managed-skills-test",
+      packageName: "@valadrien-os/plugin-managed-skills-test",
       version: pluginManifest.version,
       apiVersion: pluginManifest.apiVersion,
       categories: pluginManifest.categories,
@@ -120,7 +120,7 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     expect(created.status).toBe("created");
     expect(created.skill).toMatchObject({
       name: "Wiki Maintainer Skill",
-      key: "plugin/paperclip-managed-skills-test/wiki-maintainer",
+      key: "plugin/valadrien-os-managed-skills-test/wiki-maintainer",
       sourceType: "catalog",
       fileInventory: expect.arrayContaining([
         expect.objectContaining({ path: "SKILL.md", kind: "skill" }),
@@ -171,7 +171,7 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
       name: "Wiki Maintainer Skill",
       description: "Use LLM Wiki tools to maintain company knowledge.",
     });
-    expect(reset.skill?.markdown).toContain("key: \"plugin/paperclip-managed-skills-test/wiki-maintainer\"");
+    expect(reset.skill?.markdown).toContain("key: \"plugin/valadrien-os-managed-skills-test/wiki-maintainer\"");
   });
 
   it("does not rewrite managed skill bindings when defaults are unchanged", async () => {
@@ -273,9 +273,9 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
 
     expect(created.status).toBe("created");
     expect(created.skill).toMatchObject({
-      key: "plugin/paperclip-managed-skills-test/markdown-skill",
+      key: "plugin/valadrien-os-managed-skills-test/markdown-skill",
       name: "markdown-skill",
     });
-    expect(created.skill?.markdown).toContain("key: \"plugin/paperclip-managed-skills-test/markdown-skill\"");
+    expect(created.skill?.markdown).toContain("key: \"plugin/valadrien-os-managed-skills-test/markdown-skill\"");
   });
 });

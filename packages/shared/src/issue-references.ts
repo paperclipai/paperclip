@@ -106,7 +106,7 @@ export function parseIssueReferenceHref(href: string): { identifier: string } | 
   let url: URL;
   try {
     url = raw.startsWith("/")
-      ? new URL(raw, "https://paperclip.invalid")
+      ? new URL(raw, "https://valadrien-os.invalid")
       : new URL(raw);
   } catch {
     return null;

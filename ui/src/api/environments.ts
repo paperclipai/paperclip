@@ -1,4 +1,4 @@
-import type { Environment, EnvironmentCapabilities, EnvironmentLease, EnvironmentProbeResult } from "@paperclipai/shared";
+import type { Environment, EnvironmentCapabilities, EnvironmentLease, EnvironmentProbeResult } from "@valadrien-os/shared";
 import { api } from "./client";
 
 export const environmentsApi = {

@@ -1,4 +1,4 @@
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode } from "@valadrien-os/shared";
 import { Badge } from "@/components/ui/badge";
 
 export function ModeBadge({

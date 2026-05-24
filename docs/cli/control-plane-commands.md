@@ -9,38 +9,38 @@ Client-side commands for managing issues, agents, approvals, and more.
 
 ```sh
 # List issues
-pnpm paperclipai issue list [--status todo,in_progress] [--assignee-agent-id <id>] [--match text]
+pnpm valadrien-os issue list [--status todo,in_progress] [--assignee-agent-id <id>] [--match text]
 
 # Get issue details
-pnpm paperclipai issue get <issue-id-or-identifier>
+pnpm valadrien-os issue get <issue-id-or-identifier>
 
 # Create issue
-pnpm paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
+pnpm valadrien-os issue create --title "..." [--description "..."] [--status todo] [--priority high]
 
 # Update issue
-pnpm paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm valadrien-os issue update <issue-id> [--status in_progress] [--comment "..."]
 
 # Add comment
-pnpm paperclipai issue comment <issue-id> --body "..." [--reopen]
+pnpm valadrien-os issue comment <issue-id> --body "..." [--reopen]
 
 # Checkout task
-pnpm paperclipai issue checkout <issue-id> --agent-id <agent-id>
+pnpm valadrien-os issue checkout <issue-id> --agent-id <agent-id>
 
 # Release task
-pnpm paperclipai issue release <issue-id>
+pnpm valadrien-os issue release <issue-id>
 ```
 
 ## Company Commands
 
 ```sh
-pnpm paperclipai company list
-pnpm paperclipai company get <company-id>
+pnpm valadrien-os company list
+pnpm valadrien-os company get <company-id>
 
 # Export to portable folder package (writes manifest + markdown files)
-pnpm paperclipai company export <company-id> --out ./exports/acme --include company,agents
+pnpm valadrien-os company export <company-id> --out ./exports/acme --include company,agents
 
 # Preview import (no writes)
-pnpm paperclipai company import \
+pnpm valadrien-os company import \
   <owner>/<repo>/<path> \
   --target existing \
   --company-id <company-id> \
@@ -49,7 +49,7 @@ pnpm paperclipai company import \
   --dry-run
 
 # Apply import
-pnpm paperclipai company import \
+pnpm valadrien-os company import \
   ./exports/acme \
   --target new \
   --new-company-name "Acme Imported" \
@@ -59,52 +59,52 @@ pnpm paperclipai company import \
 ## Agent Commands
 
 ```sh
-pnpm paperclipai agent list
-pnpm paperclipai agent get <agent-id>
+pnpm valadrien-os agent list
+pnpm valadrien-os agent get <agent-id>
 ```
 
 ## Approval Commands
 
 ```sh
 # List approvals
-pnpm paperclipai approval list [--status pending]
+pnpm valadrien-os approval list [--status pending]
 
 # Get approval
-pnpm paperclipai approval get <approval-id>
+pnpm valadrien-os approval get <approval-id>
 
 # Create approval
-pnpm paperclipai approval create --type hire_agent --payload '{"name":"..."}' [--issue-ids <id1,id2>]
+pnpm valadrien-os approval create --type hire_agent --payload '{"name":"..."}' [--issue-ids <id1,id2>]
 
 # Approve
-pnpm paperclipai approval approve <approval-id> [--decision-note "..."]
+pnpm valadrien-os approval approve <approval-id> [--decision-note "..."]
 
 # Reject
-pnpm paperclipai approval reject <approval-id> [--decision-note "..."]
+pnpm valadrien-os approval reject <approval-id> [--decision-note "..."]
 
 # Request revision
-pnpm paperclipai approval request-revision <approval-id> [--decision-note "..."]
+pnpm valadrien-os approval request-revision <approval-id> [--decision-note "..."]
 
 # Resubmit
-pnpm paperclipai approval resubmit <approval-id> [--payload '{"..."}']
+pnpm valadrien-os approval resubmit <approval-id> [--payload '{"..."}']
 
 # Comment
-pnpm paperclipai approval comment <approval-id> --body "..."
+pnpm valadrien-os approval comment <approval-id> --body "..."
 ```
 
 ## Activity Commands
 
 ```sh
-pnpm paperclipai activity list [--agent-id <id>] [--entity-type issue] [--entity-id <id>]
+pnpm valadrien-os activity list [--agent-id <id>] [--entity-type issue] [--entity-id <id>]
 ```
 
 ## Dashboard
 
 ```sh
-pnpm paperclipai dashboard get
+pnpm valadrien-os dashboard get
 ```
 
 ## Heartbeat
 
 ```sh
-pnpm paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100]
+pnpm valadrien-os heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100]
 ```

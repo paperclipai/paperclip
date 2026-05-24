@@ -7,7 +7,7 @@ import type {
   ThreadSystemMessage,
   ThreadUserMessage,
 } from "@assistant-ui/react";
-import type { Agent, IssueComment } from "@paperclipai/shared";
+import type { Agent, IssueComment } from "@valadrien-os/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import {
@@ -362,7 +362,7 @@ function authorNameForComment(
 ) {
   const authorAgentId = effectiveCommentAuthorAgentId(comment);
   if (authorAgentId) {
-    return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
+    return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "ValadrienOs" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
   if (!authorUserId) return "You";

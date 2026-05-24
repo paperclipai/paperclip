@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from "vitest";
-import type { SecretProviderDescriptor } from "@paperclipai/shared";
+import type { SecretProviderDescriptor } from "@valadrien-os/shared";
 import {
   getAwsManagedPathPreview,
   getCreateProviderBlockReason,
@@ -28,7 +28,7 @@ describe("Secrets page provider helpers", () => {
           status: "ok",
           message: "AWS Secrets Manager provider is configured",
           details: {
-            prefix: "paperclip",
+            prefix: "valadrien-os",
             deploymentId: "prod-us-1",
           },
         },
@@ -42,7 +42,7 @@ describe("Secrets page provider helpers", () => {
         companyId: "company-123",
         secretKeySource: "Anthropic API Key",
       }),
-    ).toBe("paperclip/prod-us-1/company-123/anthropic-api-key");
+    ).toBe("valadrien-os/prod-us-1/company-123/anthropic-api-key");
   });
 
   it("blocks unconfigured providers before create submission", () => {
@@ -62,7 +62,7 @@ describe("Secrets page provider helpers", () => {
           provider: "aws_secrets_manager",
           status: "warn",
           message:
-            "AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
+            "AWS Secrets Manager provider is not ready: missing VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID.",
         },
       ],
     };
@@ -74,7 +74,7 @@ describe("Secrets page provider helpers", () => {
         health,
       ),
     ).toBe(
-      "AWS Secrets Manager is not configured in this deployment. AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
+      "AWS Secrets Manager is not configured in this deployment. AWS Secrets Manager provider is not ready: missing VALADRIEN_OS_SECRETS_AWS_DEPLOYMENT_ID.",
     );
   });
 

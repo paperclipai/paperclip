@@ -1,7 +1,7 @@
 import type { UIAdapterModule } from "../types";
-import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local/ui";
+import { parseOpenCodeStdoutLine } from "@valadrien-os/adapter-opencode-local/ui";
 import { OpenCodeLocalConfigFields } from "./config-fields";
-import { buildOpenCodeLocalConfig } from "@paperclipai/adapter-opencode-local/ui";
+import { buildOpenCodeLocalConfig } from "@valadrien-os/adapter-opencode-local/ui";
 
 export const openCodeLocalUIAdapter: UIAdapterModule = {
   type: "opencode_local",

@@ -14,14 +14,14 @@ type SupertestTestInstance = {
 type SupertestTestConstructor = {
   prototype: {
     serverAddress(this: SupertestTestInstance, app: SupertestServer, path: string): string;
-    __paperclipLoopbackPatched?: boolean;
+    __valadrienOsLoopbackPatched?: boolean;
   };
 };
 
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;
 
-if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
+if (!SupertestTest.prototype.__valadrienOsLoopbackPatched) {
   SupertestTest.prototype.serverAddress = function serverAddress(app, path) {
     const addr = app.address();
 
@@ -43,5 +43,5 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
     return `${protocol}://${host}:${listeningAddress.port}${path}`;
   };
 
-  SupertestTest.prototype.__paperclipLoopbackPatched = true;
+  SupertestTest.prototype.__valadrienOsLoopbackPatched = true;
 }

@@ -40,7 +40,7 @@ describe("TelemetryClient periodic flush", () => {
     expect(requestInit?.headers).toEqual({ "Content-Type": "application/json" });
     const body = JSON.parse(String(requestInit?.body ?? "{}"));
     expect(body).toMatchObject({
-      app: "paperclip",
+      app: "valadrien-os",
       schemaVersion: "1",
       installId: "test-install",
       version: "0.0.0-test",
@@ -78,7 +78,7 @@ describe("TelemetryClient periodic flush", () => {
 
   it("falls back to the api gateway ingest url when the default hostname fails", async () => {
     vi.mocked(fetch)
-      .mockRejectedValueOnce(new TypeError("getaddrinfo ENOTFOUND telemetry.paperclip.ing"))
+      .mockRejectedValueOnce(new TypeError("getaddrinfo ENOTFOUND telemetry.todo-domain.example"))
       .mockResolvedValueOnce({ ok: true });
 
     const client = makeClient({ endpoint: undefined });
@@ -87,7 +87,7 @@ describe("TelemetryClient periodic flush", () => {
     await client.flush();
 
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://telemetry.paperclip.ing/ingest");
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://telemetry.todo-domain.example/ingest");
     expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe("https://rusqrrg391.execute-api.us-east-1.amazonaws.com/ingest");
   });
 

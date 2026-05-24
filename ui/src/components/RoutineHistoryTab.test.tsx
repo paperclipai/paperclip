@@ -10,7 +10,7 @@ import type {
   RoutineEnvConfig,
   RoutineRevision,
   RoutineRevisionSnapshotV1,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineHistoryTab } from "./RoutineHistoryTab";
 
@@ -350,7 +350,7 @@ describe("RoutineHistoryTab", () => {
         name: "github-bot",
         provider: "local_encrypted",
         status: "active",
-        managedMode: "paperclip_managed",
+        managedMode: "valadrien_os_managed",
         externalRef: null,
         providerConfigId: null,
         providerMetadata: null,
@@ -412,7 +412,7 @@ describe("RoutineHistoryTab", () => {
         name: "old-token",
         provider: "local_encrypted",
         status: "active",
-        managedMode: "paperclip_managed",
+        managedMode: "valadrien_os_managed",
         externalRef: null,
         providerConfigId: null,
         providerMetadata: null,
@@ -433,7 +433,7 @@ describe("RoutineHistoryTab", () => {
         name: "new-token",
         provider: "local_encrypted",
         status: "active",
-        managedMode: "paperclip_managed",
+        managedMode: "valadrien_os_managed",
         externalRef: null,
         providerConfigId: null,
         providerMetadata: null,

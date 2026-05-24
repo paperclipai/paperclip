@@ -1,16 +1,16 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { ValadrienOsPluginManifestV1 } from "@valadrien-os/plugin-sdk";
 
-const PLUGIN_ID = "paperclip.modal-sandbox-provider";
+const PLUGIN_ID = "valadrien-os.modal-sandbox-provider";
 const PLUGIN_VERSION = "0.1.0";
 
-const manifest: PaperclipPluginManifestV1 = {
+const manifest: ValadrienOsPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
   displayName: "Modal Sandbox Provider",
   description:
-    "First-party sandbox provider plugin that provisions Modal sandboxes as Paperclip execution environments.",
-  author: "Paperclip",
+    "First-party sandbox provider plugin that provisions Modal sandboxes as ValadrienOs execution environments.",
+  author: "ValadrienOs",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
   entrypoints: {
@@ -41,7 +41,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             format: "secret-ref",
             description:
-              "Modal token ID. Paste a token or an existing Paperclip secret reference; saved environments store pasted values as company secrets. Required.",
+              "Modal token ID. Paste a token or an existing ValadrienOs secret reference; saved environments store pasted values as company secrets. Required.",
           },
           tokenSecret: {
             type: "string",
@@ -56,7 +56,7 @@ const manifest: PaperclipPluginManifestV1 = {
           workdir: {
             type: "string",
             description: "Remote working directory inside the sandbox.",
-            default: "/workspace/paperclip",
+            default: "/workspace/valadrien-os",
           },
           sandboxTimeoutMs: {
             type: "number",

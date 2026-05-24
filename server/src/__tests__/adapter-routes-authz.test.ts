@@ -84,7 +84,7 @@ function registerRouteMocks() {
 }
 
 const EXTERNAL_ADAPTER_TYPE = "external_admin_test";
-const EXTERNAL_PACKAGE_NAME = "paperclip-external-adapter";
+const EXTERNAL_PACKAGE_NAME = "valadrien-os-external-adapter";
 let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 let registerServerAdapter: typeof import("../adapters/registry.js").registerServerAdapter;
@@ -264,7 +264,7 @@ describe.sequential("adapter management route authorization", () => {
     unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);
     setOverridePaused("claude_local", false);
     mocks.listAdapterPlugins.mockImplementation(() => [...mocks.externalRecords.values()]);
-    mocks.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-route-authz-test");
+    mocks.getAdapterPluginsDir.mockReturnValue("/tmp/valadrien-os-adapter-route-authz-test");
     mocks.getDisabledAdapterTypes.mockReturnValue([]);
     mocks.setAdapterDisabled.mockReturnValue(true);
     mocks.buildExternalAdapters.mockResolvedValue([]);

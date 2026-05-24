@@ -4,7 +4,7 @@ import { Clock, FlaskConical, Play, Search } from "lucide-react";
 import type {
   IssueGraphLivenessAutoRecoveryPreview,
   PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -304,7 +304,7 @@ export function InstanceExperimentalSettings() {
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Cloud Sync</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.
+              Show local ValadrienOs Cloud upstream connection, preview, push, retry, and activation review surfaces.
               Saved connections and run history are preserved when this is disabled.
             </p>
           </div>

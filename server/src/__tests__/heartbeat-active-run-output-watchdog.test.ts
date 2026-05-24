@@ -13,7 +13,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -43,9 +43,9 @@ vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => ({ track: vi.fn() }),
 }));
 
-vi.mock("@paperclipai/shared/telemetry", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
-    "@paperclipai/shared/telemetry",
+vi.mock("@valadrien-os/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@valadrien-os/shared/telemetry")>(
+    "@valadrien-os/shared/telemetry",
   );
   return {
     ...actual,
@@ -78,7 +78,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   let db: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
 

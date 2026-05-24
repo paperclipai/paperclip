@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import { AGENT_ICON_NAMES } from "@paperclipai/shared";
+import type { Db } from "@valadrien-os/db";
+import { AGENT_ICON_NAMES } from "@valadrien-os/shared";
 import { forbidden } from "../errors.js";
 import { listServerAdapters } from "../adapters/index.js";
 import { agentService } from "../services/agents.js";
@@ -29,7 +29,7 @@ export function llmRoutes(db: Db) {
     await assertCanRead(req);
     const adapters = listServerAdapters().sort((a, b) => a.type.localeCompare(b.type));
     const lines = [
-      "# Paperclip Agent Configuration Index",
+      "# ValadrienOs Agent Configuration Index",
       "",
       "Installed adapters:",
       ...adapters.map((adapter) => `- ${adapter.type}: /llms/agent-configuration/${adapter.type}.txt`),
@@ -45,7 +45,7 @@ export function llmRoutes(db: Db) {
       "Notes:",
       "- Sensitive values are redacted in configuration read APIs.",
       "- New hires may be created in pending_approval state depending on company settings.",
-      "- Use the paperclip-create-agent skill for end-to-end hiring: adapter reflection, config comparison, instruction source selection, icon choice, desiredSkills, sourceIssueId/sourceIssueIds, and approval follow-up.",
+      "- Use the valadrien-os-create-agent skill for end-to-end hiring: adapter reflection, config comparison, instruction source selection, icon choice, desiredSkills, sourceIssueId/sourceIssueIds, and approval follow-up.",
       "- Timer heartbeats are opt-in for new hires. Leave runtimeConfig.heartbeat.enabled false unless the role truly needs scheduled work or the user explicitly asked for it.",
       "",
     ];
@@ -55,7 +55,7 @@ export function llmRoutes(db: Db) {
   router.get("/llms/agent-icons.txt", async (req, res) => {
     await assertCanRead(req);
     const lines = [
-      "# Paperclip Agent Icon Names",
+      "# ValadrienOs Agent Icon Names",
       "",
       "Set the `icon` field on hire/create payloads to one of:",
       ...AGENT_ICON_NAMES.map((name) => `- ${name}`),

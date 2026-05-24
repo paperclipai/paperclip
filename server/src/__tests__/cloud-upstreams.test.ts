@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, cloudUpstreamConnections, cloudUpstreamRuns, companySkills, createDb } from "@paperclipai/db";
+import { companies, cloudUpstreamConnections, cloudUpstreamRuns, companySkills, createDb } from "@valadrien-os/db";
 
 import { HttpError } from "../errors.js";
 import {
@@ -47,21 +47,21 @@ describe("cloud upstream remote failures", () => {
 });
 
 describe("cloud upstream credential storage", () => {
-  const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const previousMasterKey = process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
 
   afterEach(() => {
     if (previousMasterKey === undefined) {
-      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
     } else {
-      process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
+      process.env.VALADRIEN_OS_SECRETS_MASTER_KEY = previousMasterKey;
     }
   });
 
   it("stores new credentials as encrypted envelopes and preserves legacy plaintext reads", async () => {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    process.env.VALADRIEN_OS_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
     const sealed = await sealCloudUpstreamCredential("cloud-access-token");
 
-    expect(sealed).toMatch(/^paperclip-cloud-credential:/);
+    expect(sealed).toMatch(/^valadrien-os-cloud-credential:/);
     expect(sealed).not.toContain("cloud-access-token");
     await expect(unsealCloudUpstreamCredential(sealed)).resolves.toBe("cloud-access-token");
     await expect(unsealCloudUpstreamCredential("legacy-plaintext-token")).resolves.toBe("legacy-plaintext-token");
@@ -71,11 +71,11 @@ describe("cloud upstream credential storage", () => {
 describeEmbeddedPostgres("cloud upstream persistence", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  const previousMasterKey = process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
 
   beforeAll(async () => {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cloud-upstreams-");
+    process.env.VALADRIEN_OS_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-cloud-upstreams-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
@@ -89,9 +89,9 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
 
   afterAll(async () => {
     if (previousMasterKey === undefined) {
-      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      delete process.env.VALADRIEN_OS_SECRETS_MASTER_KEY;
     } else {
-      process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
+      process.env.VALADRIEN_OS_SECRETS_MASTER_KEY = previousMasterKey;
     }
     await tempDb?.cleanup();
   });
@@ -102,9 +102,9 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
     const tokenUrl = "https://cloud.example.test/oauth/token";
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.startsWith("https://cloud.example.test/.well-known/paperclip-upstream")) {
+      if (url.startsWith("https://cloud.example.test/.well-known/valadrien-os-upstream")) {
         return jsonResponse({
-          product: "Paperclip Cloud",
+          product: "ValadrienOs Cloud",
           stack: {
             id: "stack-1",
             companyId: "cloud-company-1",
@@ -127,7 +127,7 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
       if (url === tokenUrl && init?.method === "POST") {
         const payload = JSON.parse(String(init.body));
         expect(payload.codeVerifier).toEqual(expect.any(String));
-        expect(payload.codeVerifier).not.toContain("paperclip-cloud-credential:");
+        expect(payload.codeVerifier).not.toContain("valadrien-os-cloud-credential:");
         return jsonResponse({
           accessToken: "cloud-access-token",
           token: {
@@ -153,9 +153,9 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
     });
 
     const [row] = await db.select().from(cloudUpstreamConnections);
-    expect(row.privateKeyPem).toMatch(/^paperclip-cloud-credential:/);
+    expect(row.privateKeyPem).toMatch(/^valadrien-os-cloud-credential:/);
     expect(row.privateKeyPem).not.toContain("BEGIN PRIVATE KEY");
-    expect(row.accessToken).toMatch(/^paperclip-cloud-credential:/);
+    expect(row.accessToken).toMatch(/^valadrien-os-cloud-credential:/);
     expect(row.accessToken).not.toContain("cloud-access-token");
   });
 
@@ -183,7 +183,7 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
       targetCompanyId: "cloud-company-1",
       targetOrigin: "https://cloud.example.test",
       targetPrimaryHost: "cloud.example.test",
-      targetProduct: "Paperclip Cloud",
+      targetProduct: "ValadrienOs Cloud",
       targetSchemaMajor: 1,
       targetMaxChunkBytes: 8192,
     });
@@ -267,7 +267,7 @@ describeEmbeddedPostgres("cloud upstream persistence", () => {
   async function seedCompany(companyId: string) {
     await db.insert(companies).values({
       id: companyId,
-      name: "Paperclip",
+      name: "ValadrienOs",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
@@ -300,7 +300,7 @@ function cloudConnectionRow(input: { id: string; companyId: string }) {
     targetCompanyId: "cloud-company-1",
     targetOrigin: "https://cloud.example.test",
     targetPrimaryHost: "cloud.example.test",
-    targetProduct: "Paperclip Cloud",
+    targetProduct: "ValadrienOs Cloud",
     targetSchemaMajor: 1,
     targetMaxChunkBytes: 8192,
   };

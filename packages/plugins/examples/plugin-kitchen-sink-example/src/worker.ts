@@ -7,7 +7,7 @@ import {
   PLUGIN_STATE_SCOPE_KINDS,
   definePlugin,
   runWorker,
-  type PaperclipPlugin,
+  type ValadrienOsPlugin,
   type PluginContext,
   type PluginEntityQuery,
   type PluginEvent,
@@ -20,8 +20,8 @@ import {
   type ScopeKey,
   type ToolResult,
   type ToolRunContext,
-} from "@paperclipai/plugin-sdk";
-import type { Goal, Issue } from "@paperclipai/shared";
+} from "@valadrien-os/plugin-sdk";
+import type { Goal, Issue } from "@valadrien-os/shared";
 import {
   DEFAULT_CONFIG,
   JOB_KEYS,
@@ -843,7 +843,7 @@ async function registerToolHandlers(ctx: PluginContext): Promise<void> {
     TOOL_NAMES.companySummary,
     {
       displayName: "Kitchen Sink Company Summary",
-      description: "Summarizes current company counts from the Paperclip APIs.",
+      description: "Summarizes current company counts from the ValadrienOs APIs.",
       parametersSchema: { type: "object", properties: {} },
     },
     async (_params, runCtx): Promise<ToolResult> => {
@@ -946,7 +946,7 @@ async function registerJobs(ctx: PluginContext): Promise<void> {
   });
 }
 
-const plugin: PaperclipPlugin = definePlugin({
+const plugin: ValadrienOsPlugin = definePlugin({
   async setup(ctx) {
     currentContext = ctx;
     runtimeLaunchers.set(RUNTIME_LAUNCHER.id, RUNTIME_LAUNCHER);

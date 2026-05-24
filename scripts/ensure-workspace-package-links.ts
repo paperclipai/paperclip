@@ -17,7 +17,7 @@ function readJsonFile(filePath: string): Record<string, unknown> {
 
 function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
   const packagePaths = new Map<string, string>();
-  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+  const ignoredDirNames = new Set([".git", ".valadrien-os", "dist", "node_modules"]);
 
   function visit(dirPath: string) {
     const packageJsonPath = path.join(dirPath, "package.json");
@@ -90,10 +90,10 @@ async function ensureWorkspaceLinksCurrent(workspaceDir: string) {
   const mismatches = findWorkspaceLinkMismatches(workspaceDir);
   if (mismatches.length === 0) return;
 
-  console.log(`[paperclip] detected stale workspace package links for ${workspaceDir}; relinking dependencies...`);
+  console.log(`[valadrien-os] detected stale workspace package links for ${workspaceDir}; relinking dependencies...`);
   for (const mismatch of mismatches) {
     console.log(
-      `[paperclip]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}`,
+      `[valadrien-os]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}`,
     );
   }
 

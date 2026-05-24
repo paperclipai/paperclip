@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
+const SKIP_LLM = process.env.VALADRIEN_OS_E2E_SKIP_LLM !== "false";
 
 const AGENT_NAME = "CEO";
 const TASK_TITLE = "PAP-3413 planning mode evidence";

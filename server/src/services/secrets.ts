@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, like, ne, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   agents,
   companySecretBindings,
@@ -12,7 +12,7 @@ import {
   projects,
   routines,
   secretAccessEvents,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
@@ -27,7 +27,7 @@ import type {
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
   SecretVersionSelector,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
@@ -37,7 +37,7 @@ import {
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -1575,7 +1575,7 @@ export function secretService(db: Db) {
         providerConfigId?: string | null;
         value?: string | null;
         key?: string | null;
-        managedMode?: "paperclip_managed" | "external_reference";
+        managedMode?: "valadrien_os_managed" | "external_reference";
         description?: string | null;
         externalRef?: string | null;
         providerVersionRef?: string | null;
@@ -1598,7 +1598,7 @@ export function secretService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (duplicateKey) throw conflict(`Secret key already exists: ${key}`);
 
-      const managedMode = input.managedMode ?? "paperclip_managed";
+      const managedMode = input.managedMode ?? "valadrien_os_managed";
       const provider = getSecretProvider(input.provider);
       const providerConfig = await getSelectableRuntimeProviderConfig({
         companyId,
@@ -1608,10 +1608,10 @@ export function secretService(db: Db) {
       if (managedMode === "external_reference" && !input.externalRef?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
-      if (managedMode === "paperclip_managed" && input.externalRef?.trim()) {
+      if (managedMode === "valadrien_os_managed" && input.externalRef?.trim()) {
         throw unprocessable("Managed secrets cannot override externalRef");
       }
-      if (managedMode === "paperclip_managed" && !input.value?.trim()) {
+      if (managedMode === "valadrien_os_managed" && !input.value?.trim()) {
         throw unprocessable("Managed secrets require value");
       }
       const providerWriteContext = {
@@ -1682,7 +1682,7 @@ export function secretService(db: Db) {
           createdByUserId: actor?.userId ?? null,
         });
       } catch (error) {
-        if (managedMode === "paperclip_managed") {
+        if (managedMode === "valadrien_os_managed") {
           const cleaned = await cleanupPreparedProviderWrite({
             provider,
             prepared,
@@ -1727,7 +1727,7 @@ export function secretService(db: Db) {
           return secret;
         });
       } catch (error) {
-        if (managedMode === "paperclip_managed") {
+        if (managedMode === "valadrien_os_managed") {
           const cleaned = await cleanupPreparedProviderWrite({
             provider,
             prepared,
@@ -1921,7 +1921,7 @@ export function secretService(db: Db) {
         }
       }
       const deleting = patch.status === "deleted";
-      if (deleting && secret.managedMode === "paperclip_managed") {
+      if (deleting && secret.managedMode === "valadrien_os_managed") {
         throw unprocessable("Managed secrets must be deleted through DELETE /secrets/:id");
       }
       if (secret.managedMode !== "external_reference" && patch.externalRef !== undefined) {
@@ -1946,7 +1946,7 @@ export function secretService(db: Db) {
         );
       }
       if (
-        secret.managedMode === "paperclip_managed" &&
+        secret.managedMode === "valadrien_os_managed" &&
         patch.providerConfigId !== undefined &&
         patch.providerConfigId !== secret.providerConfigId
       ) {

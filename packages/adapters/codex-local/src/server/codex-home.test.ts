@@ -10,11 +10,11 @@ describe("codex managed home", () => {
   });
 
   it("treats a concurrently-created expected auth symlink as success", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-codex-home-"));
     const sharedCodexHome = path.join(root, "shared-codex-home");
-    const paperclipHome = path.join(root, "paperclip-home");
+    const valadrienOsHome = path.join(root, "valadrien-os-home");
     const managedCodexHome = path.join(
-      paperclipHome,
+      valadrienOsHome,
       "instances",
       "default",
       "companies",
@@ -40,8 +40,8 @@ describe("codex managed home", () => {
         prepareManagedCodexHome(
           {
             CODEX_HOME: sharedCodexHome,
-            PAPERCLIP_HOME: paperclipHome,
-            PAPERCLIP_INSTANCE_ID: "default",
+            VALADRIEN_OS_HOME: valadrienOsHome,
+            VALADRIEN_OS_INSTANCE_ID: "default",
           },
           async () => {},
           "company-1",

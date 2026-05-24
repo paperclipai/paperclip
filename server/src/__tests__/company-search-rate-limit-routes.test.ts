@@ -3,7 +3,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { issueRoutes } from "../routes/issues.js";
 import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
-import type { CompanySearchQuery, CompanySearchResponse } from "@paperclipai/shared";
+import type { CompanySearchQuery, CompanySearchResponse } from "@valadrien-os/shared";
 
 function createSearchResponse(query: CompanySearchQuery): CompanySearchResponse {
   return {

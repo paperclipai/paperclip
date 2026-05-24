@@ -1,19 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { sessionCodec as claudeSessionCodec } from "@paperclipai/adapter-claude-local/server";
-import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@paperclipai/adapter-codex-local/server";
+import { sessionCodec as claudeSessionCodec } from "@valadrien-os/adapter-claude-local/server";
+import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@valadrien-os/adapter-codex-local/server";
 import {
   sessionCodec as cursorSessionCodec,
   isCursorUnknownSessionError,
-} from "@paperclipai/adapter-cursor-local/server";
+} from "@valadrien-os/adapter-cursor-local/server";
 import {
   sessionCodec as geminiSessionCodec,
   isGeminiUnknownSessionError,
-} from "@paperclipai/adapter-gemini-local/server";
+} from "@valadrien-os/adapter-gemini-local/server";
 import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
-} from "@paperclipai/adapter-opencode-local/server";
-import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-acpx-local/server";
+} from "@valadrien-os/adapter-opencode-local/server";
+import { sessionCodec as acpxSessionCodec } from "@valadrien-os/adapter-acpx-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -111,7 +111,7 @@ describe("adapter session codecs", () => {
 
   it("preserves acpx session params required for compatibility checks", () => {
     const parsed = acpxSessionCodec.deserialize({
-      sessionKey: "paperclip:company:agent:task:fingerprint",
+      sessionKey: "valadrien-os:company:agent:task:fingerprint",
       runtimeSessionName: "runtime-session-1",
       acpxRecordId: "record-1",
       acpSessionId: "acp-session-1",
@@ -131,7 +131,7 @@ describe("adapter session codecs", () => {
     });
 
     expect(parsed).toMatchObject({
-      sessionKey: "paperclip:company:agent:task:fingerprint",
+      sessionKey: "valadrien-os:company:agent:task:fingerprint",
       runtimeSessionName: "runtime-session-1",
       acpxRecordId: "record-1",
       acpSessionId: "acp-session-1",

@@ -103,19 +103,19 @@ describe("NewAgentDialog", () => {
     createCompanyInviteMock.mockResolvedValue({
       id: "invite-1",
       token: "agent-token",
-      inviteUrl: "https://paperclip.local/invite/agent-token",
+      inviteUrl: "https://valadrien-os.local/invite/agent-token",
       expiresAt: "2026-04-20T00:00:00.000Z",
       allowedJoinTypes: "agent",
       humanRole: null,
-      onboardingTextUrl: "https://paperclip.local/api/invites/agent-token/onboarding.txt",
+      onboardingTextUrl: "https://valadrien-os.local/api/invites/agent-token/onboarding.txt",
       onboardingTextPath: "/api/invites/agent-token/onboarding.txt",
     });
     getInviteOnboardingMock.mockResolvedValue({
       onboarding: {
         connectivity: {
-          connectionCandidates: ["https://paperclip.local"],
+          connectionCandidates: ["https://valadrien-os.local"],
           testResolutionEndpoint: {
-            url: "https://paperclip.local/api/invites/agent-token/test-resolution",
+            url: "https://valadrien-os.local/api/invites/agent-token/test-resolution",
           },
         },
       },
@@ -179,7 +179,7 @@ describe("NewAgentDialog", () => {
     });
     expect(getInviteOnboardingMock).toHaveBeenCalledWith("agent-token");
     expect(clipboardWriteTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("You're invited to join a Paperclip company as an agent."),
+      expect.stringContaining("You're invited to join a ValadrienOs company as an agent."),
     );
     expect(container.textContent).toContain("Agent onboarding prompt");
     expect(container.textContent).toContain("Send this prompt to the external agent");

@@ -16,8 +16,8 @@ import {
 describe("resolveEnvironmentExecutionTarget", () => {
   beforeEach(() => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
-    delete process.env.PAPERCLIP_API_URL;
-    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.VALADRIEN_OS_API_URL;
+    delete process.env.VALADRIEN_OS_RUNTIME_API_URL;
   });
 
   it("uses a bounded default cwd for sandbox targets when lease metadata omits remoteCwd", async () => {
@@ -58,7 +58,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
-  it("keeps sandbox targets on bridge mode even when lease metadata includes a Paperclip API URL", async () => {
+  it("keeps sandbox targets on bridge mode even when lease metadata includes a ValadrienOs API URL", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: {
@@ -81,7 +81,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       },
       leaseId: "lease-1",
       leaseMetadata: {
-        paperclipApiUrl: "https://paperclip.example.test",
+        valadrienOsApiUrl: "https://valadrien-os.example.test",
       },
       lease: null,
       environmentRuntime: null,
@@ -93,8 +93,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
       providerKey: "fake-plugin",
       remoteCwd: DEFAULT_SANDBOX_REMOTE_CWD,
     });
-    expect(target).not.toHaveProperty("paperclipApiUrl");
-    expect(target).not.toHaveProperty("paperclipTransport");
+    expect(target).not.toHaveProperty("valadrienOsApiUrl");
+    expect(target).not.toHaveProperty("valadrienOsTransport");
   });
 
   it("passes through a provider-declared sandbox shell command from lease metadata", async () => {
@@ -139,8 +139,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
       config: {
         host: "ssh.example.test",
         port: 22,
-        username: "paperclip",
-        remoteWorkspacePath: "/srv/paperclip",
+        username: "valadrien-os",
+        remoteWorkspacePath: "/srv/valadrien-os",
         privateKey: "PRIVATE KEY",
         knownHosts: "[ssh.example.test]:22 ssh-ed25519 AAAA",
         strictHostKeyChecking: true,
@@ -165,17 +165,17 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(target).toMatchObject({
       kind: "remote",
       transport: "ssh",
-      remoteCwd: "/srv/paperclip",
+      remoteCwd: "/srv/valadrien-os",
       leaseId: "lease-ssh-1",
       environmentId: "env-ssh-1",
       spec: {
         host: "ssh.example.test",
         port: 22,
-        username: "paperclip",
-        remoteWorkspacePath: "/srv/paperclip",
-        remoteCwd: "/srv/paperclip",
+        username: "valadrien-os",
+        remoteWorkspacePath: "/srv/valadrien-os",
+        remoteCwd: "/srv/valadrien-os",
       },
     });
-    expect(target).not.toHaveProperty("paperclipApiUrl");
+    expect(target).not.toHaveProperty("valadrienOsApiUrl");
   });
 });

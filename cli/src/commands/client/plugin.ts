@@ -5,7 +5,7 @@ import {
   scaffoldPluginProject,
   shellQuote,
   type ScaffoldPluginOptions,
-} from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
+} from "../../../../packages/plugins/create-valadrien-os-plugin/src/index.js";
 import pc from "picocolors";
 import {
   addCommonClientOptions,
@@ -138,7 +138,7 @@ export function buildPluginInstallRequest(
 export function renderLocalPluginInstallHint(packagePath: string): string {
   return [
     pc.dim("Local plugin installs run trusted local code from your machine."),
-    pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; Paperclip watches rebuilt dist output and reloads the plugin worker.`),
+    pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; ValadrienOs watches rebuilt dist output and reloads the plugin worker.`),
   ].join("\n");
 }
 
@@ -196,7 +196,7 @@ export function buildPluginInitNextCommands(outputDir: string): string[] {
     `cd ${quotedOutputDir}`,
     "pnpm install",
     "pnpm dev",
-    `paperclipai plugin install ${quotedOutputDir}`,
+    `valadrien-os plugin install ${quotedOutputDir}`,
   ];
 }
 
@@ -231,7 +231,7 @@ export function registerPluginCommands(program: Command): void {
   addCommonClientOptions(
     plugin
       .command("init <packageName>")
-      .description("Scaffold a local Paperclip plugin project")
+      .description("Scaffold a local ValadrienOs plugin project")
       .option("--output <dir>", "Directory to create the plugin folder in")
       .addOption(
         new Option("--template <template>", "Starter template")
@@ -245,7 +245,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--display-name <name>", "Manifest display name")
       .option("--description <description>", "Manifest description")
       .option("--author <author>", "Manifest author")
-      .option("--sdk-path <path>", "Local @paperclipai/plugin-sdk package path")
+      .option("--sdk-path <path>", "Local @valadrien-os/plugin-sdk package path")
       .action((packageName: string, opts: PluginInitOptions) => {
         try {
           const result = runPluginInitCommand(packageName, opts);
@@ -305,9 +305,9 @@ export function registerPluginCommands(program: Command): void {
       .description(
         "Install a plugin from a local path or npm package.\n" +
           "  Examples:\n" +
-          "    paperclipai plugin install ./my-plugin              # local path\n" +
-          "    paperclipai plugin install @acme/plugin-linear      # npm package\n" +
-          "    paperclipai plugin install @acme/plugin-linear@1.2  # pinned version",
+          "    valadrien-os plugin install ./my-plugin              # local path\n" +
+          "    valadrien-os plugin install @acme/plugin-linear      # npm package\n" +
+          "    valadrien-os plugin install @acme/plugin-linear@1.2  # pinned version",
       )
       .option("-l, --local", "Treat <package> as a local filesystem path", false)
       .option("--version <version>", "Specific npm version to install (npm packages only)")
@@ -523,7 +523,7 @@ export function registerPluginCommands(program: Command): void {
             console.log(
               `${pc.bold(ex.displayName)}  ${pc.dim(ex.pluginKey)}\n` +
                 `  ${ex.description}\n` +
-                `  ${pc.cyan(`paperclipai plugin install ${ex.localPath}`)}`,
+                `  ${pc.cyan(`valadrien-os plugin install ${ex.localPath}`)}`,
             );
           }
         } catch (err) {

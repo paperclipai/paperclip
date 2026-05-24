@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   activityLog,
   agentWakeupRequests,
@@ -27,7 +27,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
-} from "@paperclipai/db";
+} from "@valadrien-os/db";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadata,
@@ -39,7 +39,7 @@ import type {
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
   SuccessfulRunHandoffState,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
@@ -49,7 +49,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -684,9 +684,9 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
 }
 
 const LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS = [
-  "plugin:paperclipai.content-machine:case",
-  "plugin:paperclipai.content-machine:evaluation",
-  "plugin:paperclipai.content-machine:source-sync",
+  "plugin:valadrien-os.content-machine:case",
+  "plugin:valadrien-os.content-machine:evaluation",
+  "plugin:valadrien-os.content-machine:source-sync",
 ] as const;
 
 function nonPluginOperationIssueCondition() {

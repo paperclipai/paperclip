@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean } from "@valadrien-os/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -59,7 +59,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
-  const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
+  const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "valadrien-os-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
 

@@ -20,7 +20,7 @@ function usage() {
       "  node scripts/bootstrap-npm-package.mjs <package-name-or-dir> [--publish --otp <code>] [--skip-build]",
       "",
       "Examples:",
-      "  node scripts/bootstrap-npm-package.mjs @paperclipai/adapter-acpx-local",
+      "  node scripts/bootstrap-npm-package.mjs @valadrien-os/adapter-acpx-local",
       "  node scripts/bootstrap-npm-package.mjs packages/adapters/acpx-local --publish",
       "",
     ].join("\n"),
@@ -127,7 +127,7 @@ function ensureNpmAuth() {
       [
         "npm auth check failed.",
         "This usually means the machine is either not logged into npm yet or has a stale token in ~/.npmrc.",
-        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @paperclipai scope, then rerun with --publish.",
+        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @valadrien-os scope, then rerun with --publish.",
         "Do not use this auth flow in CI; it is only for the one-time human bootstrap publish.",
       ].join(" "),
     );
@@ -179,7 +179,7 @@ function printNextSteps(pkg) {
       "Publish succeeded. Next:",
       `1. Open https://www.npmjs.com/package/${pkg.name}`,
       "2. Go to Settings -> Trusted publishing",
-      "3. Add repository paperclipai/paperclip",
+      "3. Add repository ValDola-stack/valadrien-os",
       "4. Set workflow filename to release.yml",
       "5. Optionally enable Settings -> Publishing access -> Require two-factor authentication and disallow tokens",
       "",

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@valadrien-os/shared";
 import type { RunForIssue } from "@/api/activity";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -47,7 +47,7 @@ import {
   storybookIssueRuns,
   storybookIssues,
   storybookProjects,
-} from "../fixtures/paperclipData";
+} from "../fixtures/valadrienOsData";
 
 const companyId = "company-storybook";
 const issueListViewKey = "storybook:issue-management:list";
@@ -73,9 +73,9 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="paperclip-story__frame overflow-hidden">
+    <section className="valadrien-os-story__frame overflow-hidden">
       <div className="border-b border-border px-5 py-4">
-        <div className="paperclip-story__label">{eyebrow}</div>
+        <div className="valadrien-os-story__label">{eyebrow}</div>
         <h2 className="mt-1 text-xl font-semibold">{title}</h2>
       </div>
       <div className="p-5">{children}</div>
@@ -105,7 +105,7 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
         status: "active",
         user: {
           id: "user-board",
-          email: "riley@paperclip.local",
+          email: "riley@valadrien-os.local",
           name: "Riley Board",
           image: null,
         },
@@ -570,12 +570,12 @@ function QuicklookSurfaces() {
 function IssueManagementStories() {
   return (
     <StorybookData>
-      <div className="paperclip-story">
-        <main className="paperclip-story__inner space-y-6">
-          <section className="paperclip-story__frame p-6">
+      <div className="valadrien-os-story">
+        <main className="valadrien-os-story__inner space-y-6">
+          <section className="valadrien-os-story__frame p-6">
             <div className="flex flex-wrap items-start justify-between gap-5">
               <div>
-                <div className="paperclip-story__label">Issue management</div>
+                <div className="valadrien-os-story__label">Issue management</div>
                 <h1 className="mt-2 text-3xl font-semibold tracking-tight">List, detail, filters, runs, and workspace states</h1>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
                   Fixture-backed issue management stories cover the operational states used by the board when reviewing,
@@ -680,7 +680,7 @@ function IssueManagementStories() {
             ].map((item) => {
               const Icon = item.icon;
               return (
-                <Card key={item.label} className="paperclip-story__frame shadow-none">
+                <Card key={item.label} className="valadrien-os-story__frame shadow-none">
                   <CardHeader>
                     <Icon className="h-4 w-4 text-muted-foreground" />
                     <CardTitle>{item.label}</CardTitle>
@@ -718,12 +718,12 @@ export const FullSurfaceMatrix: Story = {};
 function ModelProfileLedgerStandalone() {
   return (
     <StorybookData>
-      <div className="paperclip-story">
-        <main className="paperclip-story__inner space-y-6">
-          <section className="paperclip-story__frame p-6">
+      <div className="valadrien-os-story">
+        <main className="valadrien-os-story__inner space-y-6">
+          <section className="valadrien-os-story__frame p-6">
             <div className="flex flex-wrap items-start justify-between gap-5">
               <div>
-                <div className="paperclip-story__label">IssueRunLedger</div>
+                <div className="valadrien-os-story__label">IssueRunLedger</div>
                 <h1 className="mt-2 text-3xl font-semibold tracking-tight">Model profile badges</h1>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-muted-foreground">
                   Run ledger isolated to the cheap-lane visual states: an emerald applied=cheap badge, an amber

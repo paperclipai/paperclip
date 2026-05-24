@@ -8,7 +8,7 @@ import {
   updateIssueSchema,
   type Issue,
   type IssueComment,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import {
   addCommonClientOptions,
   formatInlineRecord,

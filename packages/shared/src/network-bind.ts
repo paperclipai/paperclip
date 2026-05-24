@@ -97,7 +97,7 @@ export function resolveRuntimeBind(input: {
           host: legacyHost ?? LOOPBACK_BIND_HOST,
           customBindHost,
           errors: [
-            "server.bind=tailnet requires a detected Tailscale address or PAPERCLIP_TAILNET_BIND_HOST",
+            "server.bind=tailnet requires a detected Tailscale address or VALADRIEN_OS_TAILNET_BIND_HOST",
           ],
         };
     }

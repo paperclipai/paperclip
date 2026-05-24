@@ -12,7 +12,7 @@ export const companySecrets = pgTable(
     name: text("name").notNull(),
     provider: text("provider").notNull().default("local_encrypted"),
     status: text("status").notNull().default("active"),
-    managedMode: text("managed_mode").notNull().default("paperclip_managed"),
+    managedMode: text("managed_mode").notNull().default("valadrien_os_managed"),
     externalRef: text("external_ref"),
     providerConfigId: uuid("provider_config_id").references(() => companySecretProviderConfigs.id, { onDelete: "set null" }),
     providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),

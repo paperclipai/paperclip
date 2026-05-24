@@ -1,15 +1,15 @@
 {
-  "name": "@paperclipai/plugin-cloudflare-sandbox",
+  "name": "@valadrien-os/plugin-cloudflare-sandbox",
   "version": "0.1.0",
-  "description": "Cloudflare sandbox provider plugin for Paperclip environments",
+  "description": "Cloudflare sandbox provider plugin for Valadrien OS environments",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/ValDola-stack/valadrien-os",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/ValDola-stack/valadrien-os/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/ValDola-stack/valadrien-os",
     "directory": "packages/plugins/sandbox-providers/cloudflare"
   },
   "type": "module",
@@ -31,23 +31,23 @@
     "dist",
     "bridge-template"
   ],
-  "paperclipPlugin": {
+  "valadrienOsPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js"
   },
   "keywords": [
-    "paperclip",
+    "valadrien-os",
     "plugin",
     "sandbox",
     "cloudflare"
   ],
   "scripts": {
     "postinstall": "node ../../../../scripts/link-plugin-dev-sdk.mjs",
-    "prebuild": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm -C ../../../.. --filter @valadrien-os/plugin-sdk ensure-build-deps",
     "build": "rm -rf dist && tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
-    "test": "pnpm -C ../../../.. --filter @paperclipai/plugin-sdk ensure-build-deps && vitest run --config vitest.config.ts",
+    "typecheck": "pnpm -C ../../../.. --filter @valadrien-os/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "test": "pnpm -C ../../../.. --filter @valadrien-os/plugin-sdk ensure-build-deps && vitest run --config vitest.config.ts",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../../../../scripts/generate-plugin-package-json.mjs",
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },

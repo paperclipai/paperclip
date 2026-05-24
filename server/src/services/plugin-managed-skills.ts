@@ -1,15 +1,15 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
 import {
   pluginManagedResources,
-} from "@paperclipai/db";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+} from "@valadrien-os/db";
+import { normalizeAgentUrlKey } from "@valadrien-os/shared";
 import type {
   CompanySkill,
-  PaperclipPluginManifestV1,
+  ValadrienOsPluginManifestV1,
   PluginManagedSkillDeclaration,
   PluginManagedSkillResolution,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 import { notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { companySkillService } from "./company-skills.js";
@@ -19,7 +19,7 @@ const MANAGED_SKILL_RESOURCE_KIND = "skill";
 interface PluginManagedSkillServiceOptions {
   pluginId: string;
   pluginKey: string;
-  manifest?: PaperclipPluginManifestV1 | null;
+  manifest?: ValadrienOsPluginManifestV1 | null;
 }
 
 function pluginKeySlug(pluginKey: string) {

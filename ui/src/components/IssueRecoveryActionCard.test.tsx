@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AnchorHTMLAttributes, ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Agent, IssueRecoveryAction } from "@paperclipai/shared";
+import type { Agent, IssueRecoveryAction } from "@valadrien-os/shared";
 import { IssueRecoveryActionCard, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 
 vi.mock("@/lib/router", () => ({

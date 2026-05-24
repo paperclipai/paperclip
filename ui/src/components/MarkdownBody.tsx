@@ -55,7 +55,7 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
-      className="paperclip-markdown-issue-ref"
+      className="valadrien-os-markdown-issue-ref"
       title={title}
       aria-label={issueLabel}
     >
@@ -200,8 +200,8 @@ function createWikiLinkNode(href: string, wikiLink: ParsedWikiLink): MarkdownAst
     title: null,
     data: {
       hProperties: {
-        "data-paperclip-wiki-link": "true",
-        "data-paperclip-wiki-target": wikiLink.target,
+        "data-valadrien-os-wiki-link": "true",
+        "data-valadrien-os-wiki-target": wikiLink.target,
       },
     },
     children: [{ type: "text", value: wikiLink.label }],
@@ -406,7 +406,7 @@ function CodeBlock({
   const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
 
   return (
-    <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
+    <div className="valadrien-os-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
       <pre
         {...preProps}
         ref={preRef}
@@ -425,7 +425,7 @@ function CodeBlock({
         {children}
       </pre>
       <div
-        className="paperclip-markdown-codeblock-actions"
+        className="valadrien-os-markdown-codeblock-actions"
         data-active={copied || failed || wrapLines || undefined}
       >
         <button
@@ -433,19 +433,19 @@ function CodeBlock({
           onClick={() => setWrapLines((value) => !value)}
           aria-label={wrapLabel}
           title={wrapLabel}
-          className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-wrap"
+          className="valadrien-os-markdown-codeblock-action valadrien-os-markdown-codeblock-wrap"
           aria-pressed={wrapLines}
           data-active={wrapLines || undefined}
         >
           <WrapText aria-hidden="true" className="h-3.5 w-3.5" />
-          <span className="paperclip-markdown-codeblock-action-label">{wrapLabel}</span>
+          <span className="valadrien-os-markdown-codeblock-action-label">{wrapLabel}</span>
         </button>
         <button
           type="button"
           onClick={handleCopy}
           aria-label="Copy code"
           title={copyLabel}
-          className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
+          className="valadrien-os-markdown-codeblock-action valadrien-os-markdown-codeblock-copy"
           data-copied={copied || undefined}
           data-failed={failed || undefined}
         >
@@ -454,7 +454,7 @@ function CodeBlock({
           ) : (
             <Copy aria-hidden="true" className="h-3.5 w-3.5" />
           )}
-          <span className="paperclip-markdown-codeblock-action-label">{copyLabel}</span>
+          <span className="valadrien-os-markdown-codeblock-action-label">{copyLabel}</span>
         </button>
       </div>
     </div>
@@ -480,7 +480,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
           fontFamily: "inherit",
           suppressErrorRendering: true,
         });
-        const rendered = await mermaid.render(`paperclip-mermaid-${renderId}`, source);
+        const rendered = await mermaid.render(`valadrien-os-mermaid-${renderId}`, source);
         if (!active) return;
         setSvg(rendered.svg);
       })
@@ -499,15 +499,15 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   }, [darkMode, renderId, source]);
 
   return (
-    <div className="paperclip-mermaid">
+    <div className="valadrien-os-mermaid">
       {svg ? (
         <div dangerouslySetInnerHTML={{ __html: svg }} />
       ) : (
         <>
-          <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
+          <p className={cn("valadrien-os-mermaid-status", error && "valadrien-os-mermaid-status-error")}>
             {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
           </p>
-          <pre className="paperclip-mermaid-source">
+          <pre className="valadrien-os-mermaid-source">
             <code className="language-mermaid">{source}</code>
           </pre>
         </>
@@ -556,7 +556,7 @@ export function MarkdownBody({
       </blockquote>
     ),
     table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <div className="valadrien-os-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
         <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
           {tableChildren}
         </table>
@@ -586,7 +586,7 @@ export function MarkdownBody({
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
       const dataProps = anchorProps as Record<string, unknown>;
-      const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
+      const isWikiLink = dataProps["data-valadrien-os-wiki-link"] === "true";
       if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {
         return (
           <Link
@@ -626,9 +626,9 @@ export function MarkdownBody({
           <a
             href={targetHref}
             className={cn(
-              "paperclip-mention-chip",
-              `paperclip-mention-chip--${parsed.kind}`,
-              parsed.kind === "project" && "paperclip-project-mention-chip",
+              "valadrien-os-mention-chip",
+              `valadrien-os-mention-chip--${parsed.kind}`,
+              parsed.kind === "project" && "valadrien-os-project-mention-chip",
             )}
             data-mention-kind={parsed.kind}
             style={{ ...mergeWrapStyle(linkStyle as React.CSSProperties | undefined), ...mentionChipInlineStyle(parsed) }}
@@ -677,7 +677,7 @@ export function MarkdownBody({
   return (
     <div
       className={cn(
-        "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
+        "valadrien-os-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
         className,
       )}

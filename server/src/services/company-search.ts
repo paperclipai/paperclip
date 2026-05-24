@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companies, issues, projects } from "@paperclipai/db";
+import type { Db } from "@valadrien-os/db";
+import { agents, companies, issues, projects } from "@valadrien-os/db";
 import {
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
@@ -13,7 +13,7 @@ import {
   type CompanySearchResultType,
   type CompanySearchScope,
   type CompanySearchSnippet,
-} from "@paperclipai/shared";
+} from "@valadrien-os/shared";
 
 const MIN_TOKEN_LENGTH = 2;
 const MIN_FUZZY_QUERY_LENGTH = 4;

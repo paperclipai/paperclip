@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Project } from "@valadrien-os/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -188,7 +188,7 @@ function pluginSlot(overrides: Record<string, unknown> = {}) {
     exportName: "ExecutionWorkspaceChangesTab",
     entityTypes: ["execution_workspace"],
     pluginId: "plugin-1",
-    pluginKey: "paperclip.workspace-diff",
+    pluginKey: "valadrien-os.workspace-diff",
     pluginDisplayName: "Workspace Changes",
     pluginVersion: "0.1.0",
     ...overrides,

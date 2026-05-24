@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, createDb, issues } from "@paperclipai/db";
+import { companies, createDb, issues } from "@valadrien-os/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -25,7 +25,7 @@ describeEmbeddedPostgres("issue identifier routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-identifier-routes-");
+    tempDb = await startEmbeddedPostgresTestDatabase("valadrien-os-issue-identifier-routes-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 

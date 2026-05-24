@@ -255,12 +255,12 @@ export async function prepareSandboxManagedRuntime(input: {
   assets?: SandboxManagedRuntimeAsset[];
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".valadrien-os-runtime", input.adapterKey);
   const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
-    exclude: [...new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
+    exclude: [...new Set([".valadrien-os-runtime", ...(input.preserveAbsentOnRestore ?? []), ...(input.workspaceExclude ?? [])])],
   });
 
-  await withTempDir("paperclip-sandbox-sync-", async (tempDir) => {
+  await withTempDir("valadrien-os-sandbox-sync-", async (tempDir) => {
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
     await createTarballFromDirectory({
       localDir: input.workspaceLocalDir,
@@ -271,7 +271,7 @@ export async function prepareSandboxManagedRuntime(input: {
     const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
     await input.client.makeDir(runtimeRootDir);
     await input.client.writeFile(remoteWorkspaceTar, toArrayBuffer(workspaceTarBytes));
-    const preservedNames = new Set([".paperclip-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
+    const preservedNames = new Set([".valadrien-os-runtime", ...(input.preserveAbsentOnRestore ?? [])]);
     const findPreserveArgs = [...preservedNames].map((entry) => `! -name ${shellQuote(entry)}`).join(" ");
     await input.client.run(
       `sh -c ${shellQuote(
@@ -318,7 +318,7 @@ export async function prepareSandboxManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     restoreWorkspace: async () => {
-      await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
+      await withTempDir("valadrien-os-sandbox-restore-", async (tempDir) => {
         const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
         await input.client.run(
           `sh -c ${shellQuote(

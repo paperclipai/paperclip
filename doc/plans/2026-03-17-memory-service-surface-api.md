@@ -1,16 +1,16 @@
-# Paperclip Memory Service Plan
+# Valadrien OS Memory Service Plan
 
 ## Goal
 
-Define a Paperclip memory service and surface API that can sit above multiple memory backends, while preserving Paperclip's control-plane requirements:
+Define a Valadrien OS memory service and surface API that can sit above multiple memory backends, while preserving Valadrien OS's control-plane requirements:
 
 - company scoping
 - auditability
-- provenance back to Paperclip work objects
+- provenance back to Valadrien OS work objects
 - budget and cost visibility
 - plugin-first extensibility
 
-This plan is based on the external landscape summarized in `doc/memory-landscape.md`, the AWS AgentCore comparison captured in [PAP-1274](/PAP/issues/PAP-1274), and the current Paperclip architecture in:
+This plan is based on the external landscape summarized in `doc/memory-landscape.md`, the AWS AgentCore comparison captured in [PAP-1274](/PAP/issues/PAP-1274), and the current Valadrien OS architecture in:
 
 - `doc/SPEC-implementation.md`
 - `doc/plugins/PLUGIN_SPEC.md`
@@ -19,7 +19,7 @@ This plan is based on the external landscape summarized in `doc/memory-landscape
 
 ## Recommendation In One Sentence
 
-Paperclip should add a company-scoped memory control plane with company default plus agent override resolution, shared hook delivery, and full operation attribution, while leaving extraction and storage semantics to built-ins and plugins.
+Valadrien OS should add a company-scoped memory control plane with company default plus agent override resolution, shared hook delivery, and full operation attribution, while leaving extraction and storage semantics to built-ins and plugins.
 
 ## Product Decisions
 
@@ -51,15 +51,15 @@ Agents, tools, and background hooks resolve the active provider by key, not by h
 
 ### 3. Plugins are the primary provider path
 
-Built-ins are useful for a zero-config local path, but most providers should arrive through the existing Paperclip plugin runtime.
+Built-ins are useful for a zero-config local path, but most providers should arrive through the existing Valadrien OS plugin runtime.
 
-That keeps the core small and matches the broader Paperclip direction that specialized knowledge systems live at the edges.
+That keeps the core small and matches the broader Valadrien OS direction that specialized knowledge systems live at the edges.
 
-### 4. Paperclip owns routing, provenance, and policy
+### 4. Valadrien OS owns routing, provenance, and policy
 
-Providers should not decide how Paperclip entities map to governance.
+Providers should not decide how Valadrien OS entities map to governance.
 
-Paperclip core should own:
+Valadrien OS core should own:
 
 - binding resolution
 - who is allowed to call a memory operation
@@ -68,13 +68,13 @@ Paperclip core should own:
 - how usage and costs are attributed
 - how operators inspect what happened
 
-### 5. Paperclip exposes shared hooks, providers own extraction
+### 5. Valadrien OS exposes shared hooks, providers own extraction
 
-Paperclip should emit a common set of memory hooks that built-ins, third-party adapters, and plugins can all use.
+Valadrien OS should emit a common set of memory hooks that built-ins, third-party adapters, and plugins can all use.
 
-Those hooks should pass structured Paperclip source objects plus normalized metadata. The provider then decides how to extract from those objects.
+Those hooks should pass structured Valadrien OS source objects plus normalized metadata. The provider then decides how to extract from those objects.
 
-Paperclip should not force one extraction pipeline or one canonical "memory text" transform before the provider sees the input.
+Valadrien OS should not force one extraction pipeline or one canonical "memory text" transform before the provider sees the input.
 
 ### 6. Automatic memory should start narrow, but the hook surface should be general
 
@@ -93,7 +93,7 @@ The hook registry itself should be general enough that other providers can subsc
 
 For the open-source version, changing memory bindings should not require approvals.
 
-Paperclip should still log those changes in activity and preserve full auditability. Approval-gated memory governance can remain an enterprise or future policy layer.
+Valadrien OS should still log those changes in activity and preserve full auditability. Approval-gated memory governance can remain an enterprise or future policy layer.
 
 ## Proposed Concepts
 
@@ -116,7 +116,7 @@ This is the object selected by key.
 
 ### Memory binding target
 
-A mapping from a Paperclip target to a binding.
+A mapping from a Valadrien OS target to a binding.
 
 V1 targets:
 
@@ -125,7 +125,7 @@ V1 targets:
 
 ### Memory scope
 
-The normalized Paperclip scope passed into a provider request.
+The normalized Valadrien OS scope passed into a provider request.
 
 At minimum:
 
@@ -154,7 +154,7 @@ Supported source kinds should include:
 
 ### Memory hook
 
-A normalized trigger emitted by Paperclip when something memory-relevant happens.
+A normalized trigger emitted by Valadrien OS when something memory-relevant happens.
 
 Initial hook kinds:
 
@@ -166,13 +166,13 @@ Initial hook kinds:
 
 ### Memory operation
 
-A normalized capture, record-write, query, browse, get, correction, or delete action performed through Paperclip.
+A normalized capture, record-write, query, browse, get, correction, or delete action performed through Valadrien OS.
 
-Paperclip should log every memory operation whether the provider is local, plugin-backed, or external.
+Valadrien OS should log every memory operation whether the provider is local, plugin-backed, or external.
 
 ## Required Adapter Contract
 
-The required core should be small enough to fit `memsearch`, `mem0`, `Memori`, `MemOS`, or `OpenViking`, but strong enough to satisfy Paperclip's attribution and inspectability requirements.
+The required core should be small enough to fit `memsearch`, `mem0`, `Memori`, `MemOS`, or `OpenViking`, but strong enough to satisfy Valadrien OS's attribution and inspectability requirements.
 
 ```ts
 export interface MemoryAdapterCapabilities {
@@ -342,7 +342,7 @@ export interface MemoryAdapter {
 }
 ```
 
-This contract intentionally does not force a provider to expose its internal graph, file tree, or ontology. It does require enough structure for Paperclip to browse, attribute, and audit what happened.
+This contract intentionally does not force a provider to expose its internal graph, file tree, or ontology. It does require enough structure for Valadrien OS to browse, attribute, and audit what happened.
 
 ## Optional Adapter Surfaces
 
@@ -367,9 +367,9 @@ The broad direction still looks right:
 - AWS treats browse and list operations as first-class APIs, not ad hoc debugging helpers
 - AWS exposes extraction jobs instead of hiding asynchronous maintenance completely
 
-That lines up with the Paperclip plan at a high level: provider configuration, scoped writes, scoped retrieval, provider-managed extraction as a capability, and a browse and inspect surface.
+That lines up with the Valadrien OS plan at a high level: provider configuration, scoped writes, scoped retrieval, provider-managed extraction as a capability, and a browse and inspect surface.
 
-The concrete changes Paperclip should take from AWS are:
+The concrete changes Valadrien OS should take from AWS are:
 
 ### 1. Keep config APIs separate from runtime traffic
 
@@ -384,7 +384,7 @@ This keeps governance changes distinct from high-volume memory traffic.
 
 AWS does not flatten everything into one write primitive. It distinguishes captured events from durable memory records.
 
-Paperclip should do the same:
+Valadrien OS should do the same:
 
 - `capture(...)` for raw run, comment, document, or activity residue
 - `upsertRecords(...)` for curated durable facts and notes
@@ -393,7 +393,7 @@ That is a better fit for provider-managed extraction and for manual curation flo
 
 ### 3. Make list and browse first-class
 
-AWS exposes list and retrieve surfaces directly. Paperclip should not make browse optional at the portable layer.
+AWS exposes list and retrieve surfaces directly. Valadrien OS should not make browse optional at the portable layer.
 
 The minimum portable surface should include:
 
@@ -407,7 +407,7 @@ Provider-native graph or file browsing can remain optional beyond that.
 
 AWS consistently uses pagination on browse-heavy APIs.
 
-Paperclip should add cursor-based pagination to:
+Valadrien OS should add cursor-based pagination to:
 
 - record listing
 - extraction job listing
@@ -419,7 +419,7 @@ Prompt hydration can continue to use `topK`, but operator surfaces need cursors.
 
 AWS uses `actorId`, `sessionId`, `namespace`, and `memoryStrategyId` heavily.
 
-Paperclip should keep its own control-plane-centric model, but the adapter contract needs obvious places to map those concepts:
+Valadrien OS should keep its own control-plane-centric model, but the adapter contract needs obvious places to map those concepts:
 
 - `sessionKey`
 - `namespace`
@@ -428,7 +428,7 @@ The provider adapter can map them to AWS or other vendor-specific identifiers wi
 
 ### 6. Treat asynchronous extraction as a real operational surface
 
-AWS exposes extraction jobs explicitly. Paperclip should too.
+AWS exposes extraction jobs explicitly. Valadrien OS should too.
 
 Operators should be able to see:
 
@@ -437,9 +437,9 @@ Operators should be able to see:
 - which hook or source caused the work
 - whether a retry is available
 
-### 7. Keep Paperclip provenance primary
+### 7. Keep Valadrien OS provenance primary
 
-Paperclip should continue to center:
+Valadrien OS should continue to center:
 
 - `companyId`
 - `agentId`
@@ -450,11 +450,11 @@ Paperclip should continue to center:
 
 The lesson from AWS is to support clean mapping into provider-specific models, not to let provider identifiers take over the core product model.
 
-## What Paperclip Should Persist
+## What Valadrien OS Should Persist
 
-Paperclip should not mirror the full provider memory corpus into Postgres unless the provider is a Paperclip-managed local provider.
+Valadrien OS should not mirror the full provider memory corpus into Postgres unless the provider is a Valadrien OS-managed local provider.
 
-Paperclip core should persist:
+Valadrien OS core should persist:
 
 - memory bindings
 - company default and agent override resolution targets
@@ -471,7 +471,7 @@ For external providers, the actual memory payload can remain in the provider.
 
 ### Shared hook surface
 
-Paperclip should expose one shared hook system for memory.
+Valadrien OS should expose one shared hook system for memory.
 
 That same system must be available to:
 
@@ -496,16 +496,16 @@ The payload should include structured objects where possible so the provider can
 These should be low-risk and easy to reason about:
 
 1. `pre_run_hydrate`
-   Before an agent run starts, Paperclip may call `query(... intent = "agent_preamble")` using the active binding.
+   Before an agent run starts, Valadrien OS may call `query(... intent = "agent_preamble")` using the active binding.
 
 2. `post_run_capture`
-   After a run finishes, Paperclip may call `capture(...)` with structured run output, excerpts, and provenance.
+   After a run finishes, Valadrien OS may call `capture(...)` with structured run output, excerpts, and provenance.
 
 3. `issue_comment_capture`
-   When enabled on the binding, Paperclip may call `capture(...)` for selected issue comments.
+   When enabled on the binding, Valadrien OS may call `capture(...)` for selected issue comments.
 
 4. `issue_document_capture`
-   When enabled on the binding, Paperclip may call `capture(...)` for selected issue documents.
+   When enabled on the binding, Valadrien OS may call `capture(...)` for selected issue documents.
 
 ### Explicit tools and APIs
 
@@ -528,7 +528,7 @@ These should be tool-driven or UI-driven first:
 
 ## Agent UX Rules
 
-Paperclip should give agents both automatic recall and explicit tools, with simple guidance:
+Valadrien OS should give agents both automatic recall and explicit tools, with simple guidance:
 
 - use `memory.search` when the task depends on prior decisions, people, projects, or long-running context that is not in the current issue thread
 - use `memory.note` when a durable fact, preference, or decision should survive this run
@@ -539,7 +539,7 @@ This keeps memory available without forcing every agent prompt to become a memor
 
 ## Browse And Inspect Surface
 
-Paperclip needs a first-class UI for memory, otherwise providers become black boxes.
+Valadrien OS needs a first-class UI for memory, otherwise providers become black boxes.
 
 The initial browse surface should support:
 
@@ -556,7 +556,7 @@ When a provider supports richer browsing, the plugin can add deeper views throug
 
 ## Cost And Evaluation
 
-Paperclip should treat memory accounting as two related but distinct concerns:
+Valadrien OS should treat memory accounting as two related but distinct concerns:
 
 ### 1. `memory_operations` is the authoritative audit trail
 
@@ -580,9 +580,9 @@ The current `cost_events` model is already the canonical cost ledger for token a
 
 The recommendation is:
 
-- if a memory operation runs inside a normal Paperclip agent heartbeat and the model usage is already counted on that run, do not create a duplicate `cost_event`
+- if a memory operation runs inside a normal Valadrien OS agent heartbeat and the model usage is already counted on that run, do not create a duplicate `cost_event`
 - instead, store the memory operation with `attributionMode = "included_in_run"` and link it to the related `heartbeatRunId`
-- if a memory provider makes a direct metered model call outside the agent run accounting path, the provider must report usage and Paperclip should create a `cost_event`
+- if a memory provider makes a direct metered model call outside the agent run accounting path, the provider must report usage and Valadrien OS should create a `cost_event`
 - that direct `cost_event` should still link back to the memory operation, agent, company, and issue or run context when possible
 
 ### 3. `finance_events` should carry flat subscription or invoice-style costs
@@ -599,7 +599,7 @@ That keeps usage telemetry separate from accounting entries like invoices and fl
 
 ### 4. Evaluation metrics still matter
 
-Paperclip should record evaluation-oriented metrics where possible:
+Valadrien OS should record evaluation-oriented metrics where possible:
 
 - recall hit rate
 - empty query rate
@@ -607,7 +607,7 @@ Paperclip should record evaluation-oriented metrics where possible:
 - extraction failure count
 - per-binding success and failure counts
 
-This is important because a memory system that "works" but silently burns budget or silently fails extraction is not acceptable in Paperclip.
+This is important because a memory system that "works" but silently burns budget or silently fails extraction is not acceptable in Valadrien OS.
 
 ## Suggested Data Model Additions
 
@@ -654,7 +654,7 @@ The best zero-config built-in is a local markdown-first provider with optional s
 
 Why:
 
-- it matches Paperclip's local-first posture
+- it matches Valadrien OS's local-first posture
 - it is inspectable
 - it is easy to back up and debug
 - it gives the system a baseline even without external API keys
@@ -697,7 +697,7 @@ The design should still treat that built-in as just another provider behind the 
 ## Remaining Open Questions
 
 - Which built-in local provider should ship first: pure markdown, markdown plus embeddings, or a lightweight local vector store?
-- How much source payload should Paperclip snapshot inside `memory_operations` for debugging without duplicating large transcripts?
+- How much source payload should Valadrien OS snapshot inside `memory_operations` for debugging without duplicating large transcripts?
 - Should correction flows mutate provider state directly, create superseding records, or both depending on provider capability?
 - What default retention and size limits should the local built-in enforce?
 
@@ -705,7 +705,7 @@ The design should still treat that built-in as just another provider behind the 
 
 The right abstraction is:
 
-- Paperclip owns bindings, resolution, hooks, provenance, policy, and attribution.
+- Valadrien OS owns bindings, resolution, hooks, provenance, policy, and attribution.
 - Providers own extraction, ranking, storage, and provider-native memory semantics.
 
-That gives Paperclip a stable memory service without locking the product to one memory philosophy or one vendor, and it integrates the AWS lessons without importing AWS's model into core.
+That gives Valadrien OS a stable memory service without locking the product to one memory philosophy or one vendor, and it integrates the AWS lessons without importing AWS's model into core.

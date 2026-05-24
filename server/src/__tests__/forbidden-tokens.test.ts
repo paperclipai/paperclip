@@ -9,13 +9,13 @@ const {
 describe("forbidden token check", () => {
   it("derives username tokens without relying on whoami", () => {
     const tokens = resolveDynamicForbiddenTokens(
-      { USER: "paperclip", LOGNAME: "paperclip", USERNAME: "pc" },
+      { USER: "valadrien-os", LOGNAME: "valadrien-os", USERNAME: "pc" },
       {
-        userInfo: () => ({ username: "paperclip" }),
+        userInfo: () => ({ username: "valadrien-os" }),
       },
     );
 
-    expect(tokens).toEqual(["paperclip", "pc"]);
+    expect(tokens).toEqual(["valadrien-os", "pc"]);
   });
 
   it("falls back cleanly when user resolution fails", () => {
@@ -37,14 +37,14 @@ describe("forbidden token check", () => {
     const path = await import("node:path");
 
     const tokensFile = path.join(os.tmpdir(), `forbidden-tokens-${Date.now()}.txt`);
-    fs.writeFileSync(tokensFile, "# comment\npaperclip\ncustom-token\n");
+    fs.writeFileSync(tokensFile, "# comment\nvaladrien-os\ncustom-token\n");
 
     try {
-      const tokens = resolveForbiddenTokens(tokensFile, { USER: "paperclip" }, {
-        userInfo: () => ({ username: "paperclip" }),
+      const tokens = resolveForbiddenTokens(tokensFile, { USER: "valadrien-os" }, {
+        userInfo: () => ({ username: "valadrien-os" }),
       });
 
-      expect(tokens).toEqual(["paperclip", "custom-token"]);
+      expect(tokens).toEqual(["valadrien-os", "custom-token"]);
     } finally {
       fs.unlinkSync(tokensFile);
     }
@@ -62,7 +62,7 @@ describe("forbidden token check", () => {
 
     const exitCode = runForbiddenTokenCheck({
       repoRoot: "/repo",
-      tokens: ["paperclip", "custom-token"],
+      tokens: ["valadrien-os", "custom-token"],
       exec,
       log,
       error,

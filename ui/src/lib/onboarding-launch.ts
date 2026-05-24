@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal } from "@valadrien-os/shared";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 

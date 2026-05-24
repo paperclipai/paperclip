@@ -1,5 +1,5 @@
 import { Link } from "@/lib/router";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue } from "@valadrien-os/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";

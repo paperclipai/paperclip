@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@valadrien-os/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -81,10 +81,10 @@ vi.mock("../context/ToastContext", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "PAP" }],
+    companies: [{ id: "company-1", name: "ValadrienOs", issuePrefix: "PAP" }],
     selectedCompany: {
       id: "company-1",
-      name: "Paperclip",
+      name: "ValadrienOs",
       description: null,
       brandColor: null,
       logoUrl: null,
@@ -122,7 +122,7 @@ describe("CompanyEnvironments", () => {
     mockSecretsApi.list.mockResolvedValue([]);
     mockCompaniesApi.update.mockResolvedValue({
       id: "company-1",
-      name: "Paperclip",
+      name: "ValadrienOs",
       description: null,
       brandColor: null,
       logoUrl: null,

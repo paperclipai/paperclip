@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const upstreamTransferSchema = {
-  family: "paperclip-upstream-transfer",
+  family: "valadrien-os-upstream-transfer",
   version: "1.0.0",
   major: 1,
   minor: 0,
@@ -112,7 +112,7 @@ export interface BuildLocalUpstreamExportBundleInput {
 
 export interface LocalUpstreamPushCoordinatorOptions {
   targetOrigin: string;
-  paperclipCompanyId: string;
+  valadrienOsCompanyId: string;
   fetch?: typeof fetch;
   headers?: (input: { method: string; path: string }) => HeadersInit | Promise<HeadersInit>;
 }
@@ -130,26 +130,26 @@ export class UpstreamImportRequestError extends Error {
 
 export class LocalUpstreamPushCoordinator {
   readonly #targetOrigin: string;
-  readonly #paperclipCompanyId: string;
+  readonly #valadrienOsCompanyId: string;
   readonly #fetch: typeof fetch;
   readonly #headers: NonNullable<LocalUpstreamPushCoordinatorOptions["headers"]>;
 
   constructor(options: LocalUpstreamPushCoordinatorOptions) {
     this.#targetOrigin = options.targetOrigin.replace(/\/+$/u, "");
-    this.#paperclipCompanyId = options.paperclipCompanyId;
+    this.#valadrienOsCompanyId = options.valadrienOsCompanyId;
     this.#fetch = options.fetch ?? fetch;
     this.#headers = options.headers ?? (() => ({}));
   }
 
   async preview(bundle: LocalUpstreamExportBundle): Promise<unknown> {
-    return this.post(`/api/companies/${encodeURIComponent(this.#paperclipCompanyId)}/upstream-imports/preview`, {
+    return this.post(`/api/companies/${encodeURIComponent(this.#valadrienOsCompanyId)}/upstream-imports/preview`, {
       manifest: bundle.manifest,
       entities: bundle.entities,
     });
   }
 
   async apply(bundle: LocalUpstreamExportBundle): Promise<unknown> {
-    const run = await this.post(`/api/companies/${encodeURIComponent(this.#paperclipCompanyId)}/upstream-imports/runs`, {
+    const run = await this.post(`/api/companies/${encodeURIComponent(this.#valadrienOsCompanyId)}/upstream-imports/runs`, {
       mode: "apply",
       manifest: bundle.manifest,
       entities: bundle.entities,

@@ -24,7 +24,7 @@ function createBackupService(overrides: Partial<InstanceDatabaseBackupService> =
   return {
     runManualBackup: vi.fn().mockResolvedValue({
       trigger: "manual",
-      backupFile: "/tmp/paperclip-20260416.sql.gz",
+      backupFile: "/tmp/valadrien-os-20260416.sql.gz",
       sizeBytes: 1234,
       prunedCount: 2,
       backupDir: "/tmp",
@@ -60,7 +60,7 @@ describe("instance database backup routes", () => {
     expect(service.runManualBackup).toHaveBeenCalledTimes(1);
     expect(res.body).toEqual({
       trigger: "manual",
-      backupFile: "/tmp/paperclip-20260416.sql.gz",
+      backupFile: "/tmp/valadrien-os-20260416.sql.gz",
       sizeBytes: 1234,
       prunedCount: 2,
       backupDir: "/tmp",
