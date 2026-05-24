@@ -60,7 +60,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { buildInitialIssueMonitorFields, issueMatchesQaGate, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -85,6 +85,62 @@ const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
+
+/**
+ * Find the QA agent for a company by looking for an agent with the "qa" role.
+ * Returns the agent's ID or null if no QA agent exists.
+ */
+async function findCompanyQaAgentId(db: Db, companyId: string): Promise<string | null> {
+  const qaAgent = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), eq(agents.role, "qa")))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return qaAgent?.id ?? null;
+}
+
+/**
+ * When an issue is created with keywords suggesting production/runtime/DB work,
+ * auto-inject Quinn as a required reviewer unless a meaningful execution policy
+ * (one with stages or a monitor) was explicitly provided.
+ *
+ * This prevents agents from bypassing the QA gate by omitting the execution
+ * policy or by submitting an empty/meaningless one such as `{ stages: [] }`.
+ * A genuinely non-null, non-empty policy is respected as-is (e.g., CEO/CTO
+ * waiver, documented in the issue thread per the deployment guide).
+ */
+async function autoApplyQaGateToIssueData(
+  db: Db,
+  data: IssueCreateInput,
+  companyId: string,
+): Promise<IssueCreateInput> {
+  const title = data.title ?? "";
+  const description = data.description ?? "";
+  if (!issueMatchesQaGate(title, description)) return data;
+
+  // Normalize first so that `{}`, `{ stages: [] }`, or `{ mode: "normal" }`
+  // are treated as "no policy" — they all yield null after normalization.
+  const normalized = normalizeIssueExecutionPolicy(data.executionPolicy ?? null);
+  if (normalized) return data;
+
+  const qaAgentId = await findCompanyQaAgentId(db, companyId);
+  if (!qaAgentId) return data;
+  return {
+    ...data,
+    executionPolicy: {
+      mode: "normal",
+      commentRequired: true,
+      stages: [
+        {
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+      ],
+    },
+  };
+}
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 function assertTransition(from: string, to: string) {
@@ -4081,6 +4137,7 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
+      data = await autoApplyQaGateToIssueData(db, data, companyId);
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -5531,6 +5588,33 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    /**
+     * Check whether an issue matches the QA gate pattern (production/runtime/DB)
+     * and, if so, return an execution policy with the company's QA agent as the
+     * required reviewer. Returns null when no QA gate is needed or no QA agent
+     * exists.
+     */
+    resolveQaGateForIssue: async (
+      companyId: string,
+      title: string,
+      description: string | null,
+    ): Promise<Record<string, unknown> | null> => {
+      if (!issueMatchesQaGate(title, description)) return null;
+      const qaAgentId = await findCompanyQaAgentId(db, companyId);
+      if (!qaAgentId) return null;
+      return {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId: qaAgentId }],
+          },
+        ],
+      } as Record<string, unknown>;
     },
   };
 }

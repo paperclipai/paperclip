@@ -103,6 +103,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  issueMatchesQaGate,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -2960,10 +2961,23 @@ export function issueRoutes(
       updateFields.status = "todo";
     }
     if (req.body.executionPolicy !== undefined) {
-      updateFields.executionPolicy = applyActorMonitorScheduledBy(
-        normalizeIssueExecutionPolicy(req.body.executionPolicy),
-        actor.actorType,
-      );
+      const normalized = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+      if (normalized) {
+        updateFields.executionPolicy = applyActorMonitorScheduledBy(normalized, actor.actorType);
+      }
+    }
+    if (updateFields.executionPolicy === undefined && !normalizeIssueExecutionPolicy(existing.executionPolicy ?? null)) {
+      const mergedTitle = req.body.title ?? existing.title;
+      const mergedDescription = req.body.description !== undefined ? req.body.description : existing.description;
+      if (issueMatchesQaGate(mergedTitle, mergedDescription)) {
+        const autoPolicy = await svc.resolveQaGateForIssue(existing.companyId, mergedTitle, mergedDescription);
+        if (autoPolicy) {
+          updateFields.executionPolicy = applyActorMonitorScheduledBy(
+            normalizeIssueExecutionPolicy(autoPolicy),
+            actor.actorType,
+          );
+        }
+      }
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
