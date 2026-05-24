@@ -190,6 +190,7 @@ def worker_main(
     poll_usage: bool,
     byte_archive: Optional[str],
     claude_argv: Optional[list[str]],
+    turn_timeout_sec: float,
     command_q: "queue.Queue[dict]",
 ) -> int:
     """Main worker loop. Returns the desired process exit code."""
@@ -271,7 +272,7 @@ def worker_main(
                     continue
                 emit({"type": "turn_start", "prompt": prompt})
                 try:
-                    result = drv.send_turn(prompt)
+                    result = drv.send_turn(prompt, hard_timeout=turn_timeout_sec)
                 except Exception as exc:
                     emit_log("error", f"send_turn raised: {exc!r}")
                     emit_log("error", traceback.format_exc())
@@ -339,6 +340,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--claude-arg", action="append", default=None,
                    help="extra argument to pass to the spawned `claude` command "
                         "(repeatable; e.g. --claude-arg --dangerously-skip-permissions)")
+    p.add_argument("--turn-timeout-sec", type=float, default=3600.0,
+                   help="per-turn hard timeout in seconds (default: 3600). "
+                        "A real claude turn can take many minutes; the previous "
+                        "driver default of 120s was too short for heartbeat runs.")
     p.add_argument("--log-stderr", action="store_true",
                    help="also mirror log events to stderr for human debugging")
     return p.parse_args(argv)
@@ -411,6 +416,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 poll_usage=not args.no_poll_usage,
                 byte_archive=args.byte_archive,
                 claude_argv=claude_argv,
+                turn_timeout_sec=args.turn_timeout_sec,
                 command_q=command_q,
             )
         except BaseException as exc:  # noqa: BLE001

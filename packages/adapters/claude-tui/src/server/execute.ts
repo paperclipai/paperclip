@@ -268,12 +268,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  // Give the driver a per-turn timeout slightly shorter than the watchdog so
+  // the Python side can emit turn_end (with exit_reason=timeout) and shut
+  // down cleanly before the Node-side watchdog SIGTERMs the process group.
+  // Floor at 60s so very small adapter timeoutSec values still produce a
+  // positive driver timeout.
+  const driverTurnTimeoutSec = Math.max(60, timeoutSec - 30);
+
   const cliArgs = [
     PYTHON_TUI_CLI_PATH,
     "--cwd",
     cwd,
     "--policy",
     "auto_approve",
+    "--turn-timeout-sec",
+    String(driverTurnTimeoutSec),
   ];
   // We intentionally do NOT pass --dangerously-skip-permissions: it triggers
   // a "Yes, I accept" modal whose default selection is "No, exit", and the
@@ -350,6 +359,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let lastUsagePct: number | null = null;
   let exitReason: string | null = null;
   let exitDetail: string | null = null;
+  let turnEnded = false;
   let stderrBuffer = "";
 
   child.stderr.on("data", (chunk) => {
@@ -422,6 +432,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       case "turn_end": {
         const responseText = asString(event.response_text, lastResponseText);
+        if (responseText && !lastResponseText) {
+          lastResponseText = responseText;
+        }
         const elapsedSec = asNumber(event.elapsed_sec, 0);
         const usagePctRaw = event.usage_pct;
         if (typeof usagePctRaw === "number" && Number.isFinite(usagePctRaw)) {
@@ -435,6 +448,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           usagePct: lastUsagePct,
           exitReason: exitReasonValue || null,
         });
+        turnEnded = true;
         break;
       }
       case "log": {
@@ -509,11 +523,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // ignore
     }
   };
-  // Fire-and-forget timer that nudges shutdown shortly after lastResponseText
-  // changes (i.e. the model finished producing output). We keep it simple: ask
-  // for shutdown 250ms after we observe a turn_end-shaped state.
+  // Fire-and-forget timer that nudges shutdown shortly after the driver
+  // reports turn_end (regardless of exit_reason — complete, timeout, and
+  // escalation all signal the contract is done) or after the driver itself
+  // emits an exit event. We poll because translateEvent runs async and we
+  // need the cleanup to happen on the main task.
   const shutdownTimer = setInterval(() => {
-    if (exitReason || lastUsagePct !== null) {
+    if (turnEnded || exitReason) {
       clearInterval(shutdownTimer);
       void requestShutdown();
       // Force-terminate if the driver doesn't exit within SHUTDOWN_WAIT_MS.
