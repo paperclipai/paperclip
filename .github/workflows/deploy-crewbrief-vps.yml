@@ -1,0 +1,69 @@
+name: Deploy CrewBrief to VPS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Pull latest code and rebuild on VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'DEPLOY_EOF'
+            set -e
+            echo "=== Pulling latest code ==="
+            cd /opt/paperclip
+            git fetch origin master
+            git reset --hard origin/master
+
+            echo "=== Rebuilding and restarting server ==="
+            docker compose -f docker/docker-compose.yml build server
+            docker compose -f docker/docker-compose.yml up -d server
+
+            echo "=== Waiting for server to be healthy ==="
+            for i in $(seq 1 30); do
+              if curl -s http://localhost:3100/api/health > /dev/null 2>&1; then
+                echo "Server is healthy after ${i}s"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "ERROR: Server failed to become healthy"
+                exit 1
+              fi
+              sleep 2
+            done
+
+            echo "=== Running database migrations ==="
+            docker compose -f docker/docker-compose.yml exec -T server \
+              node --import ./server/node_modules/tsx/dist/loader.mjs \
+              ./server/node_modules/.bin/drizzle-kit push
+
+            echo "=== Seeding demo data ==="
+            CREWBRIEF_API_URL=http://localhost:3100 node /opt/paperclip/scripts/seed-crewbrief-demo-data.mjs
+          DEPLOY_EOF
+
+      - name: Verify deployment
+        run: |
+          echo "=== Verifying endpoints ==="
+          for ep in \
+            "https://crewbrief.avva.aero/api/health" \
+            "https://crewbrief.avva.aero/api/crewbrief/intake/airports" \
+            "https://crewbrief.avva.aero/api/briefings/demo-trip-001/demo-duty-001" \
+            "https://crewbrief.avva.aero/api/briefing/monday"; do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ep")
+            echo "$ep -> HTTP $CODE"
+            if [ "$CODE" = "000" ] || [ "$CODE" = "502" ] || [ "$CODE" = "503" ]; then
+              echo "ERROR: $ep returned $CODE"
+              exit 1
+            fi
+          done
+          echo "=== Deployment verification complete ==="
