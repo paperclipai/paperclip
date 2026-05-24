@@ -108,4 +108,25 @@ describe("token commands", () => {
     expect(fetchMock.mock.calls[3]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}/keys/key-1`);
     expect(fetchMock.mock.calls[3]?.[1]?.method).toBe("DELETE");
   });
+
+  it("resolves agent token commands by agent id without the reference lookup query", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(agentResponse()), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "key-1", name: "external-worker", createdAt: "2026-05-23T00:00:00.000Z", revokedAt: null }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await createProgram().parseAsync([
+      "token", "agent", "list",
+      "--api-base", "http://localhost:3100",
+      "--api-key", "board-token",
+      "--company-id", COMPANY_ID,
+      "--agent", AGENT_ID,
+      "--json",
+    ], { from: "user" });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}`);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`http://localhost:3100/api/agents/${AGENT_ID}/keys`);
+  });
 });

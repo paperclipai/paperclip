@@ -217,6 +217,11 @@ export function registerTokenCommands(program: Command): void {
 async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, companyId: string, agentRef: string): Promise<Agent> {
   const trimmed = agentRef.trim();
   if (!trimmed) throw new Error("Agent reference is required");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    const agent = await api.get<Agent>(apiPath`/api/agents/${trimmed}`);
+    if (!agent || agent.companyId !== companyId) throw new Error(`Agent not found: ${agentRef}`);
+    return agent;
+  }
   const query = new URLSearchParams({ companyId });
   const agent = await api.get<Agent>(`${apiPath`/api/agents/${trimmed}`}?${query.toString()}`);
   if (!agent) throw new Error(`Agent not found: ${agentRef}`);

@@ -531,7 +531,31 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Routine artifacts are under `tmp/cli-api-parity/artifacts/routine`. No active routine/trigger from this batch remains; the disposable routine is archived.
 - Follow-up: Final inventory and status check.
 
+### 2026-05-24T13:19:42+02:00 - Final token-list fix verification
+
+- Command: `token agent list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --agent 1dd601a1-031a-4225-b005-419427fd059f --json`; edited `cli/src/commands/client/token.ts` and `cli/src/__tests__/token.test.ts`; `pnpm exec vitest run cli/src/__tests__/token.test.ts`; `pnpm --dir cli typecheck`; reran the same live `token agent list` command.
+- Purpose: Verify agent token list accepts the documented `--agent <agent-id>` shape during final cleanup.
+- Prerequisites/IDs used: Company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`.
+- Expected result: Agent token list resolves an agent ID directly and returns the key list.
+- Actual result: Initial final cleanup attempt returned `404: Agent not found` for the agent ID, while `agent list` showed the agent exists and using `--agent "Parity Worker"` worked. After BUG-009 fix, the same ID-based command passed and showed no active unrevoked agent keys.
+- Status: PASS after BUG-009 fix.
+- Output summary: Verification artifact written to `tmp/cli-api-parity/artifacts/final-agent-tokens-by-id.json`.
+- Follow-up: Commit BUG-009 fix, then run final clean status checks.
+
 ## Bugs And Mismatches
+
+### BUG-009 - `token agent list --agent <agent-id>` failed even when the agent exists
+
+- Status: Fixed and live-verified.
+- Severity: Low CLI argument parity bug.
+- Reproduction command: `pnpm paperclipai token agent list --company-id 12e9db4b-f66c-459b-959e-d645002240fb --agent 1dd601a1-031a-4225-b005-419427fd059f --json`.
+- Expected result: `--agent` accepts the documented agent ID, shortname, or unambiguous name.
+- Actual result: The command returned `404: Agent not found` for the ID form; the name form worked.
+- Suspected cause: The token command always called the reference lookup route `/api/agents/:ref?companyId=...`; the server route did not resolve the UUID ref in that lookup mode.
+- Files changed: `cli/src/commands/client/token.ts`, `cli/src/__tests__/token.test.ts`, `doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`.
+- Fix summary: Detect UUID-form agent refs in the CLI, fetch `/api/agents/:id` directly, and verify the returned agent belongs to the requested company before listing/creating/revoking keys.
+- Verification command: `pnpm exec vitest run cli/src/__tests__/token.test.ts`; `pnpm --dir cli typecheck`; live isolated `token agent list --company-id <company-id> --agent <agent-id> --json`.
+- Remaining risk: Low; non-ID references continue to use the existing company-scoped lookup path.
 
 ### BUG-007 - `worktree:make` can recurse through pnpm shim when `HOME` is isolated
 
