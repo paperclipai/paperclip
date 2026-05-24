@@ -300,6 +300,17 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: First `instructions-path:update` attempt without `adapterConfigKey` failed with `No default instructions path key for adapter type 'process'. Provide adapterConfigKey.` A second relative-path attempt with `adapterConfigKey` failed because process adapters without `cwd` require an absolute path. The successful pass used `adapterConfigKey: instructionsFilePath` and an absolute scratch path.
 - Follow-up: Record instructions-path UX mismatch and continue cost/finance/budget/access/admin domains.
 
+### 2026-05-24T11:57:20+02:00 - Cost, finance, and budget command pass
+
+- Command: `cost event:create`; `cost summary`; `cost by-agent`; `cost by-agent-model`; `cost by-provider`; `cost by-biller`; `cost by-project`; `cost window-spend`; `cost quota-windows`; `cost issue`; `finance event:create`; `finance events`; `finance summary`; `finance by-biller`; `finance by-kind`; `budget overview`; `budget policy:upsert`; `budget company:update`; `budget agent:update`
+- Purpose: Exercise cost/finance event creation, rollups, issue cost lookup, and budget policy/update flows.
+- Prerequisites/IDs used: company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`; issue `f0250734-95f1-4c28-9e10-f1954649fffb`; project `d32032ce-d95e-4c4e-a942-dd98498025fb`; goal `5b2a9135-1044-48d6-a17d-6b91dd9fdc74`.
+- Expected result: Cost and finance events are recorded; all rollup commands return JSON; budget updates work and are restored.
+- Actual result: Cost event `63d757ae-a7f4-40e1-8ee8-e7d3174be1a4` and finance event `bd38c196-7598-4591-8750-f992d4d9babf` were created. All listed cost/finance read commands succeeded. Budget policy upsert succeeded. Company budget was changed to `23456` then restored to `12345`; agent budget was changed to `4321` then restored to `0`.
+- Status: PASS.
+- Output summary: `budget incident:resolve` was not run because no budget incident was created by this safe smoke path.
+- Follow-up: Continue access/profile/invite/admin/instance/sidebar/inbox/auth domains.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
