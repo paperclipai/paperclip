@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -446,5 +446,76 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId));
     expect(JSON.stringify(activity.map((row) => row.details))).not.toContain("provider.example");
     expect(activity.find((row) => row.action === "issue.monitor_triggered")?.details).not.toHaveProperty("externalRef");
+  });
+
+  it("auto-escalates stale in_review once, suppresses duplicates, and skips when reviewer acted recently", async () => {
+    const stale = await seedFixture({ issueStatus: "in_review" });
+    const fresh = await seedFixture({ issueStatus: "in_review" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: null,
+        executionPolicy: null,
+        executionState: null,
+        updatedAt: new Date("2026-04-11T09:00:00.000Z"),
+      })
+      .where(eq(issues.id, stale.issueId));
+    await db
+      .update(issues)
+      .set({
+        monitorNextCheckAt: null,
+        executionPolicy: null,
+        executionState: null,
+        updatedAt: new Date("2026-04-11T09:00:00.000Z"),
+      })
+      .where(eq(issues.id, fresh.issueId));
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId: fresh.companyId,
+      issueId: fresh.issueId,
+      body: "Reviewer checked this",
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "reviewer-user",
+      createdAt: new Date("2026-04-11T11:00:00.000Z"),
+    });
+
+    const first = await heartbeat.tickTimers(tickAt);
+    expect(first.enqueued).toBeGreaterThanOrEqual(1);
+
+    const staleWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, stale.companyId), eq(agentWakeupRequests.reason, "issue_review_stale")));
+    expect(staleWakes).toHaveLength(1);
+    expect(staleWakes[0]?.payload).toMatchObject({
+      issueId: stale.issueId,
+      escalatedToCto: false,
+    });
+
+    const staleComments = await db
+      .select()
+      .from(issueComments)
+      .where(and(eq(issueComments.companyId, stale.companyId), eq(issueComments.issueId, stale.issueId)));
+    expect(staleComments.filter((row) => row.body.includes("stale in_review auto-escalation"))).toHaveLength(1);
+
+    const freshWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, fresh.companyId), eq(agentWakeupRequests.reason, "issue_review_stale")));
+    expect(freshWakes).toHaveLength(0);
+
+    const second = await heartbeat.tickTimers(new Date("2026-04-11T12:40:00.000Z"));
+    expect(second.enqueued).toBeGreaterThanOrEqual(0);
+
+    const staleWakesAfterSecondTick = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, stale.companyId), eq(agentWakeupRequests.reason, "issue_review_stale")));
+    expect(staleWakesAfterSecondTick).toHaveLength(1);
   });
 });
