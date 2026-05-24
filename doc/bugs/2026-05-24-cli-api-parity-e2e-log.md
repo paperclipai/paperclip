@@ -630,6 +630,79 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: Final clean artifacts are under `tmp/cli-api-parity/artifacts/final-clean-sweep`.
 - Follow-up: Leave the scratch instance running for manual testing.
 
+### 2026-05-24T13:50:00+02:00 - Final user-facing handoff summary
+
+- Command: Recorded the final assistant handoff summary in this living log after the clean inventory sweep.
+- Purpose: Preserve the exact user-facing closeout in the reproducible CLI/API parity audit trail.
+- Prerequisites/IDs used: Scratch server on `http://127.0.0.1:3197`; company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`; final clean sweep artifacts under `tmp/cli-api-parity/artifacts/final-clean-sweep`.
+- Expected result: The log includes the final paths, command coverage, bug/fix summary, cleanup state, verification commands, and manual continuation instructions that were reported to the user.
+- Actual result: Final handoff stated that the full isolated CLI/API parity pass completed and was committed, the scratch Paperclip server was still running on `http://127.0.0.1:3197`, and goal usage was 2,625,855 tokens over about 2h 23m.
+- Status: PASS.
+- Output summary:
+
+```json
+{
+  "health": "ok",
+  "openapi": "3.0.0",
+  "pathCount": 247,
+  "activeBoardTokens": 0,
+  "activeAgentTokens": 0,
+  "plugins": 0,
+  "routines": 2,
+  "activeRoutines": 0,
+  "secrets": 0,
+  "environments": 1,
+  "projectWorkspaces": 0
+}
+```
+
+- Final paths:
+  - Scratch home: `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home`
+  - Config: `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/config.json`
+  - Context: `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/context.json`
+  - Auth store: `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/auth.json`
+  - Embedded DB: `/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/db`, active on pg port `54330`
+  - API URL: `http://127.0.0.1:3197`
+  - Log: `doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`
+- Commands covered: health; context; auth/access/profile/session/invite/join/member/admin/sidebar/inbox/openclaw; company CRUD/export/import/raw portability/stats/branding/archive; goals; projects; agents; tokens; issues and subresources; approvals; feedback; dashboard/activity/cost/finance/budget; secrets lifecycle; adapters; environments; workspaces/project-workspaces; assets; skills/import; routines/triggers; prompt/wake/run/heartbeat; cloud fake upstream; worktree helpers; setup/doctor/env/db backup/env-lab; OpenAPI; advanced plugin lifecycle/tool/job/webhook/bridge/config surfaces.
+- Latest continuation commits:
+  - `01579595` Log final CLI parity sweep
+  - `ce16de70` Clean up routine webhook secrets
+  - `1de4174f` Fix plugin tool worker lookup
+  - `ec3cb727` Clarify instructions path CLI help
+  - `c811bf07` Add OpenAPI CLI route
+- Remaining caveats:
+  - Positive interactive `connect` was not run because the CLI intentionally rejects non-TTY use; equivalent scriptable context/token/auth flows were covered.
+  - Positive `board-claim claim` was not run because there was no live valid board claim challenge; invalid/gated paths were covered.
+  - OpenAPI works, but it is route/operation inventory level, not full request/response schema generation.
+- Tokens and cleanup: All created board and agent tokens were revoked. Plugins were uninstalled. Temporary secrets are gone. Temporary non-default environments and project workspaces are gone. Two routines remain archived in the disposable instance.
+- Verification run:
+  - `pnpm exec vitest run server/src/__tests__/openapi-routes.test.ts`
+  - `pnpm exec vitest run cli/src/__tests__/agent-lifecycle.test.ts`
+  - `pnpm exec vitest run server/src/__tests__/plugin-database.test.ts`
+  - `pnpm exec vitest run server/src/__tests__/routines-service.test.ts`
+  - `pnpm --dir cli typecheck`
+  - `pnpm --dir server typecheck`
+  - live isolated CLI reruns for each fixed failure
+- Manual continuation:
+
+```sh
+export PAPERCLIP_HOME=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home
+export PAPERCLIP_INSTANCE_ID=cli-api-parity
+export PAPERCLIP_CONFIG=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/instances/cli-api-parity/config.json
+export PAPERCLIP_CONTEXT=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/context.json
+export PAPERCLIP_AUTH_STORE=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/home/auth.json
+export PAPERCLIP_API_URL=http://127.0.0.1:3197
+export PAPERCLIP_SERVER_PORT=3197
+export PORT=3197
+export CODEX_HOME=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/codex-home
+export CLAUDE_HOME=/Users/aronprins/Documents/PaperclipAI/paperclip/tmp/cli-api-parity/claude-home
+unset DATABASE_URL DATABASE_MIGRATION_URL
+pnpm paperclipai health --json
+```
+
+- Follow-up: Commit this log-only update so the final handoff is preserved in git history.
+
 ## Bugs And Mismatches
 
 ### BUG-011 - Deleting a webhook routine trigger left its managed secret active
