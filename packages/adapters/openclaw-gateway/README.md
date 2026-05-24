@@ -70,3 +70,7 @@ Structured gateway event logs use:
 - `[openclaw-gateway:event] run=<id> stream=<stream> data=<json>` for `event agent` frames
 
 UI/CLI parsers consume these lines to render transcript updates.
+
+## Workflow Recipes
+
+- [OpenClaw TweetClaw X/Twitter Routine](../../../docs/guides/openclaw-tweetclaw-routine.md) shows how to assign recurring X/Twitter signal review to an OpenClaw gateway agent that has TweetClaw installed.
