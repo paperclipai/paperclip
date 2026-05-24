@@ -28,14 +28,25 @@ def rfb_click(
     *,
     host: str = "127.0.0.1",
     port: int = 6080,
-    connect_timeout: float = 3.0,
-    op_timeout: float = 3.0,
+    connect_timeout: float = 10.0,
+    op_timeout: float = 15.0,
 ) -> None:
     """Inject a real X PointerEvent at (x,y) via websockify → x11vnc.
 
     Bypasses Camoufox/Firefox isTrusted=false on React-protected buttons.
     Coords are Xvfb-native (1920x1080). Raises RFBConnectFailed on any
     socket/handshake/timeout error.
+
+    Timeout rationale (BLO-6870 followup, 2026-05-24): x11vnc's
+    ServerInit step is serialized with Xvfb screen-capture, so when
+    Camoufox is actively rendering (e.g., right after page.goto to
+    Figma's login page), the handshake can stall for 10+ seconds.
+    rfb_click is called IMMEDIATELY after `wait_for_load_state` /
+    `wait_for_selector` in `login.do_login`, exactly when Camoufox is
+    busiest. Idle-state benchmark: handshake completes in ~0.3s. The
+    failure mode with op_timeout=3.0 was the bot's RFB connection
+    being killed mid-handshake by its own socket timeout, surfacing
+    as `rfb_unreachable` (RFBConnectFailed("socket error: timeout")).
     """
     sock: socket.socket | None = None
     try:
