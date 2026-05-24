@@ -54,6 +54,7 @@ export function MyIssues() {
               key={issue.id}
               identifier={issue.identifier ?? issue.id.slice(0, 8)}
               title={issue.title}
+              subtitle={`Project: ${issue.project?.name ?? issue.projectId?.slice(0, 8) ?? "Unassigned"}`}
               to={`/issues/${issue.identifier ?? issue.id}`}
               leading={
                 <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />

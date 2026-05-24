@@ -228,6 +228,23 @@ describe("IssueRow", () => {
     });
   });
 
+  it("renders a project code chip beside the issue identifier", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue({ identifier: "JPP-50", projectId: "aiops-project-1" })} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.textContent).toContain("JPP-50");
+    expect(link?.textContent).toContain("aiops-pr");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders planning mode marker for planning work mode issues", () => {
     const root = createRoot(container);
 

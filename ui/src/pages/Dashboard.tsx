@@ -369,6 +369,12 @@ export function Dashboard() {
                             <span className="text-xs font-mono text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
+                            <span
+                              className="hidden max-w-36 truncate rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-muted-foreground sm:inline-flex"
+                              title={issue.project?.name ?? issue.projectId ?? "Unassigned"}
+                            >
+                              {issue.project?.name ?? issue.projectId?.slice(0, 8) ?? "Unassigned"}
+                            </span>
                             {issue.assigneeAgentId && (() => {
                               const name = agentName(issue.assigneeAgentId);
                               return name

@@ -62,6 +62,8 @@ export function IssueRow({
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
+  const projectLabel = issue.project?.name ?? issue.projectId?.slice(0, 8) ?? null;
+  const projectTitle = issue.project?.name ?? issue.projectId ?? undefined;
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
@@ -153,6 +155,14 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
+              {projectLabel ? (
+                <span
+                  className="hidden max-w-36 shrink-0 truncate rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-muted-foreground sm:inline-flex"
+                  title={projectTitle}
+                >
+                  {projectLabel}
+                </span>
+              ) : null}
               {planningModeIndicator}
               {parkedBlockerIndicator}
               {recoveryIndicator}
