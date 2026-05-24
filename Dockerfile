@@ -46,11 +46,19 @@ COPY . .
 RUN pnpm --filter "@paperclipai/ui..." build
 RUN pnpm --filter "@paperclipai/server..." build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
+  || (echo "ERROR: claude-tui python CLI missing in build stage" \
+      && ls -la /app/packages/adapters/claude-tui/ \
+      && exit 1)
 
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
 RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils python3 python3-ptyprocess python3-pyte && rm -rf /var/lib/apt/lists/*
+RUN test -f /app/packages/adapters/claude-tui/python/cli.py \
+  || (echo "ERROR: claude-tui python CLI missing in production stage" \
+      && ls -la /app/packages/adapters/claude-tui/ \
+      && exit 1)
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.130.0
 ARG AGENT_BROWSER_VERSION=0.27.0
