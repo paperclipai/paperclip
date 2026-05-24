@@ -198,12 +198,20 @@ def worker_main(
     driver_policy = _policy_for_driver(policy)
     exit_code = 0
 
+    def _liveness_cb(phase: str, elapsed: float) -> None:
+        # Emit a stable log event the upstream Node adapter's onLog handler
+        # picks up; that handler updates run.updatedAt so the parent's
+        # process-loss reaper (which kicks in at ~5min of silence) keeps
+        # seeing us as live during long claude turns.
+        emit_log("info", f"send_turn liveness ping: phase={phase} elapsed={elapsed:.1f}s")
+
     drv = ClaudeTuiDriver(
         cwd=cwd,
         policy=driver_policy,
         poll_usage=poll_usage,
         byte_archive_path=byte_archive,
         claude_argv=claude_argv,
+        liveness_cb=_liveness_cb,
     )
     with _active_driver_lock:
         _active_driver = drv

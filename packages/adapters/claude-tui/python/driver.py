@@ -38,7 +38,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 # Local imports -- spike modules are siblings.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -277,6 +277,7 @@ class ClaudeTuiDriver:
     USAGE_OVERLAY_TIMEOUT = 8.0
     USAGE_POLL_QUIET_SEC = 1.2
     SETTLE_QUIET_SEC = 2.5
+    LIVENESS_PING_SEC = 60.0       # emit a liveness ping at this cadence during long turns
 
     def __init__(
         self,
@@ -288,6 +289,7 @@ class ClaudeTuiDriver:
         rows: int = 60,
         byte_archive_path: Optional[str] = None,
         claude_argv: Optional[list[str]] = None,
+        liveness_cb: Optional[Callable[[str, float], None]] = None,
     ):
         self.cwd = cwd
         self.policy = policy
@@ -300,6 +302,10 @@ class ClaudeTuiDriver:
             claude_argv=claude_argv,
         )
         self._started = False
+        # Optional callback (phase: str, elapsed_sec: float) -> None invoked
+        # periodically while send_turn is waiting for claude. Used by the CLI
+        # shim to keep upstream run.updatedAt fresh.
+        self._liveness_cb = liveness_cb
 
     # ----------------------------------------------------------- lifecycle
 
@@ -464,16 +470,38 @@ class ClaudeTuiDriver:
 
         exit_reason = "complete"
         deadline = t_start + hard_timeout
+        # Emit a "still working" liveness ping every LIVENESS_PING_SEC so the
+        # parent server's run reaper (which marks runs as process_lost after
+        # ~5min of silence) keeps seeing fresh log activity while claude is
+        # in a long compute / streaming phase. Without this the driver itself
+        # stays healthy but the upstream reaper kills the whole process group
+        # because run.updatedAt hasn't moved.
+        next_liveness_at = t_start + self.LIVENESS_PING_SEC
 
         while True:
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            if now >= next_liveness_at:
+                if self._liveness_cb is not None:
+                    ts = latest["turn_state"]
+                    phase = "thinking" if (ts and ts.is_thinking) else (
+                        "streaming" if (ts and ts.is_streaming) else (
+                        "in_modal" if (ts and ts.is_in_modal) else "waiting"))
+                    try:
+                        self._liveness_cb(phase, now - t_start)
+                    except Exception:
+                        pass
+                next_liveness_at = now + self.LIVENESS_PING_SEC
+            remaining = deadline - now
             if remaining <= 0:
                 exit_reason = "timeout"
                 break
+            # Cap read_until's hard_timeout at LIVENESS_PING_SEC so we can fire
+            # the next ping even if claude stays quiet.
+            poll_budget = min(remaining, self.LIVENESS_PING_SEC)
             res = self._session.read_until(
                 predicate=predicate,
                 quiet_sec=self.POLL_QUIET_SEC,
-                hard_timeout=remaining,
+                hard_timeout=poll_budget,
             )
 
             if res.exit_reason == "child_dead":
