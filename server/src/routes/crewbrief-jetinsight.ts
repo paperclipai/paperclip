@@ -113,7 +113,21 @@ export function crewbriefJetinsightRoutes(db: Db, storage: StorageService) {
     }
   });
 
-  router.post("/upload", async (req, res, next) => {
+  const uploadHandler = createUploadHandler(db, storage);
+  router.post("/upload", uploadHandler);
+
+  return router;
+}
+
+export function crewbriefDocumentsRoutes(db: Db, storage: StorageService) {
+  const router = Router();
+  const handler = createUploadHandler(db, storage);
+  router.post("/upload", handler);
+  return router;
+}
+
+function createUploadHandler(db: Db, storage: StorageService) {
+  return async (req: Request, res: Response, next: any) => {
     try {
       await runSingleFileUpload(req, res);
     } catch (err) {
