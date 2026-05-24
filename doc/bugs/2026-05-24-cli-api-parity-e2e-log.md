@@ -256,6 +256,28 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Output summary: No plaintext token values were written to this log. Token `a67f4f69-7250-43d6-9988-96e7692da605` is revoked.
 - Follow-up: Inspect agent-authored comment command/auth semantics before retrying feedback voting.
 
+### 2026-05-24T11:44:45+02:00 - Commit issue subresource fixes
+
+- Command: `git add cli/src/__tests__/issue-subresources.test.ts cli/src/commands/client/issue.ts server/src/__tests__/issue-tree-control-routes.test.ts server/src/routes/issue-tree-control.ts doc/bugs/2026-05-24-cli-api-parity-e2e-log.md`; `git commit -m "Fix CLI issue subresource parity bugs"`
+- Purpose: Persist verified fixes immediately after focused verification, per user instruction.
+- Prerequisites/IDs used: `pnpm exec vitest run cli/src/__tests__/issue-subresources.test.ts`; `pnpm --dir cli typecheck`; `pnpm exec vitest run server/src/__tests__/issue-tree-control-routes.test.ts`; `pnpm --dir server typecheck`.
+- Expected result: Commit contains only the optional interaction accept fix, malformed tree hold ID hardening, tests, and updated parity log.
+- Actual result: Commit `73997628` created with 5 files changed.
+- Status: PASS.
+- Output summary: No plaintext tokens included in the commit.
+- Follow-up: Continue parity testing and commit future fixes immediately after focused verification.
+
+### 2026-05-24T11:46:46+02:00 - Feedback and recovery completion
+
+- Command: `token agent create`; `issue comment --api-key <agent-token>`; `issue feedback:vote`; `issue feedback:votes`; `issue feedback:list`; `issue feedback:export`; `token agent revoke`; `issue recovery-actions`; `issue recovery:resolve`
+- Purpose: Complete feedback voting/export and recovery resolution after the earlier invalid target and output-shape mistakes.
+- Prerequisites/IDs used: company `12e9db4b-f66c-459b-959e-d645002240fb`; agent `1dd601a1-031a-4225-b005-419427fd059f`; issue `f0250734-95f1-4c28-9e10-f1954649fffb`.
+- Expected result: Feedback vote is saved against an agent-authored target; feedback list/export work; temporary token is revoked; active recovery action resolves.
+- Actual result: Correctly reading `token agent create` output from `.key.token` produced agent-authored comment `d4e2adbe-d94c-4d87-8205-828f3ddfa033`; feedback vote `24843ebd-456d-4534-89ec-bdbc0bb02170` was saved; feedback list/export completed. Temporary token `40e683ec-758f-4964-bdef-544bee16ee5a` was revoked. Recovery action `1151475f-c97f-456b-9c6a-8e0f936abe05` resolved after using `--source-issue-status todo`; the issue moved to `todo`.
+- Status: PASS with command output-shape learning and help mismatch.
+- Output summary: A parser mistake against feedback output (`.vote.id` instead of top-level `.id`) stopped one script after the vote succeeded; the token was manually revoked and the remaining list/export commands were run separately.
+- Follow-up: Record recovery help mismatch and continue remaining CLI domains.
+
 ## Bugs And Mismatches
 
 ### BUG-001 - `context set` erased existing profile fields
@@ -322,3 +344,16 @@ Full Paperclip CLI/API parity smoke pass against a disposable local source-tree 
 - Fix summary: Not fixed yet; adapted E2E to cancel an `ask_user_questions` interaction.
 - Verification command: `pnpm paperclipai issue interaction:cancel <issue-id> <ask-user-questions-interaction-id> --reason "Cancelled by CLI parity" --json`.
 - Remaining risk: Users may try to cancel a request confirmation because the CLI help does not mention the kind restriction.
+
+### MISMATCH-003 - `issue recovery:resolve` help overstates valid restored statuses
+
+- Status: Not fixed in this pass.
+- Severity: Low command UX drift.
+- Reproduction command: `pnpm paperclipai issue recovery:resolve <issue-id> --action-id <action-id> --outcome restored --source-issue-status blocked --json`.
+- Expected result: Help text and validation agree on valid source statuses for `restored` outcomes.
+- Actual result: Help says `--source-issue-status` accepts `todo, done, in_review, or blocked`; validator rejects `blocked` for `--outcome restored` with `Restored recovery actions must move the source issue to todo, done, or in_review`.
+- Suspected cause: CLI option description lists the broad enum rather than outcome-specific constraints.
+- Files changed: none for this mismatch.
+- Fix summary: Not fixed yet; adapted E2E to `--source-issue-status todo`, which resolved recovery action `1151475f-c97f-456b-9c6a-8e0f936abe05`.
+- Verification command: `pnpm paperclipai issue recovery:resolve <issue-id> --action-id <action-id> --outcome restored --source-issue-status todo --json`.
+- Remaining risk: Users may choose a status shown in help that is invalid for their selected outcome.
