@@ -694,6 +694,13 @@
       "when": 1779000000000,
       "tag": "0098_agent_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1779000060000,
+      "tag": "0099_adapter_type_claude_tui",
+      "breakpoints": true
     }
   ]
 }

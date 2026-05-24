@@ -35,6 +35,15 @@ import {
   modelProfiles as claudeModelProfiles,
 } from "@paperclipai/adapter-claude-local";
 import {
+  execute as claudeTuiExecute,
+  testEnvironment as claudeTuiTestEnvironment,
+  sessionCodec as claudeTuiSessionCodec,
+} from "@paperclipai/adapter-claude-tui/server";
+import {
+  agentConfigurationDoc as claudeTuiAgentConfigurationDoc,
+  models as claudeTuiModels,
+} from "@paperclipai/adapter-claude-tui";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -252,6 +261,20 @@ const claudeLocalAdapter: ServerAdapterModule = {
     buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
+};
+
+const claudeTuiAdapter: ServerAdapterModule = {
+  type: "claude_tui",
+  execute: claudeTuiExecute,
+  testEnvironment: claudeTuiTestEnvironment,
+  sessionCodec: claudeTuiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("claude_tui") ?? undefined,
+  models: claudeTuiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: claudeTuiAgentConfigurationDoc,
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {
@@ -480,6 +503,7 @@ function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
     claudeLocalAdapter,
+    claudeTuiAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,

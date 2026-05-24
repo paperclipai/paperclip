@@ -1967,6 +1967,10 @@ function credentialTypesForAdapterType(
   switch (adapterType) {
     case "claude_local":
       return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
+    case "claude_tui":
+      // claude_tui drives the same Claude Code CLI session as claude_local,
+      // just through a TUI wrapper, so it shares the same credential set.
+      return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
     case "gemini_local":
       return new Set<CredentialType>(["gemini_api_key"]);
     case "codex_local":

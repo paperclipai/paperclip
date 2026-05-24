@@ -4,6 +4,7 @@
 export const BUILTIN_ADAPTER_TYPES = new Set([
   "acpx_local",
   "claude_local",
+  "claude_tui",
   "codex_local",
   "cursor_cloud",
   "cursor",

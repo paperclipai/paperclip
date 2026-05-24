@@ -67,6 +67,14 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Sparkles,
     recommended: true,
   },
+  claude_tui: {
+    label: "Claude (TUI wrapper)",
+    description:
+      "Drives the Claude Code TUI via PTY — slower but uses your interactive Claude session",
+    icon: Sparkles,
+    experimental: true,
+    hideFromVisualSelection: true,
+  },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",
