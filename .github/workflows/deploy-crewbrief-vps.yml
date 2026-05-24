@@ -66,6 +66,13 @@ jobs:
 
             echo "=== Seeding demo data ==="
             CREWBRIEF_API_URL=http://localhost:3100 node /opt/paperclip/scripts/seed-crewbrief-demo-data.mjs
+
+            echo "=== Backfilling Quinn QA gate for existing issues ==="
+            if [ -n "$DB_URL" ]; then
+              DATABASE_URL="$DB_URL" pnpm exec tsx scripts/backfill-qa-gate.ts
+            else
+              echo "WARNING: Could not determine DATABASE_URL. QA gate backfill skipped."
+            fi
           DEPLOY_EOF
 
       - name: Verify deployment
