@@ -80,6 +80,11 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  PROCESS_LOST_BACKOFF_RETRY_REASON,
+  PROCESS_LOST_BACKOFF_WAKE_REASON,
+  computeProcessLostBackoffDecision,
+} from "./heartbeat-process-lost-backoff.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -4750,11 +4755,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+
+    // SPC-6121: when the same issue has hit ≥5 consecutive `process_lost`
+    // failures within a 5-minute window, switch the retry from immediate
+    // (status=queued) to scheduled_retry with an exponential delay so we
+    // stop hammering the same dead host at 11-second cadence.
+    const backoff = issueId
+      ? await computeProcessLostBackoffDecision(db, {
+          companyId: run.companyId,
+          issueId,
+          now,
+        })
+      : null;
+    const useBackoff = backoff !== null && backoff.remainingDelayMs > 0;
+    const dueAt = useBackoff ? new Date(now.getTime() + backoff!.remainingDelayMs) : null;
+
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
-      wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      wakeReason: useBackoff ? PROCESS_LOST_BACKOFF_WAKE_REASON : "process_lost_retry",
+      retryReason: useBackoff ? PROCESS_LOST_BACKOFF_RETRY_REASON : "process_lost",
+      ...(useBackoff
+        ? {
+            processLostBackoff: {
+              consecutiveCount: backoff!.consecutiveCount,
+              requiredDelayMs: backoff!.requiredDelayMs,
+              dueAt: dueAt!.toISOString(),
+            },
+          }
+        : {}),
     }, "normal_model");
 
     const queued = await db.transaction(async (tx) => {
@@ -4765,10 +4794,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           source: "automation",
           triggerDetail: "system",
-          reason: "process_lost_retry",
+          reason: useBackoff ? PROCESS_LOST_BACKOFF_WAKE_REASON : "process_lost_retry",
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
+            ...(useBackoff
+              ? {
+                  processLostBackoffConsecutiveCount: backoff!.consecutiveCount,
+                  processLostBackoffDueAt: dueAt!.toISOString(),
+                }
+              : {}),
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -4785,12 +4820,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: useBackoff ? "scheduled_retry" : "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
           processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          ...(useBackoff
+            ? {
+                scheduledRetryAt: dueAt!,
+                scheduledRetryAttempt: backoff!.consecutiveCount,
+                scheduledRetryReason: PROCESS_LOST_BACKOFF_RETRY_REASON,
+              }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -4835,9 +4877,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: useBackoff
+        ? `Scheduled process_lost retry with exponential backoff (${backoff!.consecutiveCount} consecutive failures, dueAt ${dueAt!.toISOString()})`
+        : "Queued automatic retry after orphaned child process was confirmed dead",
       payload: {
         retryOfRunId: run.id,
+        ...(useBackoff
+          ? {
+              processLostBackoffConsecutiveCount: backoff!.consecutiveCount,
+              processLostBackoffRequiredDelayMs: backoff!.requiredDelayMs,
+              processLostBackoffDueAt: dueAt!.toISOString(),
+            }
+          : {}),
       },
     });
 
