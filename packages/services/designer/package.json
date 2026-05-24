@@ -1,0 +1,74 @@
+{
+  "name": "@blockcast/designer",
+  "version": "0.3.6",
+  "private": true,
+  "type": "module",
+  "description": "Vendored @pro-vi/designer for paperclip. MCP + CLI for autonomous iteration of claude.ai/design. See UPSTREAM.md for the source commit + how to re-sync.",
+  "license": "MIT",
+  "author": "Provi Zhang (upstream)",
+  "homepage": "https://github.com/Blockcast/paperclip/tree/master/packages/services/designer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Blockcast/paperclip.git",
+    "directory": "packages/services/designer"
+  },
+  "bugs": {
+    "url": "https://github.com/Blockcast/paperclip/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-design",
+    "mcp",
+    "model-context-protocol",
+    "design",
+    "agent-browser",
+    "anthropic"
+  ],
+  "bin": {
+    "designer": "./bin/designer.mjs"
+  },
+  "scripts": {
+    "mcp": "tsx mcp-server.ts",
+    "cli": "tsx cli.ts",
+    "setup": "tsx cli.ts setup",
+    "doctor": "tsx cli.ts doctor",
+    "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run check && npm run build",
+    "postinstall": "node scripts/postinstall.mjs",
+    "probe": "tsx scripts/probe.ts",
+    "probe:health": "tsx scripts/ci-health.ts",
+    "auto-heal": "tsx scripts/auto-heal.ts",
+    "smoke": "bash scripts/install-smoke.sh"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "cross-spawn": "^7.0.6",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "dist/",
+    "bin/",
+    "skills/",
+    "scripts/designer-chrome.sh",
+    "scripts/designer-chrome.ps1",
+    "scripts/postinstall.mjs",
+    "selectors.json",
+    "README.md",
+    "LICENSE"
+  ]
+}

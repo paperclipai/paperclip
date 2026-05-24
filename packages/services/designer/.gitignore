@@ -1,0 +1,16 @@
+node_modules/
+dist/
+artifacts/*
+# daily-health probe evidence is small + worth keeping in git so a human
+# reviewer of a selectors-drift PR can see what the probe saw.
+!artifacts/health/
+logs/*.log
+.DS_Store
+
+# bug reports / scratch — not source
+.inbox/
+*.tgz
+
+# local tooling state
+.claude/
+.prov/

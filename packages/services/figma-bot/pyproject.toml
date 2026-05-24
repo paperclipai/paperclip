@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "figma-bot"
+version = "0.3.1"
+description = "Multi-identity Camoufox session that holds authenticated Figma Designer pages for paperclip agents to drive."
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Blockcast" }]
+dependencies = [
+  # Pinned to match the versions installed in webflow-bot's Dockerfile
+  # (which is the runtime base image figma-bot inherits from).
+  "camoufox[geoip]==0.4.11",
+  "playwright==1.59.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=4.0",
+  "ruff>=0.4",
+  "mypy>=1.10",
+]
+
+[project.scripts]
+figma-bot = "figma_bot.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["error"]
+# Add src/ to sys.path so `from figma_bot import …` works without an
+# editable install. See webflow-bot/pyproject.toml for the rationale.
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# E501: line-too-long handled by the formatter; long lines mainly land
+# in embedded JS strings inside page.evaluate() calls.
+# B904: deliberate suppression of exception chaining where the underlying
+# exception is already serialized into the RuntimeError message.
+ignore = ["E501", "B904"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true

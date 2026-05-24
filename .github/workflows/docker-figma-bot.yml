@@ -1,0 +1,115 @@
+name: Docker (figma-bot)
+
+# Builds + pushes the paperclip-figma-bot image. Does NOT auto-deploy
+# — the cluster yaml at onprem-k8s/paperclip/figma-designer-bot.yaml
+# pins a specific sha-tag and updating it is a separate operator step.
+#
+# IMPORTANT: figma-bot's Dockerfile inherits FROM
+# harbor.blockcast.net/paperclip-webflow-bot/webflow-bot:latest. The
+# webflow-bot image MUST exist in Harbor before this workflow can
+# succeed. PR 1 (BLO-6870) added the docker-webflow-bot.yml workflow
+# that publishes that base image.
+#
+# Trigger: any change under packages/services/figma-bot/. Master and tags
+# only; no PR builds (HARBOR_PASSWORD org secret isn't available to forks).
+# Pre-build gate runs pytest + ruff so an invalid extract / removed
+# chicken-and-egg fix fails CI before the Docker layer wastes runner time.
+#
+# Security: this workflow does NOT interpolate any untrusted event input
+# (github.event.*, github.head_ref, etc.) into run: commands — only
+# repository secrets via env. Same posture as docker-webflow-bot.yml.
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "packages/services/figma-bot/**"
+      - ".github/workflows/docker-figma-bot.yml"
+    tags:
+      - "figma-bot-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dev dependencies
+        working-directory: packages/services/figma-bot
+        run: |
+          python -m pip install --upgrade pip
+          # Install only dev/test deps; structural + cold-boot regression
+          # tests run via AST and don't actually import camoufox / playwright.
+          python -m pip install pytest pytest-cov ruff mypy
+
+      - name: Run ruff lint
+        working-directory: packages/services/figma-bot
+        run: ruff check src/ tests/
+
+      - name: Run pytest
+        working-directory: packages/services/figma-bot
+        run: pytest tests/ -v
+
+  build-and-push:
+    needs: test
+    runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: docker-figma-bot-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Clean stale node_modules from runner workspace
+        run: |
+          find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: true
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            harbor.blockcast.net/paperclip-figma-bot/figma-bot
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/services/figma-bot/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip-figma-bot/figma-bot:buildcache-v1
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip-figma-bot/figma-bot:buildcache-v1,mode=max,image-manifest=true,oci-mediatypes=true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
