@@ -204,7 +204,7 @@ env:
     # binary code / stack / fs cache. Tune up further if the heap-used metric
     # gets close to this ceiling under load.
     - name: NODE_OPTIONS
-      value: "--max-old-space-size=3072"
+      value: "--max-old-space-size=4608"
     # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
     # Anthropic through paperclip-public-tools → ccrotate-serve using the
     # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
@@ -225,6 +225,17 @@ env:
         secretKeyRef:
           name: paperclip-ccrotate-board-token
           key: token
+
+# Worker tier also runs plugin workers and scheduled plugin jobs. Linear's
+# periodic sync can transiently burn CPU over large BLO backlogs; keep enough
+# headroom for Alertmanager webhooks and health probes to complete.
+resources:
+  requests:
+    cpu: 1500m
+    memory: 2Gi
+  limits:
+    cpu: "4"
+    memory: 6Gi
 
 persistence:
   enabled: true

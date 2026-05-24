@@ -1572,6 +1572,12 @@ describe("paperclip-plugin-linear", () => {
   // -----------------------------------------------------------------------
 
   describe("jobs", () => {
+    it("declares periodic-sync on a six-hour schedule", () => {
+      const job = manifest.jobs?.find((candidate) => candidate.jobKey === JOB_KEYS.periodicSync);
+
+      expect(job?.schedule).toBe("0 */6 * * *");
+    });
+
     it("registers periodic-sync job", async () => {
       await harness.ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },

@@ -133,7 +133,7 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Periodic Sync",
       description:
         "Polls linked Linear issues to catch changes missed by webhooks.",
-      schedule: "*/15 * * * *",
+      schedule: "0 */6 * * *",
     },
     {
       jobKey: JOB_KEYS.initialImport,
