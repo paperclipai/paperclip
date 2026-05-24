@@ -975,6 +975,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("switches to scheduled_retry with 30s backoff after 5 consecutive process_lost failures (SPC-6121)", async () => {
+    const { agentId, runId, issueId, companyId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+
+    // Seed 4 prior process_lost terminal runs for this issue so that the
+    // current reaper-driven failure becomes the 5th consecutive within the
+    // helper's view of recent history.
+    const priorBaseTime = new Date("2026-03-18T23:59:00.000Z").getTime();
+    for (let i = 0; i < 4; i += 1) {
+      const priorRunId = randomUUID();
+      const finishedAt = new Date(priorBaseTime + i * 11_000);
+      await db.insert(heartbeatRuns).values({
+        id: priorRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: { issueId },
+        errorCode: "process_lost",
+        startedAt: new Date(finishedAt.getTime() - 10_000),
+        finishedAt,
+        createdAt: new Date(finishedAt.getTime() - 10_000),
+        updatedAt: finishedAt,
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const newRows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const retryRun = newRows.find(
+      (row) =>
+        row.retryOfRunId === runId &&
+        (row.status === "scheduled_retry" || row.status === "queued"),
+    );
+    expect(retryRun).toBeDefined();
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("process_lost_backoff");
+    expect(retryRun?.scheduledRetryAttempt).toBe(5);
+    expect(retryRun?.scheduledRetryAt).toBeTruthy();
+
+    const finishedRun = newRows.find((row) => row.id === runId);
+    const dueAtMs = retryRun?.scheduledRetryAt
+      ? new Date(retryRun.scheduledRetryAt).getTime()
+      : 0;
+    const finishedAtMs = finishedRun?.finishedAt
+      ? new Date(finishedRun.finishedAt).getTime()
+      : 0;
+    const delayMs = dueAtMs - finishedAtMs;
+    expect(delayMs).toBeGreaterThanOrEqual(29_000);
+    expect(delayMs).toBeLessThanOrEqual(31_000);
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,
