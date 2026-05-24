@@ -48,6 +48,7 @@ export default defineConfig({
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
+      PAPERCLIP_DISABLE_CLOSURE_GATE: "true",
     },
   },
   outputDir: "./test-results",

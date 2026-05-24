@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
@@ -107,6 +107,13 @@ async function createApp() {
 }
 
 describe("issue dependency wakeups in issue routes", () => {
+  beforeAll(() => {
+    process.env.PAPERCLIP_DISABLE_CLOSURE_GATE = "true";
+  });
+  afterAll(() => {
+    delete process.env.PAPERCLIP_DISABLE_CLOSURE_GATE;
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");

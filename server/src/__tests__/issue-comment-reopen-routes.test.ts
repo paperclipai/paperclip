@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -218,6 +218,11 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  // Disable closure gate — these tests pre-date the gate and close issues to exercise
+  // comment-reopen behaviour, not gate rejection paths.
+  beforeAll(() => { process.env.PAPERCLIP_DISABLE_CLOSURE_GATE = "true"; });
+  afterAll(() => { delete process.env.PAPERCLIP_DISABLE_CLOSURE_GATE; });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();

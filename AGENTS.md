@@ -216,3 +216,50 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
 - Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+
+---
+
+## §B Closure Gate
+
+When closing any issue (transitioning to `done` via `PATCH /issues/:id`), the control-plane validates §B closure anchors before accepting the status change.
+
+### What the hook checks
+
+1. **HEAD sha present** — closing comment (or issue description if no comment) must contain a sha in `git log <branch> --oneline -1` format.
+2. **HEAD sha real** — the sha must pass `git cat-file -t <sha>` returning `commit` against the issue's execution workspace repo.
+3. **Path proofs** — for each path cited via `git log <branch> --oneline -- <path>`, the path must have at least one commit on the default branch.
+
+### Rejection shape
+
+```json
+{
+  "error": "CLOSURE_GATE_REJECTED",
+  "rejections": [
+    { "code": "INVALID_HEAD_SHA", "message": "...", "detail": { "sha": "..." } }
+  ]
+}
+```
+
+Rejection codes: `NO_TEXT`, `NO_HEAD_SHA`, `INVALID_HEAD_SHA`, `PROCESS_ONLY_UNDECLARED`, `PATH_PROOF_MISMATCH`, `NO_WORKSPACE`, `INVALID_PROOF_BRANCH`, `INVALID_BYPASS_REASON`, `INVALID_REMOTE_REACHABILITY`.
+
+- `INVALID_REMOTE_REACHABILITY` — the HEAD sha is not reachable from `origin/<defaultBranch>` (i.e., branch not merged to remote). Fail-open on network/fetch errors (logged as `issue.closure_gate_remote_unreachable`).
+
+Path-proof lines **must** cite the default branch ref: `git log <defaultBranch> --oneline -- <path>`. A feature-branch ref or a missing ref token rejects with `INVALID_PROOF_BRANCH` even if shas pass `git cat-file -t`.
+
+### Override
+
+Pass `bypassClosureGate: { reason: "<≥10 chars>" }` in the PATCH body to skip validation (logged as `issue.closure_gate_overridden`).
+
+**Deny-list:** Reasons are rejected with `INVALID_BYPASS_REASON` if they match any of:
+- D1: `/pr.*(not.*merged|pending|open|review)/i` — PR not yet merged
+- D2: `/\blocal\b.*(merge|master|main)/i` — locally-merged claim
+- D3: `/merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i` — no upstream access
+
+Merge the PR to the remote default branch first.
+
+### Flags
+
+- `PAPERCLIP_DISABLE_CLOSURE_GATE=true` — disable gate entirely (startup warning emitted).
+- `PAPERCLIP_CLOSURE_GATE_SHADOW=true` — log rejections as `issue.closure_gate_would_reject` but allow transition.
+
+See `doc/DEVELOPING.md` §B Pre-Close SHA Validation Hook for full details.

@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -157,6 +157,11 @@ function makeIssue() {
 }
 
 describe("issue activity event routes", () => {
+  // Disable closure gate — these tests pre-date the gate and close issues to exercise
+  // activity-log behaviour, not gate rejection paths.
+  beforeAll(() => { process.env.PAPERCLIP_DISABLE_CLOSURE_GATE = "true"; });
+  afterAll(() => { delete process.env.PAPERCLIP_DISABLE_CLOSURE_GATE; });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");

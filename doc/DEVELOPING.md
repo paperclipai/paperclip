@@ -620,3 +620,64 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## §B Pre-Close SHA Validation Hook
+
+The closure gate (`server/src/services/closureGate.ts`) validates that any issue being transitioned to `done` contains verifiable §B closure anchors in the closing comment (or issue description if no comment is provided).
+
+### How it works
+
+When `PATCH /issues/:id` is called with `status: "done"`, the hook:
+
+1. Resolves the issue's execution workspace and its `cwd` as `repoPath`.
+2. Extracts the HEAD sha and cited paths from the closing comment body.
+3. Runs `git cat-file -t <headSha>` to confirm the sha is a real commit object.
+4. Runs `git log <defaultBranch> --oneline -- <path>` for each cited path to confirm it is reachable from the default branch.
+5. Returns `422 CLOSURE_GATE_REJECTED` with structured `rejections` if any check fails.
+
+### Environment flags
+
+| Flag | Effect |
+|---|---|
+| `PAPERCLIP_DISABLE_CLOSURE_GATE=true` | Hard kill-switch — gate disabled entirely at startup. All closures pass. |
+| `PAPERCLIP_CLOSURE_GATE_SHADOW=true` | Shadow mode — rejections are logged as `issue.closure_gate_would_reject` activity but the transition proceeds. Use for staged rollout. |
+
+### Rejection codes
+
+| Code | Meaning |
+|---|---|
+| `NO_TEXT` | No closing comment or description to validate |
+| `NO_HEAD_SHA` | No HEAD sha found in closing comment |
+| `INVALID_HEAD_SHA` | `git cat-file -t <sha>` returned non-zero or non-commit type |
+| `PROCESS_ONLY_UNDECLARED` | No paths cited and no process-only declaration |
+| `PATH_PROOF_MISMATCH` | Cited path has no commits on default branch |
+| `INVALID_PROOF_BRANCH` | Path-proof line cites a non-default-branch ref, or the ref token is missing from the `git log` command. Added rev 2 per UPG-838. |
+| `INVALID_BYPASS_REASON` | `bypassClosureGate.reason` matches the §6.4 deny-list (e.g. "PR not yet merged"). Added rev 2 per UPG-838. |
+| `INVALID_REMOTE_REACHABILITY` | HEAD sha is not reachable from `origin/<defaultBranch>` (`git merge-base --is-ancestor` exits 1). Added rev 3. Fail-open on fetch timeout/network error — logs `issue.closure_gate_remote_unreachable` activity. |
+
+### Manager override
+
+Agents or board users with sufficient authority can bypass the gate by including `bypassClosureGate: { reason: "<reason ≥ 10 chars>" }` in the PATCH body. This logs an `issue.closure_gate_overridden` activity entry and skips validation.
+
+**Bypass deny-list (§6.4 rev 3):** Reasons are rejected with `INVALID_BYPASS_REASON` regardless of actor tier if they match any of:
+- D1: `/pr.*(not.*merged|pending|open|review)/i` — PR not yet merged (e.g. "PR pending review")
+- D2: `/\blocal\b.*(merge|master|main)/i` — locally-merged claim (e.g. "local merge to main")
+- D3: `/merged.*(locally|local-only)|no.*(upstream|maintainer).*(access|merge)/i` — no upstream access
+
+Merge the PR to the remote default branch and paste canonical-default-branch anchors instead.
+
+**Path-proof ref requirement (§4.4.0):** Path-proof lines must cite the default branch ref explicitly: `git log <defaultBranch> --oneline -- <path>`. A feature-branch ref (e.g. `git log ben/feature --oneline -- path`) rejects with `INVALID_PROOF_BRANCH` even if the shas pass `cat-file -t`.
+
+### Process-only tickets
+
+Issues with a `process-only` label, or whose closing comment contains the phrase "cites no in-repo artifact" (case-insensitive), are treated as process-only. Only the HEAD sha is required; no path proofs are needed.
+
+### Cheapest detector
+
+Before pasting any sha into a closing comment, run:
+
+```sh
+git cat-file -t <sha>
+```
+
+If it returns `commit`, the sha is valid. Any other output or non-zero exit means the sha does not exist in the repository.

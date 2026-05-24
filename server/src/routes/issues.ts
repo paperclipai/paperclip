@@ -8,6 +8,7 @@ import {
   activityLog,
   executionWorkspaces,
   heartbeatRuns,
+  issueClosureGateOverrides,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -110,6 +111,11 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  validate as closureGateValidate,
+  BYPASS_REASON_DENYLIST_RE,
+  type ClosureGateRejection,
+} from "../services/closureGate.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -846,6 +852,15 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
+
+  const closureGateDisabled = process.env.PAPERCLIP_DISABLE_CLOSURE_GATE === "true";
+  const closureGateShadow = !closureGateDisabled && process.env.PAPERCLIP_CLOSURE_GATE_SHADOW === "true";
+  if (closureGateDisabled) {
+    logger.warn("§B closure gate: PAPERCLIP_DISABLE_CLOSURE_GATE=true — gate disabled globally (gate_disabled_at_startup: true)");
+  } else if (closureGateShadow) {
+    logger.info("§B closure gate: PAPERCLIP_CLOSURE_GATE_SHADOW=true — running in shadow mode (rejections logged but not enforced)");
+  }
+
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
@@ -3422,6 +3437,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      bypassClosureGate,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -3662,6 +3678,132 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    // §B closure gate: validate before transitioning to done
+    if (!closureGateDisabled && updateFields.status === "done" && existing.status !== "done") {
+      const workspace = existing.executionWorkspaceId
+        ? await executionWorkspacesSvc.getById(existing.executionWorkspaceId)
+        : null;
+      const repoPath = workspace?.cwd ?? workspace?.providerRef ?? null;
+
+      if (!repoPath) {
+        const noWorkspaceRejection = {
+          code: "NO_WORKSPACE" as const,
+          message: "No execution workspace resolvable for §B validation.",
+        };
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { rejections: [noWorkspaceRejection], gate_disabled_at_startup: false },
+        });
+        if (!closureGateShadow) {
+          res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: [noWorkspaceRejection] });
+          return;
+        }
+      } else if (bypassClosureGate) {
+        // §6.4 deny-list: reject before consulting actor tier — PR-status reasons are invalid
+        if (BYPASS_REASON_DENYLIST_RE.test(bypassClosureGate.reason)) {
+          const bypassRejection: ClosureGateRejection = {
+            code: "INVALID_BYPASS_REASON",
+            message: `Bypass reason "${bypassClosureGate.reason}" matches the §6.4 deny-list. PR-status reasons are not valid emergency justifications — merge the PR and paste canonical-default-branch anchors instead.`,
+          };
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { rejections: [bypassRejection], gate_disabled_at_startup: false },
+          });
+          if (!closureGateShadow) {
+            res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: [bypassRejection] });
+            return;
+          }
+        } else {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.closure_gate_overridden",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { override_reason: bypassClosureGate.reason },
+          });
+        }
+      } else {
+        const defaultBranch = workspace?.baseRef
+          ? workspace.baseRef.replace(/^origin\//, "")
+          : "main";
+        const labels = (existing as unknown as { labels?: Array<{ name: string }> }).labels?.map((l) => l.name.toLowerCase().replace(/\s+/g, "-")) ?? [];
+        const isProcessOnly =
+          labels.includes("process-only") ||
+          /cites no in.repo artifact/i.test(commentBody ?? existing.description ?? "");
+
+        const gateResult = await closureGateValidate(
+          {
+            text: commentBody ?? existing.description ?? "",
+            isProcessOnly,
+            defaultBranch,
+          },
+          repoPath,
+        );
+
+        if (!gateResult.ok) {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: closureGateShadow ? "issue.closure_gate_would_reject" : "issue.closure_gate_rejected",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { rejections: gateResult.rejections, gate_disabled_at_startup: false },
+          });
+          if (!closureGateShadow) {
+            res.status(422).json({ error: "CLOSURE_GATE_REJECTED", rejections: gateResult.rejections });
+            return;
+          }
+        } else if (gateResult.remoteUnreachable) {
+          // §4.4.2 fail-open: fetch failed — log warn, write audit row, and logActivity
+          logger.warn({ issueId: existing.id }, "closure_gate.remote_unreachable");
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.closure_gate_remote_unreachable",
+            entityType: "issue",
+            entityId: existing.id,
+            details: { audit_flag: "REMOTE_UNREACHABLE" },
+          });
+          try {
+            await db.insert(issueClosureGateOverrides).values({
+              issueId: existing.id,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              overrideReason: null,
+              auditFlag: "REMOTE_UNREACHABLE",
+              detectorFindings: [],
+            });
+          } catch (err: unknown) {
+            logger.warn({ issueId: existing.id, err }, "closure_gate.remote_unreachable_audit_insert_failed");
+          }
+        }
       }
     }
 
