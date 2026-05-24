@@ -231,6 +231,22 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+const CLOSED_OR_TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const REVIEW_ONLY_AGENT_NAME_RE = /\b(qa|review|reviewer|approver)\b/i;
+const BROWSER_QA_AGENT_NAME_RE = /\b(browser|e2e|playwright|visual)\b/i;
+const CODE_QA_AGENT_NAME_RE = /\b(code|static|lint|unit)\b/i;
+const ENGINEERING_AGENT_ROLE_RE = /\b(engineer|developer|coder|builder)\b/i;
+const ISSUE_WORKSPACE_REQUIRED_REASONS = new Set([
+  "issue_assigned",
+  "execution_changes_requested",
+  "execution_review_requested",
+  "execution_approval_requested",
+  "issue_continuation_needed",
+  "issue_assignment_recovery",
+  "successful_run_handoff_required",
+  "transient_failure_retry",
+  MAX_TURN_CONTINUATION_WAKE_REASON,
+]);
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -1676,6 +1692,108 @@ function allowsIssueInteractionWake(
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
+type IssueWakeGuardAgent = Pick<typeof agents.$inferSelect, "id" | "name" | "role">;
+type IssueWakeGuardIssue = Pick<
+  typeof issues.$inferSelect,
+  "id" | "status" | "assigneeAgentId" | "projectId" | "projectWorkspaceId" | "executionWorkspaceId" | "executionState"
+>;
+
+function lowerText(value: unknown) {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function classifyIssueWakeAgent(agent: IssueWakeGuardAgent) {
+  const name = lowerText(agent.name);
+  const role = lowerText(agent.role);
+  const label = `${role} ${name}`;
+  const isBrowserQa = BROWSER_QA_AGENT_NAME_RE.test(label) && REVIEW_ONLY_AGENT_NAME_RE.test(label);
+  const isCodeQa = CODE_QA_AGENT_NAME_RE.test(label) && REVIEW_ONLY_AGENT_NAME_RE.test(label);
+  const isReviewOnly = isBrowserQa || isCodeQa || (REVIEW_ONLY_AGENT_NAME_RE.test(label) && !ENGINEERING_AGENT_ROLE_RE.test(role));
+  const isEngineering = ENGINEERING_AGENT_ROLE_RE.test(role) || /\b(codex|claude|opencode|engineer)\b/i.test(label);
+  return { isEngineering, isReviewOnly, isCodeQa, isBrowserQa };
+}
+
+function issueNativeReviewTargetsAgent(issue: IssueWakeGuardIssue, agentId: string) {
+  if (issue.status !== "in_review") return false;
+  const state = parseObject(issue.executionState);
+  if (state.status !== "pending" || state.currentStageType !== "review") return false;
+  const participant = parseObject(state.currentParticipant);
+  return participant.type === "agent" && participant.agentId === agentId;
+}
+
+function issueWakeRequiresWorkspace(input: {
+  agent: IssueWakeGuardAgent;
+  source: string | null;
+  reason: string | null;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}) {
+  const classification = classifyIssueWakeAgent(input.agent);
+  if (!classification.isEngineering && !classification.isReviewOnly) return false;
+  if (allowsIssueInteractionWake(input.contextSnapshot)) return false;
+
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason) ?? input.reason;
+  if (wakeReason && ISSUE_WORKSPACE_REQUIRED_REASONS.has(wakeReason)) return true;
+  return input.source === "assignment" || input.source === "automation";
+}
+
+function evaluateIssueWakeEligibility(input: {
+  agent: IssueWakeGuardAgent;
+  issue: IssueWakeGuardIssue;
+  source: string | null;
+  triggerDetail: string | null;
+  reason: string | null;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}) {
+  const { agent, issue } = input;
+  const interactionWake = allowsIssueInteractionWake(input.contextSnapshot);
+  if (interactionWake) return { allowed: true as const };
+
+  if (CLOSED_OR_TERMINAL_ISSUE_STATUSES.has(issue.status)) {
+    return { allowed: false as const, reason: `issue_status_${issue.status}` };
+  }
+
+  if (issue.status === "blocked") {
+    return { allowed: false as const, reason: "issue_status_blocked" };
+  }
+
+  if (issue.assigneeAgentId && issue.assigneeAgentId !== agent.id) {
+    return { allowed: false as const, reason: "issue_assignee_changed" };
+  }
+
+  const classification = classifyIssueWakeAgent(agent);
+  const nativeReviewTarget = issueNativeReviewTargetsAgent(issue, agent.id);
+  const explicitBrowserReviewAssignment = classification.isBrowserQa && issue.status === "in_review" && issue.assigneeAgentId === agent.id;
+  if (classification.isBrowserQa && issue.status !== "code_approved" && !nativeReviewTarget && !explicitBrowserReviewAssignment) {
+    return { allowed: false as const, reason: "browser_qa_requires_code_approved" };
+  }
+  if (classification.isCodeQa && issue.status !== "in_review") {
+    return { allowed: false as const, reason: "code_qa_requires_in_review" };
+  }
+  if (classification.isEngineering && !classification.isReviewOnly && !["todo", "backlog", "in_progress"].includes(issue.status)) {
+    return { allowed: false as const, reason: "engineering_requires_todo_or_in_progress" };
+  }
+
+  if (issueWakeRequiresWorkspace(input)) {
+    const hasIssueWorkspace = Boolean(issue.executionWorkspaceId || issue.projectWorkspaceId || issue.projectId);
+    const projectScoped = hasIssueWorkspace || Boolean(readNonEmptyString(input.contextSnapshot?.projectId));
+    if (projectScoped && !hasIssueWorkspace) {
+      return { allowed: false as const, reason: "issue_workspace_required" };
+    }
+  }
+
+  return { allowed: true as const };
+}
+
+function wakeContextFromWakeupPayload(payload: unknown) {
+  const parsed = parseObject(payload);
+  const deferredContext = parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY]);
+  return {
+    payload: parsed,
+    contextSnapshot: Object.keys(deferredContext).length > 0 ? deferredContext : parsed,
+    issueId: readNonEmptyString(parsed.issueId) ?? readNonEmptyString(deferredContext.issueId),
+  };
+}
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -1741,7 +1859,6 @@ function shouldAutoCheckoutIssueForWake(input: {
   if (
     issueStatus !== "todo" &&
     issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
     issueStatus !== "in_progress"
   ) {
     return false;
@@ -3449,10 +3566,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function shouldForceFreshIssueSessionForWakeup(
+    agent: typeof agents.$inferSelect,
+    taskKey: string | null,
+  ) {
+    return (
+      ((agent.name === "Claude Engineer" && agent.adapterType === "claude_local") ||
+        (agent.name === "Codex Engineer" && agent.adapterType === "codex_local")) &&
+      Boolean(taskKey && taskKey !== HEARTBEAT_TASK_KEY)
+    );
+  }
+
+  async function clearAgentResumeStateBeforeIssueWake(
+    agent: typeof agents.$inferSelect,
+    taskKey: string | null,
+  ) {
+    await ensureRuntimeState(agent);
+    if (taskKey) {
+      await clearTaskSessions(agent.companyId, agent.id, {
+        adapterType: agent.adapterType,
+        taskKey,
+      });
+    }
+    await db
+      .update(agentRuntimeState)
+      .set({
+        sessionId: null,
+        lastRunStatus: null,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(agentRuntimeState.agentId, agent.id));
+  }
+
   async function resolveSessionBeforeForWakeup(
     agent: typeof agents.$inferSelect,
     taskKey: string | null,
   ) {
+    if (shouldForceFreshIssueSessionForWakeup(agent, taskKey)) {
+      await clearAgentResumeStateBeforeIssueWake(agent, taskKey);
+      return null;
+    }
+
     if (taskKey) {
       const codec = getAdapterSessionCodec(agent.adapterType);
       const existingTaskSession = await getTaskSession(
@@ -5233,7 +5388,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const configuredMaxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const maxAttempts = classifyIssueWakeAgent(agent).isBrowserQa
+      ? Math.min(configuredMaxAttempts, 1)
+      : configuredMaxAttempts;
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const baseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -5837,7 +5995,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnOnDemand, true),
+      wakeOnAssignment: asBoolean(heartbeat.wakeOnAssignment ?? heartbeat.wakeOnDemand, true),
+      wakeOnAutomation: asBoolean(heartbeat.wakeOnAutomation ?? heartbeat.wakeOnDemand, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
   }
@@ -8781,7 +8941,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await writeSkippedRequest("heartbeat.disabled");
       return null;
     }
-    if (source !== "timer" && !policy.wakeOnDemand) {
+    if (source === "assignment" && !policy.wakeOnAssignment) {
+      await writeSkippedRequest("heartbeat.wakeOnAssignment.disabled");
+      return null;
+    }
+    if (source === "automation" && !policy.wakeOnAutomation) {
+      await writeSkippedRequest("heartbeat.wakeOnAutomation.disabled");
+      return null;
+    }
+    if (source !== "timer" && source !== "assignment" && source !== "automation" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
     }
@@ -8850,8 +9018,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: issues.companyId,
             status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
+            projectId: issues.projectId,
+            projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            executionState: issues.executionState,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -8870,6 +9042,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
             finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        const eligibility = evaluateIssueWakeEligibility({
+          agent,
+          issue,
+          source,
+          triggerDetail,
+          reason,
+          contextSnapshot: enrichedContextSnapshot,
+        });
+        if (!eligibility.allowed) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: eligibility.reason,
+            payload: { ...(payload ?? {}), issueId: issue.id },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          await tx.insert(activityLog).values({
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            action: "heartbeat.wakeup_skipped",
+            entityType: "issue",
+            entityId: issue.id,
+            agentId,
+            details: {
+              reason: eligibility.reason,
+              requestedReason: reason,
+              source,
+              triggerDetail,
+              issueStatus: issue.status,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
           });
           return { kind: "skipped" as const };
         }
@@ -9428,6 +9642,95 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function cancelStaleIssueWakeups(now = new Date(), limit = 200) {
+    const candidates = await db
+      .select({
+        request: agentWakeupRequests,
+        agent: {
+          id: agents.id,
+          companyId: agents.companyId,
+          name: agents.name,
+          role: agents.role,
+        },
+      })
+      .from(agentWakeupRequests)
+      .innerJoin(agents, and(eq(agents.id, agentWakeupRequests.agentId), eq(agents.companyId, agentWakeupRequests.companyId)))
+      .where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]))
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(Math.max(1, Math.min(limit, 1000)));
+
+    let cancelled = 0;
+    for (const candidate of candidates) {
+      const wakeContext = wakeContextFromWakeupPayload(candidate.request.payload);
+      const issueId = wakeContext.issueId;
+      if (!issueId) continue;
+
+      const issue = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          projectId: issues.projectId,
+          projectWorkspaceId: issues.projectWorkspaceId,
+          executionWorkspaceId: issues.executionWorkspaceId,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, candidate.request.companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      const staleReason = issue
+        ? evaluateIssueWakeEligibility({
+          agent: candidate.agent,
+          issue,
+          source: candidate.request.source,
+          triggerDetail: candidate.request.triggerDetail,
+          reason: candidate.request.reason,
+          contextSnapshot: wakeContext.contextSnapshot,
+        })
+        : { allowed: false as const, reason: "issue_execution_issue_not_found" };
+      if (staleReason.allowed) continue;
+
+      const error = `Cancelled stale issue wakeup: ${staleReason.reason}`;
+      if (candidate.request.runId) {
+        await cancelRunInternal(candidate.request.runId, error);
+      } else {
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, candidate.request.id));
+      }
+
+      await logActivity(db, {
+        companyId: candidate.request.companyId,
+        actorType: "system",
+        actorId: "heartbeat_janitor",
+        action: "heartbeat.wakeup_cancelled_stale",
+        entityType: issue ? "issue" : "agent_wakeup_request",
+        entityId: issue?.id ?? candidate.request.id,
+        agentId: candidate.request.agentId,
+        runId: candidate.request.runId,
+        details: {
+          reason: staleReason.reason,
+          wakeupRequestId: candidate.request.id,
+          source: candidate.request.source,
+          triggerDetail: candidate.request.triggerDetail,
+          requestedReason: candidate.request.reason,
+          issueStatus: issue?.status ?? null,
+          assigneeAgentId: issue?.assigneeAgentId ?? null,
+        },
+      });
+      cancelled += 1;
+    }
+
+    return cancelled;
+  }
+
   async function cancelPendingWakeupsForBudgetScope(scope: BudgetEnforcementScope) {
     const now = new Date();
     let wakeupIds: string[] = [];
@@ -9868,10 +10171,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
-
+    cancelStaleIssueWakeups,
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
+      const staleIssueWakeupsCancelled = await cancelStaleIssueWakeups(now);
       const allAgents = await db.select().from(agents);
       let checked = 0;
       let enqueued = 0;
@@ -9909,6 +10213,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        staleIssueWakeupsCancelled,
       };
     },
 

@@ -28,6 +28,9 @@ const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => false),
   hasPermission: vi.fn(async () => false),
 }));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
@@ -47,9 +50,7 @@ function registerModuleMocks() {
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
     accessService: () => mockAccessService,
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-    }),
+    agentService: () => mockAgentService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -165,6 +166,13 @@ describe("issue execution policy routes", () => {
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAgentService.getById.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      role: "engineer",
+      name: "Engineer",
+      title: "Software Engineer",
+    });
   });
 
   it("rejects an agent-authored in_review transition without a review path", async () => {
@@ -239,6 +247,167 @@ describe("issue execution policy routes", () => {
         status: "in_review",
         assigneeAgentId: null,
         assigneeUserId: "human-reviewer",
+      }),
+    );
+  });
+
+  it("allows an agent to hand off a project-scoped clean-PR issue to a QA review agent", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Code handoff to QA Browser",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === "44444444-4444-4444-8444-444444444444") {
+        return { id, companyId: "company-1", role: "qa", name: "QA (Browser)", title: "Quality Assurance" };
+      }
+      return { id, companyId: "company-1", role: "engineer", name: "Engineer", title: "Software Engineer" };
+    });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        type: "pull_request",
+        status: "ready_for_review",
+        healthStatus: "healthy",
+        isPrimary: true,
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", assigneeAgentId: "44444444-4444-4444-8444-444444444444" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockWorkProductService.listForIssue).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockAccessService.hasPermission).not.toHaveBeenCalledWith(expect.anything(), "company-1", "tasks:assign");
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      }),
+    );
+  });
+
+  it("rejects an engineer project-scoped agent-review handoff without a linked PR", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Code handoff without PR",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", executionPolicy: policy });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "missing_pull_request_preflight" });
+    expect(mockWorkProductService.listForIssue).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a researcher project-scoped agent-review handoff without forcing a PR", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: "22222222-2222-4222-8222-222222222222",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Research handoff without PR",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        },
+      ],
+    })!;
+    mockAgentService.getById.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      role: "researcher",
+      name: "Researcher",
+      title: "Technical Researcher & Context Analyst",
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", executionPolicy: policy });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockWorkProductService.listForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        executionState: expect.objectContaining({
+          currentParticipant: expect.objectContaining({
+            type: "agent",
+            agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+        }),
       }),
     );
   });

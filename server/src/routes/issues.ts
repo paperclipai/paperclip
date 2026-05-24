@@ -469,8 +469,16 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, assign a review agent with assigneeAgentId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+
+function isReviewAgent(agent: { role?: string | null; name?: string | null; title?: string | null } | null | undefined) {
+  if (!agent) return false;
+  const role = String(agent.role ?? "").trim().toLowerCase();
+  if (role === "qa") return true;
+  const descriptor = `${agent.name ?? ""} ${agent.title ?? ""}`.toLowerCase();
+  return /\bqa\b|quality assurance|reviewer|review\b/.test(descriptor);
+}
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -1076,6 +1084,7 @@ export function issueRoutes(
       id: string;
       companyId: string;
       status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
@@ -1092,6 +1101,14 @@ export function issueRoutes(
       ? input.existing.assigneeUserId
       : input.updateFields.assigneeUserId;
     if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId
+      : input.updateFields.assigneeAgentId;
+    if (typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.trim().length > 0) {
+      const targetAgent = await agentsSvc.getById(nextAssigneeAgentId);
+      if (targetAgent?.companyId === input.existing.companyId && isReviewAgent(targetAgent)) return;
+    }
 
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
@@ -1118,15 +1135,37 @@ export function issueRoutes(
         "pending_issue_thread_interaction",
         "linked_pending_approval",
         "human_assignee_user_id",
+        "review_agent_assignee_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
       ],
     });
   }
 
+  const NON_CODE_DELIVERABLE_AGENT_ROLES = new Set(["advisor", "cmo", "researcher"]);
+
+  function isNonCodeDeliverableAgent(agent: {
+    role?: string | null;
+    name?: string | null;
+    title?: string | null;
+  } | null | undefined) {
+    if (!agent) return false;
+    const role = String(agent.role ?? "").trim().toLowerCase();
+    if (NON_CODE_DELIVERABLE_AGENT_ROLES.has(role)) return true;
+
+    const descriptor = `${agent.name ?? ""} ${agent.title ?? ""}`.toLowerCase();
+    return (
+      descriptor.includes("research") ||
+      descriptor.includes("market intelligence") ||
+      descriptor.includes("marketing") ||
+      descriptor.includes("product strategy")
+    );
+  }
+
   async function assertAgentProjectIssuePullRequestPreflight(input: {
     existing: {
       id: string;
+      companyId: string;
       status: string;
       assigneeUserId?: string | null;
       projectId?: string | null;
@@ -1135,6 +1174,7 @@ export function issueRoutes(
     };
     updateFields: Record<string, unknown>;
     actorType: string;
+    actorAgentId?: string | null;
   }) {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
@@ -1147,6 +1187,13 @@ export function issueRoutes(
       input.existing.executionWorkspaceId,
     );
     if (!projectScoped) return;
+
+    if (input.actorAgentId) {
+      const actorAgent = await agentsSvc.getById(input.actorAgentId);
+      if (actorAgent?.companyId === input.existing.companyId && isNonCodeDeliverableAgent(actorAgent)) {
+        return;
+      }
+    }
 
     const workProducts = await workProductsSvc.listForIssue(input.existing.id);
     const pullRequests = workProducts.filter((product) =>
@@ -3502,6 +3549,7 @@ export function issueRoutes(
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
     });
 
     const nextAssigneeAgentId =
@@ -3519,9 +3567,22 @@ export function issueRoutes(
       typeof nextAssigneeUserId === "string" &&
       nextAssigneeUserId.trim().length > 0 &&
       nextStatusForAssignment === "in_review";
+    const targetAgentReviewer = typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId.trim().length > 0
+      ? await agentsSvc.getById(nextAssigneeAgentId)
+      : null;
+    const isAgentHandingOffIssueToAgentReviewer =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      nextAssigneeAgentId !== null &&
+      nextAssigneeAgentId !== req.actor.agentId &&
+      nextAssigneeUserId === null &&
+      nextStatusForAssignment === "in_review" &&
+      targetAgentReviewer?.companyId === existing.companyId &&
+      isReviewAgent(targetAgentReviewer);
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentHandingOffIssueToHumanReviewer) {
+      if (!isAgentHandingOffIssueToHumanReviewer && !isAgentHandingOffIssueToAgentReviewer) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }

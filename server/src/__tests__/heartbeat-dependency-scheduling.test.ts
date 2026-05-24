@@ -956,4 +956,368 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  it("skips automated issue wakes for terminal issues", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Codex Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already done",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(wake).toBeNull();
+    const requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    expect(requests).toEqual([{ status: "skipped", reason: "issue_status_done" }]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("can disable assignment wakes while keeping manual on-demand wakes enabled", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Researcher",
+      role: "researcher",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          wakeOnDemand: true,
+          wakeOnAssignment: false,
+          wakeOnAutomation: false,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Manual research task",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const assignmentWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(assignmentWake).toBeNull();
+    let requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    expect(requests).toEqual([{ status: "skipped", reason: "heartbeat.wakeOnAssignment.disabled" }]);
+
+    const automationWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(automationWake).toBeNull();
+    requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .orderBy(agentWakeupRequests.createdAt);
+    expect(requests).toEqual([
+      { status: "skipped", reason: "heartbeat.wakeOnAssignment.disabled" },
+      { status: "skipped", reason: "heartbeat.wakeOnAutomation.disabled" },
+    ]);
+
+    const manualWake = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "manual_review",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "manual_review" },
+    });
+
+    expect(manualWake?.status).toBe("queued");
+    requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .orderBy(agentWakeupRequests.createdAt);
+    expect(requests[0]).toEqual({ status: "skipped", reason: "heartbeat.wakeOnAssignment.disabled" });
+    expect(requests[1]).toEqual({ status: "skipped", reason: "heartbeat.wakeOnAutomation.disabled" });
+    expect(requests[2]?.reason).toBe("manual_review");
+    expect(["queued", "claimed"]).toContain(requests[2]?.status);
+  });
+
+  it("skips QA Browser wakes until the issue has an explicit review route", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QA (Browser)",
+      role: "qa",
+      status: "active",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs code review first",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: randomUUID(),
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_approval_requested",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "execution_approval_requested" },
+    });
+
+    expect(wake).toBeNull();
+    const requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    expect(requests).toEqual([{ status: "skipped", reason: "browser_qa_requires_code_approved" }]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("allows QA Browser wakes for explicit in_review browser assignments", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QA (Browser)",
+      role: "qa",
+      status: "active",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Browser review explicitly assigned",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_approval_requested",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "execution_approval_requested" },
+    });
+
+    expect(wake?.status).toBe("queued");
+    const requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.reason).toBe("execution_approval_requested");
+    expect(["queued", "claimed"]).toContain(requests[0]?.status);
+  });
+
+  it("allows QA Browser wakes when native execution policy targets that browser reviewer", async () => {
+    mockAdapterExecute.mockClear();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const stageId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QA (Browser)",
+      role: "qa",
+      status: "active",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native browser review",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_approval_requested",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "execution_approval_requested" },
+    });
+
+    expect(wake?.status).toBe("queued");
+    const requests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.reason).toBe("execution_approval_requested");
+    expect(["queued", "claimed"]).toContain(requests[0]?.status);
+  });
+
+  it("janitor cancels queued issue wakeups after reassignment drift", async () => {
+    const companyId = randomUUID();
+    const originalAgentId = randomUUID();
+    const currentAgentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: originalAgentId,
+        companyId,
+        name: "QA (Code)",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: currentAgentId,
+        companyId,
+        name: "QA (Browser)",
+        role: "qa",
+        status: "active",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned",
+      status: "code_approved",
+      priority: "medium",
+      assigneeAgentId: currentAgentId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: originalAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_review_requested",
+      payload: { issueId, wakeReason: "execution_review_requested" },
+      status: "queued",
+      requestedByActorType: "system",
+    });
+
+    const cancelled = await heartbeat.cancelStaleIssueWakeups();
+
+    expect(cancelled).toBe(1);
+    const [request] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests);
+    expect(request.status).toBe("cancelled");
+    expect(request.error).toContain("issue_assignee_changed");
+  });
 });
