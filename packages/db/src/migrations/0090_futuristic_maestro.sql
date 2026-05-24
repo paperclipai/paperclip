@@ -12,7 +12,7 @@ CREATE TABLE "agent_work_requests" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cloud_upstream_connections" (
+CREATE TABLE IF NOT EXISTS "cloud_upstream_connections" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"remote_url" text NOT NULL,
