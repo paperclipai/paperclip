@@ -6,6 +6,7 @@ import {
   resolveProfile,
   setCurrentProfile,
   upsertProfile,
+  type ClientContextProfile,
 } from "../../client/context.js";
 import { printOutput } from "./common.js";
 
@@ -102,14 +103,7 @@ export function registerContextCommands(program: Command): void {
 
       upsertProfile(
         targetProfile,
-        {
-          apiBase: opts.apiBase,
-          companyId: opts.companyId,
-          persona: parsePersona(opts.persona),
-          agentId: opts.agentId,
-          agentName: opts.agentName,
-          apiKeyEnvVarName: opts.apiKeyEnvVarName,
-        },
+        buildContextPatch(opts),
         opts.context,
       );
 
@@ -134,6 +128,27 @@ export function registerContextCommands(program: Command): void {
       }
       printOutput(payload, { json: opts.json });
     });
+}
+
+function setIfProvided<K extends keyof ClientContextProfile>(
+  patch: Partial<ClientContextProfile>,
+  key: K,
+  value: ClientContextProfile[K] | undefined,
+): void {
+  if (value !== undefined) {
+    patch[key] = value;
+  }
+}
+
+function buildContextPatch(opts: ContextSetOptions): Partial<ClientContextProfile> {
+  const patch: Partial<ClientContextProfile> = {};
+  setIfProvided(patch, "apiBase", opts.apiBase);
+  setIfProvided(patch, "companyId", opts.companyId);
+  setIfProvided(patch, "persona", parsePersona(opts.persona));
+  setIfProvided(patch, "agentId", opts.agentId);
+  setIfProvided(patch, "agentName", opts.agentName);
+  setIfProvided(patch, "apiKeyEnvVarName", opts.apiKeyEnvVarName);
+  return patch;
 }
 
 function parsePersona(value: string | undefined): "board" | "agent" | undefined {

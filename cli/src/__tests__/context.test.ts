@@ -52,6 +52,34 @@ describe("client context store", () => {
     });
   });
 
+  it("preserves existing profile values when patch fields are undefined", () => {
+    const contextPath = createTempContextPath();
+
+    upsertProfile(
+      "default",
+      {
+        apiBase: "http://127.0.0.1:3197",
+      },
+      contextPath,
+    );
+
+    upsertProfile(
+      "default",
+      {
+        apiBase: undefined,
+        companyId: "company-123",
+        persona: undefined,
+      },
+      contextPath,
+    );
+
+    const context = readContext(contextPath);
+    expect(context.profiles.default).toEqual({
+      apiBase: "http://127.0.0.1:3197",
+      companyId: "company-123",
+    });
+  });
+
   it("migrates version 1 context files to version 2 with persona metadata", () => {
     const contextPath = createTempContextPath();
     fs.writeFileSync(

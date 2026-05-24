@@ -149,10 +149,17 @@ export function upsertProfile(
 ): ClientContext {
   const context = readContext(contextPath);
   const existing = context.profiles[profileName] ?? {};
-  const merged: ClientContextProfile = {
-    ...existing,
-    ...patch,
-  };
+  const merged: ClientContextProfile = { ...existing };
+
+  if (patch.apiBase !== undefined) merged.apiBase = patch.apiBase;
+  if (patch.companyId !== undefined) merged.companyId = patch.companyId;
+  if (patch.persona !== undefined) merged.persona = patch.persona;
+  if (patch.agentId !== undefined) merged.agentId = patch.agentId;
+  if (patch.agentName !== undefined) merged.agentName = patch.agentName;
+  if (patch.apiKeyEnvVarName !== undefined) merged.apiKeyEnvVarName = patch.apiKeyEnvVarName;
+  if (patch.tokenName !== undefined) merged.tokenName = patch.tokenName;
+  if (patch.tokenId !== undefined) merged.tokenId = patch.tokenId;
+  if (patch.tokenCreatedAt !== undefined) merged.tokenCreatedAt = patch.tokenCreatedAt;
 
   if (patch.apiBase !== undefined && patch.apiBase.trim().length === 0) {
     delete merged.apiBase;
