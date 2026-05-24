@@ -33,7 +33,7 @@ function randomTaf(station: string, seed: number): string {
   const windDir = 100 + (seed % 260);
   const windSpd = 5 + (seed % 20);
   const day = 25;
-  return `${station} ${251120Z} ${day}12/${day + 1}18 ${windDir}${windSpd}KT P6SM FEW025 BKN200`;
+  return `${station} 251120Z ${day}12/${day + 1}18 ${windDir}${windSpd}KT P6SM FEW025 BKN200`;
 }
 
 export function briefingGenerationService() {
