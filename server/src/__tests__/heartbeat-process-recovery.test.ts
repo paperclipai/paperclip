@@ -2603,6 +2603,84 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[1]?.body).toContain("Latest retry failure details were withheld from the issue thread");
   });
 
+  it("cancels the recovery issue after MAX_RECOVERY_IN_PLACE_CYCLES re-escalations to break the in-place loop", async () => {
+    const sourceIssueId = randomUUID();
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original stranded source",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue PAP-1",
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+
+    // Pre-seed MAX_RECOVERY_IN_PLACE_CYCLES (3) prior in-place escalation activity log entries
+    // so this reconcile invocation hits the cap and cancels instead of re-blocking.
+    for (let i = 0; i < 3; i += 1) {
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          source: "recovery.reconcile_stranded_recovery_issue",
+          status: "blocked",
+          previousStatus: "in_progress",
+          cycles: i + 1,
+        },
+      });
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const recoveryIssueRow = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(recoveryIssueRow?.status).toBe("cancelled");
+
+    // The source issue stays blocked (cancelled blockers don't count as resolved).
+    const sourceRow = await db.select().from(issues).where(eq(issues.id, sourceIssueId)).then((rows) => rows[0]);
+    expect(sourceRow?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const last = comments[comments.length - 1];
+    expect(last?.body).toContain("cancelled this recovery issue after");
+    expect(last?.body).toContain("automatic recovery is exhausted");
+
+    const exhaustionActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    const exhaustionEntry = exhaustionActivity.find(
+      (entry) => (entry.details as Record<string, unknown> | null)?.source === "recovery.reconcile_stranded_recovery_issue_exhausted",
+    );
+    expect(exhaustionEntry).toBeDefined();
+    expect((exhaustionEntry?.details as Record<string, unknown>).status).toBe("cancelled");
+  });
+
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

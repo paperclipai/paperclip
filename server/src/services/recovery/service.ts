@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -62,6 +63,8 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+export const MAX_RECOVERY_IN_PLACE_CYCLES = 3;
+const RECOVERY_IN_PLACE_ESCALATION_SOURCE = "recovery.reconcile_stranded_recovery_issue";
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -1534,11 +1537,93 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  async function countPriorRecoveryInPlaceEscalations(companyId: string, issueId: string) {
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          sql`${activityLog.details} ->> 'source' = ${RECOVERY_IN_PLACE_ESCALATION_SOURCE}`,
+        ),
+      );
+    return rows[0]?.count ?? 0;
+  }
+
+  function buildRecoveryIssueInPlaceExhaustedComment(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    prefix: string;
+    cycles: number;
+  }) {
+    const runLink = input.latestRun
+      ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, input.prefix)
+      : "none";
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return [
+      `Paperclip cancelled this recovery issue after ${input.cycles} unsuccessful in-place re-escalation cycles.`,
+      "",
+      `- Recovery issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Latest run: ${runLink}`,
+      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
+      failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
+      "- Guard: automatic recovery is exhausted for this branch. Cancelled blockers do not count as resolved — the source issue remains `blocked`.",
+      "",
+      "Next action: a board operator must investigate the source issue manually, restore a live execution path, or re-open a fresh recovery if the underlying runtime problem has been fixed.",
+    ].join("\n");
+  }
+
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
+    const priorCycles = await countPriorRecoveryInPlaceEscalations(
+      input.issue.companyId,
+      input.issue.id,
+    );
+
+    if (priorCycles >= MAX_RECOVERY_IN_PLACE_CYCLES) {
+      const cancelled = await issuesSvc.update(input.issue.id, { status: "cancelled" });
+      if (!cancelled) return null;
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      await issuesSvc.addComment(
+        input.issue.id,
+        buildRecoveryIssueInPlaceExhaustedComment({
+          issue: input.issue,
+          latestRun: input.latestRun,
+          prefix,
+          cycles: priorCycles + 1,
+        }),
+        {},
+      );
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "cancelled",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_stranded_recovery_issue_exhausted",
+          cycles: priorCycles + 1,
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          originKind: input.issue.originKind,
+          originId: input.issue.originId,
+        },
+      });
+      return cancelled;
+    }
+
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
     if (!updated) return null;
 
@@ -1567,7 +1652,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         identifier: input.issue.identifier,
         status: "blocked",
         previousStatus: input.previousStatus,
-        source: "recovery.reconcile_stranded_recovery_issue",
+        source: RECOVERY_IN_PLACE_ESCALATION_SOURCE,
+        cycles: priorCycles + 1,
         latestRunId: input.latestRun?.id ?? null,
         latestRunStatus: input.latestRun?.status ?? null,
         latestRunErrorCode: input.latestRun?.errorCode ?? null,
