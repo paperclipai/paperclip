@@ -492,7 +492,8 @@ class ClaudeTuiDriver:
                         "streaming" if (ts and ts.is_streaming) else (
                         "in_modal" if (ts and ts.is_in_modal) else "waiting"))
                     visible = latest.get("visible") or ""
-                    screen_tail = visible[-800:] if visible else ""
+                    history = latest.get("history") or ""
+                    screen_tail = visible if visible else history[-2000:]
                     try:
                         self._liveness_cb(phase, now - t_start, screen_tail)
                     except Exception:

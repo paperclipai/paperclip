@@ -207,7 +207,9 @@ def worker_main(
         # extended waits (e.g. login prompt, error overlay, modal we missed).
         emit_log("info", f"send_turn liveness ping: phase={phase} elapsed={elapsed:.1f}s")
         if screen_tail:
-            for line in screen_tail.splitlines()[-12:]:
+            non_empty = [ln for ln in screen_tail.splitlines() if ln.strip()]
+            emit_log("info", f"screen-stats: total-lines={len(screen_tail.splitlines())} non-empty={len(non_empty)} bytes={len(screen_tail)}")
+            for line in non_empty[-15:]:
                 emit_log("info", f"screen: {line[:200]}")
 
     drv = ClaudeTuiDriver(
