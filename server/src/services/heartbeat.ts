@@ -681,10 +681,11 @@ function summarizeRunFailureForIssueComment(
   return null;
 }
 
-function normalizeLedgerBillingType(value: unknown): BillingType {
+export function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
     case "api":
+    case "api_key":
     case "metered_api":
       return "metered_api";
     case "subscription":
