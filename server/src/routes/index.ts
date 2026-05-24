@@ -20,4 +20,5 @@ export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
 export { crewbriefRoutes } from "./crewbrief.js";
+export { qualityRoutes } from "./quality.js";
 

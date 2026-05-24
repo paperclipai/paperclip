@@ -194,4 +194,11 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  quality: {
+    scorecard: ["quality", "scorecard"] as const,
+    escalations: (limit?: number) => ["quality", "escalations", limit ?? "default"] as const,
+    metrics: (days?: number) => ["quality", "metrics", days ?? "default"] as const,
+    crewScores: ["quality", "crew-scores"] as const,
+    gatePassRates: ["quality", "gate-pass-rates"] as const,
+  },
 };

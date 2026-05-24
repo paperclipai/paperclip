@@ -13,6 +13,7 @@ import { healthRoutes } from "./routes/health.js";
 import { crewbriefRoutes } from "./routes/crewbrief.js";
 import { briefingFeedbackRoutes } from "./routes/briefing-feedback.js";
 import { briefingQualityRoutes } from "./routes/briefing-quality.js";
+import { qualityRoutes } from "./routes/quality.js";
 import { crewbriefBriefingRoutes } from "./routes/crewbrief-briefing.js";
 import { crewbriefIntakeRoutes } from "./routes/crewbrief-intake.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -335,6 +336,7 @@ export async function createApp(
   api.use("/crewbrief", crewbriefRoutes(db, crewbriefCfg, cbNurture, cbHubspot, cbWebhooks));
   api.use("/feedback", briefingFeedbackRoutes(db));
   api.use("/briefing-quality", briefingQualityRoutes(db));
+  api.use("/quality", qualityRoutes(db));
   api.use("/briefings", crewbriefBriefingRoutes(db));
   api.use("/crewbrief/intake", crewbriefIntakeRoutes(db));
 

@@ -61,6 +61,7 @@ export { crewbriefPosthogService } from "./crewbrief-posthog.js";
 export { crewbriefEmailService } from "./crewbrief-email.js";
 export { crewbriefNurtureService } from "./crewbrief-nurture.js";
 export { crewbriefWebhookService } from "./crewbrief-webhooks.js";
+export { qualityService, type QualityService } from "./quality.js";
 export { briefingFeedbackService, type BriefingFeedbackService } from "./briefing-feedback.js";
 export { briefingFeedbackAlertsService, type BriefingFeedbackAlertsService } from "./briefing-feedback-alerts.js";
 export { briefingQualityService, type BriefingQualityService } from "./briefing-quality.js";
