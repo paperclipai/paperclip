@@ -10,6 +10,12 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { setRequestHeader } from "../api/client";
+import {
+  categorizeOnboardingError,
+  type CategorizedOnboardingError,
+} from "../lib/onboarding-error";
+import { OnboardingError } from "./OnboardingError";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -100,7 +106,7 @@ export function OnboardingWizard() {
 
   const [step, setStep] = useState<Step>(initialStep);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<CategorizedOnboardingError | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -158,6 +164,15 @@ export function OnboardingWizard() {
   useEffect(() => {
     setRouteDismissed(false);
   }, [location.pathname]);
+
+  // Tag every fetch fired while the wizard is mounted so the server-side
+  // onboarding-incident middleware can scope auto-file decisions. Server has a
+  // route allowlist fallback if this header is missing.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) return;
+    setRequestHeader("X-Paperclip-Onboarding", "1");
+    return () => setRequestHeader("X-Paperclip-Onboarding", null);
+  }, [effectiveOnboardingOpen]);
 
   // Sync step and company when onboarding opens with options.
   // Keep this independent from company-list refreshes so Step 1 completion
@@ -376,8 +391,11 @@ export function OnboardingWizard() {
       setAdapterEnvResult(result);
       return result;
     } catch (err) {
+      const category = categorizeOnboardingError(err);
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        category.class === "network"
+          ? "Couldn't reach Paperclip to run the adapter probe. Check your connection and try again."
+          : "Adapter environment test failed. Try again, or check the adapter config."
       );
       return null;
     } finally {
@@ -415,7 +433,7 @@ export function OnboardingWizard() {
 
       setStep(2);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(categorizeOnboardingError(err));
     } finally {
       setLoading(false);
     }
@@ -428,9 +446,19 @@ export function OnboardingWizard() {
     try {
       if (adapterType === "opencode_local") {
         if (!isValidOpenCodeModelId(model)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
+          setError({
+            class: "validation",
+            status: null,
+            serverMessage: null,
+            incidentId: null,
+            fields: [
+              {
+                path: "model",
+                message:
+                  "OpenCode requires an explicit model in provider/model format."
+              }
+            ]
+          });
           return;
         }
       }
@@ -463,7 +491,7 @@ export function OnboardingWizard() {
       });
       setStep(3);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(categorizeOnboardingError(err));
     } finally {
       setLoading(false);
     }
@@ -503,16 +531,12 @@ export function OnboardingWizard() {
 
       const result = await runAdapterEnvironmentTest(configWithUnset);
       if (result?.status === "fail") {
-        setError(
+        setAdapterEnvError(
           "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing."
         );
       }
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to unset ANTHROPIC_API_KEY and retry."
-      );
+      setError(categorizeOnboardingError(err));
     } finally {
       setUnsetAnthropicLoading(false);
     }
@@ -577,10 +601,27 @@ export function OnboardingWizard() {
           : `/issues/${issueRef}`
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create task");
+      setError(categorizeOnboardingError(err));
     } finally {
       setLoading(false);
     }
+  }
+
+  function retryCurrentStep() {
+    if (loading) return;
+    if (step === 1) {
+      if (companyName.trim()) void handleStep1Next();
+      return;
+    }
+    if (step === 2) {
+      if (agentName.trim()) void handleStep2Next();
+      return;
+    }
+    if (step === 3) {
+      if (taskTitle.trim()) void handleStep3Next();
+      return;
+    }
+    if (step === 4) void handleLaunch();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -1178,7 +1219,11 @@ export function OnboardingWizard() {
               {/* Error */}
               {error && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">{error}</p>
+                  <OnboardingError
+                    error={error}
+                    onRetry={retryCurrentStep}
+                    retrying={loading}
+                  />
                 </div>
               )}
 
