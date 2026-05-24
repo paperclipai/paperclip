@@ -71,12 +71,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Codex",
     description: "Local Codex agent",
     icon: Code,
-    recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
     description: "Local Gemini agent",
     icon: Gem,
+    recommended: true,
   },
   grok_local: {
     label: "Grok Build",

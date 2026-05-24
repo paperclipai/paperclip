@@ -110,7 +110,7 @@ export function OnboardingWizard() {
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("gemini_local");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -756,6 +756,12 @@ export function OnboardingWizard() {
                             if (nextType === "codex_local") {
                               if (!model) {
                                 setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                              }
+                              return;
+                            }
+                            if (nextType === "gemini_local") {
+                              if (!model) {
+                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                               }
                               return;
                             }
