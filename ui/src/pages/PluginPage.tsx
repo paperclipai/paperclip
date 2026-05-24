@@ -11,7 +11,7 @@ import {
   type ResolvedPluginSlot,
 } from "@/plugins/slots";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Settings } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
 
 /**
@@ -161,14 +161,21 @@ export function PluginPage() {
     return <Navigate to={settingsPath} replace />;
   }
 
+  const isBriefsDashboard = pageSlot.pluginKey === "paperclipai.plugin-briefs";
+
   return (
     <div className="space-y-4">
-      {!routeSidebarActive && (
-        <div className="flex items-center gap-2">
+      {!routeSidebarActive && !isBriefsDashboard && (
+        <div className="flex items-center justify-between gap-2">
           <Button variant="ghost" size="sm" asChild>
             <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back
+            </Link>
+          </Button>
+          <Button variant="ghost" size="icon-sm" asChild title={`${pageSlot.pluginDisplayName} settings`}>
+            <Link to={`/instance/settings/plugins/${pageSlot.pluginId}`} aria-label={`${pageSlot.pluginDisplayName} settings`}>
+              <Settings className="h-4 w-4" />
             </Link>
           </Button>
         </div>

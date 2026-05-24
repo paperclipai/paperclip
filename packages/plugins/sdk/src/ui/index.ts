@@ -74,6 +74,8 @@ export {
   IssuesList,
   AssigneePicker,
   ProjectPicker,
+  IssueLink,
+  IssueRow,
   ManagedRoutinesList,
 } from "./components.js";
 
@@ -107,6 +109,11 @@ export type {
   FileTreeProps,
   IssuesListFilters,
   IssuesListProps,
+  IssueLinkProps,
+  IssueRowIssue,
+  IssueRowPriority,
+  IssueRowProps,
+  IssueRowStatus,
   AssigneePickerSelection,
   AssigneePickerProps,
   ProjectPickerProps,

@@ -91,6 +91,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
   const isDraft = !isArchived && !routine.assigneeAgentId;
   const runDisabled = runningRoutineId === routine.id || isArchived || disableRunNow;
+  const lastRunStatus = formatRoutineRunStatus(routine.lastRun?.status);
 
   return (
     <Link
@@ -123,7 +124,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </span>
           <span>
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
-            {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
+            {lastRunStatus ? ` · ${lastRunStatus}` : ""}
           </span>
         </div>
         {secondaryDetails ? (

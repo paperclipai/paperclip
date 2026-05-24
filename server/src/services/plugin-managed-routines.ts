@@ -35,6 +35,9 @@ interface PluginManagedRoutineServiceOptions {
 interface RoutineOverrides {
   assigneeAgentId?: string | null;
   projectId?: string | null;
+  variables?: Record<string, string | number | boolean> | null;
+  payload?: Record<string, unknown> | null;
+  idempotencyKey?: string | null;
 }
 
 function buildRoutineDefaults(declaration: PluginManagedRoutineDeclaration) {
@@ -495,6 +498,9 @@ export function pluginManagedRoutineService(
       source: "manual",
       assigneeAgentId: overrides?.assigneeAgentId,
       projectId: overrides?.projectId,
+      variables: overrides?.variables ?? null,
+      payload: overrides?.payload ?? null,
+      idempotencyKey: overrides?.idempotencyKey ?? null,
     }, { agentId: null, userId: null });
     await logActivity(db, {
       companyId,

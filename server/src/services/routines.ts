@@ -1737,7 +1737,9 @@ export function routineService(
       let nextRunAt: Date | null = null;
 
       if (input.kind === "schedule") {
-        assertScheduleCompatibleVariables(routine.variables ?? []);
+        if ((input.enabled ?? true) === true) {
+          assertScheduleCompatibleVariables(routine.variables ?? []);
+        }
         const timeZone = input.timezone || "UTC";
         assertTimeZone(timeZone);
         const error = validateCron(input.cronExpression);

@@ -607,7 +607,11 @@ The plugin UI calls the host bridge, which forwards the request to the worker. T
 Input includes:
 
 - data key (plugin-defined, e.g. `"sync-health"`, `"issue-detail"`)
-- context (company id, project id, entity id, etc.)
+- browser-supplied context (company id, project id, entity id, etc.)
+- trusted actor context from the host, available to SDK handlers as the second
+  argument (`request.actor`). User-scoped plugins must compare any requested
+  `userId` with `request.actor.userId`; they must not trust a `userId` supplied
+  by the plugin UI request body.
 - optional query parameters
 
 ### 13.9 `performAction`
@@ -620,6 +624,10 @@ Examples:
 - "link GitHub issue"
 - "create branch from issue"
 - "restart process"
+
+Action handlers receive the same trusted host request context as data handlers
+as their second argument. User-scoped mutations must authorize against
+`request.actor.userId` rather than any caller-supplied `params.userId`.
 
 ### 13.10 `executeTool`
 

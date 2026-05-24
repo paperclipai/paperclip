@@ -65,6 +65,7 @@ import type {
   PluginAuthorizationDecisionResult,
   PluginAuthorizationPolicyRecord,
   PluginAuthorizationPolicySummary,
+  PluginBridgeActorContext,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -361,6 +362,8 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /** Trusted actor context supplied by the host, never by the browser. */
+  actor?: PluginBridgeActorContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
 }
@@ -401,6 +404,8 @@ export interface PerformActionParams {
   params: Record<string, unknown>;
   /** Authenticated actor context resolved by the host, never by caller params. */
   actorContext?: PluginPerformActionActorContext | null;
+  /** Trusted actor context supplied by the host, never by the browser. */
+  actor?: PluginBridgeActorContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
 }
@@ -916,6 +921,9 @@ export interface WorkerToHostMethods {
       companyId: string;
       assigneeAgentId?: string | null;
       projectId?: string | null;
+      variables?: Record<string, string | number | boolean> | null;
+      payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
     },
     result: RoutineRun,
   ];

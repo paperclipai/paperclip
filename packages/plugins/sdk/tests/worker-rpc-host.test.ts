@@ -137,13 +137,7 @@ describe("worker performAction context", () => {
         params: { companyId: "spoofed-company" },
       })).resolves.toEqual({
         paramsCompanyId: "spoofed-company",
-        actor: {
-          type: "system",
-          userId: null,
-          agentId: null,
-          runId: null,
-          companyId: null,
-        },
+        actor: null,
         companyId: null,
       });
     } finally {

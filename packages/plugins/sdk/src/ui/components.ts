@@ -403,6 +403,56 @@ export interface ProjectPickerProps {
   onConfirm?: () => void;
 }
 
+export interface IssueLinkProps {
+  /** Issue identifier or id to use for the host quicklook query. */
+  issuePathId: string;
+  /** Optional href. Defaults to the host issue detail route for `issuePathId`. */
+  href?: string | null;
+  /** Link contents supplied by the plugin. */
+  children?: React.ReactNode;
+  /** Optional CSS class name forwarded to the host link. */
+  className?: string;
+  /** Optional inline styles forwarded to the host link. */
+  style?: React.CSSProperties;
+  /** Optional browser title forwarded to the host link. */
+  title?: string;
+  /** Popover side used by the host issue quicklook. */
+  issueQuicklookSide?: "top" | "right" | "bottom" | "left";
+  /** Popover alignment used by the host issue quicklook. */
+  issueQuicklookAlign?: "start" | "center" | "end";
+}
+
+export type IssueRowStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
+export type IssueRowPriority = "critical" | "high" | "medium" | "low";
+
+export interface IssueRowIssue {
+  /** Stable issue id if known. Falls back to `identifier` for lightweight plugin rows. */
+  id?: string | null;
+  /** Human-readable issue identifier, e.g. `PAP-123`. */
+  identifier?: string | null;
+  /** Issue title. */
+  title: string;
+  /** Issue status used by the host status icon. */
+  status?: IssueRowStatus | string | null;
+  /** Issue priority. Defaults to `medium` when omitted. */
+  priority?: IssueRowPriority | string | null;
+  /** Latest issue timestamp shown by callers as trailing metadata when desired. */
+  updatedAt?: Date | string | null;
+  /** Whether the row should show blocker attention styling. */
+  blockerAttention?: boolean | null;
+}
+
+export interface IssueRowProps {
+  /** Lightweight issue data for the host row renderer. */
+  issue: IssueRowIssue;
+  /** Optional CSS class name forwarded to the host issue row. */
+  className?: string;
+  /** Optional trailing metadata rendered in the same slot as the host issue list. */
+  trailingMeta?: React.ReactNode;
+  /** Whether to disable Paperclip's issue hover quicklook. Defaults to false for plugin rows. */
+  disableIssueQuicklook?: boolean;
+}
+
 export interface ManagedRoutinesListAgent {
   id: string;
   name: string;
@@ -589,6 +639,16 @@ export const AssigneePicker = createSdkUiComponent<AssigneePickerProps>("Assigne
  * Renders the same host project picker used by the new issue pane.
  */
 export const ProjectPicker = createSdkUiComponent<ProjectPickerProps>("ProjectPicker");
+
+/**
+ * Renders a host issue link with the same hover quicklook used by Paperclip issue references.
+ */
+export const IssueLink = createSdkUiComponent<IssueLinkProps>("IssueLink");
+
+/**
+ * Renders Paperclip's native issue row component for lightweight plugin issue references.
+ */
+export const IssueRow = createSdkUiComponent<IssueRowProps>("IssueRow");
 
 /**
  * Renders Paperclip's native managed routines list for plugin settings pages.

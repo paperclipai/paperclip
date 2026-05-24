@@ -70,6 +70,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-briefs",
+    "name": "@paperclipai/plugin-briefs",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/plugin-workspace-diff",
     "name": "@paperclipai/plugin-workspace-diff",
     "publishFromCi": false

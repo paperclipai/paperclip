@@ -167,6 +167,15 @@ function assertAllowedPublicRead(
   }
 }
 
+function assertAllowedPublicMigrationRef(
+  ref: SqlRef,
+  allowedCoreReadTables: ReadonlySet<string>,
+): void {
+  if (ref.schema !== "public") return;
+  if (ref.keyword === "references" && ref.table === "user") return;
+  assertAllowedPublicRead(ref, allowedCoreReadTables);
+}
+
 function assertNoBannedSql(statement: string): void {
   const normalized = normaliseSql(statement);
   const banned = [
@@ -236,7 +245,7 @@ export function validatePluginMigrationStatement(
   for (const ref of refs) {
     if (ref.schema === namespace) continue;
     if (ref.schema === "public") {
-      assertAllowedPublicRead(ref, allowedCoreReadTables);
+      assertAllowedPublicMigrationRef(ref, allowedCoreReadTables);
       continue;
     }
     throw new Error(`Plugin SQL references schema "${ref.schema}" outside namespace "${namespace}"`);
@@ -281,8 +290,14 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
   const statement = statements[0]!;
   assertNoBannedSql(statement);
   const normalized = normaliseSql(statement);
-  if (!/^(insert\s+into|update|delete\s+from)\b/.test(normalized)) {
+  if (!/^(insert\s+into|update|delete\s+from|with)\b/.test(normalized)) {
     throw new Error("ctx.db.execute only allows INSERT, UPDATE, or DELETE");
+  }
+  if (
+    normalized.startsWith("with ") &&
+    !/\b(insert\s+into|update|delete\s+from)\b/.test(normalized)
+  ) {
+    throw new Error("ctx.db.execute WITH statements must perform INSERT, UPDATE, or DELETE");
   }
   if (/\b(alter|create|drop|truncate)\b/.test(normalized)) {
     throw new Error("ctx.db.execute cannot contain DDL keywords");

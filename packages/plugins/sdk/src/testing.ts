@@ -42,6 +42,9 @@ import type {
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
+  PluginBridgeRequestContext,
+  PluginDataHandler,
+  PluginActionHandler,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -57,8 +60,6 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
-  PluginPerformActionActorContext,
-  PluginPerformActionContext,
 } from "./protocol.js";
 
 export interface TestHarnessOptions {
@@ -78,10 +79,9 @@ export interface TestHarnessLogEntry {
 
 export interface TestHarnessPerformActionOptions {
   /**
-   * Authenticated actor context to expose to the action handler. Omitted fields
-   * default to null, and `type` defaults to `system`.
+   * Authenticated actor context to expose to the action handler.
    */
-  actor?: Partial<PluginPerformActionActorContext> | null;
+  actor?: Partial<NonNullable<PluginBridgeRequestContext["actor"]> & { type?: "user" | "agent" | "system"; companyId?: string | null }> | null;
   /**
    * Host-authorized company scope. When provided, this is injected into
    * `params.companyId` so tests match the production bridge's anti-spoofing
@@ -112,12 +112,12 @@ export interface TestHarness {
   /** Execute a previously-registered scheduled job handler. */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
   /** Invoke a `ctx.data.register(...)` handler by key. */
-  getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
+  getData<T = unknown>(key: string, params?: Record<string, unknown>, context?: Partial<PluginBridgeRequestContext>): Promise<T>;
   /** Invoke a `ctx.actions.register(...)` handler by key. */
   performAction<T = unknown>(
     key: string,
     params?: Record<string, unknown>,
-    options?: TestHarnessPerformActionOptions,
+    options?: TestHarnessPerformActionOptions | Partial<PluginBridgeRequestContext>,
   ): Promise<T>;
   /** Execute a registered tool handler via `ctx.tools.execute(...)`. */
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
@@ -510,11 +510,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launchers = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
-  const actionHandlers = new Map<
-    string,
-    (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
-  >();
+  const dataHandlers = new Map<string, PluginDataHandler>();
+  const actionHandlers = new Map<string, PluginActionHandler>();
   const toolHandlers = new Map<string, (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>>();
 
   function localFolderKey(companyId: string, folderKey: string): string {
@@ -529,35 +526,46 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }
 
-  function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
-    return value === "user" || value === "agent" || value === "system" ? value : "system";
-  }
-
   function actionContextFor(
     params: Record<string, unknown>,
     options?: TestHarnessPerformActionOptions,
-  ): PluginPerformActionContext {
+  ): PluginBridgeRequestContext {
     const actorInput = options?.actor ?? null;
     const companyId = stringOrNull(options?.companyId) ?? stringOrNull(actorInput?.companyId) ?? stringOrNull(params.companyId);
+    const actorType = actorInput?.actorType === "agent" || actorInput?.type === "agent" ? "agent" : "user";
+    const userId = stringOrNull(actorInput?.userId);
+    const agentId = stringOrNull(actorInput?.agentId);
     const actor = Object.freeze({
-      type: actorTypeOrSystem(actorInput?.type),
-      userId: stringOrNull(actorInput?.userId),
-      agentId: stringOrNull(actorInput?.agentId),
+      actorType,
+      actorId: stringOrNull(actorInput?.actorId) ?? (actorType === "agent" ? agentId ?? "agent-test" : userId ?? "user-test"),
+      userId,
+      agentId,
       runId: stringOrNull(actorInput?.runId),
-      companyId,
+      source: stringOrNull(actorInput?.source),
     });
-    return Object.freeze({ actor, companyId });
+    return Object.freeze({ actor, companyId, renderEnvironment: null });
   }
 
   function paramsWithHostCompanyScope(
     params: Record<string, unknown>,
-    context: PluginPerformActionContext,
+    context: PluginBridgeRequestContext,
     options?: TestHarnessPerformActionOptions,
   ): Record<string, unknown> {
     if (Object.prototype.hasOwnProperty.call(options ?? {}, "companyId")) {
       return context.companyId ? { ...params, companyId: context.companyId } : { ...params };
     }
     return params;
+  }
+
+  function isBridgeRequestContextOptions(
+    options: TestHarnessPerformActionOptions | Partial<PluginBridgeRequestContext> | undefined,
+  ): options is Partial<PluginBridgeRequestContext> {
+    if (!options || typeof options !== "object") return false;
+    const actor = (options as Partial<PluginBridgeRequestContext>).actor;
+    return Boolean(
+      "renderEnvironment" in options
+      || (actor && typeof actor === "object" && "actorType" in actor),
+    );
   }
 
   function normalizeLocalFolderRelativePath(relativePath: string): string {
@@ -1139,13 +1147,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const now = new Date();
           const agentRef = declaration.assigneeRef;
           const projectRef = declaration.projectRef;
-          const assigneeAgentId = overrides?.assigneeAgentId
-            ?? (agentRef?.resourceKind === "agent"
+          const assigneeAgentId = overrides && "assigneeAgentId" in overrides
+            ? overrides.assigneeAgentId ?? null
+            : (agentRef?.resourceKind === "agent"
               ? [...agents.values()].find((agent) => isInCompany(agent, companyId) && isManagedAgent(agent, agentRef.resourceKey))?.id
               : null)
             ?? null;
-          const projectId = overrides?.projectId
-            ?? (projectRef?.resourceKind === "project"
+          const projectId = overrides && "projectId" in overrides
+            ? overrides.projectId ?? null
+            : (projectRef?.resourceKind === "project"
               ? [...projects.values()].find((project) => (
                 isInCompany(project, companyId)
                 && project.managedByPlugin?.pluginKey === manifest.id
@@ -1232,7 +1242,62 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async reset(routineKey, companyId, overrides) {
           const resolved = await this.reconcile(routineKey, companyId, overrides);
-          return { ...resolved, status: resolved.routine ? "reset" : resolved.status } satisfies PluginManagedRoutineResolution;
+          const declaration = manifest.routines?.find((routine) => routine.routineKey === routineKey);
+          if (!declaration || !resolved.routine) {
+            return { ...resolved, status: resolved.routine ? "reset" : resolved.status } satisfies PluginManagedRoutineResolution;
+          }
+          const agentRef = declaration.assigneeRef;
+          const projectRef = declaration.projectRef;
+          const assigneeAgentId = overrides && "assigneeAgentId" in overrides
+            ? overrides.assigneeAgentId ?? null
+            : (agentRef?.resourceKind === "agent"
+              ? [...agents.values()].find((agent) => isInCompany(agent, companyId) && isManagedAgent(agent, agentRef.resourceKey))?.id
+              : null)
+            ?? null;
+          const projectId = overrides && "projectId" in overrides
+            ? overrides.projectId ?? null
+            : (projectRef?.resourceKind === "project"
+              ? [...projects.values()].find((project) => (
+                isInCompany(project, companyId)
+                && project.managedByPlugin?.pluginKey === manifest.id
+                && project.managedByPlugin?.resourceKey === projectRef.resourceKey
+              ))?.id
+              : null)
+            ?? null;
+          const missingRefs: NonNullable<PluginManagedRoutineResolution["missingRefs"]> = [];
+          if (agentRef && !assigneeAgentId) missingRefs.push({ ...agentRef, pluginKey: manifest.id });
+          if (projectRef && !projectId) missingRefs.push({ ...projectRef, pluginKey: manifest.id });
+          if (missingRefs.length > 0) {
+            return {
+              ...resolved,
+              status: "missing_refs",
+              missingRefs,
+            } satisfies PluginManagedRoutineResolution;
+          }
+          const now = new Date();
+          const routine = {
+            ...resolved.routine,
+            projectId,
+            goalId: declaration.goalId ?? null,
+            title: declaration.title,
+            description: declaration.description ?? null,
+            assigneeAgentId,
+            priority: declaration.priority ?? "medium",
+            status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
+            concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
+            catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
+            variables: declaration.variables ?? [],
+            updatedAt: now,
+            managedByPlugin: resolved.routine.managedByPlugin
+              ? {
+                  ...resolved.routine.managedByPlugin,
+                  defaultsJson: { title: declaration.title, issueTemplate: declaration.issueTemplate ?? null },
+                  updatedAt: now,
+                }
+              : resolved.routine.managedByPlugin,
+          } as Routine;
+          routines.set(routine.id, routine);
+          return { ...resolved, routine, status: "reset", missingRefs: [] } satisfies PluginManagedRoutineResolution;
         },
         async update(routineKey, companyId, patch) {
           const resolved = await this.get(routineKey, companyId);
@@ -1245,7 +1310,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           routines.set(next.id, next);
           return next;
         },
-        async run(routineKey, companyId) {
+        async run(routineKey, companyId, overrides) {
           const resolved = await this.get(routineKey, companyId);
           if (!resolved.routine) throw new Error(`Managed routine not found: ${routineKey}`);
           const now = new Date();
@@ -1257,8 +1322,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             source: "manual",
             status: "queued",
             triggeredAt: now,
-            idempotencyKey: null,
-            triggerPayload: null,
+            idempotencyKey: overrides?.idempotencyKey ?? null,
+            triggerPayload: overrides?.payload ?? (overrides?.variables ? { variables: overrides.variables } : null),
             dispatchFingerprint: null,
             linkedIssueId: null,
             coalescedIntoRunId: null,
@@ -1922,7 +1987,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             spentMonthlyCents: 0,
             pauseReason: null,
             pausedAt: null,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              pluginTools: Array.isArray(declaration.permissions?.pluginTools)
+                ? declaration.permissions.pluginTools
+                : [],
+            },
             lastHeartbeatAt: null,
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
@@ -1960,7 +2030,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               spentMonthlyCents: 0,
               pauseReason: null,
               pausedAt: null,
-              permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+              permissions: {
+                canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+                pluginTools: Array.isArray(declaration.permissions?.pluginTools)
+                  ? declaration.permissions.pluginTools
+                  : [],
+              },
               lastHeartbeatAt: null,
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
@@ -1981,7 +2056,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             adapterConfig: declaration.adapterConfig ?? {},
             runtimeConfig: declaration.runtimeConfig ?? {},
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              pluginTools: Array.isArray(declaration.permissions?.pluginTools)
+                ? declaration.permissions.pluginTools
+                : [],
+            },
             metadata: managedAgentMetadata(agentKey, resolved.agent.metadata),
             updatedAt: new Date(),
           };
@@ -2355,20 +2435,33 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
       });
     },
-    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
+    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}, context: Partial<PluginBridgeRequestContext> = {}) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      return await handler(params, {
+        actor: context.actor ?? null,
+        companyId: context.companyId ?? null,
+        renderEnvironment: context.renderEnvironment ?? null,
+      }) as T;
     },
     async performAction<T = unknown>(
       key: string,
       params: Record<string, unknown> = {},
-      options?: TestHarnessPerformActionOptions,
+      options?: TestHarnessPerformActionOptions | Partial<PluginBridgeRequestContext>,
     ) {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
-      const context = actionContextFor(params, options);
-      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
+      const bridgeContext = isBridgeRequestContextOptions(options)
+        ? {
+            actor: options.actor ?? null,
+            companyId: options.companyId ?? null,
+            renderEnvironment: options.renderEnvironment ?? null,
+          }
+        : actionContextFor(params, options as TestHarnessPerformActionOptions | undefined);
+      return await handler(
+        paramsWithHostCompanyScope(params, bridgeContext, options as TestHarnessPerformActionOptions | undefined),
+        bridgeContext,
+      ) as T;
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);

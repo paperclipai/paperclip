@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,7 +36,7 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+  Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
   useParams: () => mockParams,
 }));
@@ -55,13 +55,13 @@ vi.mock("@/plugins/slots", async () => {
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flushReact() {
-  await act(async () => {
+  for (let i = 0; i < 5; i += 1) {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  }
 }
 
-function pageContribution(overrides: Partial<{ slots: unknown[] }> = {}) {
+function pageContribution(overrides: Partial<{ pluginId: string; pluginKey: string; displayName: string; slots: unknown[] }> = {}) {
   return {
     pluginId: "plugin-wiki",
     pluginKey: "paperclipai.plugin-llm-wiki",
@@ -88,13 +88,11 @@ async function renderPage(container: HTMLDivElement) {
     defaultOptions: { queries: { retry: false } },
   });
 
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <PluginPage />
-      </QueryClientProvider>,
-    );
-  });
+  root.render(
+    <QueryClientProvider client={queryClient}>
+      <PluginPage />
+    </QueryClientProvider>,
+  );
   await flushReact();
   await flushReact();
   return root;
@@ -130,10 +128,10 @@ describe("PluginPage", () => {
     ]);
     expect(container.textContent).toContain("Back");
     expect(container.querySelector('a[href="/PAP/dashboard"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/instance/settings/plugins/plugin-wiki"]')).not.toBeNull();
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 
   it("uses a route title and hides the Back button when a routeSidebar matches the active route", async () => {
@@ -167,9 +165,37 @@ describe("PluginPage", () => {
     // Page slot itself still renders.
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')?.textContent).toBe("Wiki");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
+  });
+
+  it("hides the host Back and settings buttons for the Briefs dashboard", async () => {
+    mockParams.pluginRoutePath = "briefs";
+    mockPluginsApi.listUiContributions.mockResolvedValue([
+      pageContribution({
+        pluginId: "plugin-briefs",
+        pluginKey: "paperclipai.plugin-briefs",
+        displayName: "Briefs",
+        slots: [
+          {
+            type: "page",
+            id: "briefs-page",
+            displayName: "Briefs",
+            exportName: "BriefingPage",
+            routePath: "briefs",
+          },
+        ],
+      }),
+    ]);
+
+    const root = await renderPage(container);
+
+    expect(container.textContent).not.toContain("Back");
+    expect(container.querySelector('a[href="/PAP/dashboard"]')).toBeNull();
+    expect(container.querySelector('a[href="/instance/settings/plugins/plugin-briefs"]')).toBeNull();
+
+    root.unmount();
+    await flushReact();
   });
 
   it("uses the selected plugin page path as the route-sidebar title", async () => {
@@ -200,8 +226,7 @@ describe("PluginPage", () => {
 
     expect(mockSetBreadcrumbs).toHaveBeenCalledWith([{ label: "index" }]);
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 });

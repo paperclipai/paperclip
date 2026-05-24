@@ -1215,6 +1215,44 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toThrow(/require defaults for required variables/i);
   });
 
+  it("allows disabled schedule triggers when required variables do not have defaults", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage",
+        description: "Review {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    const created = await svc.createTrigger(variableRoutine.id, {
+      kind: "schedule",
+      label: "daily",
+      enabled: false,
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    expect(created.trigger).toMatchObject({
+      kind: "schedule",
+      enabled: false,
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    });
+  });
+
   it("treats malformed stored defaults as missing when validating schedule triggers", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const variableRoutine = await svc.create(

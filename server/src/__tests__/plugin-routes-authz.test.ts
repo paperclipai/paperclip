@@ -120,7 +120,7 @@ function agentActor(overrides: Record<string, unknown> = {}) {
     agentId: agentA,
     companyId: companyA,
     runId: runA,
-    source: "agent_jwt",
+    source: "agent_key",
     ...overrides,
   };
 }
@@ -602,6 +602,82 @@ describe.sequential("plugin tool and bridge authz", () => {
     );
   });
 
+  it("allows an agent to execute plugin tools explicitly granted in its permissions", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA, permissions: { pluginTools: ["paperclip.example"] } }],
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+        [{ companyId: companyA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginId: "paperclip.example" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      {
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+        projectId: projectA,
+      },
+    );
+  });
+
+  it("rejects agent plugin tool execution without matching plugin permission", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(agentActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA, permissions: { pluginTools: ["paperclip.other"] } }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search", pluginId: "paperclip.example" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: {
+          agentId: agentA,
+          runId: runA,
+          companyId: companyA,
+          projectId: projectA,
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["legacy data", "post", `/api/plugins/${pluginId}/bridge/data`, { key: "health" }],
     ["legacy action", "post", `/api/plugins/${pluginId}/bridge/action`, { key: "sync" }],
@@ -642,6 +718,50 @@ describe.sequential("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actor: {
+        actorType: "user",
+        actorId: "user-1",
+        userId: "user-1",
+        agentId: null,
+        runId: null,
+        source: "session",
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it("passes trusted actor context to plugin data handlers without trusting caller user params", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({
+      userId: "signed-in-user",
+      companyIds: [companyA],
+    }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/page`)
+      .send({
+        companyId: companyA,
+        params: { companyId: companyA, userId: "victim-user" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "getData", {
+      key: "page",
+      companyId: companyA,
+      params: { companyId: companyA, userId: "victim-user" },
+      actor: {
+        actorType: "user",
+        actorId: "signed-in-user",
+        userId: "signed-in-user",
+        agentId: null,
+        runId: null,
+        source: "session",
+      },
       renderEnvironment: null,
     });
   });
@@ -673,6 +793,14 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: null,
         runId: null,
         companyId: null,
+      },
+      actor: {
+        actorType: "user",
+        actorId: "admin-1",
+        userId: "admin-1",
+        agentId: null,
+        runId: null,
+        source: "session",
       },
       renderEnvironment: null,
     });
@@ -711,6 +839,14 @@ describe.sequential("plugin tool and bridge authz", () => {
         runId: runA,
         companyId: companyA,
       },
+      actor: {
+        actorType: "user",
+        actorId: "user-1",
+        userId: "user-1",
+        agentId: null,
+        runId: runA,
+        source: "session",
+      },
       renderEnvironment: null,
     });
   });
@@ -734,6 +870,11 @@ describe.sequential("plugin tool and bridge authz", () => {
         type: "user",
         userId: null,
         companyId: companyA,
+      }),
+      actor: expect.objectContaining({
+        actorType: "user",
+        actorId: "board",
+        userId: null,
       }),
     }));
   });
@@ -771,6 +912,14 @@ describe.sequential("plugin tool and bridge authz", () => {
         runId: runA,
         companyId: companyA,
       },
+      actor: {
+        actorType: "agent",
+        actorId: agentA,
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        source: "agent_key",
+      },
       renderEnvironment: null,
     });
 
@@ -799,6 +948,14 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+      },
+      actor: {
+        actorType: "agent",
+        actorId: agentA,
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        source: "agent_key",
       },
       renderEnvironment: null,
     });

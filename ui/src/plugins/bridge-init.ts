@@ -21,8 +21,9 @@ import {
   usePluginStream,
   usePluginToast,
 } from "./bridge.js";
-import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Issue } from "@paperclipai/shared";
 import { User } from "lucide-react";
 import {
   FileTree,
@@ -30,6 +31,8 @@ import {
 } from "@/components/FileTree";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
+import { IssueLinkQuicklook } from "@/components/IssueLinkQuicklook";
+import { IssueRow as HostIssueRow } from "@/components/IssueRow";
 import { IssuesList as HostIssuesList } from "@/components/IssuesList";
 import { ManagedRoutinesList as HostManagedRoutinesList } from "@/components/ManagedRoutinesList";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -169,6 +172,23 @@ type PluginIssuesListProps = {
   initialSearch?: string;
   createIssueLabel?: string;
   searchWithinLoadedIssues?: boolean;
+};
+
+type PluginIssueRowIssue = {
+  id?: string | null;
+  identifier?: string | null;
+  title: string;
+  status?: string | null;
+  priority?: string | null;
+  updatedAt?: Date | string | null;
+  blockerAttention?: boolean | null;
+};
+
+type PluginIssueRowProps = {
+  issue: PluginIssueRowIssue;
+  className?: string;
+  trailingMeta?: ReactNode;
+  disableIssueQuicklook?: boolean;
 };
 
 type PluginAssigneePickerSelection = {
@@ -645,6 +665,145 @@ class PluginSdkErrorBoundary extends Component<{ children: ReactNode; fallback?:
   }
 }
 
+function PluginSdkIssueLink({
+  issuePathId,
+  href,
+  children,
+  className,
+  style,
+  title,
+  issueQuicklookSide,
+  issueQuicklookAlign,
+}: {
+  issuePathId: string;
+  href?: string | null;
+  children?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  title?: string;
+  issueQuicklookSide?: "top" | "right" | "bottom" | "left";
+  issueQuicklookAlign?: "start" | "center" | "end";
+}) {
+  return createElement(
+    IssueLinkQuicklook,
+    {
+      issuePathId,
+      to: href || `/issues/${issuePathId}`,
+      className,
+      style,
+      title,
+      issueQuicklookSide,
+      issueQuicklookAlign,
+    },
+    children,
+  );
+}
+
+const ISSUE_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"]);
+const ISSUE_PRIORITIES = new Set(["critical", "high", "medium", "low"]);
+
+function coerceIssueDate(value: Date | string | null | undefined): Date {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? new Date(0) : value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date(0);
+}
+
+function normalizeIssueRowStatus(value: string | null | undefined): Issue["status"] {
+  return ISSUE_STATUSES.has(value ?? "") ? value as Issue["status"] : "todo";
+}
+
+function normalizeIssueRowPriority(value: string | null | undefined): Issue["priority"] {
+  return ISSUE_PRIORITIES.has(value ?? "") ? value as Issue["priority"] : "medium";
+}
+
+function parseIssueNumber(identifier: string | null): number | null {
+  const match = identifier?.match(/-(\d+)$/);
+  if (!match) return null;
+  const number = Number(match[1]);
+  return Number.isFinite(number) ? number : null;
+}
+
+function pluginIssueToHostIssue(input: PluginIssueRowIssue): Issue {
+  const identifier = input.identifier?.trim() || null;
+  const id = input.id?.trim() || identifier || "plugin-issue-row";
+  const status = normalizeIssueRowStatus(input.status);
+  const updatedAt = coerceIssueDate(input.updatedAt);
+  return {
+    id,
+    identifier,
+    companyId: "",
+    projectId: null,
+    projectWorkspaceId: null,
+    goalId: null,
+    parentId: null,
+    title: input.title,
+    description: null,
+    status,
+    workMode: "standard",
+    priority: normalizeIssueRowPriority(input.priority),
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    issueNumber: parseIssueNumber(identifier),
+    requestDepth: 0,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    executionWorkspaceSettings: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    startedAt: null,
+    completedAt: status === "done" ? updatedAt : null,
+    cancelledAt: status === "cancelled" ? updatedAt : null,
+    hiddenAt: null,
+    createdAt: updatedAt,
+    updatedAt,
+    labels: [],
+    labelIds: [],
+    blockedBy: [],
+    blocks: [],
+    blockerAttention: input.blockerAttention ? {
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: identifier,
+      sampleStalledBlockerIdentifier: null,
+    } : undefined,
+    relatedWork: { outbound: [], inbound: [] },
+    documentSummaries: [],
+    workProducts: [],
+    mentionedProjects: [],
+    myLastTouchAt: null,
+    lastExternalCommentAt: null,
+    isUnreadForMe: false,
+  };
+}
+
+function PluginSdkIssueRow({
+  issue,
+  className,
+  trailingMeta,
+  disableIssueQuicklook = false,
+}: PluginIssueRowProps) {
+  const hostIssue = useMemo(() => pluginIssueToHostIssue(issue), [issue]);
+  return createElement(HostIssueRow, {
+    issue: hostIssue,
+    className,
+    trailingMeta,
+    disableIssueQuicklook,
+  });
+}
+
 /**
  * Initialize the plugin bridge global registry.
  *
@@ -697,6 +856,8 @@ export function initPluginBridge(
       IssuesList: PluginSdkIssuesList,
       AssigneePicker: PluginSdkAssigneePicker,
       ProjectPicker: PluginSdkProjectPicker,
+      IssueLink: PluginSdkIssueLink,
+      IssueRow: PluginSdkIssueRow,
       ManagedRoutinesList: HostManagedRoutinesList,
     },
   };

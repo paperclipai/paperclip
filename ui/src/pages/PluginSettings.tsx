@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle, FolderOpen, Save } from "lucide-react";
 import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
@@ -60,10 +60,17 @@ import {
  * @see doc/plugins/PLUGIN_SPEC.md §19.8 — Plugin Settings UI.
  */
 export function PluginSettings() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { companies, selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
+  const routeCompany = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requested = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requested) ?? null;
+  }, [companies, companyPrefix]);
+  const activeCompany = routeCompany ?? selectedCompany ?? null;
+  const activeCompanyId = routeCompany?.id ?? selectedCompanyId;
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
     queryKey: queryKeys.plugins.detail(pluginId!),
@@ -104,24 +111,29 @@ export function PluginSettings() {
 
   const { slots } = usePluginSlots({
     slotTypes: ["settingsPage"],
-    companyId: selectedCompanyId,
-    enabled: !!selectedCompanyId,
+    companyId: activeCompanyId,
+    enabled: !!activeCompanyId,
   });
 
   // Filter slots to only show settings pages for this specific plugin
-  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
+  const pluginSlots = slots.filter((slot) =>
+    slot.pluginId === pluginId
+    || slot.pluginId === plugin?.id
+    || slot.pluginKey === pluginId
+    || slot.pluginKey === plugin?.pluginKey
+  );
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: activeCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/instance/settings/heartbeats" },
       { label: "Plugins", href: "/instance/settings/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
+  }, [activeCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
 
   useEffect(() => {
     setActiveTab("configuration");
@@ -224,7 +236,7 @@ export function PluginSettings() {
               {hasLocalFolders ? (
                 <PluginLocalFoldersSettings
                   pluginId={pluginId!}
-                  companyId={selectedCompanyId}
+                  companyId={activeCompanyId}
                   declarations={localFolderDeclarations}
                 />
               ) : null}
@@ -235,7 +247,7 @@ export function PluginSettings() {
                       key={`${slot.pluginKey}:${slot.id}`}
                       slot={slot}
                       context={{
-                        companyId: selectedCompanyId,
+                        companyId: activeCompanyId,
                         companyPrefix: companyPrefix ?? null,
                       }}
                       missingBehavior="placeholder"

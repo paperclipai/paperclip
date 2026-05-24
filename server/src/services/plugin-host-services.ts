@@ -545,6 +545,17 @@ export function buildHostServices(
     return companyId;
   };
 
+  const routineRunVariables = (value: unknown): Record<string, string | number | boolean> | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const result: Record<string, string | number | boolean> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+        result[key] = entry;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  };
+
   const parseWindowValue = (value: unknown): number | null => {
     if (typeof value === "number" && Number.isFinite(value)) {
       return Math.max(0, Math.floor(value));
@@ -1495,6 +1506,9 @@ export function buildHostServices(
         return managedRoutines.run(params.routineKey, companyId, {
           assigneeAgentId: params.assigneeAgentId,
           projectId: params.projectId,
+          variables: routineRunVariables(params.variables),
+          payload: params.payload,
+          idempotencyKey: params.idempotencyKey,
         });
       },
     },

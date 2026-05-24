@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import * as React from "react";
 import * as ReactDOM from "react-dom";
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FileTree as SdkFileTree,
+  IssueLink as SdkIssueLink,
+  IssueRow as SdkIssueRow,
   ManagedRoutinesList as SdkManagedRoutinesList,
   MarkdownBlock as SdkMarkdownBlock,
   MarkdownEditor as SdkMarkdownEditor,
@@ -133,7 +135,7 @@ describe("useHostNavigation mobile drawer behavior", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
 
-    act(() => {
+    flushSync(() => {
       root.render(
         React.createElement(
           MemoryRouter,
@@ -152,13 +154,13 @@ describe("useHostNavigation mobile drawer behavior", () => {
     });
 
     expect(sidebar!.isMobile).toBe(true);
-    act(() => sidebar!.setSidebarOpen(true));
+    flushSync(() => sidebar!.setSidebarOpen(true));
     expect(sidebar!.sidebarOpen).toBe(true);
 
-    act(() => nav!.navigate("/wiki?section=ingest"));
+    flushSync(() => nav!.navigate("/wiki?section=ingest"));
     expect(sidebar!.sidebarOpen).toBe(false);
 
-    act(() => root.unmount());
+    flushSync(() => root.unmount());
     container.remove();
   });
 
@@ -177,7 +179,7 @@ describe("useHostNavigation mobile drawer behavior", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
 
-    act(() => {
+    flushSync(() => {
       root.render(
         React.createElement(
           MemoryRouter,
@@ -198,10 +200,10 @@ describe("useHostNavigation mobile drawer behavior", () => {
     expect(sidebar!.isMobile).toBe(false);
     expect(sidebar!.sidebarOpen).toBe(true);
 
-    act(() => nav!.navigate("/wiki?section=ingest"));
+    flushSync(() => nav!.navigate("/wiki?section=ingest"));
     expect(sidebar!.sidebarOpen).toBe(true);
 
-    act(() => root.unmount());
+    flushSync(() => root.unmount());
     container.remove();
   });
 });
@@ -271,6 +273,8 @@ describe("plugin SDK markdown component bridge", () => {
     expect(registry.IssuesList).toBeTypeOf("function");
     expect(registry.AssigneePicker).toBeTypeOf("function");
     expect(registry.ProjectPicker).toBeTypeOf("function");
+    expect(registry.IssueLink).toBeTypeOf("function");
+    expect(registry.IssueRow).toBeTypeOf("function");
     expect(registry.ManagedRoutinesList).toBeTypeOf("function");
   });
 
@@ -286,6 +290,10 @@ describe("plugin SDK markdown component bridge", () => {
           }, content),
         MarkdownEditor: ({ value }: { value: string }) =>
           React.createElement("textarea", { value, readOnly: true }),
+        IssueLink: ({ issuePathId, children }: { issuePathId: string; children: React.ReactNode }) =>
+          React.createElement("a", { href: `/issues/${issuePathId}` }, children),
+        IssueRow: ({ issue }: { issue: { identifier?: string | null; title: string } }) =>
+          React.createElement("a", { href: `/issues/${issue.identifier ?? ""}`, "data-plugin-issue-row": issue.identifier }, issue.title),
         ManagedRoutinesList: ({ routines }: { routines: Array<{ title: string }> }) =>
           React.createElement("section", null, routines.map((routine) => routine.title).join(", ")),
       },
@@ -300,6 +308,8 @@ describe("plugin SDK markdown component bridge", () => {
     expect(markdownHtml).toContain('data-wiki-links="true"');
     expect(markdownHtml).toContain('data-wiki-root="/wiki/page"');
     expect(renderToStaticMarkup(React.createElement(SdkMarkdownEditor, { value: "# Wiki", onChange: () => undefined }))).toContain("# Wiki");
+    expect(renderToStaticMarkup(React.createElement(SdkIssueLink, { issuePathId: "PAP-123" }, "Issue"))).toContain('href="/issues/PAP-123"');
+    expect(renderToStaticMarkup(React.createElement(SdkIssueRow, { issue: { identifier: "PAP-123", title: "Row title" } }))).toContain('data-plugin-issue-row="PAP-123"');
     expect(renderToStaticMarkup(React.createElement(SdkManagedRoutinesList, {
       routines: [{ key: "lint", title: "Run lint", status: "active" }],
     }))).toContain("Run lint");

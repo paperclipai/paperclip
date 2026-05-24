@@ -96,6 +96,12 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <PluginLauncherOutlet
+            placementZones={["sidebar"]}
+            context={pluginContext}
+            className="flex flex-col gap-0.5"
+            itemClassName="text-[13px] font-medium"
+          />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
@@ -106,12 +112,6 @@ export function Sidebar() {
             className="flex flex-col gap-0.5"
             itemClassName="text-[13px] font-medium"
             missingBehavior="placeholder"
-          />
-          <PluginLauncherOutlet
-            placementZones={["sidebar"]}
-            context={pluginContext}
-            className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
           />
         </SidebarSection>
 

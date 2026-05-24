@@ -29,14 +29,17 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-async function createControlledGatewayServer() {
+async function createControlledGatewayServer(options: { heldWaits?: number } = {}) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
-  let firstWaitRelease: (() => void) | null = null;
-  let firstWaitGate = new Promise<void>((resolve) => {
-    firstWaitRelease = resolve;
-  });
+  const heldWaits = options.heldWaits ?? 1;
+  const waitReleases: Array<() => void> = [];
+  const waitGates = Array.from({ length: heldWaits }, () =>
+    new Promise<void>((resolve) => {
+      waitReleases.push(resolve);
+    })
+  );
   let waitCount = 0;
 
   wss.on("connection", (socket) => {
@@ -102,8 +105,8 @@ async function createControlledGatewayServer() {
 
       if (frame.method === "agent.wait") {
         waitCount += 1;
-        if (waitCount === 1) {
-          await firstWaitGate;
+        if (waitCount <= waitGates.length) {
+          await waitGates[waitCount - 1];
         }
         socket.send(
           JSON.stringify({
@@ -134,10 +137,16 @@ async function createControlledGatewayServer() {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayloads: () => agentPayloads,
+    releaseNextWait: () => {
+      waitReleases.shift()?.();
+    },
     releaseFirstWait: () => {
-      firstWaitRelease?.();
-      firstWaitRelease = null;
-      firstWaitGate = Promise.resolve();
+      waitReleases.shift()?.();
+    },
+    releaseAllWaits: () => {
+      while (waitReleases.length > 0) {
+        waitReleases.shift()?.();
+      }
     },
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
@@ -271,7 +280,7 @@ describe("heartbeat comment wake batching", () => {
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -442,9 +451,22 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
+      let promotedRunId: string | null = null;
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const promotedRun = runs.find((run) => run.id !== firstRun?.id && run.status === "running");
+        promotedRunId = promotedRun?.id ?? null;
+        return Boolean(promotedRunId);
+      });
+      await db
+        .update(issues)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      gateway.releaseNextWait();
+      await waitFor(async () => {
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+        const batchedRuns = runs.filter((run) => run.id === firstRun?.id || run.id === promotedRunId);
+        return batchedRuns.length === 2 && batchedRuns.every((run) => run.status === "succeeded");
       }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
@@ -458,13 +480,13 @@ describe("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
       expect(String(secondPayload.message ?? "")).not.toContain("First comment");
     } finally {
-      gateway.releaseFirstWait();
+      gateway.releaseAllWaits();
       await gateway.close();
     }
   }, 120_000);
 
   it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
-    const gateway = await createControlledGatewayServer();
+    const gateway = await createControlledGatewayServer({ heldWaits: 2 });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -614,13 +636,25 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
-      gateway.releaseFirstWait();
+      let promotedRunId: string | null = null;
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const promotedRun = runs.find((run) => run.id !== firstRun?.id && run.status === "running");
+        promotedRunId = promotedRun?.id ?? null;
+        return Boolean(promotedRunId);
+      });
+      await db
+        .update(issues)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      gateway.releaseAllWaits();
+      await waitFor(async () => {
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+        const promotedRuns = runs.filter((run) => run.id === firstRun?.id || run.id === promotedRunId);
+        return promotedRuns.length === 2 && promotedRuns.every((run) => ["cancelled", "succeeded"].includes(run.status));
       }, 90_000);
     } finally {
-      gateway.releaseFirstWait();
+      gateway.releaseAllWaits();
       await gateway.close();
     }
   }, 120_000);

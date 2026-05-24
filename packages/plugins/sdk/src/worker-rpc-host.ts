@@ -64,6 +64,10 @@ import type {
   ToolResult,
   EventFilter,
   AgentSessionEvent,
+  PluginDataHandler,
+  PluginActionHandler,
+  PluginBridgeActorContext,
+  PluginBridgeRequestContext,
 } from "./types.js";
 import type {
   JsonRpcId,
@@ -78,8 +82,6 @@ import type {
   RunJobParams,
   GetDataParams,
   PerformActionParams,
-  PluginPerformActionActorContext,
-  PluginPerformActionContext,
   ExecuteToolParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -290,11 +292,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
-  const actionHandlers = new Map<
-    string,
-    (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
-  >();
+  const dataHandlers = new Map<string, PluginDataHandler>();
+  const actionHandlers = new Map<string, PluginActionHandler>();
   const toolHandlers = new Map<string, {
     declaration: Pick<import("@paperclipai/shared").PluginToolDeclaration, "displayName" | "description" | "parametersSchema">;
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
@@ -705,7 +704,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async run(
             routineKey: string,
             companyId: string,
-            overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+            overrides?: {
+              assigneeAgentId?: string | null;
+              projectId?: string | null;
+              variables?: Record<string, string | number | boolean> | null;
+              payload?: Record<string, unknown> | null;
+              idempotencyKey?: string | null;
+            },
           ) {
             return callHost("routines.managed.run", { routineKey, companyId, ...overrides });
           },
@@ -1183,16 +1188,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       data: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(key: string, handler: PluginDataHandler): void {
           dataHandlers.set(key, handler);
         },
       },
 
       actions: {
-        register(
-          key: string,
-          handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
-        ): void {
+        register(key: string, handler: PluginActionHandler): void {
           actionHandlers.set(key, handler);
         },
       },
@@ -1519,31 +1521,38 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       ...params.params,
       ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
       ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    }, bridgeRequestContextFromParams(params));
   }
 
   function stringOrNull(value: unknown): string | null {
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }
 
-  function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
-    return value === "user" || value === "agent" || value === "system" ? value : "system";
+  function bridgeActorFromLegacyContext(value: unknown): PluginBridgeActorContext | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const rawActor = value as Record<string, unknown>;
+    const actorType = rawActor.type === "agent" ? "agent" : "user";
+    const userId = stringOrNull(rawActor.userId);
+    const agentId = stringOrNull(rawActor.agentId);
+    return Object.freeze({
+      actorType,
+      actorId: actorType === "agent" ? agentId ?? "unknown-agent" : userId ?? "board",
+      userId,
+      agentId,
+      runId: stringOrNull(rawActor.runId),
+      source: null,
+    });
   }
 
-  function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
-    const rawActor = params.actorContext && typeof params.actorContext === "object"
-      ? params.actorContext
-      : null;
-    const actor = Object.freeze({
-      type: actorTypeOrSystem(rawActor?.type),
-      userId: stringOrNull(rawActor?.userId),
-      agentId: stringOrNull(rawActor?.agentId),
-      runId: stringOrNull(rawActor?.runId),
-      companyId: stringOrNull(rawActor?.companyId),
-    });
+  function bridgeRequestContextFromParams(params: GetDataParams | PerformActionParams): PluginBridgeRequestContext {
+    const actor = params.actor ?? bridgeActorFromLegacyContext("actorContext" in params ? params.actorContext : null);
+    const companyId = stringOrNull(params.companyId)
+      ?? stringOrNull("actorContext" in params && params.actorContext ? params.actorContext.companyId : null);
+    const renderEnvironment = params.renderEnvironment ?? null;
     return Object.freeze({
-      actor,
-      companyId: actor.companyId,
+      actor: actor ? Object.freeze(actor) : null,
+      companyId,
+      renderEnvironment,
     });
   }
 
@@ -1558,7 +1567,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
         ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
       },
-      actionContextFromParams(params),
+      bridgeRequestContextFromParams(params),
     );
   }
 

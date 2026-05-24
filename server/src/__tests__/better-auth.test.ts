@@ -33,17 +33,22 @@ describe("Better Auth cookie scoping", () => {
       cookiePrefix: "paperclip-sat-worktree",
     });
     expect(getCookies({ advanced } as BetterAuthOptions).sessionToken.name).toMatch(
-      /paperclip-sat-worktree\.session_token$/,
+      /^(?:__Secure-)?paperclip-sat-worktree\.session_token$/,
     );
   });
 
   it("keeps local http auth cookies non-secure while preserving the scoped prefix", () => {
     process.env.PAPERCLIP_INSTANCE_ID = "pap-worktree";
 
-    expect(buildBetterAuthAdvancedOptions({ disableSecureCookies: true })).toEqual({
+    const advanced = buildBetterAuthAdvancedOptions({ disableSecureCookies: true });
+
+    expect(advanced).toEqual({
       cookiePrefix: "paperclip-pap-worktree",
       useSecureCookies: false,
     });
+    expect(getCookies({ advanced } as BetterAuthOptions).sessionToken.name).toBe(
+      "paperclip-pap-worktree.session_token",
+    );
   });
 
   it("disables secure cookies when no canonical public auth URL is configured", () => {

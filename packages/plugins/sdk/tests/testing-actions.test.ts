@@ -30,11 +30,12 @@ describe("createTestHarness action context", () => {
     const result = await harness.performAction<{
       paramsCompanyId: unknown;
       actor: {
-        type: string;
+        actorType: string;
+        actorId: string;
         userId: string | null;
         agentId: string | null;
         runId: string | null;
-        companyId: string | null;
+        source: string | null;
       };
       companyId: string | null;
       contextFrozen: boolean;
@@ -55,11 +56,12 @@ describe("createTestHarness action context", () => {
     expect(result.paramsCompanyId).toBe("host-company");
     expect(result.companyId).toBe("host-company");
     expect(result.actor).toEqual({
-      type: "user",
+      actorType: "user",
+      actorId: "board-user-1",
       userId: "board-user-1",
       agentId: null,
       runId: "run-1",
-      companyId: "host-company",
+      source: null,
     });
     expect(result.contextFrozen).toBe(true);
     expect(result.actorFrozen).toBe(true);

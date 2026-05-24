@@ -15,6 +15,7 @@ import type {
   PluginEventType,
   PluginToolDeclaration,
   PluginLauncherDeclaration,
+  PluginLauncherRenderContextSnapshot,
   Company,
   Project,
   Issue,
@@ -46,8 +47,6 @@ import type {
   PrincipalPermissionGrant,
   PrincipalType,
 } from "@paperclipai/shared";
-import type { PluginPerformActionContext } from "./protocol.js";
-
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
 // ---------------------------------------------------------------------------
@@ -910,7 +909,13 @@ export interface PluginRoutinesClient {
     run(
       routineKey: string,
       companyId: string,
-      overrides?: { assigneeAgentId?: string | null; projectId?: string | null },
+      overrides?: {
+        assigneeAgentId?: string | null;
+        projectId?: string | null;
+        variables?: Record<string, string | number | boolean> | null;
+        payload?: Record<string, unknown> | null;
+        idempotencyKey?: string | null;
+      },
     ): Promise<RoutineRun>;
   };
 }
@@ -928,6 +933,31 @@ export interface PluginSkillsClient {
   };
 }
 
+export interface PluginBridgeActorContext {
+  actorType: "user" | "agent";
+  actorId: string;
+  userId: string | null;
+  agentId: string | null;
+  runId: string | null;
+  source: string | null;
+}
+
+export interface PluginBridgeRequestContext {
+  actor: PluginBridgeActorContext | null;
+  companyId: string | null;
+  renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
+}
+
+export type PluginDataHandler = (
+  params: Record<string, unknown>,
+  context: PluginBridgeRequestContext,
+) => Promise<unknown>;
+
+export type PluginActionHandler = (
+  params: Record<string, unknown>,
+  context: PluginBridgeRequestContext,
+) => Promise<unknown>;
+
 /**
  * `ctx.data` — register `getData` handlers that back `usePluginData()` in the
  * plugin's frontend components.
@@ -942,9 +972,9 @@ export interface PluginDataClient {
    * Register a handler for a plugin-defined data key.
    *
    * @param key - Stable string identifier for this data type (e.g. `"sync-health"`)
-   * @param handler - Async function that receives request params and returns JSON-serializable data
+   * @param handler - Async function that receives request params plus trusted host context and returns JSON-serializable data
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(key: string, handler: PluginDataHandler): void;
 }
 
 /**
@@ -958,12 +988,9 @@ export interface PluginActionsClient {
    * Register a handler for a plugin-defined action key.
    *
    * @param key - Stable string identifier for this action (e.g. `"resync"`)
-   * @param handler - Async function that receives action params plus immutable host actor context and returns a result
+   * @param handler - Async function that receives action params plus trusted host context and returns a result
    */
-  register(
-    key: string,
-    handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
-  ): void;
+  register(key: string, handler: PluginActionHandler): void;
 }
 
 /**

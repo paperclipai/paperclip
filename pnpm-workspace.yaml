@@ -2,6 +2,9 @@ packages:
   - packages/*
   - packages/adapters/*
   - packages/plugins/*
+  # Keep the new Briefs plugin installable as a local first-party package while
+  # this PR intentionally avoids root pnpm-lock.yaml churn.
+  - "!packages/plugins/plugin-briefs"
   # Keep sandbox-provider plugins installable as standalone packages without
   # forcing root pnpm-lock.yaml churn for their third-party deps.
   - "!packages/plugins/sandbox-providers/**"

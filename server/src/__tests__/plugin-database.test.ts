@@ -47,6 +47,12 @@ describe("plugin database SQL validation", () => {
         ["issues"],
       )
     ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.rows (id uuid PRIMARY KEY, user_id text REFERENCES public.\"user\"(id) ON DELETE CASCADE)",
+        "plugin_test",
+      )
+    ).not.toThrow();
   });
 
   it("allows qualified index creation and namespace-scoped migration backfills", () => {
@@ -127,6 +133,28 @@ describe("plugin database SQL validation", () => {
     expect(() =>
       validatePluginRuntimeExecute("UPDATE public.issues SET title = $1", "plugin_test")
     ).toThrow(/namespace/i);
+  });
+
+  it("allows namespace-scoped data-modifying WITH runtime statements", () => {
+    expect(() =>
+      validatePluginRuntimeExecute(
+        `
+        WITH removed AS (
+          DELETE FROM plugin_test.rows WHERE id = $1 RETURNING id
+        )
+        UPDATE plugin_test.cards
+        SET latest_row_id = (SELECT id FROM removed)
+        WHERE id = $2
+        `,
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeExecute(
+        "WITH rows AS (SELECT id FROM plugin_test.rows) SELECT id FROM rows",
+        "plugin_test",
+      )
+    ).toThrow(/must perform/i);
   });
 
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {

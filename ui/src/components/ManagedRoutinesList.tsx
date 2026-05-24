@@ -114,9 +114,12 @@ export function ManagedRoutinesList({
         const row = managedRoutineToRow(routine);
         const href = routine.href ?? (routine.routineId ? `/routines/${routine.routineId}` : "/routines");
         const missingRefs = routine.missingRefs ?? [];
+        const changedFields = routine.defaultDrift?.changedFields ?? [];
+        const hasDefaultDrift = changedFields.length > 0;
         const canUseRoutine = Boolean(routine.routineId && routine.resourceKey && missingRefs.length === 0);
         const managedBy = routine.managedByPluginDisplayName ?? pluginDisplayName;
-        const hasRepairActions = Boolean(onReconcile || onReset);
+        const hasRepairActions = (missingRefs.length > 0 && Boolean(onReconcile))
+          || (hasDefaultDrift && Boolean(onReconcile || onReset));
 
         return (
           <div key={routine.key} className="last:[&_a]:border-b-0">
@@ -153,7 +156,7 @@ export function ManagedRoutinesList({
                 <span>
                   {missingRefs.length
                     ? `Missing ${missingRefs.map((ref) => `${ref.resourceKind}:${ref.resourceKey}`).join(", ")}`
-                    : "Routine defaults can be repaired."}
+                    : `Routine defaults changed${changedFields.length ? `: ${changedFields.join(", ")}` : "."}`}
                 </span>
                 <span className="flex items-center gap-2">
                   {onReconcile ? (

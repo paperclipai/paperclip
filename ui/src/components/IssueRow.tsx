@@ -36,6 +36,7 @@ interface IssueRowProps {
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  disableIssueQuicklook?: boolean;
 }
 
 export function IssueRow({
@@ -59,6 +60,7 @@ export function IssueRow({
   onArchive,
   archiveDisabled,
   className,
+  disableIssueQuicklook = true,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
@@ -102,7 +104,7 @@ export function IssueRow({
     <Link
       to={createIssueDetailPath(issuePathId)}
       state={detailState}
-      disableIssueQuicklook
+      disableIssueQuicklook={disableIssueQuicklook}
       issuePrefetch={issue}
       data-inbox-issue-link
       id={checklistRowId}

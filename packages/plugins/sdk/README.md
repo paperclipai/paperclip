@@ -564,6 +564,8 @@ export function DashboardWidget() {
 
 Fetches data from the worker's registered `getData` handler. Re-fetches when `params` changes. Returns `{ data, loading, error, refresh }`.
 
+Worker handlers receive browser-supplied `params` as the first argument and trusted host context as the second argument. For user-scoped data, compare any requested `params.userId` with `request.actor.userId`; do not trust `params.userId` by itself.
+
 ```tsx
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 
@@ -595,6 +597,8 @@ export function SyncStatusWidget({ context }: PluginWidgetProps) {
 #### `usePluginAction(key)`
 
 Returns an async function that calls the worker's `performAction` handler. Throws `PluginBridgeError` on failure.
+
+Action handlers also receive trusted host context as their second argument. User-scoped mutations should authorize against `request.actor.userId`.
 
 ```tsx
 import { useState } from "react";

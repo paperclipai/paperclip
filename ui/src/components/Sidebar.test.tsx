@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -68,7 +67,7 @@ vi.mock("../hooks/useInboxBadge", () => ({
 
 vi.mock("@/plugins/slots", () => ({
   PluginSlotOutlet: ({ slotTypes }: { slotTypes: string[] }) => (
-    <div data-plugin-slot-types={slotTypes.join(",")}>Plugin slot outlet</div>
+    <div data-plugin-slot-types={slotTypes.join(",")} data-plugin-slot-zone={slotTypes.join(",")}>Plugin slot outlet</div>
   ),
 }));
 
@@ -94,10 +93,10 @@ vi.mock("./SidebarAgents", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flushReact() {
-  await act(async () => {
+  for (let i = 0; i < 5; i += 1) {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  }
 }
 
 describe("Sidebar", () => {
@@ -109,13 +108,11 @@ describe("Sidebar", () => {
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Sidebar />
-        </QueryClientProvider>,
-      );
-    });
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <Sidebar />
+      </QueryClientProvider>,
+    );
     await flushReact();
 
     return root;
@@ -142,9 +139,8 @@ describe("Sidebar", () => {
     const workLinks = [...container.querySelectorAll("nav a")].map((anchor) => anchor.textContent?.trim());
     expect(workLinks).not.toContain("Search");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 
   it("renders plugin sidebar launchers inside the Work section", async () => {
@@ -159,9 +155,25 @@ describe("Sidebar", () => {
     expect(workSectionContainer?.textContent).toContain("Issues");
     expect(workSectionContainer?.textContent).toContain("Goals");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
+  });
+
+  it("renders plugin sidebar slots at the bottom of the Work section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const root = await renderSidebar();
+
+    const slot = [...container.querySelectorAll("nav [data-plugin-slot-zone]")]
+      .find((node) => node.getAttribute("data-plugin-slot-zone") === "sidebar");
+    expect(slot?.textContent).toContain("Plugin slot outlet");
+    const workSectionContainer = slot?.parentElement?.parentElement;
+    const workText = workSectionContainer?.textContent ?? "";
+    expect(workText).toContain("Work");
+    expect(workText.indexOf("Workspaces")).toBeGreaterThan(-1);
+    expect(workText.indexOf("Plugin slot outlet")).toBeGreaterThan(workText.indexOf("Workspaces"));
+
+    root.unmount();
+    await flushReact();
   });
 
   it("renders plugin sidebar slots in Work below Workspaces", async () => {
@@ -181,9 +193,8 @@ describe("Sidebar", () => {
     expect(primaryNavText).toContain("Inbox");
     expect(primaryNavText).not.toContain("Plugin slot outlet");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 
   it("does not flash the Workspaces link while experimental settings are loading", async () => {
@@ -192,9 +203,8 @@ describe("Sidebar", () => {
 
     expect(container.textContent).not.toContain("Workspaces");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 
   it("shows the Workspaces link when isolated workspaces are enabled", async () => {
@@ -204,8 +214,7 @@ describe("Sidebar", () => {
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
     expect(link?.getAttribute("href")).toBe("/workspaces");
 
-    await act(async () => {
-      root.unmount();
-    });
+    root.unmount();
+    await flushReact();
   });
 });
