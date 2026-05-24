@@ -80,6 +80,7 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const IOS_LANE_LABELS = ["ios", "iphone", "shifts iphone app", "plantonistapro"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -4678,14 +4679,13 @@ export function issueService(db: Db) {
       }
 
       // iOS lane-cap enforcement: only one concurrent iOS issue across all agents
-      const iosLabelNames = ["ios", "iphone", "shifts iphone app", "plantonistapro"];
       const issueLabelRows = await db
         .select({ name: labels.name })
         .from(issueLabels)
         .innerJoin(labels, eq(issueLabels.labelId, labels.id))
         .where(and(eq(issueLabels.companyId, issueCompany.companyId), eq(issueLabels.issueId, id)));
       const isIosIssue = issueLabelRows.some((l) =>
-        iosLabelNames.includes(l.name.toLowerCase()),
+        IOS_LANE_LABELS.includes(l.name.toLowerCase()),
       );
       if (isIosIssue) {
         const activeIosIssues = await db
@@ -4699,7 +4699,7 @@ export function issueService(db: Db) {
               eq(issues.status, "in_progress"),
               not(eq(issues.id, id)),
               or(
-                ...iosLabelNames.map((name) =>
+                ...IOS_LANE_LABELS.map((name) =>
                   sql`lower(${labels.name}) = ${name}`,
                 ),
               ),
