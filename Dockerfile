@@ -88,7 +88,7 @@ WORKDIR /vendor
 # Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
-ARG CCROTATE_REF=306da1767a7eeac0e49c33bcbaee2706396da2e6
+ARG CCROTATE_REF=4ce3b9834ab340041ee8136c9a9d4e4f2f00ab5e
 # Re-pinned 2026-05-22 to master tips after kkroo claude-k8s#3 / #4 and
 # opencode-k8s#16 / #17 merged. Brings in:
 #  - `--group=1000` on the DinD sidecar so uid-1000 main containers can
