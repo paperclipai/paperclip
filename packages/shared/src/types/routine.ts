@@ -60,6 +60,7 @@ export interface Routine {
   catchUpPolicy: string;
   variables: RoutineVariable[];
   executionLabelIds: string[];
+  labelIds?: string[];
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;

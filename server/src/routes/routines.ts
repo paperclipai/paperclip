@@ -90,7 +90,7 @@ export function routineRoutes(
     assertCompanyAccess(req, companyId);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     const result = await svc.list(companyId, { projectId });
-    res.json(result);
+    res.json(result.map((r) => ({ ...r, labelIds: r.executionLabelIds ?? [] })));
   });
 
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
@@ -126,7 +126,7 @@ export function routineRoutes(
       changeSummary: "Created routine",
       triggerCount: 0,
     });
-    res.status(201).json(created);
+    res.status(201).json({ ...created, labelIds: created.executionLabelIds ?? [] });
   });
 
   router.get("/routines/:id", async (req, res) => {
@@ -136,7 +136,7 @@ export function routineRoutes(
       return;
     }
     assertCompanyAccess(req, detail.companyId);
-    res.json(detail);
+    res.json({ ...detail, labelIds: detail.executionLabelIds ?? [] });
   });
 
   router.get("/routines/:id/revisions", async (req, res) => {
@@ -202,7 +202,7 @@ export function routineRoutes(
         triggerCount: null,
       });
     }
-    res.json(updated);
+    res.json(updated ? { ...updated, labelIds: updated.executionLabelIds ?? [] } : null);
   });
 
   router.post("/routines/:id/revisions/:revisionId/restore", async (req, res) => {
