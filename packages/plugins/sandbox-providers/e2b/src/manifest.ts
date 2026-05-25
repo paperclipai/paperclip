@@ -28,7 +28,7 @@ const manifest: PaperclipPluginManifestV1 = {
         properties: {
           template: {
             type: "string",
-            description: "E2B sandbox template name.",
+            description: "E2B sandbox template name. Defaults to base when omitted.",
             default: "base",
           },
           apiKey: {
@@ -39,8 +39,9 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           timeoutMs: {
             type: "number",
-            description: "Sandbox timeout in milliseconds.",
-            default: 300000,
+            description:
+              "Sandbox lifetime in milliseconds, refreshed on each command. Defaults to 1 hour. Raise this if your runs commonly idle longer than the default between commands.",
+            default: 3600000,
           },
           reuseLease: {
             type: "boolean",
@@ -48,7 +49,6 @@ const manifest: PaperclipPluginManifestV1 = {
             default: false,
           },
         },
-        required: ["template"],
       },
     },
   ],

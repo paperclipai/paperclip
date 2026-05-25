@@ -403,16 +403,16 @@ describe("InviteLandingPage", () => {
     expect(container.textContent).toContain("Request to join Acme Robotics");
     expect(container.textContent).toContain("A company admin must approve your request to join.");
     expect(container.textContent).toContain(
-      "Ask them to visit Company Settings → Access to approve your request.",
+      "Ask them to visit Company Settings → Members to approve your request.",
     );
     expect(container.querySelector('img[alt="Acme Robotics logo"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("http://localhost/company/settings/access");
+    expect(container.textContent).not.toContain("http://localhost/company/settings/members");
 
     const approvalLinks = Array.from(container.querySelectorAll("a")).filter(
-      (link) => link.textContent === "Company Settings → Access",
+      (link) => link.textContent === "Company Settings → Members",
     );
     expect(approvalLinks).toHaveLength(2);
-    const expectedApprovalUrl = `${window.location.origin}/company/settings/access`;
+    const expectedApprovalUrl = `${window.location.origin}/company/settings/members`;
     for (const link of approvalLinks) {
       expect(link.getAttribute("href")).toBe(expectedApprovalUrl);
     }
@@ -471,7 +471,7 @@ describe("InviteLandingPage", () => {
     expect(container.querySelector('[data-testid="invite-pending-approval"]')).not.toBeNull();
     expect(container.textContent).toContain("Your request is still awaiting approval.");
     expect(container.textContent).toContain(
-      "Ask them to visit Company Settings → Access to approve your request.",
+      "Ask them to visit Company Settings → Members to approve your request.",
     );
 
     await act(async () => {

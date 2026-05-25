@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
 
@@ -289,6 +290,41 @@ describe("WorkspaceRuntimeControls", () => {
     expect(buttons).toEqual(["Stop", "Restart", "Run"]);
     expect(container.textContent).toContain("Services");
     expect(container.textContent).toContain("Jobs");
+
+    act(() => root.unmount());
+  });
+
+  it("lets quick action buttons inherit the shared button shape tokens", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <WorkspaceRuntimeQuickControls
+          sections={sections}
+          onAction={vi.fn()}
+        />,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.className).toContain("rounded-md");
+      expect(button.className).not.toContain("rounded-none");
+      expect(button.className).not.toContain("rounded-xl");
+      expect(button.className).not.toContain("shadow-none");
+    }
 
     act(() => root.unmount());
   });
