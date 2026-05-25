@@ -43,6 +43,26 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
     replacement: "[REDACTED_GITHUB_TOKEN]",
   },
   {
+    kind: "github_pat",
+    regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+    replacement: "[REDACTED_GITHUB_PAT]",
+  },
+  {
+    kind: "cloudflare_token",
+    regex: /\bcfut_[A-Za-z0-9_-]{20,}/g,
+    replacement: "[REDACTED_CF_TOKEN]",
+  },
+  {
+    kind: "webhook_secret",
+    regex: /\bwhsec_[A-Za-z0-9]{20,}\b/g,
+    replacement: "[REDACTED_WEBHOOK_SECRET]",
+  },
+  {
+    kind: "sentry_token",
+    regex: /\bsntrys_[A-Za-z0-9._-]{20,}/g,
+    replacement: "[REDACTED_SENTRY_TOKEN]",
+  },
+  {
     kind: "provider_api_key",
     regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g,
     replacement: "[REDACTED_API_KEY]",
@@ -130,6 +150,25 @@ export function sanitizeFeedbackText(
     state.truncatedFields.add(fieldPath);
   }
 
+  return output;
+}
+
+/**
+ * Lightweight value-based secret redactor for run-log chunks.
+ *
+ * Applies the same {@link FREE_TEXT_PATTERNS} as the feedback bundle sanitizer,
+ * but without truncation, current-user redaction, or field-state tracking.
+ * Intended to be composed with the field-name-based {@link redactSensitiveText}
+ * pipeline used by `compactRunLogChunk`, to catch secrets that appear in free
+ * text (e.g. an agent printing a raw `ghp_xxx` token to stdout outside of any
+ * JSON structure).
+ */
+export function sanitizeRunLogText(input: string): string {
+  let output = input;
+  for (const pattern of FREE_TEXT_PATTERNS) {
+    output = output.replace(pattern.regex, pattern.replacement as never);
+    pattern.regex.lastIndex = 0;
+  }
   return output;
 }
 
