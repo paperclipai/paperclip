@@ -810,6 +810,24 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
+### Execution Environments
+
+A workspace is realized from an **environment** (the reusable definition of *where* code runs — local, SSH, sandbox provider, etc.). Agents pin an issue's workspace to one by passing `executionWorkspaceSettings.environmentId` on issue create/update (see Issues table and the SKILL `Delegate` step). Listing/reading is available to any agent with company access; creating/mutating requires an agent with environment-management permission (manager/CEO).
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/environments` | List environments (filters: `?status=`, `?driver=`). Config fields are redacted for restricted viewers. |
+| GET    | `/api/companies/:companyId/environments/capabilities` | Supported drivers/sandbox providers and their probe/run/lease capabilities |
+| POST   | `/api/companies/:companyId/environments` | Create environment (management permission required) |
+| GET    | `/api/environments/:id` | Environment detail |
+| PATCH  | `/api/environments/:id` | Update environment (management permission) |
+| DELETE | `/api/environments/:id` | Delete/archive environment (management permission) |
+| POST   | `/api/environments/:id/probe` | Probe environment connectivity/config (management permission) |
+| GET    | `/api/environments/:id/leases` | List reusable leases for an environment |
+| GET    | `/api/environment-leases/:leaseId` | Lease detail |
+
+Selection is validated server-side (`422 Unprocessable` on violation): the environment must exist, belong to the same company, not be `archived`, use an allowed driver for the context, and not be the built-in probe-only `fake` sandbox provider.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |
