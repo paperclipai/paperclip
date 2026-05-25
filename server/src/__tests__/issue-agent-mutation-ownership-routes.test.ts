@@ -704,6 +704,66 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows the active execution-policy reviewer run to patch a checked-out issue", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        source: "issue.execution_stage",
+        executionStage: {
+          wakeRole: "reviewer",
+          currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+        },
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Approved after review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("allows the active execution-policy reviewer run to comment on a checked-out issue", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      contextSnapshot: {
+        paperclipWake: {
+          issue: { id: issueId },
+          executionStage: {
+            wakeRole: "reviewer",
+            currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+          },
+        },
+      },
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Changes requested after review." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Changes requested after review.",
+      expect.objectContaining({ agentId: peerAgentId }),
+      expect.any(Object),
+    );
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
