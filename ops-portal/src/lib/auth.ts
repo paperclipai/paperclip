@@ -22,10 +22,11 @@ function extractZitadelRoles(claims: Record<string, unknown>): string[] {
 // it was just delivered to us over TLS by next-auth's OIDC code-exchange).
 function decodeJwtClaims(jwt: string): Record<string, unknown> {
   const parts = jwt.split('.');
-  if (parts.length !== 3) return {};
+  const rawPayload = parts[1];
+  if (parts.length !== 3 || rawPayload == null) return {};
   try {
     // base64url → base64 → buffer
-    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = rawPayload.replace(/-/g, '+').replace(/_/g, '/');
     const padding = '='.repeat((4 - (payload.length % 4)) % 4);
     const decoded = Buffer.from(payload + padding, 'base64').toString('utf8');
     return JSON.parse(decoded);
