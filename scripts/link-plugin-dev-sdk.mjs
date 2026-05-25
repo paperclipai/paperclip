@@ -20,7 +20,7 @@ mkdirSync(scopeDir, { recursive: true });
 try {
   const stat = lstatSync(linkTarget);
   if (stat.isSymbolicLink()) {
-    rmSync(linkTarget, { force: true });
+    rmSync(linkTarget, { force: true, recursive: true });
   } else {
     console.log("  i Keeping existing installed @paperclipai/plugin-sdk directory in place");
     process.exit(0);
