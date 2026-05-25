@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import type { SecretStore } from "./secret-store.js";
+import { SECRETS_REF_SCHEME, parseSecretsRef } from "./secret-store.js";
+
 export interface ClaudeLocalGitConfig {
   userName: string;
   userEmail: string;
@@ -97,6 +100,7 @@ function readNonEmptyString(value: unknown): string | null {
 function isSupportedTokenSecretRef(ref: string): boolean {
   if (ref.startsWith("env:")) return ref.slice(4).trim().length > 0;
   if (ref.startsWith("file:")) return ref.slice(5).trim().length > 0;
+  if (ref.startsWith(SECRETS_REF_SCHEME)) return parseSecretsRef(ref) !== null;
   return false;
 }
 
@@ -104,7 +108,9 @@ export interface TokenResolver {
   (ref: string): Promise<string | null>;
 }
 
-export const defaultTokenResolver: TokenResolver = async (ref) => {
+export const defaultTokenResolver: TokenResolver = async (ref) => resolveBuiltInTokenRef(ref);
+
+async function resolveBuiltInTokenRef(ref: string): Promise<string | null> {
   if (ref.startsWith("env:")) {
     const name = ref.slice(4).trim();
     if (!name) return null;
@@ -125,7 +131,22 @@ export const defaultTokenResolver: TokenResolver = async (ref) => {
     }
   }
   return null;
-};
+}
+
+/**
+ * Build a TokenResolver that recognizes `env:`, `file:`, and `secrets://` schemes.
+ * Used by `execute()` so the SecretStore can be injected per-run (carries the companyId
+ * needed to pick the right per-company encrypted file).
+ */
+export function createTokenResolverWithSecretStore(secretStore: SecretStore | null): TokenResolver {
+  if (secretStore === null) return defaultTokenResolver;
+  return async (ref) => {
+    if (ref.startsWith(SECRETS_REF_SCHEME)) {
+      return secretStore.resolve(ref);
+    }
+    return resolveBuiltInTokenRef(ref);
+  };
+}
 
 export interface PrepareGitIdentityRuntimeInput {
   runId: string;

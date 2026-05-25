@@ -53,6 +53,7 @@
     "probe:quota:raw": "pnpm exec tsx src/cli/quota-probe.ts --json --raw-cli"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.1.1",
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },

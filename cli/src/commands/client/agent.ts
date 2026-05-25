@@ -261,9 +261,15 @@ export function registerAgentCommands(program: Command): void {
               throw new Error(`--user-email must look like an email address (got: ${userEmail})`);
             }
             const tokenRef = opts.tokenRef?.trim() ?? "";
-            if (tokenRef && !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(tokenRef) && !tokenRef.startsWith("file:/")) {
+            if (
+              tokenRef &&
+              !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(tokenRef) &&
+              !tokenRef.startsWith("file:/") &&
+              !/^secrets:\/\/[A-Za-z0-9._\-/]+$/.test(tokenRef)
+            ) {
               throw new Error(
-                `--token-ref must use env:NAME (e.g. env:PAPERCLIP_GH_TOKEN_FOO) or file:/abs/path (got: ${tokenRef})`,
+                `--token-ref must use env:NAME (e.g. env:PAPERCLIP_GH_TOKEN_FOO), file:/abs/path, ` +
+                  `or secrets://<key> (e.g. secrets://gh/paperclip-foundingeng); got: ${tokenRef}`,
               );
             }
             const gitFields: Record<string, string> = {

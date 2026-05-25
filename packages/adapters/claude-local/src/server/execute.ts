@@ -52,9 +52,11 @@ import {
   isClaudeLocalGitIdentityEnabled,
   parseClaudeLocalGitConfig,
   prepareGitIdentityRuntime,
+  createTokenResolverWithSecretStore,
   type ClaudeLocalGitConfigParseError,
   type TokenResolver,
 } from "./git-identity.js";
+import { createDefaultSecretStore, type SecretStore } from "./secret-store.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +78,12 @@ interface ClaudeExecutionInput {
     resolveToken?: TokenResolver;
     /** Override the per-run gitconfig root directory (used by tests). */
     runtimeRoot?: string;
+    /**
+     * Override the SecretStore used for `secrets://` refs (used by tests).
+     * When omitted, a `createDefaultSecretStore({ companyId: agent.companyId })`
+     * instance is built per run.
+     */
+    secretStore?: SecretStore | null;
   };
 }
 
@@ -269,12 +277,19 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     const parsed = parseClaudeLocalGitConfig((config as Record<string, unknown>).git);
     gitIdentityRuntime.parseErrors = parsed.errors;
     if (parsed.config !== null) {
+      const resolveToken =
+        gitIdentity?.resolveToken ??
+        createTokenResolverWithSecretStore(
+          gitIdentity?.secretStore !== undefined
+            ? gitIdentity.secretStore
+            : tryCreateDefaultSecretStore(agent.companyId, gitIdentityRuntime.warnings),
+        );
       const prepared = await prepareGitIdentityRuntime({
         runId,
         agentId: agent.id,
         cwd,
         config: parsed.config,
-        resolveToken: gitIdentity?.resolveToken,
+        resolveToken,
         runtimeRoot: gitIdentity?.runtimeRoot,
       });
       for (const [key, value] of Object.entries(prepared.env)) {
@@ -870,6 +885,31 @@ function readGitIdentityOverridesFromContext(
   if (typeof record.resolveToken === "function") {
     out.resolveToken = record.resolveToken as TokenResolver;
   }
+  if ("secretStore" in record) {
+    const raw = record.secretStore;
+    if (raw === null || (typeof raw === "object" && raw !== null && typeof (raw as SecretStore).resolve === "function")) {
+      out.secretStore = raw as SecretStore | null;
+    }
+  }
   if (Object.keys(out).length === 0) return undefined;
   return out;
+}
+
+/**
+ * Construct the default SecretStore for this run. If the env selector is misconfigured
+ * we emit a warning instead of hard-crashing the heartbeat — `secrets://` refs will then
+ * fall through to `null` and `prepareGitIdentityRuntime` will skip GH_TOKEN injection with
+ * its existing "did not resolve" warning. `env:` and `file:` refs continue to work.
+ */
+function tryCreateDefaultSecretStore(companyId: string, warnings: string[]): SecretStore | null {
+  try {
+    return createDefaultSecretStore({ companyId });
+  } catch (err) {
+    warnings.push(
+      `Could not construct default SecretStore for company ${companyId}: ${
+        err instanceof Error ? err.message : String(err)
+      }. "secrets://" refs will not resolve this run.`,
+    );
+    return null;
+  }
 }

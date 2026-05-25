@@ -4,11 +4,22 @@ export {
   parseClaudeLocalGitConfig,
   prepareGitIdentityRuntime,
   defaultTokenResolver,
+  createTokenResolverWithSecretStore,
   type ClaudeLocalGitConfig,
   type ClaudeLocalGitConfigParseError,
   type ClaudeLocalGitConfigParseResult,
   type TokenResolver,
 } from "./git-identity.js";
+export {
+  SECRETS_REF_SCHEME,
+  SECRET_STORE_SELECTOR_ENV,
+  parseSecretsRef,
+  EncryptedFileSecretStore,
+  initMasterKey,
+  createDefaultSecretStore,
+  type SecretStore,
+  type EncryptedFileSecretStoreOptions,
+} from "./secret-store.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels } from "./models.js";
 export { testEnvironment } from "./test.js";

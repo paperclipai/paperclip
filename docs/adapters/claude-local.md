@@ -45,17 +45,41 @@ Supported `tokenSecretRef` schemes:
 
 - `env:VAR_NAME` — read from the Paperclip server process environment.
 - `file:/abs/path` — read the token from a chmod-600 file.
+- `secrets://<key>` — read from the local encrypted secrets store at `~/.paperclip/secrets/<companyId>.json`. Recommended for production.
 
-CLI helper (preferred for managing identities):
+### Local encrypted secrets store
+
+Phase 1 ships an `EncryptedFileSecretStore` (NaCl `crypto_secretbox` — XSalsa20-Poly1305 — via the audited `@noble/ciphers` library). A pluggable `SecretStore` interface keeps the door open for `KeyringSecretStore` later without touching call sites; selection is via `PAPERCLIP_SECRET_STORE` (default `file`).
+
+Layout:
+
+- `~/.paperclip/secrets/.master.key` — 32 random bytes, mode `0600`, owner-only. Boot-checked on every load: refuses to run if mode or owner is wrong.
+- `~/.paperclip/secrets/<companyId>.json` — per-company encrypted entries, mode `0600`. Boot-checked on every load.
+- The decrypted PAT lives only in the heartbeat subprocess `GH_TOKEN` env var. It is never written to disk or logs (sanitizer covers `ghp_*` and `github_pat_*`).
+
+CLI (no PAT is ever passed on argv — values are read from stdin or via TTY hidden-input prompt):
 
 ```sh
+# One-time on each host: create the master key.
+pnpm paperclipai secrets init
+# CRITICAL: back up ~/.paperclip/secrets/.master.key. Losing it = all stored secrets are unrecoverable.
+
+# Store a PAT under a key (value is read from stdin or prompted hidden).
+pnpm paperclipai secrets put gh/paperclip-foundingeng --company-id <companyId>
+
+# Reference it from an agent's adapterConfig.
 pnpm paperclipai agent set-git-identity <agentId> \
   --user-name paperclip-foundingeng \
   --user-email paperclip+foundingeng@openstudio.fr \
-  --token-ref env:PAPERCLIP_GH_TOKEN_FOUNDINGENG
+  --token-ref secrets://gh/paperclip-foundingeng
+
+# Manage secrets.
+pnpm paperclipai secrets list   --company-id <companyId>
+pnpm paperclipai secrets delete gh/paperclip-foundingeng --company-id <companyId>
+pnpm paperclipai secrets show-path --company-id <companyId>
 ```
 
-The CLI never persists the token — only the indirection ref. The actual PAT is supplied to the Paperclip server out-of-band (env var or secure file). Recommended PAT scopes (fine-grained): `contents:write`, `pull_requests:write`.
+The CLI never persists the token in plain form — only the indirection ref. With `secrets://`, the actual PAT is encrypted at rest under the master key. Recommended PAT scopes (fine-grained): `contents:write`, `pull_requests:write`.
 
 Mandatory operational notes:
 
