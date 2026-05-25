@@ -1533,6 +1533,7 @@ export function routineService(
             concurrencyPolicy: input.concurrencyPolicy,
             catchUpPolicy: input.catchUpPolicy,
             variables,
+            executionLabelIds: input.labelIds ?? input.executionLabelIds ?? [],
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1613,7 +1614,11 @@ export function routineService(
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
-          executionLabelIds: patch.executionLabelIds === undefined ? (locked.executionLabelIds ?? []) : patch.executionLabelIds,
+          executionLabelIds: patch.labelIds !== undefined
+            ? patch.labelIds
+            : patch.executionLabelIds !== undefined
+            ? patch.executionLabelIds
+            : (locked.executionLabelIds ?? []),
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
