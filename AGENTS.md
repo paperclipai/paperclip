@@ -184,6 +184,7 @@ This is a fork of `paperclipai/paperclip` with QoL patches and an **external-onl
 
 - `feat/externalize-hermes-adapter` → core has **no** `hermes-paperclip-adapter` dependency and **no** built-in `hermes_local` registration. Install Hermes via the Adapter Plugin manager (`@henkey/hermes-paperclip-adapter` or a `file:` path).
 - Older fork branches may still document built-in Hermes; treat this file as authoritative for the externalize branch.
+- If `Blockcast/master` falls more than 20 commits behind `paperclipai/master`, merge upstream before opening new cross-upstream PRs so reviewers do not see fork-drift noise as part of unrelated changes.
 
 ### Hermes (plugin only)
 

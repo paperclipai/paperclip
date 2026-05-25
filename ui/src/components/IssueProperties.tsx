@@ -405,6 +405,7 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const normalizedBlockedBySearch = blockedBySearch.trim();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -479,7 +480,7 @@ export function IssueProperties({
 
   // Recent-issues fallback when the picker is open with empty search. 20
   // recent rows is enough to feel populated without pulling the full list.
-  const { data: recentPickerIssues } = useQuery({
+  const { data: recentPickerIssues, isFetching: isFetchingRecentPickerIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(companyId!), "issue-properties-recent", PICKER_RECENT_LIMIT],
     queryFn: () => issuesApi.list(companyId!, { limit: PICKER_RECENT_LIMIT }),
     enabled: !!companyId && (parentOpen || blockedByOpen),
@@ -492,7 +493,7 @@ export function IssueProperties({
     enabled: !!companyId && parentOpen && debouncedParentSearch.trim().length > 0,
   });
 
-  const { data: blockerSearchResults } = useQuery({
+  const { data: blockerSearchResults, isFetching: isFetchingBlockerSearchResults } = useQuery({
     queryKey: queryKeys.issues.search(companyId!, debouncedBlockedBySearch, undefined, PICKER_RESULT_LIMIT),
     queryFn: () => issuesApi.list(companyId!, { q: debouncedBlockedBySearch, limit: PICKER_RESULT_LIMIT }),
     enabled: !!companyId && blockedByOpen && debouncedBlockedBySearch.trim().length > 0,
@@ -1678,7 +1679,8 @@ export function IssueProperties({
     </>
   );
   const blockingIssues = issue.blocks ?? [];
-  const blockerOptionsSource = blockedBySearch.trim().length > 0
+  const blockerSearchActive = normalizedBlockedBySearch.length > 0;
+  const blockerOptionsSource = blockerSearchActive
     ? (blockerSearchResults ?? [])
     : (recentPickerIssues ?? []);
   const blockerOptions = blockerOptionsSource
@@ -1688,12 +1690,17 @@ export function IssueProperties({
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
     });
+  const blockerOptionsLoading = blockedByOpen && (
+    blockerSearchActive ? isFetchingBlockerSearchResults : isFetchingRecentPickerIssues
+  );
 
   const toggleBlockedBy = (blockedByIssueId: string) => {
     const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
       ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
       : [...blockedByIds, blockedByIssueId];
     onUpdate({ blockedByIssueIds: nextBlockedByIds });
+    setBlockedByOpen(false);
+    setBlockedBySearch("");
   };
   const removeBlockedBy = (blockedByIssueId: string) => {
     onUpdate({ blockedByIssueIds: blockedByIds.filter((candidate) => candidate !== blockedByIssueId) });
@@ -1707,6 +1714,7 @@ export function IssueProperties({
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
+        aria-label="Search issues to add as blockers"
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1714,7 +1722,11 @@ export function IssueProperties({
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
             blockedByIds.length === 0 && "bg-accent",
           )}
-          onClick={() => onUpdate({ blockedByIssueIds: [] })}
+          onClick={() => {
+            onUpdate({ blockedByIssueIds: [] });
+            setBlockedByOpen(false);
+            setBlockedBySearch("");
+          }}
         >
           No blockers
         </button>
@@ -1734,9 +1746,15 @@ export function IssueProperties({
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
               </span>
+              {selected && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
             </button>
           );
         })}
+        {blockerOptionsLoading ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+        ) : blockerOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+        ) : null}
       </div>
     </>
   );

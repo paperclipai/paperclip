@@ -2334,6 +2334,7 @@ export function Inbox() {
                             depth === 0 && hasChildren && collapseParentId ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={(event) => {
                                   event.preventDefault();
@@ -2366,6 +2367,7 @@ export function Inbox() {
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button
                             type="button"
+                            data-slot="icon-button"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -2446,6 +2448,9 @@ export function Inbox() {
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
+                        onMouseEnter={() => {
+                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                        }}
                       >
                         <IssueGroupHeader
                           label={group.label}
@@ -2482,6 +2487,7 @@ export function Inbox() {
                         data-inbox-item
                         className="relative"
                         onClick={() => setSelectedIndex(navIdx)}
+                        onMouseEnter={() => setSelectedIndex(navIdx)}
                       >
                         {child}
                       </div>
@@ -2649,7 +2655,12 @@ export function Inbox() {
                             key={`sel-issue:${child.id}`}
                             data-inbox-item
                             className="relative"
-                            onClick={() => setSelectedIndex(childNavIdx)}
+                            onClick={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
+                            onMouseEnter={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
                           >
                             {canArchiveIssue ? (
                               <SwipeToArchive

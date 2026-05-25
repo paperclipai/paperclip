@@ -18,8 +18,13 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  composeSweepWakeFramePage,
+  sweepWakeFrameSlug,
+} from "../services/sweep-wake-preflight.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
+const mockGbrainCall = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
@@ -63,6 +68,16 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+  };
+});
+
+vi.mock("../services/gbrain-client-factory.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/gbrain-client-factory.js")>(
+    "../services/gbrain-client-factory.js",
+  );
+  return {
+    ...actual,
+    createServerGbrainClient: vi.fn(() => ({ call: mockGbrainCall })),
   };
 });
 
@@ -113,6 +128,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   afterEach(async () => {
+    mockGbrainCall.mockReset();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -411,6 +427,108 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       minRepeatWakeIntervalMs: 30 * 60 * 1000,
     });
     expect(secondSweep).toMatchObject({ scanned: 1, woken: 0, skipped: 1, failed: 0 });
+  });
+
+  it("falls open for resolved-blocker sweep when server-side preflight sees a blocker completed after the frame", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueActivityAt = new Date("2026-05-21T07:00:00.000Z");
+    const frameUpdatedAt = new Date("2026-05-21T07:01:00.000Z");
+    const blockerCompletedAt = new Date("2026-05-21T07:02:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      featureFlags: { serverSideSweepPreflight: true },
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished blocker",
+        status: "done",
+        priority: "high",
+        completedAt: blockerCompletedAt,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Dependent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        lastActivityAt: issueActivityAt,
+        updatedAt: issueActivityAt,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const slug = sweepWakeFrameSlug({
+      companyId,
+      agentId,
+      issueIdentifier: `${issuePrefix}-2`,
+    });
+    const framePage = composeSweepWakeFramePage({
+      schemaVersion: 1,
+      companyId,
+      agentId,
+      agentName: "CodexCoder",
+      issueIdentifier: `${issuePrefix}-2`,
+      issueId: dependentIssueId,
+      issueLastActivityAt: issueActivityAt.toISOString(),
+      updatedAt: frameUpdatedAt.toISOString(),
+      status: "todo",
+      blockedByIssueIds: [blockerId],
+      disposition: "Stable before blocker completion",
+      nextRefreshTriggers: [],
+      consecutiveSkips: 0,
+      body: "",
+    });
+    mockGbrainCall.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "get_page" && params.slug === slug) return framePage;
+      if (method === "put_page") return null;
+      throw new Error(`unexpected gbrain call ${method}`);
+    });
+
+    const sweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 0,
+    });
+
+    expect(sweep).toMatchObject({ scanned: 1, woken: 1, skipped: 0, failed: 0 });
+    expect(mockGbrainCall).toHaveBeenCalledWith("get_page", { slug });
+    expect(mockGbrainCall).not.toHaveBeenCalledWith("put_page", expect.anything());
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {

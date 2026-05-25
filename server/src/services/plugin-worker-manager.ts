@@ -61,8 +61,8 @@ import { logger } from "../middleware/logger.js";
  * still possible via `timeoutMs`; hard cap stays at MAX_RPC_TIMEOUT_MS. */
 const DEFAULT_RPC_TIMEOUT_MS = 120_000;
 
-/** Hard upper bound for any RPC timeout (5 minutes). Prevents unbounded waits. */
-const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
+/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 
 /**
  * Timeout for the initialize RPC call.
@@ -674,7 +674,9 @@ export function createPluginWorkerHandle(
     // Handle process errors (e.g. spawn failure)
     child.on("error", (err) => {
       log.error({ err: err.message }, "worker process error");
-      emitter.emit("error", { pluginId, error: err });
+      if (emitter.listenerCount("error") > 0) {
+        emitter.emit("error", { pluginId, error: err });
+      }
       if (status === "starting") {
         setStatus("crashed");
         rejectAllPending(

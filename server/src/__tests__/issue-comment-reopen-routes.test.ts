@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -223,6 +224,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
+    mockIssueService.getCurrentScheduledRetry.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
@@ -300,6 +302,7 @@ describe.sequential("issue comment reopen routes", () => {
       allBlockersDone: true,
       isDependencyReady: true,
     });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -568,6 +571,159 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "retry-run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "I added the missing detail; please continue." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "todo",
+          scheduledRetrySupersededByComment: true,
+          scheduledRetryRunId: "retry-run-1",
+          cancelledScheduledRetryRunId: "retry-run-1",
+        }),
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        }),
+      }),
+    ));
+  });
+
+  it("still moves scheduled-retry issues to todo and adds the comment when retry cancellation fails (best-effort cancel)", async () => {
+    // Contract change vs. original: the issue.todo update is durable and now
+    // happens BEFORE the scheduled-retry cancellation. Reversing the order
+    // would risk orphaning the issue in `in_progress` with no retry path if
+    // the update failed mid-flight. Cancellation itself is best-effort — a
+    // failure logs + records a `scheduledRetryCancellationFailed` flag on
+    // the activity, then continues through comment-add and wake-up. The
+    // original retry will fire harmlessly against the now-`todo` issue and
+    // exit clean.
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "I added the missing detail; please continue." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "todo",
+          scheduledRetrySupersededByComment: true,
+          scheduledRetryRunId: "retry-run-1",
+          scheduledRetryCancellationFailed: true,
+        }),
+      }),
+    );
+    // cancelledScheduledRetryRunId should be absent — the cancel did not succeed.
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ cancelledScheduledRetryRunId: expect.anything() }),
+      }),
+    );
+  });
+
+  it("keeps ordinary in-progress POST human comments in progress when no scheduled retry exists", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Checking in without retry state." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.getCurrentScheduledRetry).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+      }),
+    ));
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
@@ -729,6 +885,96 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("moves in-progress issues with a scheduled retry back to todo via the PATCH comment path", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "retry-run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Retry window is over; please continue." });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          commentId: "comment-1",
+          mutation: "comment",
+        }),
+      }),
+    ));
+  });
+
+  it("does not move scheduled-retry issues to todo when PATCH comment retry cancellation fails", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Retry window is over; please continue." });
+
+    expect(res.status).toBe(500);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
   });
 
   it("rejects non-assignee agent PATCH comments on closed issues", async () => {

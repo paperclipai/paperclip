@@ -138,6 +138,43 @@ export interface SecretProviderConfigHealthResponse {
   checkedAt: Date;
 }
 
+export interface SecretProviderConfigDiscoverySignal {
+  namespace: string | null;
+  secretNamePrefix: string | null;
+  environmentTag: string | null;
+  ownerTag: string | null;
+  kmsKeyId: string | null;
+  hasKmsKey: boolean;
+  sampleCount: number;
+  paperclipManagedSampleCount: number;
+  skippedForeignPaperclipSampleCount: number;
+}
+
+export interface SecretProviderConfigDiscoverySample {
+  name: string;
+  hasKmsKey: boolean;
+  tagKeys: string[];
+}
+
+export interface SecretProviderConfigDiscoveryCandidate {
+  provider: SecretProvider;
+  displayName: string;
+  config: SecretProviderConfigPayload;
+  sampleCount: number;
+  samples: SecretProviderConfigDiscoverySample[];
+  signals: SecretProviderConfigDiscoverySignal;
+  warnings: string[];
+}
+
+export interface SecretProviderConfigDiscoveryPreviewResult {
+  provider: SecretProvider;
+  nextToken: string | null;
+  sampledSecretCount: number;
+  skippedForeignPaperclipSampleCount: number;
+  candidates: SecretProviderConfigDiscoveryCandidate[];
+  warnings: string[];
+}
+
 export interface CompanySecretVersion {
   id: string;
   secretId: string;

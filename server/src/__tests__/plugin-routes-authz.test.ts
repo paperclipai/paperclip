@@ -42,6 +42,7 @@ async function createApp(
     jobDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
+    captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
@@ -56,6 +57,16 @@ async function createApp(
 
   const app = express();
   app.use(express.json());
+  if (routeOverrides.captureJsonContext) {
+    app.use((_req, res, next) => {
+      const originalJson = res.json.bind(res);
+      res.json = ((body: unknown) => {
+        routeOverrides.captureJsonContext?.((res as any).__errorContext, body);
+        return originalJson(body);
+      }) as typeof res.json;
+      next();
+    });
+  }
   app.use((req, _res, next) => {
     req.actor = actor as typeof req.actor;
     next();
@@ -697,6 +708,40 @@ describe.sequential("plugin tool and bridge authz", () => {
       key: "sync",
       params: {},
       renderEnvironment: null,
+    });
+  });
+
+  it("attaches worker bridge errors to the HTTP logger context", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(new Error("missing source_objects column"));
+    const captured: Array<{ context: any; body: unknown }> = [];
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+      captureJsonContext: (context, body) => {
+        captured.push({ context, body });
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/source-objects`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      code: "UNKNOWN",
+      message: "missing source_objects column",
+    });
+    expect(captured.at(-1)?.context?.error).toMatchObject({
+      message: "missing source_objects column",
+      details: {
+        pluginId,
+        pluginKey: "paperclip.example",
+        bridgeMethod: "getData",
+        dataKey: "source-objects",
+        bridgeCode: "UNKNOWN",
+      },
     });
   });
 

@@ -204,6 +204,7 @@ describe("compareSweepWakeFrame", () => {
 // (BLO-6347 review finding #3).
 describe("detectSweepWakeRace", () => {
   const frameIssueLastActivityAt = new Date(baseFrame.issueLastActivityAt);
+  const frameUpdatedAt = new Date(baseFrame.updatedAt);
   const previousIssue = {
     lastActivityAt: new Date("2026-05-21T07:00:00.000Z"),
     status: "blocked",
@@ -214,6 +215,8 @@ describe("detectSweepWakeRace", () => {
       previousIssue,
       currentIssue: previousIssue,
       frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: null,
       hasNewNonMarkerCommentSinceFrame: false,
     })).toEqual({ raced: false });
   });
@@ -223,8 +226,21 @@ describe("detectSweepWakeRace", () => {
       previousIssue,
       currentIssue: null,
       frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: null,
       hasNewNonMarkerCommentSinceFrame: false,
     })).toEqual({ raced: true, reason: "issue_vanished" });
+  });
+
+  it("flags blocker_resolved when blocker completedAt moves past the frame", () => {
+    expect(detectSweepWakeRace({
+      previousIssue,
+      currentIssue: previousIssue,
+      frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: new Date("2026-05-21T07:01:30.000Z"),
+      hasNewNonMarkerCommentSinceFrame: false,
+    })).toEqual({ raced: true, reason: "blocker_resolved" });
   });
 
   it("flags activity_advanced when lastActivityAt moves past the frame snapshot", () => {
@@ -232,6 +248,8 @@ describe("detectSweepWakeRace", () => {
       previousIssue,
       currentIssue: { ...previousIssue, lastActivityAt: new Date("2026-05-21T07:00:30.000Z") },
       frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: null,
       hasNewNonMarkerCommentSinceFrame: false,
     })).toEqual({ raced: true, reason: "activity_advanced" });
   });
@@ -241,6 +259,8 @@ describe("detectSweepWakeRace", () => {
       previousIssue,
       currentIssue: { ...previousIssue, status: "in_progress" },
       frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: null,
       hasNewNonMarkerCommentSinceFrame: false,
     })).toEqual({ raced: true, reason: "status_changed" });
   });
@@ -250,6 +270,8 @@ describe("detectSweepWakeRace", () => {
       previousIssue,
       currentIssue: previousIssue,
       frameIssueLastActivityAt,
+      frameUpdatedAt,
+      currentBlockersResolvedSince: null,
       hasNewNonMarkerCommentSinceFrame: true,
     })).toEqual({ raced: true, reason: "new_non_marker_comment" });
   });
