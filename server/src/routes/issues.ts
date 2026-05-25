@@ -618,11 +618,20 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  // FUL-3307: When true (e.g. PATCH reassigns to a new agent alongside the comment),
+  // done/cancelled issues may still be implicitly reopened. Without this, a plain
+  // user comment on a done issue does NOT reopen it — explicit reopen: true is required.
+  hasStructuralChange?: boolean;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  // FUL-3307: Terminal done/cancelled issues must remain stable under plain user comments.
+  // They are only implicitly reopened when the same request also carries a structural change
+  // (e.g. reassigning to a different agent), which signals clear intent to resume the work.
+  // Pure commenting requires the caller to pass reopen: true explicitly.
+  if (isClosedIssueStatus(input.issueStatus) && !input.hasStructuralChange) return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -3440,6 +3449,11 @@ export function issueRoutes(
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    // FUL-3307: reassigning to a *different* agent alongside a comment is a structural change
+    // that signals clear intent to resume, so the implicit reopen is still allowed in that case.
+    const isAssigneeChangingToNewAgent =
+      typeof normalizedAssigneeAgentId === "string" &&
+      normalizedAssigneeAgentId !== existing.assigneeAgentId;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
       normalizedAssigneeAgentId !== undefined ||
@@ -3482,6 +3496,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          hasStructuralChange: isAssigneeChangingToNewAgent,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -5192,11 +5207,14 @@ export function issueRoutes(
       scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
+      // FUL-3307: plain comments never carry a structural change (no assignee/status update),
+      // so done/cancelled issues are not implicitly reopened. Use reopen: true explicitly.
       shouldImplicitlyMoveCommentedIssueToTodo({
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        hasStructuralChange: false,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =

@@ -170,6 +170,10 @@ import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { autoResolveSatisfactionExpressionInteractions } from "./issue-thread-interactions.js";
+import {
+  stripPaperclipRuntimeEnvBindings,
+  stripPaperclipRuntimeEnvFromAdapterConfig,
+} from "./runtime-env.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -332,26 +336,6 @@ type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
-
-function isPaperclipRuntimeEnvKey(key: string) {
-  return key.startsWith("PAPERCLIP_");
-}
-
-function stripPaperclipRuntimeEnvBindings(envValue: unknown): Record<string, unknown> | null {
-  const record = parseObject(envValue);
-  const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => !isPaperclipRuntimeEnvKey(key)),
-  );
-  return Object.keys(filtered).length > 0 ? filtered : null;
-}
-
-function stripPaperclipRuntimeEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
-  if (!Object.prototype.hasOwnProperty.call(config, "env")) return config;
-  return {
-    ...config,
-    env: stripPaperclipRuntimeEnvBindings(config.env) ?? {},
-  };
-}
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -6197,7 +6181,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      // FUL-3307: A comment wake (wakeCommentId) on a terminal issue no longer bypasses the
+      // stale gate. Terminal issues must have explicit resumeIntent (reopen: true on comment/patch)
+      // to allow a new run. This is defense-in-depth: the primary guard is in
+      // shouldImplicitlyMoveCommentedIssueToTodo (routes/issues.ts) which now prevents
+      // plain user comments from flipping done → todo at all.
+      if (!resumeIntent) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",

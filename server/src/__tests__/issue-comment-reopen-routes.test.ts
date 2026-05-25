@@ -486,7 +486,46 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
+  // FUL-3307: plain user comments must NOT implicitly reopen done issues.
+  // Done issues require explicit reopen: true; pure comments are informational only.
+  it("does NOT implicitly reopen done issues via POST comments (FUL-3307)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    // Issue must remain done — no implicit status transition.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // No wakeup should be queued (done + isClosed prevents it).
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // FUL-3307: simulation of the board-user automation comment loop.
+  // Multiple rapid comments from the board user (e.g. a "drift corrected" script)
+  // must not chain-reopen a done issue and wake the assignee each time.
+  it("board user automation comments do not create a done→todo→run loop (FUL-3307)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    // Two rapid POST comment calls simulating a board-user automation
+    const res1 = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen drift corrected: FUL-3168 restored to done." });
+    const res2 = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Reopen drift corrected again: FUL-3168 restored to done." });
+
+    expect(res1.status).toBe(201);
+    expect(res2.status).toBe(201);
+    // No status update to todo on either call.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    // No wakeup queued on either call.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  // FUL-3307: explicit reopen: true must still work for done issues.
+  it("still reopens done issues via POST comment with explicit reopen: true", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -495,7 +534,7 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "hello" });
+      .send({ body: "Needs another pass.", reopen: true });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
