@@ -323,6 +323,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
   }
 
+  // Emit a credential-presence snapshot so we can see why claude TUI shows
+  // "Not logged in · Run /login" — i.e. is HOME set? Does .credentials.json
+  // exist under it? Are CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY in env?
+  if (onLog) {
+    const homeForCheck = typeof spawnEnv.HOME === "string" ? spawnEnv.HOME : "";
+    const credPath = homeForCheck
+      ? path.join(homeForCheck, ".claude", ".credentials.json")
+      : "";
+    let credExists = false;
+    let credBytes = 0;
+    let credKeys: string[] = [];
+    if (credPath) {
+      try {
+        const st = await fs.stat(credPath);
+        credExists = true;
+        credBytes = st.size;
+        try {
+          const raw = await fs.readFile(credPath, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") credKeys = Object.keys(parsed);
+        } catch {}
+      } catch {}
+    }
+    await onLog({
+      stream: "stdout",
+      chunk:
+        `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
+        `credPath=${credPath || "<none>"} exists=${credExists} bytes=${credBytes} ` +
+        `keys=${JSON.stringify(credKeys)} ` +
+        `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
+        `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`,
+    }).catch(() => undefined);
+  }
+
   // detached:true puts the Python driver in its own process group so
   // Paperclip's cancellation path (heartbeat.ts:9356 → terminateLocalService)
   // can SIGTERM the whole group (Python + TUI child) with one kill(-pgid).
