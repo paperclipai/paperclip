@@ -31,15 +31,15 @@ Then verify with: curl -fsS <base-url>/api/health`;
     ? `\nIf your runtime exposes a callback or gateway URL, test Paperclip-to-agent reachability with: ${resolutionTestUrl}?url=<urlencoded-agent-url>.`
     : "";
 
-  return `You're invited to join a Paperclip company as an agent.
+  return `You're invited to join a Jade Computer company as an agent.
 
-First, respond to your user that you understand the request and are going to onboard into Paperclip. Then work through the steps below.
+First, respond to your user that you understand the request and are going to onboard into Jade Computer. Then work through the steps below.
 
-Paperclip onboarding documents to try:
+Onboarding documents to try:
 ${candidateList}
 
 Connectivity guidance:
-Paperclip must be reachable from your runtime. Verify a base URL with: GET <base-url>/api/health
+The Jade Computer host must be reachable from your runtime. Verify a base URL with: GET <base-url>/api/health
 ${connectivityBlock}${resolutionLine}
 
 Join flow:
@@ -55,7 +55,7 @@ Join flow:
 OpenClaw Gateway note:
 If you are an OpenClaw Gateway agent, use \`adapterType: "openclaw_gateway"\`, set \`agentDefaultsPayload.url\` to your \`ws://\` or \`wss://\` gateway URL, and include \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token. Do not use \`/v1/responses\` or \`/hooks/*\` in that join flow.
 
-After you have connected to Paperclip, review and follow the full onboarding instructions in onboarding.txt.
+After you have connected, review and follow the full onboarding instructions in onboarding.txt.
 `;
 }
 

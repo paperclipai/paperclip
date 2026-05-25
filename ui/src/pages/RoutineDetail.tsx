@@ -521,7 +521,7 @@ export function RoutineDetail() {
       }
       pushToast({
         title: "Failed to save routine",
-        body: error instanceof Error ? error.message : "Paperclip could not save the routine.",
+        body: error instanceof Error ? error.message : "Jade Computer could not save the routine.",
         tone: "error",
       });
     },
@@ -555,7 +555,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Routine run failed",
-        body: error instanceof Error ? error.message : "Paperclip could not start the routine run.",
+        body: error instanceof Error ? error.message : "Jade Computer could not start the routine run.",
         tone: "error",
       });
     },
@@ -577,7 +577,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to update routine",
-        body: error instanceof Error ? error.message : "Paperclip could not update the routine.",
+        body: error instanceof Error ? error.message : "Jade Computer could not update the routine.",
         tone: "error",
       });
     },
@@ -626,7 +626,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to add trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not create the trigger.",
+        body: error instanceof Error ? error.message : "Jade Computer could not create the trigger.",
         tone: "error",
       });
     },
@@ -649,7 +649,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to update trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not update the trigger.",
+        body: error instanceof Error ? error.message : "Jade Computer could not update the trigger.",
         tone: "error",
       });
     },
@@ -671,7 +671,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to delete trigger",
-        body: error instanceof Error ? error.message : "Paperclip could not delete the trigger.",
+        body: error instanceof Error ? error.message : "Jade Computer could not delete the trigger.",
         tone: "error",
       });
     },
@@ -695,7 +695,7 @@ export function RoutineDetail() {
     onError: (error) => {
       pushToast({
         title: "Failed to rotate webhook secret",
-        body: error instanceof Error ? error.message : "Paperclip could not rotate the webhook secret.",
+        body: error instanceof Error ? error.message : "Jade Computer could not rotate the webhook secret.",
         tone: "error",
       });
     },

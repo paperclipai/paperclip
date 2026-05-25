@@ -29,6 +29,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createTerminalUpgradeHandler } from "./realtime/terminal-ws.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
@@ -513,6 +514,7 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSessionFromHeaders:
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
+  let betterAuthApi: { api?: Record<string, unknown> } | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
@@ -547,6 +549,7 @@ export async function startServer(): Promise<StartedServer> {
       "Authenticated mode auth origin configuration",
     );
     const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+    betterAuthApi = auth as unknown as { api?: Record<string, unknown> };
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
@@ -649,6 +652,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
+    betterAuth: betterAuthApi,
     resolveSession,
     pluginWorkerManager,
   });
@@ -688,6 +692,10 @@ export async function startServer(): Promise<StartedServer> {
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    extraUpgrade: createTerminalUpgradeHandler(db as any, {
+      deploymentMode: config.deploymentMode,
+      resolveSessionFromHeaders,
+    }),
   });
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)

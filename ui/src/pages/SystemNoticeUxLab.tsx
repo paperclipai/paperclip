@@ -239,7 +239,7 @@ export function SystemNoticeUxLab() {
             label="System alert"
             source={{ label: "Paperclip", href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
-            body="Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
+            body="Jade Computer could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
             metadata={[
               {
                 title: "Recovery owner",

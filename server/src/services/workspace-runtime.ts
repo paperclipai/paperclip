@@ -286,7 +286,7 @@ export async function ensureServerWorkspaceLinksCurrent(
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("PAPERCLIP_")) {
+    if (key.startsWith("PAPERCLIP_") || key.startsWith("JADE_")) {
       delete env[key];
     }
   }
@@ -695,6 +695,11 @@ function buildWorkspaceCommandEnv(input: {
   created: boolean;
 }) {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  // Strip jade.computer ingress secrets so provision scripts (which may invoke
+  // user-supplied code) can't read them out of env and bypass the gate.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("JADE_")) delete env[key];
+  }
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
