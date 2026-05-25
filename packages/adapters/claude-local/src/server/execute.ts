@@ -377,6 +377,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const claudeMcpConfigPath = asString(config.claudeMcpConfigPath, "").trim();
+  // Engineering-tier agents default to strict MCP isolation so OAuth-sourced claude.ai integrations
+  // are not silently broadcast to them. Override via claudeStrictMcpConfig in adapter config.
+  const ENGINEERING_TIER_NAMES = /^(CTO|Director of Engineering|Coder|QA)/i;
+  const claudeStrictMcpConfig = asBoolean(
+    config.claudeStrictMcpConfig,
+    ENGINEERING_TIER_NAMES.test(agent.name ?? ""),
+  );
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -698,6 +706,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (claudeMcpConfigPath) args.push("--mcp-config", claudeMcpConfigPath);
+    if (claudeStrictMcpConfig) args.push("--strict-mcp-config");
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
