@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -25,6 +25,14 @@ vi.mock("../services/plugin-registry.js", () => ({
 vi.mock("../services/plugin-lifecycle.js", () => ({
   pluginLifecycleManager: () => mockLifecycle,
 }));
+
+vi.mock("../services/plugin-secrets-handler.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/plugin-secrets-handler.js")>();
+  return {
+    ...actual,
+    assertSecretRefsBelongToCompany: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: vi.fn(),
@@ -137,6 +145,10 @@ function readyPlugin() {
 describe.sequential("plugin install and upgrade authz", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED;
   });
 
   it("rejects plugin installation for non-admin board users", async () => {
@@ -286,7 +298,61 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
   }, 20_000);
 
-  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+  it("allows plugin config saves with secret refs for instance admins when enabled", async () => {
+    readyPlugin();
+    mockRegistry.upsertConfig.mockResolvedValue({
+      configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" },
+    });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        companyId: companyA,
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertConfig).toHaveBeenCalledWith(pluginId, {
+      configJson: { apiKeyRef: "77777777-7777-4777-8777-777777777777" },
+    });
+  }, 20_000);
+
+  it("requires companyId when saving plugin config with secret refs", async () => {
+    readyPlugin();
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/companyId.*required/i);
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects plugin config saves that contain secret refs when opt-out flag is set", async () => {
+    process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED = "true";
     readyPlugin();
 
     const { app } = await createApp({

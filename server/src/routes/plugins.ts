@@ -74,7 +74,9 @@ import {
   setStoredLocalFolder,
 } from "../services/plugin-local-folders.js";
 import {
+  assertSecretRefsBelongToCompany,
   extractSecretRefPathsFromConfig,
+  isPluginSecretRefsDisabled,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -2032,7 +2034,7 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
+    const body = req.body as { configJson?: Record<string, unknown>; companyId?: string } | undefined;
     if (!body?.configJson || typeof body.configJson !== "object") {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
@@ -2064,9 +2066,22 @@ export function pluginRoutes(
 
     try {
       const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
+      if (secretRefsByPath.size > 0 && isPluginSecretRefsDisabled()) {
         res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
         return;
+      }
+
+      if (secretRefsByPath.size > 0) {
+        const companyId =
+          typeof body.companyId === "string" ? body.companyId.trim() : "";
+        if (!companyId) {
+          res.status(400).json({
+            error: '"companyId" is required when config contains secret references',
+          });
+          return;
+        }
+        assertCompanyAccess(req, companyId);
+        await assertSecretRefsBelongToCompany(db, companyId, secretRefsByPath);
       }
 
       const result = await registry.upsertConfig(plugin.id, {

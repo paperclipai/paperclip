@@ -33,15 +33,24 @@
  * @see services/secrets.ts — secretService used by agent env bindings
  */
 
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companySecrets } from "@paperclipai/db";
+import { notFound } from "../errors.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+  "Plugin secret references are disabled (set PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true)";
+
+/** Opt-out env flag for operators who need the pre-0.3.2 fail-closed behavior. */
+export function isPluginSecretRefsDisabled(): boolean {
+  return process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED === "true";
+}
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -113,6 +122,46 @@ export function extractSecretRefPathsFromConfig(
   return refs;
 }
 
+/**
+ * Ensure every secret ref UUID belongs to the given company and is active.
+ * Used before persisting instance config that contains secret-ref fields.
+ */
+export async function assertSecretRefsBelongToCompany(
+  db: Db,
+  companyId: string,
+  secretRefsByPath: Map<string, Set<string>>,
+): Promise<void> {
+  if (secretRefsByPath.size === 0) return;
+
+  const trimmedCompanyId = companyId.trim();
+  if (!trimmedCompanyId) {
+    throw invalidSecretRef("<missing-company>");
+  }
+
+  const secretIds = [...secretRefsByPath.keys()];
+  const rows = await db
+    .select({
+      id: companySecrets.id,
+      companyId: companySecrets.companyId,
+      status: companySecrets.status,
+    })
+    .from(companySecrets)
+    .where(
+      and(
+        inArray(companySecrets.id, secretIds),
+        eq(companySecrets.companyId, trimmedCompanyId),
+      ),
+    );
+
+  const found = new Map(rows.map((row) => [row.id, row]));
+  for (const secretId of secretIds) {
+    const secret = found.get(secretId);
+    if (!secret || secret.status !== "active") {
+      throw notFound("Secret not found");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
@@ -125,7 +174,14 @@ export function extractSecretRefPathsFromConfig(
 export interface PluginSecretsResolveParams {
   /** The secret reference string (a secret UUID). */
   secretRef: string;
+  /** Company scope for the active plugin execution context. */
+  companyId: string;
+  /** Optional config path when resolving a bound instance-config secret ref. */
+  configPath?: string;
 }
+
+export const PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE =
+  "Plugin secret resolution requires companyId in the active execution context";
 
 /**
  * Options for creating the plugin secrets handler.
@@ -199,14 +255,14 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { db, pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
-      const { secretRef } = params;
+      const { secretRef, companyId, configPath } = params;
 
       // ---------------------------------------------------------------
       // 0. Rate limiting — prevent brute-force UUID enumeration
@@ -230,9 +286,52 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      if (isPluginSecretRefsDisabled()) {
+        throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      }
+
+      const trimmedCompanyId =
+        typeof companyId === "string" ? companyId.trim() : "";
+      if (!trimmedCompanyId) {
+        throw new Error(PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE);
+      }
+
+      const rows = await db
+        .select({
+          id: companySecrets.id,
+          companyId: companySecrets.companyId,
+          status: companySecrets.status,
+        })
+        .from(companySecrets)
+        .where(
+          and(
+            eq(companySecrets.id, trimmedRef),
+            eq(companySecrets.companyId, trimmedCompanyId),
+          ),
+        )
+        .limit(1);
+
+      const secret = rows[0];
+      if (!secret) {
+        throw notFound("Secret not found");
+      }
+
+      if (secret.status !== "active") {
+        throw invalidSecretRef(trimmedRef);
+      }
+
+      const secrets = secretService(db);
+      const consumerContext = configPath
+        ? {
+            consumerType: "plugin" as const,
+            consumerId: pluginId,
+            configPath,
+            actorType: "plugin" as const,
+            actorId: pluginId,
+            pluginId,
+          }
+        : undefined;
+      return secrets.resolveSecretValue(trimmedCompanyId, trimmedRef, "latest", consumerContext);
     },
   };
 }

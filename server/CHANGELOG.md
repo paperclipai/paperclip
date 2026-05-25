@@ -1,5 +1,16 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Minor Changes
+
+- Enable plugin runtime `secrets.read-ref` resolution for UUID secret references declared in plugin instance config. Resolution requires an explicit `companyId` execution context and validates tenant ownership before calling `secretService`. Operators can opt back into the previous fail-closed behavior with `PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true`.
+
+### Patch Changes
+
+- Plugin config API now accepts `format: "secret-ref"` UUID values when plugin secret refs are enabled, requiring `companyId` and validating secret ownership before persistence.
+- Plugin SDK propagates `companyId` from data/action handlers into `secrets.resolve` host calls.
+
 ## 0.3.1
 
 ### Patch Changes

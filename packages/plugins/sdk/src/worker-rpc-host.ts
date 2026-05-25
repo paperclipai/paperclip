@@ -200,6 +200,41 @@ export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
 // startWorkerRpcHost
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Company execution context — propagated from data/action handlers to host RPCs
+// ---------------------------------------------------------------------------
+
+type PluginCompanyExecutionContext = {
+  companyId: string;
+  configPath?: string;
+};
+
+const pluginCompanyExecutionContext = new AsyncLocalStorage<PluginCompanyExecutionContext>();
+
+function extractCompanyIdFromHandlerParams(params: unknown): string | undefined {
+  if (params == null || typeof params !== "object") return undefined;
+  const companyId = (params as { companyId?: unknown }).companyId;
+  return typeof companyId === "string" && companyId.trim().length > 0 ? companyId.trim() : undefined;
+}
+
+function resolveCompanyIdFromRpcParams(input: {
+  companyId?: string | null;
+  params?: unknown;
+}): string | undefined {
+  if (typeof input.companyId === "string" && input.companyId.trim().length > 0) {
+    return input.companyId.trim();
+  }
+  return extractCompanyIdFromHandlerParams(input.params);
+}
+
+function runWithPluginCompanyContext<T>(
+  companyId: string | undefined,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
+  if (!companyId) return fn();
+  return pluginCompanyExecutionContext.run({ companyId }, fn);
+}
+
 /**
  * Options for runWorker when testing (optional stdio to avoid using process streams).
  * When both stdin and stdout are provided, the "is main module" check is skipped
@@ -565,7 +600,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       secrets: {
         async resolve(secretRef: string): Promise<string> {
-          return callHost("secrets.resolve", { secretRef });
+          const executionContext = pluginCompanyExecutionContext.getStore();
+          const companyId = executionContext?.companyId;
+          if (!companyId) {
+            throw new Error("Plugin secret resolution requires an active company execution context");
+          }
+          return callHost("secrets.resolve", {
+            secretRef,
+            companyId,
+            configPath: executionContext?.configPath,
+          });
         },
       },
 
@@ -1515,11 +1559,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
+    const handlerParams = {
       ...params.params,
       ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
       ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    };
+    return runWithPluginCompanyContext(resolveCompanyIdFromRpcParams(params), () =>
+      handler(handlerParams),
+    );
   }
 
   function stringOrNull(value: unknown): string | null {
@@ -1552,13 +1599,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No action handler registered for key "${params.key}"`);
     }
-    return handler(
-      {
-        ...params.params,
-        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-      },
-      actionContextFromParams(params),
+    const handlerParams = {
+      ...params.params,
+      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+    };
+    const actionContext = actionContextFromParams(params);
+    const companyId =
+      resolveCompanyIdFromRpcParams(params) ?? actionContext.companyId ?? undefined;
+    return runWithPluginCompanyContext(companyId, () =>
+      handler(handlerParams, actionContext),
     );
   }
 

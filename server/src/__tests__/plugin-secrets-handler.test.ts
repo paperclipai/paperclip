@@ -1,29 +1,164 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../errors.js";
 import {
   createPluginSecretsHandler,
+  isPluginSecretRefsDisabled,
+  PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 
-describe("createPluginSecretsHandler", () => {
-  it("fails closed for plugin secret resolution until company scoping lands", async () => {
-    const handler = createPluginSecretsHandler({
-      db: {} as never,
-      pluginId: "11111111-1111-4111-8111-111111111111",
-    });
+const mockResolveSecretValue = vi.hoisted(() => vi.fn());
 
-    await expect(
-      handler.resolve({ secretRef: "77777777-7777-4777-8777-777777777777" }),
-    ).rejects.toThrow(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => ({
+    resolveSecretValue: mockResolveSecretValue,
+  }),
+}));
+
+const SECRET_ID = "77777777-7777-4777-8777-777777777777";
+const COMPANY_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PLUGIN_ID = "11111111-1111-4111-8111-111111111111";
+
+function createMockDb(secret?: { id: string; companyId: string; status: string }) {
+  const limit = vi.fn().mockResolvedValue(secret ? [secret] : []);
+  const where = vi.fn().mockReturnValue({ limit });
+  const from = vi.fn().mockReturnValue({ where });
+  const select = vi.fn().mockReturnValue({ from });
+  return { select } as never;
+}
+
+describe("isPluginSecretRefsDisabled", () => {
+  afterEach(() => {
+    delete process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED;
   });
 
-  it("still rejects malformed secret refs before the feature-disable guard", async () => {
+  it("defaults to enabled", () => {
+    expect(isPluginSecretRefsDisabled()).toBe(false);
+  });
+
+  it("honours PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true", () => {
+    process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED = "true";
+    expect(isPluginSecretRefsDisabled()).toBe(true);
+  });
+});
+
+describe("createPluginSecretsHandler", () => {
+  afterEach(() => {
+    delete process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED;
+    mockResolveSecretValue.mockReset();
+  });
+
+  it("fails closed when PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true", async () => {
+    process.env.PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED = "true";
     const handler = createPluginSecretsHandler({
-      db: {} as never,
-      pluginId: "11111111-1111-4111-8111-111111111111",
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
     });
 
     await expect(
-      handler.resolve({ secretRef: "not-a-uuid" }),
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toThrow(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("requires companyId in the active execution context", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(handler.resolve({ secretRef: SECRET_ID, companyId: "" })).rejects.toThrow(
+      PLUGIN_SECRET_REFS_COMPANY_REQUIRED_MESSAGE,
+    );
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("resolves active secrets scoped to the requesting company", async () => {
+    mockResolveSecretValue.mockResolvedValue("resolved-secret-value");
+    const handler = createPluginSecretsHandler({
+      db: createMockDb({ id: SECRET_ID, companyId: COMPANY_ID, status: "active" }),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).resolves.toBe("resolved-secret-value");
+    expect(mockResolveSecretValue).toHaveBeenCalledWith(
+      COMPANY_ID,
+      SECRET_ID,
+      "latest",
+      undefined,
+    );
+  });
+
+  it("returns not found when the secret UUID does not exist for the company", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toSatisfy((err: unknown) => err instanceof HttpError && err.status === 404);
+  });
+
+  it("rejects cross-tenant secret refs before resolution", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
+    ).rejects.toSatisfy((err: unknown) => err instanceof HttpError && err.status === 404);
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("rejects inactive secrets", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb({ id: SECRET_ID, companyId: COMPANY_ID, status: "archived" }),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: SECRET_ID, companyId: COMPANY_ID }),
     ).rejects.toThrow(/invalid secret reference/i);
+  });
+
+  it("still rejects malformed secret refs before resolution", async () => {
+    const handler = createPluginSecretsHandler({
+      db: createMockDb(),
+      pluginId: PLUGIN_ID,
+    });
+
+    await expect(
+      handler.resolve({ secretRef: "not-a-uuid", companyId: COMPANY_ID }),
+    ).rejects.toThrow(/invalid secret reference/i);
+    expect(mockResolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("passes binding context when configPath is provided", async () => {
+    mockResolveSecretValue.mockResolvedValue("resolved-secret-value");
+    const handler = createPluginSecretsHandler({
+      db: createMockDb({ id: SECRET_ID, companyId: COMPANY_ID, status: "active" }),
+      pluginId: PLUGIN_ID,
+    });
+
+    await handler.resolve({
+      secretRef: SECRET_ID,
+      companyId: COMPANY_ID,
+      configPath: "apiKeyRef",
+    });
+
+    expect(mockResolveSecretValue).toHaveBeenCalledWith(
+      COMPANY_ID,
+      SECRET_ID,
+      "latest",
+      expect.objectContaining({
+        consumerType: "plugin",
+        consumerId: PLUGIN_ID,
+        configPath: "apiKeyRef",
+      }),
+    );
   });
 });
