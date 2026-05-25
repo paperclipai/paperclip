@@ -284,6 +284,20 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
 
+// Agent daily-activity diaries (FIG-527) are intentionally idle between Discord
+// ingresses and are closed at 00:00 Europe/Rome by close_stale_discord_diaries.py
+// (FIG-543). The stranded-issue watchdog must not treat them as stranded.
+// Title contract from vault-endpoint/app/wake_service.py::daily_activity_title:
+// "<agentName>-<d|dd><Mon><yyyy> - Discord activity" (Europe/Rome).
+const AGENT_DAILY_ACTIVITY_DIARY_TITLE_REGEX =
+  /^.+-\d{1,2}[A-Z][a-z]{2}\d{4} - Discord activity$/;
+
+function isAgentDailyActivityDiary(issue: typeof issues.$inferSelect): boolean {
+  const title = readNonEmptyString(issue.title);
+  if (!title) return false;
+  return AGENT_DAILY_ACTIVITY_DIARY_TITLE_REGEX.test(title);
+}
+
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   return Boolean(
     latestRun &&
@@ -2382,6 +2396,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (isAgentDailyActivityDiary(issue)) {
         result.skipped += 1;
         continue;
       }
