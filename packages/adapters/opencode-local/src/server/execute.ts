@@ -53,6 +53,7 @@ import {
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { checkDenylistTripwire } from "@paperclipai/adapter-utils/denylist-tripwire";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -573,6 +574,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      await checkDenylistTripwire({ command, args, issueId: typeof context.issueId === "string" ? context.issueId : null, agentId: agent.id, adapterType: "opencode_local" });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: preparedRuntimeConfig.env,
