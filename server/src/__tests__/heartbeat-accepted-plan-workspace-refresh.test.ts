@@ -33,9 +33,15 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   sessionParams: { sessionId: "fresh-session" },
   sessionDisplayId: "fresh-session",
   summary: "Accepted plan workspace refresh test run.",
+  resultJson: { summary: "Accepted plan workspace refresh test run." },
   provider: "test",
   model: "test-model",
 })));
+
+const allowCcrotateGate = {
+  checkAdapter: async () => ({ allow: true as const }),
+  _resetForTesting: () => {},
+};
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
@@ -210,12 +216,13 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         sessionParams: { sessionId: "fresh-session" },
         sessionDisplayId: "fresh-session",
         summary: "Accepted plan workspace refresh test run.",
+        resultJson: { summary: "Accepted plan workspace refresh test run." },
         provider: "test",
         model: "test-model",
       };
     });
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",

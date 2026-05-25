@@ -2293,6 +2293,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     previousStatus: "todo" | "in_progress";
     recoveryCause: StrandedRecoveryCause;
+    sourceAssignee?: typeof agents.$inferSelect | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
@@ -2304,8 +2305,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestRunId: input.latestRun?.id ?? null,
       latestRunStatus: input.latestRun?.status ?? null,
       latestRunErrorCode: input.latestRun?.errorCode ?? null,
+      latestRunFailureSummary: summarizeRunFailureForIssueComment(input.latestRun),
       retryReason: readNonEmptyString(context.retryReason) ?? null,
       recoveryCause: input.recoveryCause,
+      originalAssigneeMcpKeys: extractAgentMcpKeys(input.sourceAssignee),
+      originalAssigneeCapabilities: summarizeAgentCapabilities(input.sourceAssignee),
       sourceRunId: input.successfulRunHandoffEvidence?.sourceRunId ?? null,
       correctiveRunId: input.successfulRunHandoffEvidence?.correctiveRunId ?? null,
       missingDisposition: input.successfulRunHandoffEvidence?.missingDisposition ?? null,
@@ -2323,6 +2327,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
+    const sourceAssignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2342,6 +2349,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRun: input.latestRun,
         previousStatus: input.previousStatus,
         recoveryCause,
+        sourceAssignee,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       }),
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
@@ -2525,20 +2533,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     // Serialize escalation per (company, source-issue) so concurrent
-    // reconcile sweeps don't fight over the same recovery-issue insert,
-    // blockedBy join rows, and source-issue UPDATE — those acquire locks
-    // in orders that PostgreSQL would otherwise resolve as deadlocks.
+    // reconcile sweeps don't fight over the same recovery-action upsert,
+    // wakeup, and source-issue UPDATE.
     // The advisory lock is xact-scoped on this tx's connection; once we
-    // commit/return, waiting peers wake up and observe the committed
-    // escalation via the early-return guard below.
+    // commit/return, waiting peers wake up and record their next attempt
+    // against the same active source-scoped action.
     return await db.transaction(async (tx) => {
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${input.issue.companyId} || ':' || ${input.issue.id}, 0))`,
       );
 
-      // Re-read source issue under the lock; if a peer already escalated it
-      // and linked the recovery as a blocker, return without re-running the
-      // status update / comment / activity log.
+      // Re-read source issue under the lock so the recovery action records
+      // the latest owner/status evidence and repeated sweeps reuse the same
+      // source-scoped action instead of creating issue-backed fallbacks.
       const [fresh] = await tx
         .select()
         .from(issues)
@@ -2546,7 +2553,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (!fresh) return null;
 
-      const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
+      const action = await ensureSourceScopedStrandedRecoveryAction({
         issue: fresh,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
@@ -2554,37 +2561,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
       const blockerIds = await existingUnresolvedBlockerIssueIds(fresh.companyId, fresh.id);
-      if (
-        recoveryIssue &&
-        fresh.status === "blocked" &&
-        blockerIds.includes(recoveryIssue.id)
-      ) {
-        // Idempotent fast-path: peer already finished escalation.
-        return fresh;
-      }
-      const nextBlockerIds = recoveryIssue
-        ? [...new Set([...blockerIds, recoveryIssue.id])]
-        : blockerIds;
+
+      await enqueueSourceScopedStrandedRecoveryWake({
+        action,
+        issue: fresh,
+        latestRun: input.latestRun,
+        recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+      });
+
       const updated = await issuesSvc.update(input.issue.id, {
         status: "blocked",
-        blockedByIssueIds: nextBlockerIds,
+        blockedByIssueIds: blockerIds,
       });
       if (!updated) return null;
 
-      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
-      const recoveryLine = recoveryIssue
-        ? [
+      if (action.attemptCount === 1) {
+        const recoveryLine = [
           "",
-          `- Recovery issue: ${issueUiLink({ identifier: recoveryIssue.identifier, id: recoveryIssue.id }, prefix)}`,
-          "- Next action: the recovery owner should either restore a live execution path or record the manual resolution, then mark the recovery issue done.",
-        ].join("\n")
-        : [
-          "",
-          "- Recovery issue: none created because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
-          "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
+          `- Recovery action: ${action.id}`,
+          action.ownerAgentId
+            ? "- Next action: the recovery owner should restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution."
+            : "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
         ].join("\n");
 
-      await issuesSvc.addComment(input.issue.id, `${input.comment}${recoveryLine}`, {});
+        await issuesSvc.addComment(
+          input.issue.id,
+          `${input.comment ?? "Automatic stranded-work recovery needs manual attention."}${recoveryLine}`,
+          {},
+        );
+      }
 
       await logActivity(db, {
         companyId: input.issue.companyId,
@@ -2603,8 +2608,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           latestRunId: input.latestRun?.id ?? null,
           latestRunStatus: input.latestRun?.status ?? null,
           latestRunErrorCode: input.latestRun?.errorCode ?? null,
-          recoveryIssueId: recoveryIssue?.id ?? null,
-          blockerIssueIds: nextBlockerIds,
+          recoveryActionId: action.id,
+          recoveryActionAttemptCount: action.attemptCount,
+          blockerIssueIds: blockerIds,
         },
       });
 
