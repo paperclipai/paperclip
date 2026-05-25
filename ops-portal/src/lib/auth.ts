@@ -12,10 +12,47 @@ export const OPERATOR_ROLE: string =
 
 // Zitadel returns project roles as a nested map:
 // "urn:zitadel:iam:org:project:roles": { "roleName": { "orgId": "orgName" } }
-function extractZitadelRoles(profile: Record<string, unknown>): string[] {
-  const raw = profile['urn:zitadel:iam:org:project:roles'];
+function extractZitadelRoles(claims: Record<string, unknown>): string[] {
+  const raw = claims['urn:zitadel:iam:org:project:roles'];
   if (raw == null || typeof raw !== 'object') return [];
   return Object.keys(raw as Record<string, unknown>);
+}
+
+// Decode a JWT payload without verifying (we trust account.id_token because
+// it was just delivered to us over TLS by next-auth's OIDC code-exchange).
+function decodeJwtClaims(jwt: string): Record<string, unknown> {
+  const parts = jwt.split('.');
+  if (parts.length !== 3) return {};
+  try {
+    // base64url → base64 → buffer
+    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padding = '='.repeat((4 - (payload.length % 4)) % 4);
+    const decoded = Buffer.from(payload + padding, 'base64').toString('utf8');
+    return JSON.parse(decoded);
+  } catch {
+    return {};
+  }
+}
+
+// Roles can land in different places depending on which OIDC assertion
+// flags Zitadel has set:
+//   - idTokenRoleAssertion: true   → in the ID token claims
+//   - userinfo via /userinfo       → in the `profile` arg next-auth passes
+// NextAuth v5's Zitadel provider may not surface the custom
+// `urn:zitadel:iam:org:project:roles` claim through `profile`, so fall
+// back to decoding the id_token directly.
+function pickRoles(
+  profile: Record<string, unknown> | undefined,
+  idToken: string | undefined,
+): string[] {
+  if (profile) {
+    const fromProfile = extractZitadelRoles(profile);
+    if (fromProfile.length > 0) return fromProfile;
+  }
+  if (idToken) {
+    return extractZitadelRoles(decodeJwtClaims(idToken));
+  }
+  return [];
 }
 
 // Env vars are validated at request time (not module load) so Next.js static
@@ -37,11 +74,14 @@ const authConfig: NextAuthConfig = {
 
   callbacks: {
     async jwt({ token, account, profile }) {
-      if (account != null && profile != null) {
-        const p = profile as Record<string, unknown>;
+      if (account != null) {
+        const p = (profile ?? {}) as Record<string, unknown>;
         token['sub'] = (p['sub'] as string | undefined) ?? token['sub'];
         token['email'] = (p['email'] as string | undefined) ?? token['email'];
-        token['roles'] = extractZitadelRoles(p);
+        token['roles'] = pickRoles(
+          profile as Record<string, unknown> | undefined,
+          account.id_token as string | undefined,
+        );
       }
       return token;
     },

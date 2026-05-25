@@ -13,6 +13,13 @@ import { AuthProxyError, OIDCConfigurationError, SessionInvalidError } from '@/l
 const APP_URL =
   process.env['APP_URL'] ?? 'https://app.ops.binelek.io';
 
+// Cookie domain follows wherever the auth portal lives so the
+// jaban_session cookie is readable by the matching `app.ops.*` host.
+// Defaults to `.binelek.io` for the legacy host; flip
+// SESSION_COOKIE_DOMAIN=.torinagi.com once the cutover happens.
+const SESSION_COOKIE_DOMAIN =
+  process.env['SESSION_COOKIE_DOMAIN'] ?? '.binelek.io';
+
 export async function GET(): Promise<NextResponse> {
   try {
     const session = await requireOperatorSession();
@@ -33,7 +40,7 @@ export async function GET(): Promise<NextResponse> {
       httpOnly: true,
       secure: true,
       sameSite: 'lax',
-      domain: '.binelek.io',
+      domain: SESSION_COOKIE_DOMAIN,
       path: '/',
       // 8 hours — matches JWT expiry
       maxAge: 8 * 60 * 60,
