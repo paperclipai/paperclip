@@ -14,7 +14,7 @@
  */
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { buildGuildWorkerEnv } from "../dispatch/guild-worker-env.js";
 
@@ -155,6 +155,83 @@ describe("video-guild worker env", () => {
         issueTitle: "video-foo/bar-123",
       });
       expect(env.VIDEO_AD_ARTIFACTS_DIR).toBeUndefined();
+    });
+  });
+
+  /**
+   * Bug G fix -- forward narrow allowlist of third-party API keys from
+   * the paperclip process env to the worker env, but only for video-guild
+   * issues. The dispatcher's worker had been failing on ElevenLabs voice
+   * synthesis because the key, though set in the paperclip container,
+   * was never propagated to the spawned worker's env.
+   */
+  describe("VIDEO_WORKER_FORWARDED_ENV_KEYS allowlist (Bug G)", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("forwards ELEVENLABS_API_KEY when process.env has it AND issue is a video stage", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", "test-key-xyz");
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: "video-research/abc-123",
+      });
+      expect(env.ELEVENLABS_API_KEY).toBe("test-key-xyz");
+    });
+
+    it("does NOT forward ELEVENLABS_API_KEY for non-video guild issues (eng-task)", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", "test-key-xyz");
+      const env = buildGuildWorkerEnv({
+        agent: engGuildAgent,
+        sandboxDir,
+        issueTitle: "eng-task-1",
+      });
+      expect(env.ELEVENLABS_API_KEY).toBeUndefined();
+    });
+
+    it("does NOT forward ELEVENLABS_API_KEY when issueTitle is null", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", "test-key-xyz");
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: null,
+      });
+      expect(env.ELEVENLABS_API_KEY).toBeUndefined();
+    });
+
+    it("does NOT forward ELEVENLABS_API_KEY when agent.kind !== 'guild'", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", "test-key-xyz");
+      const env = buildGuildWorkerEnv({
+        agent: {
+          id: "00000000-0000-0000-0000-000000000003",
+          name: "some-worker",
+          kind: "worker" as never,
+        },
+        sandboxDir,
+        issueTitle: "video-research/abc-123",
+      });
+      expect(env).toEqual({});
+    });
+
+    it("does NOT forward ELEVENLABS_API_KEY when process.env.ELEVENLABS_API_KEY is unset", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", undefined as unknown as string);
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: "video-research/abc-123",
+      });
+      expect(env.ELEVENLABS_API_KEY).toBeUndefined();
+    });
+
+    it("does NOT forward ELEVENLABS_API_KEY when process.env.ELEVENLABS_API_KEY is an empty string", () => {
+      vi.stubEnv("ELEVENLABS_API_KEY", "");
+      const env = buildGuildWorkerEnv({
+        agent: guildAgent,
+        sandboxDir,
+        issueTitle: "video-research/abc-123",
+      });
+      expect(env.ELEVENLABS_API_KEY).toBeUndefined();
     });
   });
 });

@@ -36,6 +36,22 @@ export const GUILD_WORKER_LEARNINGS_FILE = "learnings.json";
 export const GUILD_WORKER_SKILLS_FILE = "available_skills.json";
 export const GUILD_WORKER_AUTONOMY_FILE = "autonomy.json";
 
+/**
+ * Third-party API keys forwarded from process.env to video-guild
+ * workers. Workers need these to call out to the external services
+ * the video-ad pipeline depends on (voice synthesis, AI generators).
+ *
+ * Narrow + explicit by design. The paperclip container holds many
+ * sensitive keys (deploy tokens, OAuth files, cookies for unrelated
+ * projects); we only expose what the edit pipeline actually needs.
+ *
+ * Add a new key here when a new third-party dep lands. No other
+ * code change should be needed.
+ */
+export const VIDEO_WORKER_FORWARDED_ENV_KEYS = [
+  "ELEVENLABS_API_KEY",
+] as const;
+
 /** memory-service project namespace prefix for per-guild observations.
  * Convention from spec D7: `farm/<guild-slug>`. */
 export const GUILD_MEMORY_PROJECT_PREFIX = "farm";
@@ -110,6 +126,12 @@ export function buildGuildWorkerEnv(
       env.VIDEO_AD_STAGE = match[1];
       env.VIDEO_AD_REQUEST_ID = match[2];
       env.VIDEO_AD_ARTIFACTS_DIR = path.join(sandboxDir, "artifacts");
+      for (const key of VIDEO_WORKER_FORWARDED_ENV_KEYS) {
+        const value = process.env[key];
+        if (value !== undefined && value !== "") {
+          env[key] = value;
+        }
+      }
     }
   }
   return env;
