@@ -16,8 +16,12 @@
 		from_cookies jaban_session
 	}
 
+	# Host-aware redirect: stay on whichever domain the user arrived on
+	# (ops.torinagi.com OR ops.binelek.io). Hard-coding the host here
+	# would bounce torinagi.com visitors back to binelek.io and lose
+	# them in the cookie-domain split during the domain migration.
 	handle_errors 401 {
-		redir https://ops.binelek.io/login 302
+		redir https://{host}/login 302
 	}
 
 	@websocket {
