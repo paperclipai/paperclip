@@ -2979,6 +2979,133 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   });
 
+  it("BLO-7521: does NOT re-escalate after a manual blocked->todo unblock, even with 5 pre-unblock non-productive runs", async () => {
+    // BLO-7521 reproducer: CEO/operator manually flips an issue from
+    // `blocked` to `todo` (or `in_progress`). The pre-unblock history
+    // already contains >= NON_PRODUCTIVE_RUN_NOOP_THRESHOLD consecutive
+    // non-productive succeeded runs from the prior wedge. Before the fix,
+    // the next sweep cycle read all of those historical runs and re-blocked
+    // the issue within ~45-90 seconds of the operator flip, defeating the
+    // manual recovery. Fix: scope the lookback to runs created AFTER the
+    // most recent `previousStatus=blocked` transition recorded in
+    // activity_log.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      livenessState: null,
+    });
+    // Seed 4 additional pre-unblock non-productive succeeded runs (5 total
+    // counting the fixture's run). Same timestamps as the BLO-3182 test.
+    const baseTs = new Date("2026-03-19T00:05:00.000Z");
+    for (let i = 0; i < 4; i++) {
+      const ts = new Date(baseTs.getTime() + (i + 1) * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: { issueId, taskId: issueId },
+        startedAt: ts,
+        finishedAt: ts,
+        createdAt: ts,
+        updatedAt: ts,
+        livenessState: null,
+      });
+    }
+    // Operator unblock landed AFTER all 5 non-productive runs. The
+    // activity_log entry has `previousStatus: blocked` from the manual
+    // flip back to `todo` / `in_progress`.
+    const unblockedAt = new Date(baseTs.getTime() + 10 * 60_000);
+    await db.insert(activityLog).values({
+      id: randomUUID(),
+      companyId,
+      actorType: "user",
+      actorId: "operator",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { previousStatus: "blocked", status: "in_progress" },
+      createdAt: unblockedAt,
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The scoped lookback finds zero runs after `unblockedAt`, so the streak
+    // count is 0, well below the threshold. No escalation. The sweep falls
+    // through to the normal continuation-recovery path instead.
+    expect(result.escalated).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("BLO-7521: in-place recovery escalator skips when the failed run predates the manual unblock", async () => {
+    // BLO-7521 reproducer arm 2: a `stranded_issue_recovery` origin issue
+    // whose latest run is an unsuccessful terminal failure. Before the fix,
+    // the in-place escalator (`escalateStrandedRecoveryIssueInPlace`) had
+    // no gate — any recovery-origin issue with a failed latest run got
+    // instant-re-blocked, even if an operator had just unblocked it and
+    // the failed run predates the unblock. Fix: skip escalation when the
+    // latest run's createdAt <= the most recent unblock timestamp.
+    const sourceIssueId = randomUUID();
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue PAP-1",
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+      })
+      .where(eq(issues.id, issueId));
+    // Pin the failed run's createdAt to a fixed instant so we can place the
+    // operator unblock strictly after it. The fixture relies on the schema's
+    // defaultNow() for createdAt, which would otherwise race against our
+    // unblockedAt comparison.
+    const failedRunCreatedAt = new Date("2026-03-19T00:00:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: failedRunCreatedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original stranded source",
+      status: "done",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    // Operator unblock recorded AFTER the failed run createdAt above.
+    const unblockedAt = new Date("2026-03-19T01:00:00.000Z");
+    await db.insert(activityLog).values({
+      id: randomUUID(),
+      companyId,
+      actorType: "user",
+      actorId: "operator",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { previousStatus: "blocked", status: "in_progress" },
+      createdAt: unblockedAt,
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Latest failed run (createdAt 2026-03-19T00:00Z by the fixture) predates
+    // the unblock (01:00Z), so the in-place escalator should skip — not
+    // re-block — giving the agent a fresh run window.
+    expect(result.escalated).toBe(0);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

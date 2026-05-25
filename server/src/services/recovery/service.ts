@@ -99,7 +99,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson" | "usageJson"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "resultJson" | "usageJson" | "createdAt"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -578,6 +578,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
         usageJson: heartbeatRuns.usageJson,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -597,11 +598,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // productive run, the first non-succeeded run, or when the limit is hit.
   // Used by the no-op-loop detector to decide whether to escalate to
   // blocked instead of waking the agent again.
+  //
+  // 2026-05-25 BLO-7521: scope the lookback to runs created AFTER the
+  // most recent `previousStatus=blocked` transition on this issue. A manual
+  // operator unblock should give the agent a fresh window to make progress
+  // before the no-op-loop detector re-blocks based on pre-unblock history.
+  // Without the scope, the streak survives across reopens and re-blocks
+  // within seconds of the operator flip — defeating the manual recovery
+  // path entirely.
+  async function getLatestUnblockedAt(
+    companyId: string,
+    issueId: string,
+  ): Promise<Date | null> {
+    const [row] = await db
+      .select({ createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.updated"),
+          sql`${activityLog.details} ->> 'previousStatus' = 'blocked'`,
+        ),
+      )
+      .orderBy(desc(activityLog.createdAt))
+      .limit(1);
+    return row?.createdAt ?? null;
+  }
+
   async function countConsecutiveNonProductiveSuccessfulRuns(
     companyId: string,
     issueId: string,
     limit: number,
   ): Promise<number> {
+    const unblockedAt = await getLatestUnblockedAt(companyId, issueId);
     const recent = await db
       .select({
         status: heartbeatRuns.status,
@@ -613,6 +644,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(heartbeatRuns.companyId, companyId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          unblockedAt ? gt(heartbeatRuns.createdAt, unblockedAt) : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -2754,6 +2786,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
+        // 2026-05-25 BLO-7521: if the operator just manually unblocked this
+        // recovery-origin issue, give the agent a fresh run window before
+        // re-escalating. Without this gate the sweep flips the issue back
+        // to `blocked` within seconds of the operator flip, since the
+        // latest run still refers to the failure that originally stranded
+        // the issue.
+        const unblockedAt = await getLatestUnblockedAt(issue.companyId, issue.id);
+        const latestRunCreatedAt = latestRun?.createdAt ?? null;
+        const latestRunPredatesUnblock =
+          unblockedAt && latestRunCreatedAt && latestRunCreatedAt <= unblockedAt;
+        if (latestRunPredatesUnblock) {
+          result.skipped += 1;
+          continue;
+        }
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
           previousStatus: issue.status as "todo" | "in_progress",
