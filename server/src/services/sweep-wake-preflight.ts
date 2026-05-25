@@ -274,17 +274,17 @@ async function listIssueBlockerIds(db: Db, issueId: string) {
 }
 
 async function maxBlockerCompletedAt(
-  db: Db,
+  db: Pick<Db, "select">,
   blockerIssueIds: string[],
   companyId: string,
 ): Promise<Date | null> {
   if (blockerIssueIds.length === 0) return null;
   const row = await db
-    .select({ maxCompletedAt: sql<Date | null>`max(${issues.completedAt})` })
+    .select({ maxCompletedAt: sql<Date | string | null>`max(${issues.completedAt})` })
     .from(issues)
     .where(and(inArray(issues.id, blockerIssueIds), eq(issues.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
-  return row?.maxCompletedAt ?? null;
+  return row?.maxCompletedAt ? new Date(row.maxCompletedAt) : null;
 }
 
 async function getIssueSnapshot(db: Db, issueId: string, companyId: string): Promise<SweepWakeIssueSnapshot | null> {
@@ -332,7 +332,8 @@ export type SweepWakeRaceReason =
   | "issue_vanished"
   | "activity_advanced"
   | "status_changed"
-  | "new_non_marker_comment";
+  | "new_non_marker_comment"
+  | "blocker_resolved";
 
 export type PreflightMarkerResult =
   | { kind: "posted"; createdAt: Date }
@@ -352,6 +353,8 @@ export interface RaceCheckInputs {
   previousIssue: { lastActivityAt: Date; status: string };
   currentIssue: { lastActivityAt: Date; status: string } | null;
   frameIssueLastActivityAt: Date;
+  frameUpdatedAt: Date;
+  currentBlockersResolvedSince: Date | null;
   hasNewNonMarkerCommentSinceFrame: boolean;
 }
 
@@ -359,6 +362,9 @@ export function detectSweepWakeRace(
   input: RaceCheckInputs,
 ): { raced: true; reason: SweepWakeRaceReason } | { raced: false } {
   if (!input.currentIssue) return { raced: true, reason: "issue_vanished" };
+  if (input.currentBlockersResolvedSince && input.currentBlockersResolvedSince > input.frameUpdatedAt) {
+    return { raced: true, reason: "blocker_resolved" };
+  }
   if (input.currentIssue.lastActivityAt > input.frameIssueLastActivityAt) {
     return { raced: true, reason: "activity_advanced" };
   }
@@ -404,11 +410,18 @@ async function postPreflightMarker(db: Db, input: {
     const hasNewNonMarkerCommentSinceFrame = racedRows.some(
       (row) => !row.body.startsWith(SERVER_PREFLIGHT_MARKER_PREFIX),
     );
+    const currentBlockersResolvedSince = await maxBlockerCompletedAt(
+      tx,
+      input.issue.blockedByIssueIds,
+      input.issue.companyId,
+    );
 
     const race = detectSweepWakeRace({
       previousIssue: { lastActivityAt: input.issue.lastActivityAt, status: input.issue.status },
       currentIssue,
       frameIssueLastActivityAt: new Date(input.frame.issueLastActivityAt),
+      frameUpdatedAt: frameUpdatedAtDate,
+      currentBlockersResolvedSince,
       hasNewNonMarkerCommentSinceFrame,
     });
     if (race.raced) return { kind: "raced", reason: race.reason };

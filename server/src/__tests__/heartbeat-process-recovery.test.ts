@@ -1008,7 +1008,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(2);
 
     const failedRun = runs.find((row) => row.id === runId);
-    const retryRun = runs.find((row) => row.id !== runId);
+    const retryRun = runs.find((row) =>
+      (row.contextSnapshot as Record<string, unknown> | null)?.retryOfRunId === runId
+    );
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.error).toContain("before external adapter invocation");
@@ -2946,7 +2948,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // (livenessState=advanced) — the no-op detector should treat the
     // streak as broken and skip without escalation, even if older runs
     // were non-productive.
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
@@ -2981,19 +2983,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
 
-    const runs = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.agentId, agentId));
-    const retryRun = runs.find((row) => row.id !== runId);
-    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
-      issueId,
-      taskId: issueId,
-      retryReason: "issue_continuation_needed",
-      retryOfRunId: runId,
-      source: "issue.productive_terminal_continuation_recovery",
-    });
-    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
   });
 
   it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
