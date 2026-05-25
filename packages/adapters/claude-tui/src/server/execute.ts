@@ -386,6 +386,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const spawnEnvHomeMatchesAgentHome = homeForCheck === expectedAgentHome;
     const configEnvKeyCount = Object.keys(configEnv).length;
     const configEnvHasHomeKey = Object.keys(configEnv).some((k) => k === "HOME");
+    // Localize where the HOME-override is lost between configEnv and spawnEnv.
+    const envHomeRaw = typeof env.HOME === "string" ? env.HOME : "";
+    const envHasHome = envHomeRaw.length > 0;
+    const envHomeMatchesAgentHome = envHomeRaw === expectedAgentHome;
+    const envHomeMatchesProcessHome = envHomeRaw === process.env.HOME;
+    const spawnHomeIsProcessHome = homeForCheck === process.env.HOME;
+    const spawnHomeLen = homeForCheck.length;
+    const expectedHomeLen = expectedAgentHome.length;
     await onLog(
       "stdout",
       `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
@@ -399,6 +407,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `configEnvHasHome=${configEnvHasHome} configEnvHomeMatchesAgentHome=${configEnvHomeMatchesAgentHome} ` +
         `spawnEnvHomeMatchesAgentHome=${spawnEnvHomeMatchesAgentHome} ` +
         `configEnvKeyCount=${configEnvKeyCount} configEnvHasHomeKey=${configEnvHasHomeKey} ` +
+        `envHasHome=${envHasHome} envHomeMatchesAgentHome=${envHomeMatchesAgentHome} ` +
+        `envHomeMatchesProcessHome=${envHomeMatchesProcessHome} ` +
+        `spawnHomeIsProcessHome=${spawnHomeIsProcessHome} ` +
+        `spawnHomeLen=${spawnHomeLen} expectedHomeLen=${expectedHomeLen} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
         `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
     ).catch(() => undefined);
