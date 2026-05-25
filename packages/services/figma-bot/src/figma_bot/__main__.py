@@ -50,7 +50,7 @@ from .identity_registry import (
     record_login_success,
 )
 from .job_queue import drain_jobs_for, signal_switch_done
-from .login import auto_login, is_logged_in, refresh_status
+from .login import TransientNetworkError, auto_login, is_logged_in, refresh_status
 from .migration import migrate_legacy_profile_layout
 from .profile_manager import ProfileManager
 from .rfb import RFBConnectFailed
@@ -136,6 +136,12 @@ def main() -> None:
 
             li, reason = is_logged_in(pm.page)
             login_performed = False
+            # Tracks whether the failure (if any) is an infrastructure
+            # flap (tailscale exit-node down, x11vnc unreachable, proxy
+            # CONNECTION_REFUSED) rather than a credentials/UI problem.
+            # Infra flaps get a 30s cooldown; everything else escalates
+            # the 60s→6h backoff schedule.
+            transient_infra = False
             if not li:
                 login_performed = True
                 try:
@@ -159,6 +165,14 @@ def main() -> None:
                 except RFBConnectFailed as e:
                     state.log(f"auto_login[{pm.identity}]: RFBConnectFailed: {e}")
                     li, reason = False, "rfb_unreachable"
+                    transient_infra = True  # x11vnc sidecar flap, not auth
+                except TransientNetworkError as e:
+                    state.log(
+                        f"auto_login[{pm.identity}]: transient network: "
+                        f"{str(e)[:300]}"
+                    )
+                    li, reason = False, f"transient_network:{str(e)[:120]}"
+                    transient_infra = True  # tailscale/proxy flap, not auth
                 except Exception as e:
                     state.log(
                         f"auto_login[{pm.identity}]: {type(e).__name__}: "
@@ -177,7 +191,9 @@ def main() -> None:
                     login_performed=login_performed, error=None,
                 )
             else:
-                record_login_failure(pm.identity, reason)
+                record_login_failure(
+                    pm.identity, reason, transient_infra=transient_infra,
+                )
                 with state.status_lock:
                     state.status["logged_in"] = False
                     state.status["active_identity"] = pm.identity
@@ -190,6 +206,23 @@ def main() -> None:
                 state.set_active_target(None, False)
                 time.sleep(JOB_POLL_INTERVAL)
                 continue
+        else:
+            # Same identity, no refresh requested — the switch is a no-op.
+            # The /lease/acquire HTTP handler pushed a _SwitchSentinel that
+            # drain_jobs_for already consumed (recording set_active_target).
+            # But the rebuild block — where signal_switch_done normally
+            # fires — is skipped. Without an explicit signal here, the
+            # handler's done Event never sets, and submit_switch_job times
+            # out at 60s with "switch_timeout", which ratchets the identity
+            # backoff schedule (60s → 300s → 1800s → 7200s → 21600s) on a
+            # healthy bot. Signal the no-op so the lease returns immediately.
+            #
+            # signal_switch_done is idempotent: if there are no pending
+            # entries for `target`, it's a no-op. So calling it every loop
+            # iteration in steady state is harmless.
+            signal_switch_done(
+                target, switched=False, login_performed=False, error=None,
+            )
 
         drain_jobs_for(pm.page, JOB_POLL_INTERVAL)
         now = time.time()

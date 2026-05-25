@@ -29,6 +29,88 @@ if TYPE_CHECKING:
     from .profile_manager import ProfileManager
 
 
+class TransientNetworkError(RuntimeError):
+    """Raised when page.goto fails with a known transient network signature.
+
+    These signal infrastructure flaps (tailscale exit-node offline, SOCKS5
+    proxy down, DNS hiccup) rather than auth/credentials problems. Callers
+    use this to differentiate "bot can't reach figma.com right now"
+    (short cooldown, retry soon) from "wrong password / banned identity"
+    (escalating 60s → 6h backoff).
+    """
+
+
+# Substrings on the Playwright Error message that mean "the request never
+# reached figma's servers" — proxy CONNECTION_REFUSED, exit-node down,
+# DNS failure, or socket-level timeout. Not exhaustive; conservative on
+# what we classify as transient (false negatives just escalate backoff,
+# false positives lock out the bot for less time than they should).
+_TRANSIENT_NETWORK_SIGNATURES = (
+    "NS_ERROR_CONNECTION_REFUSED",
+    "NS_ERROR_PROXY_CONNECTION_REFUSED",
+    "NS_ERROR_NET_TIMEOUT",
+    "NS_ERROR_NET_RESET",
+    "NS_ERROR_NET_INTERRUPT",
+    "NS_ERROR_UNKNOWN_PROXY_HOST",
+    "NS_ERROR_UNKNOWN_HOST",
+    "NS_ERROR_PROXY_BAD_GATEWAY",
+    "NS_ERROR_PROXY_GATEWAY_TIMEOUT",
+)
+
+
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """True if the Playwright Error message matches a known transient
+    network signature (see _TRANSIENT_NETWORK_SIGNATURES)."""
+    msg = str(exc)
+    return any(sig in msg for sig in _TRANSIENT_NETWORK_SIGNATURES)
+
+
+def _goto_with_network_retry(
+    page: Page,
+    url: str,
+    *,
+    attempts: int = 3,
+    wait_between_s: float = 5.0,
+    timeout_ms: int = 20_000,
+) -> None:
+    """page.goto with retry on transient network errors.
+
+    The bot's egress goes through a SOCKS5 proxy (tailscale exit-node).
+    When the exit-node briefly drops, the first goto fails immediately
+    with NS_ERROR_(PROXY_)CONNECTION_REFUSED but the next attempt 5s
+    later usually succeeds — operator's pve-home Tailscale connection
+    cycles. Retrying here avoids burning the backoff schedule on a
+    blink. After `attempts` exhausted, raises TransientNetworkError
+    so the caller can apply a short cooldown instead of the 60→21600s
+    auth-backoff schedule.
+    """
+    last_exc: BaseException | None = None
+    for i in range(attempts):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if i > 0:
+                state.log(
+                    f"_goto_with_network_retry: succeeded on attempt {i + 1}/{attempts}"
+                )
+            return
+        except Exception as e:
+            if not _is_transient_network_error(e):
+                raise  # not a transient network error — surface as-is
+            last_exc = e
+            state.log(
+                f"_goto_with_network_retry: attempt {i + 1}/{attempts} "
+                f"got transient network error: {str(e)[:200]}"
+            )
+            if i < attempts - 1:
+                time.sleep(wait_between_s)
+    # All attempts exhausted; re-raise as TransientNetworkError so the
+    # caller can apply a short cooldown instead of escalating backoff.
+    raise TransientNetworkError(
+        f"page.goto({url!r}) failed {attempts}x with transient network errors; "
+        f"last={str(last_exc)[:200]}"
+    )
+
+
 def figma_cookie_count(page: Page) -> int:
     try:
         return len(page.context.cookies("https://www.figma.com"))
@@ -98,7 +180,7 @@ def auto_login(pm: ProfileManager) -> None:
 
     state.log(f"auto_login[{pm.identity}]: starting (figma email+password)")
     try:
-        page.goto("https://www.figma.com/login", wait_until="domcontentloaded", timeout=20_000)
+        _goto_with_network_retry(page, "https://www.figma.com/login")
 
         # Wait for figma's own email + password form to be ready.
         try:
@@ -204,5 +286,18 @@ def auto_login(pm: ProfileManager) -> None:
         )
     except RFBConnectFailed:
         raise
+    except TransientNetworkError:
+        # Already-classified network failure; preserve the type so the
+        # main loop's except-chain can apply the short cooldown.
+        raise
     except Exception as e:
+        # Surface still-transient network errors that surfaced AFTER
+        # the initial goto (e.g. on the form-submit redirect) as
+        # TransientNetworkError instead of generic RuntimeError, so
+        # they also get the short cooldown rather than escalating
+        # auth backoff.
+        if _is_transient_network_error(e):
+            raise TransientNetworkError(
+                f"{type(e).__name__}: {str(e)[:200]}",
+            ) from e
         raise RuntimeError(f"{type(e).__name__}: {str(e)[:200]}") from e

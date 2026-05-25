@@ -128,6 +128,13 @@ _identity_states_lock = threading.RLock()
 # expected escalation; changes here require updating the runbook.
 _BACKOFF_SCHEDULE = [60, 300, 1800, 7200, 21600]
 
+# Short cooldown applied when the failure is classified as
+# infrastructure-side (tailscale exit-node down, x11vnc unreachable,
+# proxy CONNECTION_REFUSED) rather than auth-side. Lets the next
+# /lease/acquire retry quickly once the infra recovers, instead of
+# burning the 60→21600s schedule on a network flap.
+_TRANSIENT_INFRA_COOLDOWN_S = 30
+
 
 def get_identity_state(identity: str) -> IdentityState:
     with _identity_states_lock:
@@ -147,18 +154,44 @@ def record_login_success(identity: str) -> None:
         s.last_failure = None
 
 
-def record_login_failure(identity: str, reason: str) -> float:
+def record_login_failure(
+    identity: str,
+    reason: str,
+    *,
+    transient_infra: bool = False,
+) -> float:
     """Record a failure, set backoff_until, return the picked backoff
     duration in seconds. Callers that need a fresh retry_after_seconds
-    should re-read s.backoff_until - time.time() via identity_in_backoff."""
+    should re-read s.backoff_until - time.time() via identity_in_backoff.
+
+    When `transient_infra=True`, the failure is classified as an
+    infrastructure flap (exit-node offline, RFB/proxy unreachable) and
+    a short fixed cooldown is used instead of advancing the
+    consecutive_failures counter — that way a 5-minute tailscale hiccup
+    doesn't lock the bot out for 6 hours.
+    """
     now = time.time()
     with _identity_states_lock:
         s = get_identity_state(identity)
+        s.last_failure = {"at": now, "reason": reason}
+        if transient_infra:
+            # DO NOT increment consecutive_failures: infra flaps must
+            # not escalate the auth-backoff schedule. Use a short fixed
+            # cooldown instead, and leave consecutive_failures at its
+            # current value (so a real bad-credentials failure that
+            # follows an infra flap still escalates correctly).
+            cooldown = _TRANSIENT_INFRA_COOLDOWN_S
+            candidate = now + cooldown
+            # Don't shorten an already-longer backoff (e.g. if a real
+            # auth failure put us in 1800s and an infra flap follows —
+            # we still want the bad-creds window to stand).
+            if s.backoff_until is None or s.backoff_until < candidate:
+                s.backoff_until = candidate
+            return float(cooldown)
         s.consecutive_failures += 1
         idx = min(s.consecutive_failures - 1, len(_BACKOFF_SCHEDULE) - 1)
         backoff = _BACKOFF_SCHEDULE[idx]
         s.backoff_until = now + backoff
-        s.last_failure = {"at": now, "reason": reason}
         return backoff
 
 
