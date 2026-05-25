@@ -80,7 +80,7 @@ vi.mock("../api/auth", () => ({
 
 vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: Project[] }) => {
-    const curatedOrder = ["project-b", "project-a", "project-c"];
+    const curatedOrder = ["project-b", "project-a", "project-c", "project-d"];
     return {
       orderedProjects: [...projects].sort(
         (left, right) => curatedOrder.indexOf(left.id) - curatedOrder.indexOf(right.id),
@@ -142,6 +142,19 @@ function makeProject(overrides: Partial<Project>): Project {
     archivedAt: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+function makeIssueStatusSummary(overrides: NonNullable<Project["issueStatusSummary"]> = {}) {
+  return {
+    backlog: 0,
+    todo: 0,
+    in_progress: 0,
+    in_review: 0,
+    done: 0,
+    blocked: 0,
+    cancelled: 0,
     ...overrides,
   };
 }
@@ -292,6 +305,54 @@ describe("SidebarProjects", () => {
 
     expect(projectLinkLabels(container)).toEqual(["Bravo", "Alpha", "Charlie"]);
     expect(container.querySelector('[aria-roledescription="sortable"]')).toBeNull();
+  });
+
+  it("renders project status circles from issue and project state instead of project colors", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({
+        id: "project-a",
+        urlKey: "alpha",
+        name: "Active",
+        status: "planned",
+        color: "#ef4444",
+        issueStatusSummary: makeIssueStatusSummary({ in_progress: 1 }),
+      }),
+      makeProject({
+        id: "project-b",
+        urlKey: "bravo",
+        name: "Waiting",
+        status: "in_progress",
+        color: "#22c55e",
+        issueStatusSummary: makeIssueStatusSummary({ blocked: 1 }),
+      }),
+      makeProject({
+        id: "project-c",
+        urlKey: "charlie",
+        name: "Inactive",
+        status: "completed",
+        color: "#3b82f6",
+        issueStatusSummary: makeIssueStatusSummary({ done: 2 }),
+      }),
+      makeProject({
+        id: "project-d",
+        urlKey: "delta",
+        name: "Unset",
+        status: "unknown" as Project["status"],
+        color: "#a855f7",
+      }),
+    ]);
+
+    await renderSidebarProjects();
+
+    expect(container.querySelector('[aria-label="Project status: blocked or pending"]')?.className)
+      .toContain("bg-amber-400");
+    expect(container.querySelector('[aria-label="Project status: active work"]')?.className)
+      .toContain("bg-emerald-500");
+    expect(container.querySelector('[aria-label="Project status: finished, empty, or inactive"]')?.className)
+      .toContain("bg-muted-foreground/45");
+    expect(container.querySelector('[aria-label="Project status: unset"]')?.className)
+      .toContain("bg-transparent");
+    expect(container.querySelector('[style*="background-color"]')).toBeNull();
   });
 
   it("uses the heading for section menu and the plus button for project creation", async () => {
