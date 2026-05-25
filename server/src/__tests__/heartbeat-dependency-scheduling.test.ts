@@ -133,6 +133,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    // A heartbeat run can append final issue comments after the first cleanup pass.
+    // Re-delete comments immediately before issues so FK cleanup stays deterministic.
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
