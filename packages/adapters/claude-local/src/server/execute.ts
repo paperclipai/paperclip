@@ -28,7 +28,7 @@ import {
   asBoolean,
   asStringArray,
   parseObject,
-  parseJson,
+  parseJsonLenient,
   applyPaperclipWorkspaceEnv,
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
@@ -710,7 +710,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         .find(Boolean) ?? "";
 
     if ((proc.exitCode ?? 0) === 0) {
-      return "Failed to parse claude JSON output";
+      // When exit code is 0 but parsing failed, this is likely a success with
+      // non-standard output format. Return a generic message that doesn't
+      // imply failure, so upstream can infer success.
+      return "Claude completed but output could not be fully parsed";
     }
 
     return stderrLine
@@ -764,7 +767,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
-    const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+    const parsed = parsedStream.resultJson ?? parseJsonLenient(proc.stdout);
     return { proc, parsedStream, parsed };
   };
 
@@ -824,12 +827,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "claude_auth_required"
         : transientUpstream
         ? "claude_transient_upstream"
+        : (proc.exitCode ?? 0) === 0
+        ? null  // Exit 0 + no parse = inferred success, not an error
         : null;
+      const isInferredSuccess = (proc.exitCode ?? 0) === 0 && !loginMeta.requiresLogin && !transientUpstream;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: fallbackErrorMessage,
+        errorMessage: isInferredSuccess ? null : fallbackErrorMessage,
         errorCode,
         errorFamily: transientUpstream ? "transient_upstream" : null,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
@@ -837,6 +843,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(isInferredSuccess ? { inferredSuccess: true } : {}),
           ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }

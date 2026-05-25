@@ -4,6 +4,7 @@ import {
   asNumber,
   parseObject,
   parseJson,
+  parseJsonLenient,
 } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
@@ -20,6 +21,7 @@ export function parseClaudeStreamJson(stdout: string) {
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
 
+  // First pass: try line-by-line parsing (handles normal stream-json output)
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -51,6 +53,26 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "result") {
       finalResult = event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
+    }
+  }
+
+  // Second pass: if no result event found, try whole-string parsing fallback
+  // This handles cases where Claude outputs a single JSON object across multiple lines
+  // or mixes JSON with non-JSON text
+  if (!finalResult) {
+    const wholeParsed = parseJsonLenient(stdout);
+    if (wholeParsed && asString(wholeParsed.type, "") === "result") {
+      finalResult = wholeParsed;
+      sessionId = asString(wholeParsed.session_id, sessionId ?? "") || sessionId;
+    }
+  }
+
+  // Third pass: try to extract any JSON object that looks like a result
+  if (!finalResult) {
+    const extracted = extractResultFromMixedOutput(stdout);
+    if (extracted) {
+      finalResult = extracted;
+      sessionId = asString(extracted.session_id, sessionId ?? "") || sessionId;
     }
   }
 
@@ -388,4 +410,41 @@ export function isClaudeTransientUpstreamError(input: {
   const haystack = buildClaudeTransientHaystack(input);
   if (!haystack) return false;
   return CLAUDE_TRANSIENT_UPSTREAM_RE.test(haystack);
+}
+
+function extractResultFromMixedOutput(stdout: string): Record<string, unknown> | null {
+  // Look for JSON objects that have a "type": "result" field
+  // This handles cases where Claude's output is interleaved with progress text
+  const resultRe = /"type"\s*:\s*"result"[^}]*}/;
+  const match = stdout.match(resultRe);
+  if (match) {
+    // Try to expand to a full JSON object
+    const idx = stdout.indexOf(match[0]);
+    if (idx >= 0) {
+      // Walk backwards to find the opening brace
+      let braceStart = idx;
+      while (braceStart > 0 && stdout[braceStart] !== "{") {
+        braceStart--;
+      }
+      // Walk forwards to find the closing brace
+      let braceEnd = idx + match[0].length;
+      let braceDepth = 0;
+      for (let i = braceStart; i < stdout.length; i++) {
+        if (stdout[i] === "{") braceDepth++;
+        if (stdout[i] === "}") {
+          braceDepth--;
+          if (braceDepth === 0) {
+            braceEnd = i + 1;
+            break;
+          }
+        }
+      }
+      const candidate = stdout.slice(braceStart, braceEnd);
+      const parsed = parseJson(candidate);
+      if (parsed && asString(parsed.type, "") === "result") {
+        return parsed;
+      }
+    }
+  }
+  return null;
 }

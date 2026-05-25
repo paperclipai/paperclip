@@ -243,6 +243,44 @@ export function parseJson(value: string): Record<string, unknown> | null {
   }
 }
 
+export function parseJsonLenient(value: string): Record<string, unknown> | null {
+  // Try direct parse first
+  const direct = parseJson(value);
+  if (direct) return direct;
+
+  // Try extracting the largest JSON object from mixed text
+  // This handles cases where Claude outputs JSON wrapped in markdown code blocks
+  // or mixed with progress indicators / warnings
+  const codeBlockMatch = value.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    const fromBlock = parseJson(codeBlockMatch[1] ?? "");
+    if (fromBlock) return fromBlock;
+  }
+
+  // Try to find the first { or [ and parse from there
+  const objectStart = value.indexOf("{");
+  const arrayStart = value.indexOf("[");
+  let start = -1;
+  if (objectStart >= 0 && arrayStart >= 0) {
+    start = Math.min(objectStart, arrayStart);
+  } else if (objectStart >= 0) {
+    start = objectStart;
+  } else if (arrayStart >= 0) {
+    start = arrayStart;
+  }
+
+  if (start >= 0) {
+    // Try parsing progressively from each start position
+    for (let i = start; i < value.length; i++) {
+      const candidate = value.slice(i);
+      const parsed = parseJson(candidate);
+      if (parsed) return parsed;
+    }
+  }
+
+  return null;
+}
+
 export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
   const combined = prev + chunk;
   return combined.length > cap ? combined.slice(combined.length - cap) : combined;
@@ -2058,10 +2096,27 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
+          // Swallow EPIPE so a child that closes stdin early does not crash the server
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            if (err.code === "EPIPE") return;
+            // Re-emit other stream errors so existing handlers can react
+            child.emit("error", err);
+          });
+
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
+            stdin.write(opts.stdin as string, (err) => {
+              if (err) {
+                const errnoErr = err as NodeJS.ErrnoException;
+                if (errnoErr.code === "EPIPE") {
+                  // Child closed stdin before we could write; ignore
+                  return;
+                }
+                // Log but do not throw — the error event handler above will also fire
+                console.error("stdin write error:", err);
+              }
+              stdin.end();
+            });
           });
         }
 
