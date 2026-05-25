@@ -346,9 +346,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } catch {}
       } catch {}
     }
-    // homeContainsAgentHomes and credParentExists give unredacted signal about
-    // whether credentials.ts overrode HOME to a per-agent path and whether the
-    // file write landed where the adapter looks for it.
     const homeContainsAgentHomes = homeForCheck.includes("/agent-homes/");
     let credParentExists = false;
     if (homeForCheck) {
@@ -357,6 +354,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         credParentExists = true;
       } catch {}
     }
+    // Probe the canonical per-agent home regardless of what HOME points to,
+    // so we can tell whether credentials.ts wrote the file there even if the
+    // env override was lost.
+    const expectedAgentHome = `/paperclip/instances/default/agent-homes/${agent.id}`;
+    let agentHomeDirExists = false;
+    let agentCredFileExists = false;
+    let agentCredFileBytes = 0;
+    try {
+      await fs.stat(expectedAgentHome);
+      agentHomeDirExists = true;
+    } catch {}
+    try {
+      const st = await fs.stat(`${expectedAgentHome}/.claude/.credentials.json`);
+      agentCredFileExists = true;
+      agentCredFileBytes = st.size;
+    } catch {}
+    let agentHomesRootListing = "<none>";
+    try {
+      const items = await fs.readdir("/paperclip/instances/default/agent-homes");
+      agentHomesRootListing = JSON.stringify(items.slice(0, 10));
+    } catch (e) {
+      agentHomesRootListing = `<error:${(e as NodeJS.ErrnoException).code ?? "?"}>`;
+    }
     await onLog(
       "stdout",
       `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
@@ -364,6 +384,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `keys=${JSON.stringify(credKeys)} ` +
         `homeContainsAgentHomes=${homeContainsAgentHomes} ` +
         `credParentExists=${credParentExists} ` +
+        `agentHomeDirExists=${agentHomeDirExists} ` +
+        `agentCredFileExists=${agentCredFileExists} agentCredFileBytes=${agentCredFileBytes} ` +
+        `agentHomesRootListing=${agentHomesRootListing} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
         `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
     ).catch(() => undefined);
