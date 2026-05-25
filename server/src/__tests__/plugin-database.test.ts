@@ -30,6 +30,7 @@ import { buildPluginWorkerEnv, pluginLoader } from "../services/plugin-loader.js
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const multiMigrationPluginKey = "paperclip.dbfixture";
+const llmWikiPluginKey = "paperclipai.plugin-llm-wiki";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -46,6 +47,63 @@ describe("plugin database SQL validation", () => {
         ["issues"],
       )
     ).not.toThrow();
+  });
+
+  it("allows qualified index creation and namespace-scoped migration backfills", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE INDEX IF NOT EXISTS rows_issue_idx ON plugin_test.rows (issue_id)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        `
+        WITH source_rows AS (
+          SELECT id FROM plugin_test.rows
+        )
+        INSERT INTO plugin_test.row_copies (id)
+        SELECT id FROM source_rows
+        ON CONFLICT (id) DO NOTHING
+        `,
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        `
+        UPDATE plugin_test.rows r
+        SET copied_from_id = s.id
+        FROM plugin_test.source_rows s
+        WHERE s.id = r.id
+        `,
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("keeps migration backfill writes scoped to the plugin namespace", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE rows (id uuid PRIMARY KEY, issue_id uuid REFERENCES public.issues(id))",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/fully qualified/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "WITH source_rows AS (SELECT id FROM plugin_test.rows) INSERT INTO public.issues (id) SELECT id FROM source_rows",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/public/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "UPDATE public.issues SET title = 'bad'",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/public/i);
   });
 
   it("rejects migrations that create public objects", () => {
@@ -137,10 +195,11 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
   }, 20_000);
 
   afterEach(async () => {
-    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey]) {
+    for (const pluginKey of ["paperclip.dbtest", "paperclip.escape", "paperclip.refresh", multiMigrationPluginKey, llmWikiPluginKey]) {
       const namespace = derivePluginDatabaseNamespace(pluginKey);
       await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`));
     }
+    await db.execute(sql.raw(`DROP SCHEMA IF EXISTS "${derivePluginDatabaseNamespace(llmWikiPluginKey, "llm_wiki")}" CASCADE`));
     await db.delete(pluginMigrations);
     await db.delete(pluginDatabaseNamespaces);
     await db.delete(plugins);
@@ -162,6 +221,29 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await mkdir(migrationsDir, { recursive: true });
     await writeFile(path.join(migrationsDir, "001_init.sql"), migrationSql, "utf8");
     return packageRoot;
+  }
+
+  function llmWikiManifest(): PaperclipPluginManifestV1 {
+    return {
+      id: llmWikiPluginKey,
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "LLM Wiki",
+      description: "Local-file LLM Wiki plugin.",
+      author: "Paperclip",
+      categories: ["automation", "ui"],
+      capabilities: [
+        "database.namespace.migrate",
+        "database.namespace.read",
+        "database.namespace.write",
+      ],
+      entrypoints: { worker: "./dist/worker.js" },
+      database: {
+        namespaceSlug: "llm_wiki",
+        migrationsDir: "migrations",
+        coreReadTables: ["companies", "issues", "projects", "agents"],
+      },
+    };
   }
 
   async function createInstallablePluginPackage(
@@ -250,6 +332,61 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
       .from(pluginMigrations)
       .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
     expect(migrations).toHaveLength(2);
+  });
+
+  it("applies the bundled LLM Wiki migrations through the production validator", async () => {
+    const pluginManifest = llmWikiManifest();
+    const repoRoot = path.basename(process.cwd()) === "server" ? path.resolve(process.cwd(), "..") : process.cwd();
+    const packageRoot = path.join(repoRoot, "packages", "plugins", "plugin-llm-wiki");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id, pluginManifest.database?.namespaceSlug);
+    const pluginId = await installPluginRecord(pluginManifest);
+
+    await pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    const migrations = await db
+      .select()
+      .from(pluginMigrations)
+      .where(and(eq(pluginMigrations.pluginId, pluginId), eq(pluginMigrations.status, "applied")));
+    expect(migrations.map((migration) => migration.migrationKey)).toEqual([
+      "001_llm_wiki.sql",
+      "002_paperclip_distillation.sql",
+      "003_spaces.sql",
+    ]);
+
+    const constraintRows = Array.from(
+      await db.execute(
+        sql<{ table_name: string; conname: string; columns: string[] }>`
+          SELECT t.relname AS table_name, c.conname, array_agg(a.attname ORDER BY constraint_columns.ordinality)::text[] AS columns
+          FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN unnest(c.conkey) WITH ORDINALITY AS constraint_columns(attnum, ordinality) ON true
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = constraint_columns.attnum
+          WHERE c.connamespace = ${namespace}::regnamespace AND c.contype = 'u'
+          GROUP BY t.relname, c.conname
+          ORDER BY t.relname, c.conname
+        `,
+      ) as Iterable<{ table_name: string; conname: string; columns: string[] }>,
+    );
+    const constraints = constraintRows.map((row) => row.conname);
+    const uniqueColumnSets = new Set(
+      constraintRows.map((row) => `${row.table_name}:${row.columns.join(",")}`),
+    );
+    expect(constraints).toEqual(
+      expect.arrayContaining([
+        "wiki_pages_company_wiki_space_path_key",
+        "distillation_cursors_company_wiki_space_scope_key",
+        "distillation_work_items_company_wiki_space_idempotency_key",
+        "page_bindings_company_wiki_space_page_path_key",
+      ]),
+    );
+    expect(constraints).not.toContain("wiki_pages_company_id_wiki_id_path_key");
+    expect(constraints).not.toContain("paperclip_distillation_cursor_company_id_wiki_id_source_sco_key");
+    expect(constraints).not.toContain("paperclip_distillation_work_i_company_id_wiki_id_idempotenc_key");
+    expect(constraints).not.toContain("paperclip_page_bindings_company_id_wiki_id_page_path_key");
+    expect(uniqueColumnSets).not.toContain("wiki_pages:company_id,wiki_id,path");
+    expect(uniqueColumnSets).not.toContain("paperclip_distillation_cursors:company_id,wiki_id,source_scope,scope_key,source_kind");
+    expect(uniqueColumnSets).not.toContain("paperclip_distillation_work_items:company_id,wiki_id,idempotency_key");
+    expect(uniqueColumnSets).not.toContain("paperclip_page_bindings:company_id,wiki_id,page_path");
   });
 
   it("applies migrations once and allows whitelisted core joins at runtime", async () => {
