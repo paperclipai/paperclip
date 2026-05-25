@@ -255,6 +255,42 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores cancelled historical top-level blockers when a live blocker path is otherwise covered", async () => {
+    const { companyId, agentId } = await createCompany("PBCX");
+    const parentId = await insertIssue({ companyId, identifier: "PBCX-1", title: "Parent", status: "blocked" });
+    const activeChildId = await insertIssue({
+      companyId,
+      identifier: "PBCX-2",
+      title: "Running child",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const cancelledBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBCX-3",
+      title: "Cancelled historical blocker",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: activeChildId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledBlockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: activeChildId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBCX-2",
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
@@ -404,7 +440,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("prefers needs_attention over stalled when the chain also has a hard attention case", async () => {
+  it("ignores cancelled blockers when deciding whether another path is stalled", async () => {
     const { companyId, agentId } = await createCompany("PBQ");
     const parentId = await insertIssue({ companyId, identifier: "PBQ-1", title: "Parent", status: "blocked" });
     const reviewLeafId = await insertIssue({
@@ -427,11 +463,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
-      state: "needs_attention",
-      reason: "attention_required",
+      state: "stalled",
+      reason: "stalled_review",
       coveredBlockerCount: 0,
       stalledBlockerCount: 1,
-      attentionBlockerCount: 1,
+      attentionBlockerCount: 0,
       sampleStalledBlockerIdentifier: "PBQ-2",
     });
   });
@@ -476,8 +512,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       reason: "active_dependency",
-      unresolvedBlockerCount: 2,
-      coveredBlockerCount: 2,
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
       attentionBlockerCount: 0,
     });
   });
