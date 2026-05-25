@@ -129,3 +129,40 @@ def drain_jobs_for(page: Page, max_seconds: float) -> None:
             box["error"] = e
         finally:
             done.set()
+
+
+def drain_pending_switch_sentinels() -> bool:
+    """Non-blocking scan of job_queue for any pending _SwitchSentinel.
+
+    Without this, after an auto_login failure tore pm down, the main
+    loop could no longer call drain_jobs_for (which requires pm.page).
+    Sentinels from /lease/acquire would sit on the queue indefinitely,
+    submit_switch_job would time out at 60s, and the bot would ratchet
+    backoff on a healthy queue — the same chicken-and-egg as BLO-6870
+    but post-failure rather than cold-boot.
+
+    Page jobs (non-sentinel queue entries) that get pulled during the
+    scan are deferred back to the queue so drain_jobs_for can run them
+    once pm.page exists.
+
+    Returns True if at least one sentinel was processed (i.e. the
+    caller should re-read state.get_active_target()).
+    """
+    deferred: list = []
+    processed_any = False
+    while True:
+        try:
+            entry = state.job_queue.get(block=False)
+        except queue.Empty:
+            break
+        fn, box, done = entry
+        if isinstance(fn, _SwitchSentinel):
+            state.set_active_target(fn.identity, fn.force_refresh)
+            # Do NOT signal done — signal_switch_done does that after
+            # the main loop processes the switch.
+            processed_any = True
+        else:
+            deferred.append(entry)
+    for entry in deferred:
+        state.job_queue.put(entry)
+    return processed_any

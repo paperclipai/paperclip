@@ -46,10 +46,15 @@ from .config import (
 from .control_plane import run_control_server
 from .identity_registry import (
     IdentityRegistry,
+    identity_in_backoff,
     record_login_failure,
     record_login_success,
 )
-from .job_queue import drain_jobs_for, signal_switch_done
+from .job_queue import (
+    drain_jobs_for,
+    drain_pending_switch_sentinels,
+    signal_switch_done,
+)
 from .login import TransientNetworkError, auto_login, is_logged_in, refresh_status
 from .migration import migrate_legacy_profile_layout
 from .profile_manager import ProfileManager
@@ -105,12 +110,39 @@ def main() -> None:
         state.log(f"cold-boot: bootstrapped with default identity {default}")
 
     while True:
+        # Always drain queued switch sentinels first, regardless of pm
+        # state. Without this, after an auto_login failure tore pm
+        # down, drain_jobs_for (the previous sentinel consumer) could
+        # never run, and any /lease/acquire after the first failure
+        # would time out at 60s with switch_timeout — the same
+        # chicken-and-egg as BLO-6870 but post-failure. See
+        # drain_pending_switch_sentinels docstring.
+        drain_pending_switch_sentinels()
+
         target, force_refresh = state.get_active_target()
         if target is None:
             time.sleep(JOB_POLL_INTERVAL)
             continue
 
         if pm is None or pm.identity != target or force_refresh:
+            # Respect the backoff window so we don't hot-loop Camoufox
+            # launches while the identity is in cooldown (transient
+            # infra flap or escalating auth backoff). When the cooldown
+            # clears, we re-enter this branch and try again.
+            #
+            # Pre-fix, the failure path called set_active_target(None,
+            # False), which made the loop sleep on the `target is None`
+            # branch — and the only way out was an external rollout
+            # restart. Now: target stays set, backoff governs retry
+            # cadence, and the bot recovers autonomously when the infra
+            # comes back.
+            remain = identity_in_backoff(target)
+            if remain is not None:
+                # Sleep at most JOB_POLL_INTERVAL so we still drain
+                # incoming sentinels (e.g. a switch-to-different-
+                # identity request) responsively.
+                time.sleep(min(remain, JOB_POLL_INTERVAL))
+                continue
             if pm is not None:
                 pm.close()
                 pm = None
@@ -122,12 +154,22 @@ def main() -> None:
                     f"main: ProfileManager build for {target} failed: "
                     f"{type(e).__name__}: {str(e)[:160]}"
                 )
-                record_login_failure(target, f"launch_error:{type(e).__name__}")
+                # launch_error is infrastructure-side (Camoufox crash,
+                # disk full, etc.), not credentials — give it the same
+                # short cooldown as other transient-infra failures
+                # rather than the 60s→6h auth-backoff schedule.
+                record_login_failure(
+                    target, f"launch_error:{type(e).__name__}",
+                    transient_infra=True,
+                )
                 signal_switch_done(
                     target, switched=False, login_performed=False,
                     error=f"launch_error:{type(e).__name__}",
                 )
-                state.set_active_target(None, False)
+                # DO NOT clear active_target — the next iteration's
+                # backoff check will sleep until the cooldown clears,
+                # then retry. Pre-fix, set_active_target(None, False)
+                # deadlocked subsequent /lease/acquire calls.
                 pm = None
                 time.sleep(JOB_POLL_INTERVAL)
                 continue
@@ -203,7 +245,9 @@ def main() -> None:
                 )
                 pm.close()
                 pm = None
-                state.set_active_target(None, False)
+                # DO NOT clear active_target — let the loop retry after
+                # the cooldown clears. See the launch_error block above
+                # for the full rationale.
                 time.sleep(JOB_POLL_INTERVAL)
                 continue
         else:
