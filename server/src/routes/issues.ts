@@ -613,16 +613,17 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
-function shouldImplicitlyMoveCommentedIssueToTodo(input: {
+export function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
 }) {
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Plain comments are communicative on terminal issues. Reopening done/cancelled
+  // work requires the explicit `reopen` or `resume` request flag handled by the route.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (isClosedIssueStatus(input.issueStatus)) return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -3873,8 +3874,8 @@ export function issueRoutes(
         ...updateFields,
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
-        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
+        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, explicitReopenIntent: true } : {}),
         ...(scheduledRetrySupersededByComment
           ? {
               scheduledRetrySupersededByComment: true,
@@ -4097,8 +4098,8 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
-          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment", explicitReopenIntent: true } : {}),
           ...(scheduledRetrySupersededByComment
             ? {
                 scheduledRetrySupersededByComment: true,
@@ -4185,7 +4186,7 @@ export function issueRoutes(
             issueId: issue.id,
             ...(comment ? { commentId: comment.id } : {}),
             mutation: "update",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
           requestedByActorType: actor.actorType,
@@ -4200,7 +4201,7 @@ export function issueRoutes(
                 }
               : {}),
             source: "issue.update",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
         });
@@ -4218,7 +4219,7 @@ export function issueRoutes(
           payload: {
             issueId: issue.id,
             mutation: "update",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
           requestedByActorType: actor.actorType,
@@ -4226,7 +4227,7 @@ export function issueRoutes(
           contextSnapshot: {
             issueId: issue.id,
             source: "issue.status_change",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
         });
@@ -4247,8 +4248,8 @@ export function issueRoutes(
               issueId: id,
               commentId: comment.id,
               mutation: "comment",
-              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(reopened ? { reopenedFrom: reopenFromStatus, explicitReopenIntent: true } : {}),
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
             requestedByActorType: actor.actorType,
@@ -4260,8 +4261,8 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: reopened ? "issue.comment.reopen" : "issue.comment",
               wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
-              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(reopened ? { reopenedFrom: reopenFromStatus, explicitReopenIntent: true } : {}),
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
@@ -5198,7 +5199,7 @@ export function issueRoutes(
         entityId: currentIssue.id,
         details: {
           status: "todo",
-          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, explicitReopenIntent: true } : {}),
           ...(scheduledRetrySupersededByComment
             ? {
                 scheduledRetrySupersededByComment: true,
@@ -5207,7 +5208,7 @@ export function issueRoutes(
               }
             : {}),
           source: "comment",
-          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
           identifier: currentIssue.identifier,
         },
       });
@@ -5274,8 +5275,8 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
-        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+        ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
+        ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment", explicitReopenIntent: true } : {}),
         ...(scheduledRetrySupersededByComment
           ? {
               scheduledRetrySupersededByComment: true,
@@ -5334,8 +5335,9 @@ export function issueRoutes(
               issueId: currentIssue.id,
               commentId: comment.id,
               reopenedFrom: reopenFromStatus,
+              explicitReopenIntent: true,
               mutation: "comment",
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
             requestedByActorType: actor.actorType,
@@ -5348,7 +5350,8 @@ export function issueRoutes(
               source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
               reopenedFrom: reopenFromStatus,
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              explicitReopenIntent: true,
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
@@ -5361,7 +5364,7 @@ export function issueRoutes(
               issueId: currentIssue.id,
               commentId: comment.id,
               mutation: "comment",
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
             requestedByActorType: actor.actorType,
@@ -5373,7 +5376,7 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: "issue.comment",
               wakeReason: "issue_commented",
-              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true, explicitReopenIntent: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
