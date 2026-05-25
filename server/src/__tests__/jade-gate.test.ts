@@ -133,4 +133,93 @@ describe("jadeGateGuard", () => {
     );
     expect(nextCalled).toBe(true);
   });
+
+  it("accepts /api/* requests bearing an Authorization: Bearer header", () => {
+    let nextCalled = false;
+    jadeGateGuard()(
+      fakeRequest({
+        path: "/api/issues/MYC-4",
+        remoteAddress: "10.0.0.5",
+        headers: { authorization: "Bearer some-agent-key" },
+      }),
+      fakeResponse(),
+      () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(true);
+  });
+
+  it("rejects /api/auth/* even with a Bearer header (no signup bypass)", () => {
+    const res = fakeResponse();
+    let nextCalled = false;
+    jadeGateGuard()(
+      fakeRequest({
+        path: "/api/auth/signup",
+        remoteAddress: "10.0.0.5",
+        headers: { authorization: "Bearer fake" },
+      }),
+      res,
+      () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect(res._status).toBe(403);
+    expect(res._body).toBe("gate_required");
+  });
+
+  it("rejects non-/api/* requests with a Bearer header", () => {
+    const res = fakeResponse();
+    let nextCalled = false;
+    jadeGateGuard()(
+      fakeRequest({
+        path: "/dashboard",
+        remoteAddress: "10.0.0.5",
+        headers: { authorization: "Bearer some-agent-key" },
+      }),
+      res,
+      () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect(res._status).toBe(403);
+  });
+
+  it("rejects malformed Authorization headers (no Bearer prefix)", () => {
+    const res = fakeResponse();
+    let nextCalled = false;
+    jadeGateGuard()(
+      fakeRequest({
+        path: "/api/issues",
+        remoteAddress: "10.0.0.5",
+        headers: { authorization: "Basic dXNlcjpwYXNz" },
+      }),
+      res,
+      () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect(res._status).toBe(403);
+  });
+
+  it("rejects empty Bearer tokens", () => {
+    const res = fakeResponse();
+    let nextCalled = false;
+    jadeGateGuard()(
+      fakeRequest({
+        path: "/api/issues",
+        remoteAddress: "10.0.0.5",
+        headers: { authorization: "Bearer " },
+      }),
+      res,
+      () => {
+        nextCalled = true;
+      },
+    );
+    expect(nextCalled).toBe(false);
+    expect(res._status).toBe(403);
+  });
 });

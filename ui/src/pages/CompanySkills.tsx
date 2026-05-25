@@ -935,7 +935,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the Jade Computer workspace.`,
       });
     },
     onError: (error) => {
