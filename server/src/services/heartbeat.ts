@@ -8253,15 +8253,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // so it didn't need this dual-layer. Phase E's guild env is
       // adapter-neutral (the process adapter used in tests, and the
       // hermes adapter used in production, must both see GUILD_*).
+      // Layer issueContext (id/title/description) onto ctx.config so the
+      // hermes adapter's `{{#taskId}}...{{/taskId}}` mustache block in
+      // DEFAULT_PROMPT_TEMPLATE actually renders the "Assigned Task"
+      // section. Without these keys the block is empty and workers fall
+      // back to the generic heartbeat-wake template (curl-search blindly
+      // for assigned issues).
+      const issueContextConfigLayer: Record<string, unknown> = issueContext
+        ? {
+            taskId: issueContext.id,
+            taskTitle: issueContext.title ?? "",
+            taskBody: issueContext.description ?? "",
+          }
+        : {};
       const runtimeConfigForAdapter = guildSandboxDir
         ? {
             ...runtimeConfig,
+            ...issueContextConfigLayer,
             env: {
               ...guildEnv,
               ...parseObject((runtimeConfig as unknown as Record<string, unknown>).env),
             },
           }
-        : runtimeConfig;
+        : { ...runtimeConfig, ...issueContextConfigLayer };
 
       let adapterResult = await adapter.execute({
         runId: run.id,
