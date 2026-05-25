@@ -16,6 +16,7 @@
  */
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_ATTACHMENT_HARD_LIMIT,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "@paperclipai/shared";
 
@@ -97,9 +98,12 @@ export function isAllowedContentType(contentType: string): boolean {
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 
+/** Platform-wide hard ceiling; adjustable only via code change + redeploy. */
+export { MAX_ATTACHMENT_HARD_LIMIT } from "@paperclipai/shared";
+
 export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
   }
-  return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+  return Math.min(Math.floor(value), MAX_ATTACHMENT_HARD_LIMIT, MAX_ATTACHMENT_BYTES);
 }
