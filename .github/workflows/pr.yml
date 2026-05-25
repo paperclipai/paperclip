@@ -92,6 +92,42 @@ jobs:
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
 
+  quality_gates:
+    name: Quality gates (lint/format/build preflight)
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint gate
+        run: pnpm run lint
+
+      - name: Format gate
+        run: |
+          mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          if [ "${#changed_paths[@]}" -eq 0 ]; then
+            echo "No changed files to format-check."
+            exit 0
+          fi
+          pnpm run format:check -- "${changed_paths[@]}"
+
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [policy]
@@ -133,7 +169,7 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, general_tests, build]
+    needs: [typecheck_release_registry, quality_gates, general_tests, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -141,10 +177,12 @@ jobs:
       - name: Fail if any split verify lane failed
         env:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          QUALITY_GATES_RESULT: ${{ needs.quality_gates.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+          test "$QUALITY_GATES_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
 
