@@ -13,6 +13,11 @@ import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { agentRoutes } from "./routes/agents.js";
+import { adapterReadinessRoutes } from "./routes/adapter-readiness.js";
+import { modelAssuranceRoutes } from "./routes/model-assurance.js";
+import { weeklyReviewRoutes } from "./routes/weekly-reviews.js";
+import { weeklyReviewFixtureRoutes } from "./routes/weekly-review-fixtures.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -210,6 +215,11 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(adapterReadinessRoutes(db));
+  api.use(modelAssuranceRoutes(db));
+  api.use(weeklyReviewRoutes(db));
+  api.use(weeklyReviewFixtureRoutes(db));
+  api.use(onboardingRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {

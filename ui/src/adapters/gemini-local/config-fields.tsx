@@ -7,8 +7,9 @@ import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
-const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Gemini prompt at runtime.";
+function instructionsFileHint(promptName = "Gemini") {
+  return `Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the ${promptName} prompt at runtime.`;
+}
 
 export function GeminiLocalConfigFields({
   isCreate,
@@ -18,11 +19,12 @@ export function GeminiLocalConfigFields({
   eff,
   mark,
   hideInstructionsFile,
-}: AdapterConfigFieldsProps) {
+  promptName,
+}: AdapterConfigFieldsProps & { promptName?: string }) {
   if (hideInstructionsFile) return null;
   return (
     <>
-      <Field label="Agent instructions file" hint={instructionsFileHint}>
+      <Field label="Agent instructions file" hint={instructionsFileHint(promptName)}>
         <div className="flex items-center gap-2">
           <DraftInput
             value={

@@ -208,4 +208,16 @@ describe("Sidebar", () => {
       root.unmount();
     });
   });
+
+  it("links to the company weekly review from the Company section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Weekly Review");
+    expect(link?.getAttribute("href")).toBe("/weekly-review");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

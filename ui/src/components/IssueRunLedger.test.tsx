@@ -517,9 +517,106 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Stale-run watchdog alert");
     expect(container.textContent).toContain("PAP-404");
     expect(container.textContent).not.toContain("Continue monitoring");
-    expect(container.textContent).not.toContain("Snooze 1h");
-    expect(container.textContent).not.toContain("Mark false positive");
+    expect(container.textContent).not.toContain("Snooze...");
+    expect(container.textContent).not.toContain("Mark false positive...");
     expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
+
+  function setNativeInputValue(input: HTMLInputElement, value: string) {
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    const previous = input.value;
+    valueSetter?.call(input, value);
+    const tracker = (input as any)._valueTracker;
+    tracker?.setValue(previous);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  it("renders custom watchdog snooze UI, captures duration & reason, and submits", () => {
+    const onWatchdogDecision = vi.fn();
+    renderLedger({
+      runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+      activeRun: createActiveRun(),
+      onWatchdogDecision,
+    });
+
+    // Click Snooze... trigger
+    const snoozeTrigger = container.querySelector('[data-testid="watchdog-snooze-trigger"]');
+    expect(snoozeTrigger).not.toBeNull();
+    act(() => {
+      snoozeTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Verify inputs are visible
+    const select = container.querySelector('[data-testid="watchdog-snooze-duration-select"]') as HTMLSelectElement;
+    const input = container.querySelector('[data-testid="watchdog-snooze-reason-input"]') as HTMLInputElement;
+    const confirmBtn = container.querySelector('[data-testid="watchdog-snooze-confirm"]');
+    const cancelBtn = container.querySelector('[data-testid="watchdog-snooze-cancel"]');
+    
+    expect(select).not.toBeNull();
+    expect(input).not.toBeNull();
+    expect(confirmBtn).not.toBeNull();
+    expect(cancelBtn).not.toBeNull();
+
+    // Change inputs
+    act(() => {
+      select.value = "4h";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      setNativeInputValue(input, "Investigating other issues");
+    });
+
+    // Confirm snooze
+    act(() => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onWatchdogDecision).toHaveBeenCalledWith({
+      runId: "run-live-1",
+      decision: "snooze",
+      evaluationIssueId: "issue-eval-1",
+      snoozedUntil: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+      reason: "Investigating other issues",
+    });
+  });
+
+  it("renders custom watchdog false positive UI, captures reason, and submits", () => {
+    const onWatchdogDecision = vi.fn();
+    renderLedger({
+      runs: [createRun({ runId: "run-live-1", status: "running", finishedAt: null })],
+      activeRun: createActiveRun(),
+      onWatchdogDecision,
+    });
+
+    // Click Mark false positive... trigger
+    const fpTrigger = container.querySelector('[data-testid="watchdog-false-positive-trigger"]');
+    expect(fpTrigger).not.toBeNull();
+    act(() => {
+      fpTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Verify inputs are visible
+    const input = container.querySelector('[data-testid="watchdog-dismiss-reason-input"]') as HTMLInputElement;
+    const confirmBtn = container.querySelector('[data-testid="watchdog-dismiss-confirm"]');
+    
+    expect(input).not.toBeNull();
+    expect(confirmBtn).not.toBeNull();
+
+    // Type reason
+    act(() => {
+      setNativeInputValue(input, "Alert was due to expected wait time");
+    });
+
+    // Confirm false positive
+    act(() => {
+      confirmBtn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onWatchdogDecision).toHaveBeenCalledWith({
+      runId: "run-live-1",
+      decision: "dismissed_false_positive",
+      evaluationIssueId: "issue-eval-1",
+      reason: "Alert was due to expected wait time",
+    });
+  });
 });
+

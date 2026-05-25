@@ -59,4 +59,10 @@ describe("adapter metadata", () => {
       },
     ]);
   });
+
+  it("keeps legacy gemini_local selectable explicitly but out of visual pickers", () => {
+    expect(isEnabledAdapterType("gemini_local")).toBe(true);
+    expect(isValidAdapterType("gemini_local")).toBe(true);
+    expect(isVisualAdapterChoice("gemini_local")).toBe(false);
+  });
 });

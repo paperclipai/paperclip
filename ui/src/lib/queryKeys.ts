@@ -2,6 +2,7 @@ export const queryKeys = {
   companies: {
     all: ["companies"] as const,
     detail: (id: string) => ["companies", id] as const,
+    onboardingSetup: (id: string) => ["companies", id, "onboarding-setup"] as const,
     stats: ["companies", "stats"] as const,
   },
   companySkills: {
@@ -29,6 +30,8 @@ export const queryKeys = {
       ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
+    adapterReadiness: (companyId: string, agentId: string) =>
+      ["agents", companyId, agentId, "adapter-readiness"] as const,
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
@@ -150,6 +153,12 @@ export const queryKeys = {
       ["company-search", companyId, q, scope, limit, offset] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  weeklyReviews: {
+    list: (companyId: string) => ["weekly-reviews", companyId] as const,
+    detail: (reviewId: string) => ["weekly-reviews", "detail", reviewId] as const,
+    readiness: (reviewId: string) => ["weekly-reviews", "readiness", reviewId] as const,
+    version: (versionId: string) => ["weekly-reviews", "version", versionId] as const,
+  },
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,

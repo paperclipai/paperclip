@@ -26,7 +26,7 @@ describe("resolveRouteOnboardingOptions", () => {
         pathname: "/onboarding",
         companies: [],
       }),
-    ).toEqual({ initialStep: 1 });
+    ).toEqual({ initialStep: 0 });
   });
 
   it("opens agent creation when the prefixed company exists", () => {

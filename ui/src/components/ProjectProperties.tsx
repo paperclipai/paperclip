@@ -264,6 +264,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.onboardingSetup(selectedCompanyId) });
     },
   });
   const { data: environments } = useQuery({

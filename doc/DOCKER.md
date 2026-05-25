@@ -75,7 +75,7 @@ PAPERCLIP_PORT=3200 PAPERCLIP_DATA_DIR=../data/pc \
 
 If you change host port or use a non-local domain, set `PAPERCLIP_PUBLIC_URL` to the external URL you will use in browser/auth flows.
 
-Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
+For first-run local development, Claude, Codex, and Antigravity adapters use the host CLI OAuth/session state and do not require provider API keys. Containerized deployments can still pass API keys for API-key-oriented or isolated review workflows, but that is not the default onboarding path.
 
 ### Full stack (with PostgreSQL)
 
@@ -128,7 +128,7 @@ The image pre-installs:
 - `claude` (Anthropic Claude Code CLI)
 - `codex` (OpenAI Codex CLI)
 
-If you want local adapter runs inside the container, pass API keys when starting the container:
+If you intentionally want API-key-backed adapter runs inside the container, pass keys when starting the container:
 
 ```sh
 docker run --name paperclip \
@@ -144,7 +144,7 @@ docker run --name paperclip \
 Notes:
 
 - Without API keys, the app still runs normally.
-- Adapter environment checks in Paperclip will surface missing auth/CLI prerequisites.
+- For OAuth-first local adapter use, keep the relevant CLI auth state on the host or in a persisted container volume and let adapter environment checks surface missing CLI/session prerequisites.
 
 ## Podman Quadlet (systemd)
 
@@ -181,6 +181,7 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    POSTGRES_PASSWORD=paperclip
    POSTGRES_DB=paperclip
    DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/paperclip
+   # Optional for API-key-backed container workflows only:
    # OPENAI_API_KEY=sk-...
    # ANTHROPIC_API_KEY=sk-...
    EOL

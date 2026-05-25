@@ -12,6 +12,7 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
+  updateOnboardingSetupStateSchema,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -23,6 +24,7 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  onboardingSetupStateService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -38,6 +40,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
+  const onboardingSetup = onboardingSetupStateService(db);
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -121,6 +124,74 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.status(400).json({
       error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
     });
+  });
+
+  router.get("/:companyId/onboarding-setup", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    res.json(await onboardingSetup.getByCompanyId(companyId));
+  });
+
+  router.patch("/:companyId/onboarding-setup", validate(updateOnboardingSetupStateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const updated = "status" in req.body
+      ? await onboardingSetup.updateStatus(companyId, req.body.status)
+      : await onboardingSetup.updateItemStatus(companyId, req.body.itemKey, req.body.itemStatus);
+    if (!updated) {
+      res.status(404).json({ error: "Onboarding setup state not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "onboarding_setup.updated",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        status: updated.status,
+        itemKey: "itemKey" in req.body ? req.body.itemKey : null,
+        itemStatus: "itemStatus" in req.body ? req.body.itemStatus : null,
+      },
+    });
+    res.json(updated);
+  });
+
+  router.post("/:companyId/onboarding-setup/refresh", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const updated = await onboardingSetup.refreshFromEvidence(companyId);
+    if (!updated) {
+      res.status(404).json({ error: "Onboarding setup state not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "onboarding_setup.refreshed",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        status: updated.status,
+        items: updated.items.map((item) => ({ key: item.key, status: item.status })),
+      },
+    });
+    res.json(updated);
   });
 
   router.get("/:companyId", async (req, res) => {

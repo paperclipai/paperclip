@@ -303,7 +303,7 @@ interface IssueChatThreadProps {
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
-  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome, resolutionNote?: string | null) => void;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;

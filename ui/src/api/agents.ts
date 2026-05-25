@@ -5,6 +5,7 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterReadinessProbe,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -211,6 +212,19 @@ export const agentsApi = {
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,
+      data,
+    ),
+  getAdapterReadiness: (companyId: string, agentId: string) =>
+    api.get<AdapterReadinessProbe | null>(
+      `/companies/${companyId}/agents/${agentId}/adapter-readiness`,
+    ),
+  probeAdapterReadiness: (
+    companyId: string,
+    agentId: string,
+    data: { adapterType: string; strictMode?: boolean },
+  ) =>
+    api.post<unknown>(
+      `/companies/${companyId}/agents/${agentId}/adapter-readiness/probe`,
       data,
     ),
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>

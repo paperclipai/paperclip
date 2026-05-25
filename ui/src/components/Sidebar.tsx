@@ -7,6 +7,7 @@ import {
   History,
   Search,
   SquarePen,
+  ClipboardList,
   Network,
   Boxes,
   Repeat,
@@ -120,6 +121,7 @@ export function Sidebar() {
         <SidebarAgents />
 
         <SidebarSection label="Company">
+          <SidebarNavItem to="/weekly-review" label="Weekly Review" icon={ClipboardList} />
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />

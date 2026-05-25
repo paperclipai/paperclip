@@ -12,12 +12,13 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity, secretService } from "../services/index.js";
+import { logActivity, onboardingSetupStateService, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
+  const onboardingSetup = onboardingSetupStateService(db);
   const defaultProvider = getConfiguredSecretProvider();
 
   router.get("/companies/:companyId/secret-providers", (req, res) => {
@@ -300,6 +301,7 @@ export function secretRoutes(db: Db) {
       entityId: created.id,
       details: { name: created.name, provider: created.provider },
     });
+    await onboardingSetup.refreshFromEvidence(companyId);
 
     res.status(201).json(created);
   });
@@ -370,6 +372,9 @@ export function secretRoutes(db: Db) {
           errorCount: result.errorCount,
         },
       });
+      if (result.importedCount > 0) {
+        await onboardingSetup.refreshFromEvidence(companyId);
+      }
 
       res.json(result);
     },
@@ -451,6 +456,7 @@ export function secretRoutes(db: Db) {
       entityId: updated.id,
       details: { name: updated.name },
     });
+    await onboardingSetup.refreshFromEvidence(updated.companyId);
 
     res.json(updated);
   });

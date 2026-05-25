@@ -11,6 +11,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const screenshotDir = "test-results/planning-mode";
 
   await page.goto("/onboarding");
+  // First-run onboarding now opens at the Stage 0 directory scan; the manual
+  // company-setup flow this test drives lives behind the escape hatch.
+  await expect(page.getByRole("heading", { name: "Choose a project folder" })).toBeVisible({ timeout: 5_000 });
+  await page.getByRole("button", { name: "Skip to manual configuration" }).click();
   await expect(page.locator("h3", { hasText: "Name your company" })).toBeVisible({ timeout: 5_000 });
 
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);

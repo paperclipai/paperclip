@@ -127,6 +127,7 @@ export function quotaSourceDisplayName(source: string): string {
     "bedrock": "AWS Bedrock",
     "codex-rpc": "Codex app server",
     "codex-wham": "ChatGPT WHAM",
+    "agy-cli": "Antigravity CLI",
   };
   return map[source] ?? source;
 }

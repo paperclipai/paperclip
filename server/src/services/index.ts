@@ -64,6 +64,8 @@ export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./clo
 export { companyPortabilityService } from "./company-portability.js";
 export { environmentService } from "./environments.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
+export { applyOnboardingSetup } from "./onboarding-apply.js";
+export { onboardingSetupStateService } from "./onboarding-setup-state.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";

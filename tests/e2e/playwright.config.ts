@@ -48,6 +48,8 @@ export default defineConfig({
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
+      PAPERCLIP_ENABLE_NORTHSTAR_FIXTURE_SEED: "true",
+      PAPERCLIP_ONBOARDING_AI_RECOMMENDATIONS: "0",
     },
   },
   outputDir: "./test-results",

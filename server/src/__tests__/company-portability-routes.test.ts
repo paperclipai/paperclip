@@ -38,6 +38,12 @@ const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
   saveIssueVote: vi.fn(),
 }));
+const mockOnboardingSetupStateService = vi.hoisted(() => ({
+  getByCompanyId: vi.fn(),
+  updateStatus: vi.fn(),
+  updateItemStatus: vi.fn(),
+  refreshFromEvidence: vi.fn(),
+}));
 
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
@@ -74,6 +80,7 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  onboardingSetupStateService: () => mockOnboardingSetupStateService,
   logActivity: mockLogActivity,
 }));
 
@@ -85,6 +92,7 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    onboardingSetupStateService: () => mockOnboardingSetupStateService,
     logActivity: mockLogActivity,
   }));
 }

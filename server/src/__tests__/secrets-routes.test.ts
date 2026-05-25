@@ -25,10 +25,14 @@ const mockSecretService = vi.hoisted(() => ({
   importRemoteSecrets: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockRefreshOnboardingSetup = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
+  onboardingSetupStateService: () => ({
+    refreshFromEvidence: mockRefreshOnboardingSetup,
+  }),
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -55,6 +59,7 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
+    mockRefreshOnboardingSetup.mockReset();
   });
 
   it("returns provider health checks for board callers with company access", async () => {
@@ -93,6 +98,29 @@ describe("secret routes", () => {
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
     expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("refreshes onboarding setup evidence after creating a secret", async () => {
+    mockSecretService.create.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      name: "Project runtime env",
+      key: "PROJECT_RUNTIME_ENV",
+      provider: "local_encrypted",
+      status: "active",
+    });
+    mockRefreshOnboardingSetup.mockResolvedValue(null);
+
+    const res = await request(createApp()).post("/api/companies/company-1/secrets").send({
+      name: "Project runtime env",
+      key: "PROJECT_RUNTIME_ENV",
+      managedMode: "paperclip_managed",
+      value: "NODE_ENV=development",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalled();
+    expect(mockRefreshOnboardingSetup).toHaveBeenCalledWith("company-1");
   });
 
   it("rejects provider vault routes for non-board actors", async () => {

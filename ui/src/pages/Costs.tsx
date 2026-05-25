@@ -434,7 +434,13 @@ export function Costs() {
     return map;
   }, [preset, spendData, byProvider]);
 
-  const providers = useMemo(() => Array.from(byProvider.keys()), [byProvider]);
+  const providers = useMemo(() => {
+    const keys = new Set(byProvider.keys());
+    for (const result of quotaData ?? []) {
+      keys.add(result.provider);
+    }
+    return Array.from(keys);
+  }, [byProvider, quotaData]);
   const billers = useMemo(() => Array.from(byBiller.keys()), [byBiller]);
 
   const effectiveProvider =
@@ -450,7 +456,7 @@ export function Costs() {
   }, [effectiveBiller, activeBiller]);
 
   const providerTabItems = useMemo(() => {
-    const providerKeys = Array.from(byProvider.keys());
+    const providerKeys = providers;
     const allTokens = providerKeys.reduce(
       (sum, provider) => sum + (byProvider.get(provider)?.reduce((acc, row) => acc + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0) ?? 0),
       0,
@@ -479,7 +485,7 @@ export function Costs() {
         label: <ProviderTabLabel provider={provider} rows={byProvider.get(provider) ?? []} />,
       })),
     ];
-  }, [byProvider]);
+  }, [byProvider, providers]);
 
   const billerTabItems = useMemo(() => {
     const billerKeys = Array.from(byBiller.keys());

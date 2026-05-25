@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "process",
   "http",
   "acpx_local",
+  "agy_local",
   "claude_local",
   "codex_local",
   "cursor_cloud",
@@ -78,6 +79,117 @@ export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
+
+export const WEEKLY_REVIEW_STATUSES = ["draft", "ready", "archived"] as const;
+export const WEEKLY_REVIEW_VERSION_STATUSES = [
+  "generating",
+  "draft",
+  "validation_failed",
+  "ready",
+  "stale",
+  "archived",
+] as const;
+export const WEEKLY_REVIEW_FINDING_CATEGORIES = [
+  "decision_blocker",
+  "action_required",
+  "evidence_gap",
+  "stale_item",
+  "budget_signal",
+  "quality_signal",
+  "win_context",
+] as const;
+export const WEEKLY_REVIEW_FINDING_SEVERITIES = ["critical", "high", "medium", "low"] as const;
+export const WEEKLY_REVIEW_FINDING_STATUSES = [
+  "open",
+  "actioned",
+  "acknowledged",
+  "dismissed",
+  "stale",
+] as const;
+export const WEEKLY_REVIEW_RECOMMENDATION_STATES = [
+  "open",
+  "accepted",
+  "dismissed",
+  "completed",
+] as const;
+export const WEEKLY_REVIEW_ACTION_STATUSES = ["requested", "completed", "failed"] as const;
+export const WEEKLY_REVIEW_ACTION_KINDS = [
+  "accept_recommendation",
+  "dismiss_recommendation",
+  "create_followup_issue",
+  "assign_issue",
+  "pause_agent",
+  "resume_agent",
+  "approve_governed_item",
+  "reject_governed_item",
+  "operator_fallback",
+  "model_profile_fallback",
+] as const;
+export const WEEKLY_REVIEW_EVENT_TYPES = [
+  "generation_started",
+  "source_snapshot_captured",
+  "findings_computed",
+  "citations_validated",
+  "adapter_readiness_attached",
+  "model_assurance_attached",
+  "narration_generated",
+  "narration_validation_failed",
+  "version_ready",
+  "version_validation_failed",
+  "generation_failed",
+  "version_marked_stale",
+  "version_archived",
+] as const;
+export const WEEKLY_REVIEW_EVENT_STATUSES = ["started", "completed", "failed", "skipped"] as const;
+
+export const LOCAL_ADAPTER_ASSURANCE_TYPES = ["claude_local", "codex_local", "agy_local"] as const;
+export const ADAPTER_READINESS_STATUSES = ["ready", "warning", "blocked", "unknown", "not_applicable"] as const;
+export const ADAPTER_READINESS_REASON_CODES = [
+  "binary_missing",
+  "auth_failed",
+  "model_missing",
+  "workspace_invalid",
+  "hello_failed",
+  "quota_limited",
+  "quota_unknown",
+  "resume_unsupported",
+  "cancel_unsupported",
+  "fixture_binding_missing",
+  "fixture_run_missing",
+] as const;
+
+export const MODEL_ASSURANCE_POLICY_STATUSES = [
+  "approved_default",
+  "approved_primary",
+  "approved_cheap",
+  "approved_fallback",
+  "manual_allowed",
+  "warning",
+  "blocked",
+  "unknown",
+] as const;
+export const MODEL_ASSURANCE_ROLE_FITS = ["strong", "acceptable", "weak", "blocked", "unknown"] as const;
+export const MODEL_ASSURANCE_MODEL_SOURCES = [
+  "adapter_config",
+  "detected",
+  "cli_default",
+  "provider_default",
+  "unknown",
+] as const;
+export const MODEL_ASSURANCE_REASON_CODES = [
+  "model_unresolved",
+  "model_not_listed",
+  "model_detect_failed",
+  "model_hello_failed",
+  "model_quota_limited",
+  "model_profile_missing",
+  "cheap_profile_missing",
+  "role_fit_weak",
+  "cost_policy_warning",
+  "cost_policy_blocked",
+  "manual_model_unverified",
+  "fallback_requires_approval",
+] as const;
 
 export const AGENT_ICON_NAMES = [
   "bot",
@@ -208,6 +320,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "harness_liveness_escalation",
   "issue_productivity_review",
   "stranded_issue_recovery",
+  "onboarding",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;

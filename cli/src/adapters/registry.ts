@@ -57,6 +57,11 @@ const grokLocalCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printGrokStreamEvent,
 };
 
+const agyLocalCLIAdapter: CLIAdapterModule = {
+  type: "agy_local",
+  formatStdoutEvent: printGeminiStreamEvent,
+};
+
 const openclawGatewayCLIAdapter: CLIAdapterModule = {
   type: "openclaw_gateway",
   formatStdoutEvent: printOpenClawGatewayStreamEvent,
@@ -71,6 +76,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,
     cursorCloudCLIAdapter,
+    agyLocalCLIAdapter,
     geminiLocalCLIAdapter,
     grokLocalCLIAdapter,
     openclawGatewayCLIAdapter,

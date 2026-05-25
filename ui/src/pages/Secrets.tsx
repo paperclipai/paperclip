@@ -520,6 +520,7 @@ export function Secrets() {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.secrets.providerConfigs(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.onboardingSetup(selectedCompanyId) });
     for (const id of extraIds) {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.usage(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.accessEvents(id) });

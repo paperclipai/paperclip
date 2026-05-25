@@ -44,6 +44,12 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockCompaniesApi = vi.hoisted(() => ({
+  getOnboardingSetup: vi.fn(),
+  refreshOnboardingSetup: vi.fn(),
+  updateOnboardingSetup: vi.fn(),
+}));
+
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
   listUserDirectory: vi.fn(),
@@ -91,6 +97,10 @@ vi.mock("../api/approvals", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/companies", () => ({
+  companiesApi: mockCompaniesApi,
 }));
 
 vi.mock("../api/access", () => ({
@@ -808,6 +818,9 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
+    mockCompaniesApi.getOnboardingSetup.mockResolvedValue(null);
+    mockCompaniesApi.refreshOnboardingSetup.mockResolvedValue(null);
+    mockCompaniesApi.updateOnboardingSetup.mockResolvedValue(null);
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
       companyIds: ["company-1"],
       isInstanceAdmin: true,
@@ -993,6 +1006,138 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
+  });
+
+  it("surfaces setup reminder mutation failures", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ originKind: "onboarding" }));
+    mockCompaniesApi.getOnboardingSetup.mockResolvedValue({
+      id: "setup-1",
+      companyId: "company-1",
+      starterIssueId: "issue-1",
+      status: "pending",
+      source: "first_run",
+      items: [
+        {
+          key: "local_auth",
+          label: "Confirm or reuse Codex, Claude, and Antigravity OAuth sessions",
+          status: "pending",
+          href: "/instance/settings/adapters",
+        },
+      ],
+      completedAt: null,
+      createdAt: "2026-05-23T10:00:00.000Z",
+      updatedAt: "2026-05-23T10:00:00.000Z",
+    });
+    mockCompaniesApi.refreshOnboardingSetup.mockRejectedValue(new Error("refresh unavailable"));
+    mockCompaniesApi.updateOnboardingSetup
+      .mockRejectedValueOnce(new Error("manual completion unavailable"))
+      .mockRejectedValueOnce(new Error("dismiss unavailable"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Finish deferred setup");
+      expect(container.textContent).toContain("Pending");
+    });
+
+    const refreshButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Refresh setup checks"));
+    expect(refreshButton).toBeTruthy();
+
+    await act(async () => {
+      refreshButton!.click();
+    });
+    await waitForAssertion(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error",
+        title: "Could not refresh setup checks",
+        body: "refresh unavailable",
+      }));
+    });
+
+    const markCompleteButton = container.querySelector('button[aria-label="Mark local auth complete"]') as HTMLButtonElement | null;
+    expect(markCompleteButton).toBeTruthy();
+
+    await act(async () => {
+      markCompleteButton!.click();
+    });
+    await waitForAssertion(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error",
+        title: "Could not update setup item",
+        body: "manual completion unavailable",
+      }));
+    });
+
+    const dismissButton = container.querySelector('button[aria-label="Dismiss setup reminder"]') as HTMLButtonElement | null;
+    expect(dismissButton).toBeTruthy();
+
+    await act(async () => {
+      dismissButton!.click();
+    });
+    await waitForAssertion(() => {
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+        tone: "error",
+        title: "Could not dismiss setup reminder",
+        body: "dismiss unavailable",
+      }));
+    });
+  });
+
+  it("requires an explicit start action for onboarding starter issues parked in backlog", async () => {
+    const backlogIssue = createIssue({
+      originKind: "onboarding",
+      status: "backlog",
+      assigneeAgentId: "agent-1",
+    });
+    mockIssuesApi.get.mockResolvedValue(backlogIssue);
+    mockIssuesApi.update.mockResolvedValue({ ...backlogIssue, status: "todo" });
+    mockCompaniesApi.getOnboardingSetup.mockResolvedValue({
+      id: "setup-1",
+      companyId: "company-1",
+      starterIssueId: "issue-1",
+      status: "pending",
+      source: "first_run",
+      items: [
+        {
+          key: "local_auth",
+          label: "Confirm or reuse Codex, Claude, and Antigravity OAuth sessions",
+          status: "pending",
+          href: "/instance/settings/adapters",
+        },
+      ],
+      completedAt: null,
+      createdAt: "2026-05-23T10:00:00.000Z",
+      updatedAt: "2026-05-23T10:00:00.000Z",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Start first audit");
+      expect(container.textContent).toContain("Local OAuth/session setup is not confirmed yet");
+    });
+
+    const startButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Start first audit"));
+    expect(startButton).toBeTruthy();
+
+    await act(async () => {
+      startButton!.click();
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith("PAP-1", { status: "todo" });
+    });
   });
 
   it("refreshes subtree pause state after resuming a hold", async () => {

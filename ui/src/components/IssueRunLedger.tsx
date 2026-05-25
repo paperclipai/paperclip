@@ -491,6 +491,21 @@ export function IssueRunLedgerContent({
   watchdogDecisionError,
   onWatchdogDecision,
 }: IssueRunLedgerContentProps) {
+  const [watchdogAction, setWatchdogAction] = useState<"snooze" | "false_positive" | null>(null);
+  const [snoozeDuration, setSnoozeDuration] = useState<string>("1h");
+  const [snoozeReason, setSnoozeReason] = useState<string>("");
+  const [dismissReason, setDismissReason] = useState<string>("");
+
+  const getSnoozeDurationMs = (duration: string): number => {
+    switch (duration) {
+      case "30m": return 30 * 60 * 1000;
+      case "1h": return 60 * 60 * 1000;
+      case "4h": return 4 * 60 * 60 * 1000;
+      case "24h": return 24 * 60 * 60 * 1000;
+      default: return 60 * 60 * 1000;
+    }
+  };
+
   const ledgerRuns = useMemo(() => mergeRuns(runs, liveRuns, activeRun), [activeRun, liveRuns, runs]);
   const latestRun = ledgerRuns[0] ?? null;
   const latestSilentRun = useMemo(
@@ -501,7 +516,7 @@ export function IssueRunLedgerContent({
       ) ?? null,
     [ledgerRuns],
   );
-  const children = childIssueSummary(childIssues);
+  const children = useMemo(() => childIssueSummary(childIssues), [childIssues]);
   const canRenderActivityEvents = Boolean(renderActivityEvent);
   const feedItems = useMemo<LedgerFeedItem[]>(() => {
     const items: LedgerFeedItem[] = [];
@@ -593,10 +608,10 @@ export function IssueRunLedgerContent({
       {latestSilentRun?.outputSilence ? (
         <div
           className={cn(
-            "rounded-md border px-3 py-2 text-xs",
+            "rounded-lg border px-3 py-2.5 text-xs",
             latestSilentRun.outputSilence.level === "critical"
               ? "border-red-500/30 bg-red-500/10 text-red-900 dark:text-red-200"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200",
+              : "border-amber-500/30 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
           )}
         >
           <p className="font-medium">
@@ -622,50 +637,146 @@ export function IssueRunLedgerContent({
             ) : null}
           </p>
           {onWatchdogDecision && canRecordWatchdogDecisions ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
-                onClick={() =>
-                  onWatchdogDecision({
-                    runId: latestSilentRun.runId,
-                    decision: "continue",
-                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
-                  })}
-                disabled={pendingWatchdogDecision != null}
-              >
-                Continue monitoring
-              </button>
-              <button
-                type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
-                onClick={() =>
-                  onWatchdogDecision({
-                    runId: latestSilentRun.runId,
-                    decision: "snooze",
-                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
-                    snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-                    reason: "Snoozed from issue run ledger",
-                  })}
-                disabled={pendingWatchdogDecision != null}
-              >
-                Snooze 1h
-              </button>
-              <button
-                type="button"
-                className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
-                onClick={() =>
-                  onWatchdogDecision({
-                    runId: latestSilentRun.runId,
-                    decision: "dismissed_false_positive",
-                    evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
-                    reason: "Dismissed from issue run ledger",
-                  })}
-                disabled={pendingWatchdogDecision != null}
-              >
-                Mark false positive
-              </button>
-            </div>
+            watchdogAction === null ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                  onClick={() =>
+                    onWatchdogDecision({
+                      runId: latestSilentRun.runId,
+                      decision: "continue",
+                      evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                    })}
+                  disabled={pendingWatchdogDecision != null}
+                >
+                  Continue monitoring
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                  onClick={() => setWatchdogAction("snooze")}
+                  disabled={pendingWatchdogDecision != null}
+                  data-testid="watchdog-snooze-trigger"
+                >
+                  Snooze...
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                  onClick={() => setWatchdogAction("false_positive")}
+                  disabled={pendingWatchdogDecision != null}
+                  data-testid="watchdog-false-positive-trigger"
+                >
+                  Mark false positive...
+                </button>
+              </div>
+            ) : watchdogAction === "snooze" ? (
+              <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 bg-background/40 p-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-medium text-muted-foreground">Duration:</span>
+                  <select
+                    value={snoozeDuration}
+                    onChange={(e) => setSnoozeDuration(e.target.value)}
+                    className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] outline-none text-foreground"
+                    data-testid="watchdog-snooze-duration-select"
+                  >
+                    <option value="30m">30m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="24h">24h</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Snooze reason:</span>
+                  <input
+                    type="text"
+                    value={snoozeReason}
+                    onChange={(e) => setSnoozeReason(e.target.value)}
+                    placeholder="Reason for snoozing..."
+                    className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none text-foreground"
+                    data-testid="watchdog-snooze-reason-input"
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onWatchdogDecision({
+                        runId: latestSilentRun.runId,
+                        decision: "snooze",
+                        evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                        snoozedUntil: new Date(Date.now() + getSnoozeDurationMs(snoozeDuration)).toISOString(),
+                        reason: snoozeReason.trim() || null,
+                      });
+                      setWatchdogAction(null);
+                      setSnoozeReason("");
+                    }}
+                    disabled={pendingWatchdogDecision != null}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-foreground hover:bg-background font-medium"
+                    data-testid="watchdog-snooze-confirm"
+                  >
+                    Confirm Snooze
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWatchdogAction(null);
+                      setSnoozeReason("");
+                    }}
+                    className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                    data-testid="watchdog-snooze-cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-2 flex flex-col gap-2 rounded-md border border-border/50 bg-background/40 p-2 text-xs">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium text-muted-foreground">Dismissal reason:</span>
+                  <input
+                    type="text"
+                    value={dismissReason}
+                    onChange={(e) => setDismissReason(e.target.value)}
+                    placeholder="Reason for dismissal..."
+                    className="w-full rounded border border-border bg-background px-2 py-1 text-[11px] outline-none text-foreground"
+                    data-testid="watchdog-dismiss-reason-input"
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onWatchdogDecision({
+                        runId: latestSilentRun.runId,
+                        decision: "dismissed_false_positive",
+                        evaluationIssueId: latestSilentRun.outputSilence?.evaluationIssueId ?? null,
+                        reason: dismissReason.trim() || null,
+                      });
+                      setWatchdogAction(null);
+                      setDismissReason("");
+                    }}
+                    disabled={pendingWatchdogDecision != null}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] text-foreground hover:bg-background font-medium"
+                    data-testid="watchdog-dismiss-confirm"
+                  >
+                    Confirm False Positive
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWatchdogAction(null);
+                      setDismissReason("");
+                    }}
+                    className="rounded-md border border-border bg-background/80 px-2 py-1 text-[11px] text-foreground hover:bg-background"
+                    data-testid="watchdog-dismiss-cancel"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )
           ) : null}
           {watchdogDecisionError ? (
             <p className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-900 dark:text-red-200">
