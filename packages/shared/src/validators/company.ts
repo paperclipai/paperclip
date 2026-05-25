@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   COMPANY_STATUSES,
+  MAX_ATTACHMENT_HARD_LIMIT,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
 
@@ -11,7 +12,7 @@ const attachmentMaxBytesSchema = z
   .number()
   .int()
   .min(1)
-  .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+  .max(MAX_ATTACHMENT_HARD_LIMIT);
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
