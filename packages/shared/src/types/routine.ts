@@ -59,6 +59,7 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  executionLabelIds: string[];
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -98,6 +99,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
   variables: RoutineVariable[];
+  executionLabelIds: string[];
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
