@@ -45,6 +45,7 @@ import {
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { computeOpenAICompatibleCost } from "./pricing.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   parseOpenCodeModelsOutput,
@@ -637,6 +638,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
 
+      // BLO-7436: opencode does not populate part.cost for openai-compatible
+      // routes via LiteLLM/openai-direct, so attempt.parsed.costUsd lands as 0
+      // even though token counts are correct. When that happens, look up the
+      // model in our local pricing table and compute cost from tokens.
+      // Falls back to the original $0/unknown shape when the model isn't priced.
+      const fallbackCost =
+        attempt.parsed.costUsd === 0
+          ? computeOpenAICompatibleCost(modelId, attempt.parsed.usage)
+          : null;
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
@@ -653,8 +663,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: parseModelProvider(modelId),
         biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
         model: modelId,
-        billingType: "unknown",
-        costUsd: attempt.parsed.costUsd,
+        billingType: fallbackCost !== null ? "metered_api" : "unknown",
+        costUsd: fallbackCost !== null ? fallbackCost : attempt.parsed.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
