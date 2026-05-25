@@ -377,6 +377,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } catch (e) {
       agentHomesRootListing = `<error:${(e as NodeJS.ErrnoException).code ?? "?"}>`;
     }
+    // Determine whether heartbeat.ts's HOME merge reached us. We can't print
+    // the value (redactCurrentUserText replaces /paperclip with the redaction
+    // token), but presence/length/match booleans pass through unredacted.
+    const configEnvHomeRaw = typeof configEnv.HOME === "string" ? configEnv.HOME : "";
+    const configEnvHasHome = "HOME" in configEnv && configEnvHomeRaw.length > 0;
+    const configEnvHomeMatchesAgentHome = configEnvHomeRaw === expectedAgentHome;
+    const spawnEnvHomeMatchesAgentHome = homeForCheck === expectedAgentHome;
+    const configEnvKeyCount = Object.keys(configEnv).length;
+    const configEnvHasHomeKey = Object.keys(configEnv).some((k) => k === "HOME");
     await onLog(
       "stdout",
       `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
@@ -387,6 +396,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `agentHomeDirExists=${agentHomeDirExists} ` +
         `agentCredFileExists=${agentCredFileExists} agentCredFileBytes=${agentCredFileBytes} ` +
         `agentHomesRootListing=${agentHomesRootListing} ` +
+        `configEnvHasHome=${configEnvHasHome} configEnvHomeMatchesAgentHome=${configEnvHomeMatchesAgentHome} ` +
+        `spawnEnvHomeMatchesAgentHome=${spawnEnvHomeMatchesAgentHome} ` +
+        `configEnvKeyCount=${configEnvKeyCount} configEnvHasHomeKey=${configEnvHasHomeKey} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
         `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
     ).catch(() => undefined);
