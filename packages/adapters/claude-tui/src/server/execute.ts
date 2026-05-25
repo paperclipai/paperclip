@@ -346,11 +346,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } catch {}
       } catch {}
     }
+    // homeContainsAgentHomes and credParentExists give unredacted signal about
+    // whether credentials.ts overrode HOME to a per-agent path and whether the
+    // file write landed where the adapter looks for it.
+    const homeContainsAgentHomes = homeForCheck.includes("/agent-homes/");
+    let credParentExists = false;
+    if (homeForCheck) {
+      try {
+        await fs.stat(path.join(homeForCheck, ".claude"));
+        credParentExists = true;
+      } catch {}
+    }
     await onLog(
       "stdout",
       `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
         `credPath=${credPath || "<none>"} exists=${credExists} bytes=${credBytes} ` +
         `keys=${JSON.stringify(credKeys)} ` +
+        `homeContainsAgentHomes=${homeContainsAgentHomes} ` +
+        `credParentExists=${credParentExists} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
         `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
     ).catch(() => undefined);

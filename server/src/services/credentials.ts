@@ -336,11 +336,11 @@ export async function resolveCredentialEnv(
         { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, isLongLivedToken, subscriptionType },
         "wrote claude_oauth credentials.json for agent",
       );
-      const oauthEnv: Record<string, string> = { HOME: agentHome };
-      if (isLongLivedToken) {
-        oauthEnv.CLAUDE_CODE_OAUTH_TOKEN = accessToken;
-      }
-      return { env: oauthEnv, home: agentHome };
+      // Deliberately NOT setting CLAUDE_CODE_OAUTH_TOKEN: when both the env var
+      // and a credentials file are present, the interactive TUI auto-pastes
+      // the env var into its OAuth-code dialog and rejects it as "Invalid code"
+      // instead of reading the file. The file is the canonical credential.
+      return { env: { HOME: agentHome }, home: agentHome };
     }
 
     case "claude_api_key": {
