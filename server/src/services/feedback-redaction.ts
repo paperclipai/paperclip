@@ -49,7 +49,7 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   },
   {
     kind: "cloudflare_token",
-    regex: /\bcfut_[A-Za-z0-9_-]{20,}/g,
+    regex: /\bcfut_[A-Za-z0-9_-]{20,}\b/g,
     replacement: "[REDACTED_CF_TOKEN]",
   },
   {
@@ -88,6 +88,16 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
     replacement: "[REDACTED_PHONE]",
   },
 ];
+
+// Subset of FREE_TEXT_PATTERNS safe for run-log chunks.
+// Excludes patterns already covered by redactSensitiveText (github_token,
+// provider_api_key, bearer_token in Authorization context, secret_assignment,
+// jwt) and patterns with high false-positive rates in raw agent stdout
+// (jwt, email, phone). secret_assignment is excluded to avoid re-processing
+// ***REDACTED*** markers already placed by redactSensitiveText.
+const RUN_LOG_PATTERNS: RedactionPattern[] = FREE_TEXT_PATTERNS.filter((p) =>
+  ["pem_block", "bearer_token", "github_pat", "cloudflare_token", "webhook_secret", "sentry_token", "dsn"].includes(p.kind),
+);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -156,16 +166,18 @@ export function sanitizeFeedbackText(
 /**
  * Lightweight value-based secret redactor for run-log chunks.
  *
- * Applies the same {@link FREE_TEXT_PATTERNS} as the feedback bundle sanitizer,
- * but without truncation, current-user redaction, or field-state tracking.
- * Intended to be composed with the field-name-based {@link redactSensitiveText}
- * pipeline used by `compactRunLogChunk`, to catch secrets that appear in free
- * text (e.g. an agent printing a raw `ghp_xxx` token to stdout outside of any
- * JSON structure).
+ * Applies {@link RUN_LOG_PATTERNS} (a subset of {@link FREE_TEXT_PATTERNS})
+ * without truncation, current-user redaction, or field-state tracking.
+ * Designed to run after {@link redactSensitiveText} in `compactRunLogChunk`
+ * to catch token prefixes not covered by the field-name-based pass
+ * (github_pat_, cfut_, whsec_, sntrys_). Patterns already handled by
+ * redactSensitiveText (ghp_*, sk-*, Authorization Bearer, KEY=value) and
+ * patterns with high false-positive rates in raw stdout (jwt, email, phone)
+ * are intentionally excluded.
  */
 export function sanitizeRunLogText(input: string): string {
   let output = input;
-  for (const pattern of FREE_TEXT_PATTERNS) {
+  for (const pattern of RUN_LOG_PATTERNS) {
     output = output.replace(pattern.regex, pattern.replacement as never);
     pattern.regex.lastIndex = 0;
   }

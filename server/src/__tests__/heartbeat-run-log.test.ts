@@ -40,10 +40,10 @@ describe("compactRunLogChunk", () => {
   });
 
   it("redacts free-form value-based secret patterns from run-log chunks", () => {
-    // Secrets that appear in raw stdout (e.g. an agent printing a token,
-    // a curl trace, or a .env dump) without being wrapped in a JSON field
-    // whose key matches the existing field-name regex. These bypass
-    // redactSensitiveText and are caught by sanitizeRunLogText.
+    // redactSensitiveText (field-name + value-based pass from adapter-utils)
+    // already handles ghp_* and sk-* tokens with ***REDACTED*** sentinel.
+    // sanitizeRunLogText adds coverage for token prefixes not in adapter-utils:
+    // github_pat_*, cfut_*, whsec_*, sntrys_*.
     const ghpToken = `ghp_${"a".repeat(36)}`;
     const ghPatToken = `github_pat_${"b".repeat(40)}`;
     const cfutToken = `cfut_${"c".repeat(30)}`;
@@ -68,11 +68,12 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain(whsecToken);
     expect(compacted).not.toContain(sntrysToken);
     expect(compacted).not.toContain(skAntToken);
-    expect(compacted).toContain("[REDACTED_GITHUB_TOKEN]");
+    // ghp_* and sk-* caught by redactSensitiveText → ***REDACTED*** sentinel
+    expect(compacted).toContain("***REDACTED***");
+    // github_pat_*, cfut_*, whsec_*, sntrys_* caught only by sanitizeRunLogText
     expect(compacted).toContain("[REDACTED_GITHUB_PAT]");
     expect(compacted).toContain("[REDACTED_CF_TOKEN]");
     expect(compacted).toContain("[REDACTED_WEBHOOK_SECRET]");
     expect(compacted).toContain("[REDACTED_SENTRY_TOKEN]");
-    expect(compacted).toContain("[REDACTED_API_KEY]");
   });
 });
