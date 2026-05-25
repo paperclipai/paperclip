@@ -57,9 +57,12 @@ export function createOptimisticIssueComment(params: {
     clientId,
     companyId: params.companyId,
     issueId: params.issueId,
+    authorType: "user",
     authorAgentId: null,
     authorUserId: params.authorUserId,
     body: params.body,
+    presentation: null,
+    metadata: null,
     clientStatus: params.clientStatus ?? "pending",
     queueTargetRunId: params.queueTargetRunId ?? null,
     createdAt: now,
@@ -70,15 +73,24 @@ export function createOptimisticIssueComment(params: {
 export function isQueuedIssueComment(params: {
   comment: Pick<IssueTimelineComment, "createdAt"> &
     Partial<Pick<OptimisticIssueComment, "clientStatus">> & {
+      id?: string;
       authorAgentId?: string | null;
     };
   activeRunStartedAt?: Date | string | null;
   activeRunAgentId?: string | null;
+  activeRunCommentId?: string | null;
+  activeRunWakeCommentId?: string | null;
   runId?: string | null;
   interruptedRunId?: string | null;
 }) {
   if (params.runId) return false;
   if (params.interruptedRunId) return false;
+  if (
+    params.comment.id &&
+    (params.comment.id === params.activeRunWakeCommentId || params.comment.id === params.activeRunCommentId)
+  ) {
+    return false;
+  }
   if (params.comment.authorAgentId && params.activeRunAgentId && params.comment.authorAgentId === params.activeRunAgentId) {
     return false;
   }

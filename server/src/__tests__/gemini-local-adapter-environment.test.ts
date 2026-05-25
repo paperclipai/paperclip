@@ -131,4 +131,57 @@ describe("gemini_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "gemini_hello_probe_quota_exhausted")).toBe(true);
     await fs.rm(root, { recursive: true, force: true });
   });
+
+  it("trusts remote sandbox workspaces during the hello probe", async () => {
+    let probeEnv: Record<string, string> | undefined;
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "gemini_local",
+      config: {
+        command: "gemini",
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "cloudflare",
+        remoteCwd: "/workspace/paperclip",
+        runner: {
+          execute: async (input) => {
+            if (input.command === "gemini") {
+              probeEnv = input.env;
+              return {
+                exitCode: 0,
+                signal: null,
+                timedOut: false,
+                stdout: [
+                  JSON.stringify({
+                    type: "assistant",
+                    message: { content: [{ type: "output_text", text: "hello" }] },
+                  }),
+                  JSON.stringify({ type: "result", subtype: "success", result: "hello" }),
+                ].join("\n"),
+                stderr: "",
+                pid: null,
+                startedAt: new Date().toISOString(),
+              };
+            }
+            return {
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            };
+          },
+        },
+      },
+      environmentName: "QA Cloudflare",
+    });
+
+    expect(result.checks.some((check) => check.code === "gemini_hello_probe_passed")).toBe(true);
+    expect(probeEnv?.GEMINI_CLI_TRUST_WORKSPACE).toBe("true");
+  });
 });

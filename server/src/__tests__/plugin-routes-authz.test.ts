@@ -6,6 +6,8 @@ const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
   upsertConfig: vi.fn(),
+  getCompanySettings: vi.fn(),
+  upsertCompanySettings: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -40,6 +42,7 @@ async function createApp(
     jobDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
+    captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
@@ -54,6 +57,16 @@ async function createApp(
 
   const app = express();
   app.use(express.json());
+  if (routeOverrides.captureJsonContext) {
+    app.use((_req, res, next) => {
+      const originalJson = res.json.bind(res);
+      res.json = ((body: unknown) => {
+        routeOverrides.captureJsonContext?.((res as any).__errorContext, body);
+        return originalJson(body);
+      }) as typeof res.json;
+      next();
+    });
+  }
   app.use((req, _res, next) => {
     req.actor = actor as typeof req.actor;
     next();
@@ -97,6 +110,17 @@ function boardActor(overrides: Record<string, unknown> = {}) {
     source: "session",
     isInstanceAdmin: false,
     companyIds: [companyA],
+    ...overrides,
+  };
+}
+
+function agentActor(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "agent",
+    agentId: agentA,
+    companyId: companyA,
+    runId: runA,
+    source: "agent_jwt",
     ...overrides,
   };
 }
@@ -222,6 +246,70 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.disable).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("resolves plugin keys without probing the UUID id column for core plugin actions", async () => {
+    const pluginKey = "paperclipqa.hello-plugin";
+    const plugin = {
+      id: pluginId,
+      pluginKey,
+      version: "1.0.0",
+      status: "ready",
+    };
+    mockRegistry.getById.mockImplementation(() => {
+      throw new Error("getById should not be called for plugin keys");
+    });
+    mockRegistry.getByKey.mockResolvedValue(plugin);
+    mockLifecycle.unload.mockResolvedValue(plugin);
+    mockLifecycle.enable.mockResolvedValue(plugin);
+    mockLifecycle.disable.mockResolvedValue(plugin);
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const inspectRes = await request(app).get(`/api/plugins/${pluginKey}`);
+    const disableRes = await request(app).post(`/api/plugins/${pluginKey}/disable`).send({});
+    const enableRes = await request(app).post(`/api/plugins/${pluginKey}/enable`).send({});
+    const uninstallRes = await request(app).delete(`/api/plugins/${pluginKey}?purge=true`);
+
+    expect(inspectRes.status).toBe(200);
+    expect(disableRes.status).toBe(200);
+    expect(enableRes.status).toBe(200);
+    expect(uninstallRes.status).toBe(200);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith(pluginKey);
+    expect(mockLifecycle.disable).toHaveBeenCalledWith(pluginId, undefined);
+    expect(mockLifecycle.enable).toHaveBeenCalledWith(pluginId);
+    expect(mockLifecycle.unload).toHaveBeenCalledWith(pluginId, true);
+  }, 20_000);
+
+  it("rejects plugin config saves that contain secret refs even for instance admins", async () => {
+    readyPlugin();
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config`)
+      .send({
+        configJson: {
+          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("allows instance admins to upgrade plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     mockRegistry.getById.mockResolvedValue({
@@ -315,6 +403,61 @@ describe.sequential("scoped plugin API routes", () => {
       }),
     );
   }, 20_000);
+});
+
+describe.sequential("plugin local folder routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+  });
+
+  function readyLocalFolderPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["local.folders"],
+        localFolders: [
+          {
+            folderKey: "content-root",
+            displayName: "Content root",
+            access: "readWrite",
+            requiredDirectories: ["docs"],
+            requiredFiles: ["README.md"],
+          },
+        ],
+      },
+    });
+  }
+
+  it("rejects validation for undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh/validate`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects saving undeclared local folder keys", async () => {
+    readyLocalFolderPlugin();
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/ssh`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Local folder key is not declared");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
 });
 
 describe.sequential("plugin tool and bridge authz", () => {
@@ -481,6 +624,28 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  it("forwards authorized bridge company scope to the plugin worker", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA, params: { view: "compact" } });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "getData", {
+      key: "health",
+      companyId: companyA,
+      params: { view: "compact" },
+      renderEnvironment: null,
+    });
+  });
+
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
     readyPlugin();
     const call = vi.fn().mockResolvedValue({ ok: true });
@@ -502,7 +667,191 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
       params: {},
+      actorContext: {
+        type: "user",
+        userId: "admin-1",
+        agentId: null,
+        runId: null,
+        companyId: null,
+      },
       renderEnvironment: null,
+    });
+  });
+
+  it("passes authenticated actor context and overrides spoofed company scope for plugin actions", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ runId: runA }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerUserId: "spoofed-user",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerUserId: "spoofed-user",
+      },
+      actorContext: {
+        type: "user",
+        userId: "user-1",
+        agentId: null,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it("uses null for board actor userId when no authenticated user id is present", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ userId: undefined }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", expect.objectContaining({
+      actorContext: expect.objectContaining({
+        type: "user",
+        userId: null,
+        companyId: companyA,
+      }),
+    }));
+  });
+
+  it("allows agent-scoped plugin actions with authenticated actor context", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(agentActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerAgentId: "spoofed-agent",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerAgentId: "spoofed-agent",
+      },
+      actorContext: {
+        type: "agent",
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+
+    call.mockClear();
+    const legacyRes = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/action`)
+      .send({
+        key: "sync",
+        companyId: companyA,
+        params: {
+          companyId: companyB,
+          reviewerAgentId: "spoofed-agent",
+        },
+      });
+
+    expect(legacyRes.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
+      key: "sync",
+      params: {
+        companyId: companyA,
+        reviewerAgentId: "spoofed-agent",
+      },
+      actorContext: {
+        type: "agent",
+        userId: null,
+        agentId: agentA,
+        runId: runA,
+        companyId: companyA,
+      },
+      renderEnvironment: null,
+    });
+  });
+
+  it("rejects agent plugin actions outside the authenticated company scope", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(agentActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyB });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("attaches worker bridge errors to the HTTP logger context", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(new Error("missing source_objects column"));
+    const captured: Array<{ context: any; body: unknown }> = [];
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+      captureJsonContext: (context, body) => {
+        captured.push({ context, body });
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/source-objects`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      code: "UNKNOWN",
+      message: "missing source_objects column",
+    });
+    expect(captured.at(-1)?.context?.error).toMatchObject({
+      message: "missing source_objects column",
+      details: {
+        pluginId,
+        pluginKey: "paperclip.example",
+        bridgeMethod: "getData",
+        dataKey: "source-objects",
+        bridgeCode: "UNKNOWN",
+      },
     });
   });
 

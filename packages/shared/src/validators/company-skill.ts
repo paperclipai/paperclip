@@ -24,7 +24,7 @@ export const companySkillSchema = z.object({
   trustLevel: companySkillTrustLevelSchema,
   compatibility: companySkillCompatibilitySchema,
   fileInventory: z.array(companySkillFileInventoryEntrySchema).default([]),
-  metadata: z.record(z.unknown()).nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });

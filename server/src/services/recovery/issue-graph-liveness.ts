@@ -4,6 +4,7 @@ export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
   | "blocked_by_unassigned_issue"
+  | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
   | "blocked_by_cancelled_issue"
   | "invalid_review_participant"
@@ -22,7 +23,10 @@ export interface IssueLivenessIssueInput {
   assigneeUserId?: string | null;
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
+  executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 }
 
 export interface IssueLivenessRelationInput {
@@ -99,6 +103,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  now?: Date | string;
 }
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -138,6 +143,45 @@ function hasWaitingPath(
   waitingPaths: IssueLivenessWaitingPathInput[],
 ) {
   return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function monitorFromIssue(issue: IssueLivenessIssueInput) {
+  const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
+  const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
+  return { policyMonitor, stateMonitor };
+}
+
+function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+
+  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
+  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -308,6 +352,7 @@ function finding(input: {
 }
 
 export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): IssueLivenessFinding[] {
+  const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
   const issuesById = new Map(input.issues.map((issue) => [issue.id, issue]));
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const blockersByBlockedIssueId = new Map<string, IssueLivenessRelationInput[]>();
@@ -351,6 +396,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
+      hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
@@ -451,6 +497,21 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
     if (blocker.status === "in_review") {
       return reviewFinding(source, blocker, dependencyPath);
+    }
+
+    if (blocker.status === "backlog" && blocker.assigneeAgentId) {
+      return finding({
+        issue: source,
+        state: "blocked_by_assigned_backlog_issue",
+        reason: `${issueLabel(source)} is blocked by assigned backlog issue ${issueLabel(blocker)} with no wake, active run, human owner, interaction, approval, monitor, or recovery issue owning the next action.`,
+        dependencyPath,
+        recoveryIssue: blocker,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction:
+          `Review ${issueLabel(blocker)} and either move it to todo so the assignee wakes, assign a human owner or interaction if it is intentionally parked, or remove it from ${issueLabel(source)}'s blockers if it is no longer required.`,
+        blockerIssueId: blocker.id,
+      });
     }
 
     if (!blocker.assigneeAgentId && !blocker.assigneeUserId) {

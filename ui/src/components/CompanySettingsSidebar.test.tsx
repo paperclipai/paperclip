@@ -10,6 +10,10 @@ const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const mockUsePluginSlots = vi.hoisted(() => vi.fn());
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -53,8 +57,20 @@ vi.mock("./SidebarNavItem", () => ({
   },
 }));
 
+vi.mock("./SidebarCompanyMenu", () => ({
+  SidebarCompanyMenu: () => <div>Workspace switcher</div>,
+}));
+
 vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
+}));
+
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: mockUsePluginSlots,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,6 +94,14 @@ describe("CompanySettingsSidebar", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 2,
+    });
+    mockUsePluginSlots.mockReturnValue({
+      slots: [],
+      isLoading: false,
+      errorMessage: null,
+    });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableCloudSync: false,
     });
   });
 
@@ -106,8 +130,10 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Company Settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
-    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Members");
+    expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
+    expect(container.textContent).toContain("Secrets");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -124,8 +150,8 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/company/settings/access",
-        label: "Access",
+        to: "/company/settings/members",
+        label: "Members",
         badge: 2,
         end: true,
       }),
@@ -134,6 +160,91 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings/invites",
         label: "Invites",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/secrets",
+        label: "Secrets",
+        end: true,
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders company settings pages contributed by ready plugins", async () => {
+    mockUsePluginSlots.mockReturnValue({
+      slots: [
+        {
+          type: "companySettingsPage",
+          id: "permissions",
+          displayName: "Permissions",
+          exportName: "PermissionsPage",
+          routePath: "permissions",
+          pluginId: "plugin-1",
+          pluginKey: "permissions-extension",
+          pluginDisplayName: "Permissions Extension",
+          pluginVersion: "0.1.0",
+        },
+      ],
+      isLoading: false,
+      errorMessage: null,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Permissions");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/permissions",
+        label: "Permissions",
+        end: true,
+      }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows cloud upstream only when cloud sync is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableCloudSync: true,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySettingsSidebar />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Cloud upstream");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/cloud-upstream",
+        label: "Cloud upstream",
         end: true,
       }),
     );
