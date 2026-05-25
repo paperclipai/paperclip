@@ -669,7 +669,97 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(enqueueWakeup).not.toHaveBeenCalled();
     await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
-    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(0);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(events).toEqual([
+      expect.objectContaining({
+        actorType: "system",
+        action: "issue.thread_interaction_stall_skipped",
+        details: expect.objectContaining({
+          interactionId,
+          reason: "external_unblock_in_flight",
+        }),
+      }),
+    ]);
+  });
+
+  it("still routes self-created operator interactions when recent user comments do not show external unblock", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs board answer",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, questions: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "user-1",
+      authorType: "user",
+      body: "Noted. I will look at this later.",
+      createdAt: new Date("2026-05-15T20:05:00.000Z"),
+      updatedAt: new Date("2026-05-15T20:05:00.000Z"),
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 1,
+      agentWoken: 0,
+      skipped: 0,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(events).toEqual([
+      expect.objectContaining({
+        actorType: "system",
+        action: "issue.thread_interaction_operator_waiting",
+        details: expect.objectContaining({
+          interactionId,
+          resolver: "operator_board",
+        }),
+      }),
+    ]);
   });
 
   it("wakes stale agent-owned issue interactions through the system recovery actor", async () => {
@@ -776,6 +866,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           interactionId,
           mutation: "stalled_interaction_recovery",
+        }),
+      }),
+    ]);
+  });
+
+  it("skips non-operator interactions whose continuation policy does not wake the assignee", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs no wake",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "none",
+      createdByAgentId: agentId,
+      payload: { version: 1, tasks: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(events).toEqual([
+      expect.objectContaining({
+        actorType: "system",
+        action: "issue.thread_interaction_stall_skipped",
+        details: expect.objectContaining({
+          interactionId,
+          reason: "unsupported_continuation_policy",
         }),
       }),
     ]);

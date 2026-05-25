@@ -274,7 +274,7 @@ function isOperatorResolvedInteractionKind(kind: string) {
 }
 
 const EXTERNAL_UNBLOCK_COMMENT_PATTERN =
-  "(telegram|\\bdm\\b|direct message|external channel|external owner|source owner|outreach|pinged|messaged|slack|teams)";
+  "(telegram|direct message|external channel|external owner|source owner|external unblock|outreach to|pinged source|messaged source|slack dm|teams dm)";
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
@@ -499,6 +499,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function hasRecentExternalUnblockEvidence(input: {
     companyId: string;
     issueId: string;
+    createdByAgentId: string;
     windowStart: Date;
     now: Date;
   }) {
@@ -509,12 +510,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issueComments.companyId, input.companyId),
           eq(issueComments.issueId, input.issueId),
+          eq(issueComments.authorAgentId, input.createdByAgentId),
           gte(issueComments.createdAt, input.windowStart),
           lte(issueComments.createdAt, input.now),
-          sql`(
-            ${issueComments.authorUserId} is not null
-            or lower(${issueComments.body}) ~ ${EXTERNAL_UNBLOCK_COMMENT_PATTERN}
-          )`,
+          sql`lower(${issueComments.body}) ~ ${EXTERNAL_UNBLOCK_COMMENT_PATTERN}`,
         ),
       )
       .limit(1)
@@ -537,8 +536,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return hasRecentExternalUnblockEvidence({
       companyId: input.interaction.companyId,
       issueId: input.interaction.issueId,
+      createdByAgentId: input.interaction.createdByAgentId,
       windowStart: input.windowStart,
       now: input.now,
+    });
+  }
+
+  async function logStalledInteractionSkipped(input: {
+    interaction: {
+      id: string;
+      companyId: string;
+      issueId: string;
+      kind: string;
+      status: string;
+      issueIdentifier: string | null;
+      updatedAt: Date;
+    };
+    now: Date;
+    runId?: string | null;
+    reason: string;
+  }) {
+    await logActivity(db, {
+      companyId: input.interaction.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.runId ?? null,
+      action: "issue.thread_interaction_stall_skipped",
+      entityType: "issue",
+      entityId: input.interaction.issueId,
+      details: {
+        source: "recovery.reconcile_stalled_issue_thread_interactions",
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        issueIdentifier: input.interaction.issueIdentifier,
+        ageMs: Math.max(0, input.now.getTime() - input.interaction.updatedAt.getTime()),
+        reason: input.reason,
+      },
     });
   }
 
@@ -607,6 +642,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         })
       ) {
         result.skipped += 1;
+        await logStalledInteractionSkipped({
+          interaction,
+          now,
+          runId: opts?.runId ?? null,
+          reason: "external_unblock_in_flight",
+        });
         continue;
       }
 
@@ -630,6 +671,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             ageMs: Math.max(0, now.getTime() - interaction.updatedAt.getTime()),
             resolver: "operator_board",
           },
+        });
+        continue;
+      }
+
+      if (interaction.continuationPolicy !== "wake_assignee") {
+        result.skipped += 1;
+        await logStalledInteractionSkipped({
+          interaction,
+          now,
+          runId: opts?.runId ?? null,
+          reason: "unsupported_continuation_policy",
         });
         continue;
       }
