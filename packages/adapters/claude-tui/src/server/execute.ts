@@ -346,15 +346,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } catch {}
       } catch {}
     }
-    await onLog({
-      stream: "stdout",
-      chunk:
-        `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
+    await onLog(
+      "stdout",
+      `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
         `credPath=${credPath || "<none>"} exists=${credExists} bytes=${credBytes} ` +
         `keys=${JSON.stringify(credKeys)} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
-        `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`,
-    }).catch(() => undefined);
+        `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
+    ).catch(() => undefined);
   }
 
   // detached:true puts the Python driver in its own process group so
