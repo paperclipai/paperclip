@@ -209,6 +209,11 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
   const userId = requiredCloudHeader(req, "x-paperclip-cloud-user-id");
   const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
   const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
+  // Per-tenant deployments pin this to their own stack id so a leaked
+  // shared token can't be used by another tenant's stack to mint a
+  // company + admin on this instance.
+  const allowedStack = process.env.PAPERCLIP_CLOUD_TENANT_ALLOWED_STACK_ID?.trim();
+  if (allowedStack && allowedStack !== stackId) return null;
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
@@ -237,16 +242,22 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       },
     });
 
-  await db
-    .insert(instanceUserRoles)
-    .values({
-      userId,
-      role: "instance_admin",
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: [instanceUserRoles.userId, instanceUserRoles.role],
-    });
+  // Promote to instance admin ONLY when the upstream stack role says so.
+  // Previously every cloud-tenant request unconditionally minted admin —
+  // meaning any user from any pinned stack became admin on this instance.
+  const promoteToInstanceAdmin = stackRole === "owner" || stackRole === "admin";
+  if (promoteToInstanceAdmin) {
+    await db
+      .insert(instanceUserRoles)
+      .values({
+        userId,
+        role: "instance_admin",
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [instanceUserRoles.userId, instanceUserRoles.role],
+      });
+  }
 
   await db
     .insert(companies)
