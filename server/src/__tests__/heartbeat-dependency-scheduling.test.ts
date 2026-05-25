@@ -663,6 +663,142 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   });
 
+  it("keeps scoped k8s issue assignments queued behind an active webhook run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const activeRunId = randomUUID();
+    const scopedIssueId = randomUUID();
+    const scopedWakeupRequestId = randomUUID();
+    const scopedRunId = randomUUID();
+    let finishQueuedRun!: () => void;
+    const queuedRunFinished = new Promise<void>((resolve) => {
+      finishQueuedRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementation(async () => {
+      await queuedRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+        resultJson: { exitCode: 0 },
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ally",
+      role: "reviewer",
+      status: "active",
+      adapterType: "opencode_k8s",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 3,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: scopedIssueId,
+      companyId,
+      title: "Scoped PR review",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: scopedWakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: scopedIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {
+          wakeReason: "github_pr_opened",
+          prReview: "Blockcast/magma#976",
+        },
+      },
+      {
+        id: scopedRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: scopedWakeupRequestId,
+        contextSnapshot: {
+          issueId: scopedIssueId,
+          wakeReason: "issue_assigned",
+          wakeSource: "assignment",
+        },
+      },
+    ]);
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: scopedRunId })
+      .where(eq(agentWakeupRequests.id, scopedWakeupRequestId));
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const [scopedRun, scopedIssue, scopedWakeup] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, scopedRunId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({
+            executionRunId: issues.executionRunId,
+            executionLockedAt: issues.executionLockedAt,
+          })
+          .from(issues)
+          .where(eq(issues.id, scopedIssueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, scopedWakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(scopedRun?.status).toBe("queued");
+      expect(scopedWakeup?.status).toBe("queued");
+      expect(scopedIssue).toMatchObject({
+        executionRunId: null,
+        executionLockedAt: null,
+      });
+      expect(adapterCalledForRun(scopedRunId)).toBe(false);
+    } finally {
+      finishQueuedRun();
+      await heartbeat.drainInFlightExecutions();
+    }
+  });
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -7776,6 +7776,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
+      if (runningCount > 0 && hasExternalLifecycle(agent.adapterType)) {
+        logger.debug(
+          { agentId, adapterType: agent.adapterType, runningCount },
+          "startNextQueuedRunForAgent: external-lifecycle agent already has an active run",
+        );
+        return [];
+      }
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
