@@ -18,6 +18,11 @@ import { useSidebar } from "../context/SidebarContext";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
+import {
+  getProjectSidebarStatusIndicator,
+  projectSidebarStatusIndicatorClass,
+  projectSidebarStatusIndicatorLabel,
+} from "../lib/project-status-indicator";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -106,6 +111,8 @@ function ProjectItem({
   isDragging = false,
 }: ProjectItemProps) {
   const routeRef = projectRouteRef(project);
+  const statusIndicator = getProjectSidebarStatusIndicator(project);
+  const statusIndicatorLabel = projectSidebarStatusIndicatorLabel[statusIndicator];
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -127,8 +134,12 @@ function ProjectItem({
         )}
       >
         <span
-          className="shrink-0 h-3.5 w-3.5 rounded-sm"
-          style={{ backgroundColor: project.color ?? "#6366f1" }}
+          aria-label={statusIndicatorLabel}
+          title={statusIndicatorLabel}
+          className={cn(
+            "shrink-0 h-3.5 w-3.5 rounded-full border",
+            projectSidebarStatusIndicatorClass[statusIndicator],
+          )}
         />
         <span className="flex-1 truncate">{project.name}</span>
         {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
