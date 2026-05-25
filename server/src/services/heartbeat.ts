@@ -8422,6 +8422,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        // FUL-3405: Mention/agent-comment wakes on terminal issues should still invoke the
+        // mentioned agent without reopening the issue. Set resumeIntent so evaluateQueuedRunStaleness
+        // allows the run through; the stale gate otherwise cancels runs on done/cancelled issues
+        // that lack explicit resumeIntent, which was the correct behavior for plain comment wakes
+        // (FUL-3307) but incorrectly suppressed cross-agent mention wakes.
+        if (!shouldReopenDeferredCommentWake && deferredCommentIds.length > 0 &&
+            (issue.status === "done" || issue.status === "cancelled")) {
+          promotedContextSeed.resumeIntent = true;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
