@@ -137,6 +137,11 @@ export interface IssueRelationIssueSummary {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  // HUM-126 Fix 2: optional display labels so the blocked-issue banner can show
+  // "who to ping" without the client doing a second round trip. Producers that
+  // don't have this resolved (e.g. legacy paths) can omit it.
+  assigneeAgentName?: string | null;
+  assigneeUserName?: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];
   activeRecoveryAction?: IssueRecoveryAction | null;
 }

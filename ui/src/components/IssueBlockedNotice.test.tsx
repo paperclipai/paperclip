@@ -265,4 +265,49 @@ describe("IssueBlockedNotice", () => {
     expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
     expect(indicator?.textContent).toContain("Recovery needed");
   });
+
+  it("shows the blocker's assignee and a Ping button on each blocker card", () => {
+    const agentMap = new Map([
+      [
+        "agent-cto",
+        {
+          id: "agent-cto",
+          name: "Compass",
+          // Only the `name` field is read by IssueBlockedNotice; the rest can stay
+          // unset for the test fixture.
+        } as unknown as Parameters<typeof IssueBlockedNotice>[0]["agentMap"] extends Map<string, infer V>
+          ? V
+          : never,
+      ],
+    ]);
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        agentMap={agentMap}
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-200",
+            title: "Waiting on review",
+            status: "in_review",
+            priority: "high",
+            assigneeAgentId: "agent-cto",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const card = node.querySelector('[data-testid="issue-blocked-notice-blocker-card"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("Compass");
+    expect(card?.textContent).toContain("In review");
+
+    const ping = card?.querySelector<HTMLAnchorElement>(
+      '[data-testid="issue-blocked-notice-ping-button"]',
+    );
+    expect(ping).not.toBeNull();
+    expect(ping?.getAttribute("href") ?? "").toContain("focus=composer");
+    expect(ping?.getAttribute("aria-label") ?? "").toContain("Compass");
+  });
 });

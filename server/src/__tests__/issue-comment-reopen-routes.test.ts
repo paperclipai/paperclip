@@ -781,7 +781,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("does not move dependency-blocked issues to todo via POST comments", async () => {
+  it("does not move dependency-blocked issues to todo via POST comments and skips the assignee wake when the assignee is not mentioned (HUM-126 Fix 3)", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -798,21 +798,12 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
-        }),
-        contextSnapshot: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          wakeCommentId: "comment-1",
-          wakeReason: "issue_commented",
-        }),
-      }),
-    ));
+    // Previously this test asserted that a generic comment on a still-blocked
+    // issue woke the assignee with `issue_commented`. That wake is exactly the
+    // loop HUM-126 Fix 3 is closing — the assignee runs against a gated issue,
+    // exits in ~5s, and the harness loops. The wake must NOT fire here.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("does not implicitly reopen closed issues via POST comments when no agent is assigned", async () => {
@@ -987,7 +978,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("does not move dependency-blocked issues to todo via the PATCH comment path", async () => {
+  it("does not move dependency-blocked issues to todo via the PATCH comment path and skips the assignee wake when the assignee is not mentioned (HUM-126 Fix 3)", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -1018,16 +1009,10 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
-        }),
-      }),
-    ));
+    // Previously this asserted an `issue_commented` wake fired for the
+    // assignee. HUM-126 Fix 3 closes that loop — the wake must not fire here.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the assignee when an assigned blocked issue moves back to todo", async () => {

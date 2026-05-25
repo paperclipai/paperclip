@@ -910,6 +910,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           hideRoutineExecutions: true,
+          hideBlocked: true,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -930,6 +931,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           hideRoutineExecutions: true,
+          hideBlocked: true,
         },
       }),
     ).toEqual([]);
@@ -950,6 +952,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           hideRoutineExecutions: true,
+          hideBlocked: true,
         },
       }),
     ).toEqual([]);
@@ -1022,6 +1025,7 @@ describe("inbox helpers", () => {
         workspaces: ["workspace-1"],
         liveOnly: true,
         hideRoutineExecutions: false,
+        hideBlocked: true,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -1037,6 +1041,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         hideRoutineExecutions: true,
+        hideBlocked: true,
       },
     });
 
@@ -1053,6 +1058,7 @@ describe("inbox helpers", () => {
         workspaces: ["workspace-1"],
         liveOnly: true,
         hideRoutineExecutions: false,
+        hideBlocked: true,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -1068,6 +1074,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         hideRoutineExecutions: true,
+        hideBlocked: true,
       },
     });
   });
@@ -1102,6 +1109,7 @@ describe("inbox helpers", () => {
         workspaces: ["workspace-1"],
         liveOnly: false,
         hideRoutineExecutions: false,
+        hideBlocked: true,
       },
     });
   });

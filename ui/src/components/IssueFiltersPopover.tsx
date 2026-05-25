@@ -348,6 +348,13 @@ export function IssueFiltersPopover({
                 <span className="text-xs text-muted-foreground">Visibility</span>
                 <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                   <Checkbox
+                    checked={state.hideBlocked}
+                    onCheckedChange={(checked) => onChange({ hideBlocked: checked === true })}
+                  />
+                  <span className="text-sm">Hide blocked</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
+                  <Checkbox
                     checked={state.liveOnly}
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
                   />

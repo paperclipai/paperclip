@@ -3157,6 +3157,22 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setBody(loadDraft(draftKey));
   }, [draftKey]);
 
+  // HUM-126 Fix 2: when navigated to from a blocker chip's "Ping" button, the URL
+  // carries `?focus=composer`. Scroll to and focus the composer once on mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("focus") !== "composer") return;
+    focusComposer();
+    params.delete("focus");
+    const remaining = params.toString();
+    const cleaned = `${window.location.pathname}${remaining ? `?${remaining}` : ""}${window.location.hash}`;
+    window.history.replaceState(window.history.state, "", cleaned);
+    // Intentional one-shot on mount — re-running this on every change would yank
+    // the page back to the composer whenever the URL changes for unrelated reasons.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (!draftKey) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);
@@ -4315,6 +4331,8 @@ export function IssueChatThread({
                         ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
                         : null
                     }
+                    agentMap={agentMap}
+                    currentUserId={currentUserId}
                   />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>

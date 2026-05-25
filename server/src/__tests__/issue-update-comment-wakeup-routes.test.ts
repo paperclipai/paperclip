@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  getDependencyReadiness: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -219,6 +220,9 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    // Default to "at least one unresolved blocker so the issue is still really
+    // blocked" — the loop scenario we're fixing. Tests that reopen will override.
+    mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 1 });
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -309,6 +313,62 @@ describe("issue update comment wakeups", () => {
           wakeReason: "issue_commented",
           source: "issue.comment",
         }),
+      }),
+    );
+  });
+
+  it("skips the assignee comment wake on blocked issues when the assignee is not mentioned", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "just leaving a note, no work needed",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "just leaving a note, no work needed" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("still wakes the assignee on blocked issues when the comment @-mentions them", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-4",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "@assignee can you triage this even though it's blocked?",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: "@assignee can you triage this even though it's blocked?" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "issue_comment_mentioned",
       }),
     );
   });

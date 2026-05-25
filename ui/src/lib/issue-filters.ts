@@ -20,6 +20,10 @@ export type IssueFilterState = {
   workspaces: string[];
   liveOnly?: boolean;
   hideRoutineExecutions: boolean;
+  // HUM-126 Fix 1: when true, hides issues that are blocked (`status === "blocked"`
+  // or have any unresolved upstream blockers). Defaults to true so a user opening
+  // the board for the first time isn't drowning in items they cannot act on.
+  hideBlocked: boolean;
 };
 
 export const defaultIssueFilterState: IssueFilterState = {
@@ -32,6 +36,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   workspaces: [],
   liveOnly: false,
   hideRoutineExecutions: false,
+  hideBlocked: true,
 };
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -73,6 +78,9 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
     hideRoutineExecutions: candidate.hideRoutineExecutions === true,
+    // Default ON: missing-from-storage and any non-boolean value reads as `true` so
+    // users who haven't seen the new toggle inherit the new default.
+    hideBlocked: candidate.hideBlocked === false ? false : true,
   };
 }
 
@@ -166,6 +174,13 @@ export function applyIssueFilters(
       return workspaceId != null && state.workspaces.includes(workspaceId);
     });
   }
+  if (state.hideBlocked) {
+    result = result.filter((issue) => {
+      if (issue.status === "blocked") return false;
+      if ((issue.blockerAttention?.unresolvedBlockerCount ?? 0) > 0) return false;
+      return true;
+    });
+  }
   return result;
 }
 
@@ -183,5 +198,9 @@ export function countActiveIssueFilters(
   if (state.workspaces.length > 0) count += 1;
   if (state.liveOnly) count += 1;
   if (enableRoutineVisibilityFilter && state.hideRoutineExecutions) count += 1;
+  // Only count `hideBlocked` when the user has flipped OFF the default — that is
+  // the explicit choice that warrants showing a chip in the bar. Default-on stays
+  // implicit.
+  if (state.hideBlocked === false) count += 1;
   return count;
 }

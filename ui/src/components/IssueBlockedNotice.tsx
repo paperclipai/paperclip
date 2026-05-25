@@ -1,23 +1,65 @@
 import type {
+  Agent,
   IssueBlockerAttention,
   IssueRecoveryAction,
   IssueRelationIssueSummary,
   IssueScheduledRetry,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, Flag, Loader2, RotateCcw } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, Flag, Loader2, RotateCcw } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { formatMonitorOffset } from "../lib/issue-monitor";
+import { formatAssigneeUserLabel } from "../lib/assignees";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
+import { StatusIcon } from "./StatusIcon";
 import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
 import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
 } from "../lib/recovery-display";
+
+// HUM-126 Fix 2: the previous banner said "click to find out more" — the user
+// had no idea who to ping. This block resolves the blocker's assignee to a display
+// label so we can render it inline.
+function resolveBlockerAssigneeLabel(args: {
+  blocker: IssueRelationIssueSummary;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+}): { label: string; kind: "agent" | "user" | "unassigned" } {
+  const { blocker, agentMap, currentUserId } = args;
+  if (blocker.assigneeAgentId) {
+    const name =
+      blocker.assigneeAgentName
+      ?? agentMap?.get(blocker.assigneeAgentId)?.name
+      ?? blocker.assigneeAgentId.slice(0, 8);
+    return { label: name, kind: "agent" };
+  }
+  if (blocker.assigneeUserId) {
+    const formatted = formatAssigneeUserLabel(blocker.assigneeUserId, currentUserId);
+    return {
+      label: blocker.assigneeUserName ?? formatted ?? blocker.assigneeUserId.slice(0, 8),
+      kind: "user",
+    };
+  }
+  return { label: "Unassigned", kind: "unassigned" };
+}
+
+function issueStatusLabel(status: IssueRelationIssueSummary["status"]): string {
+  switch (status) {
+    case "in_progress": return "In progress";
+    case "in_review": return "In review";
+    case "todo": return "Todo";
+    case "backlog": return "Backlog";
+    case "blocked": return "Blocked";
+    case "done": return "Done";
+    case "cancelled": return "Cancelled";
+    default: return status;
+  }
+}
 
 function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
   const state = deriveActiveRecoveryDisplayState(action);
@@ -112,6 +154,8 @@ export function IssueBlockedNotice({
   successfulRunHandoff,
   scheduledRetry,
   agentName,
+  agentMap,
+  currentUserId,
 }: {
   issueId?: string | null;
   issueStatus?: string;
@@ -120,6 +164,10 @@ export function IssueBlockedNotice({
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   agentName?: string | null;
+  // HUM-126 Fix 2: passed through so each blocker chip can show its assignee's
+  // display name without the banner doing its own data fetch.
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
 }) {
   if (issueStatus === "done" || issueStatus === "cancelled") return null;
   const showSuccessfulRunHandoff = successfulRunHandoff?.required === true;
@@ -178,19 +226,62 @@ export function IssueBlockedNotice({
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
     const recoveryAction = blocker.activeRecoveryAction ?? null;
+    const assignee = resolveBlockerAssigneeLabel({ blocker, agentMap, currentUserId });
+    const detailPath = createIssueDetailPath(issuePathId);
+    // HUM-126 Fix 2: ping = navigate to the blocking issue with a focus signal so
+    // the chat thread auto-scrolls + focuses the composer. Cheaper than a modal,
+    // and reuses the composer's existing draft/assignee logic.
+    const pingPath = `${detailPath}?focus=composer`;
     return (
-      <IssueLinkQuicklook
+      <div
         key={blocker.id}
-        issuePathId={issuePathId}
-        to={createIssueDetailPath(issuePathId)}
-        className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+        data-testid="issue-blocked-notice-blocker-card"
+        className="flex w-full max-w-md flex-col gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2.5 py-2 text-xs text-amber-950 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100"
       >
-        <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
-          {blocker.title}
-        </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
-      </IssueLinkQuicklook>
+        <div className="flex items-center justify-between gap-2">
+          <IssueLinkQuicklook
+            issuePathId={issuePathId}
+            to={detailPath}
+            className="inline-flex min-w-0 flex-1 items-center gap-1.5 truncate font-mono text-xs text-amber-950 transition-colors hover:underline dark:text-amber-100"
+          >
+            <span className="shrink-0">{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+            <span className="min-w-0 truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+              {blocker.title}
+            </span>
+          </IssueLinkQuicklook>
+          {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-amber-900 dark:text-amber-100">
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/70 bg-amber-100/80 px-1.5 py-0.5 font-medium dark:border-amber-500/40 dark:bg-amber-500/15">
+              <StatusIcon status={blocker.status} />
+              <span>{issueStatusLabel(blocker.status)}</span>
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="text-amber-800/80 dark:text-amber-200/80">Assigned to</span>
+              {blocker.assigneeAgentId ? (
+                <Link
+                  to={`/agents/${blocker.assigneeAgentId}`}
+                  className="font-medium hover:underline"
+                >
+                  {assignee.label}
+                </Link>
+              ) : (
+                <span className="font-medium">{assignee.label}</span>
+              )}
+            </span>
+          </div>
+          <Link
+            to={pingPath}
+            data-testid="issue-blocked-notice-ping-button"
+            aria-label={`Ping ${assignee.label} on ${blocker.identifier ?? "the blocking issue"}`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-300/80 bg-background/90 px-2 py-1 text-[11px] font-medium text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-background/50 dark:text-amber-100 dark:hover:bg-amber-500/15"
+          >
+            <Bell className="h-3 w-3" aria-hidden />
+            <span>Ping</span>
+          </Link>
+        </div>
+      </div>
     );
   };
 

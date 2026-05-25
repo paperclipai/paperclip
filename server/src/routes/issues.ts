@@ -4236,7 +4236,24 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+
+        let mentionedIds: string[] = [];
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        }
+        const assigneeMentioned = assigneeId !== null && mentionedIds.includes(assigneeId);
+        // HUM-126 Fix 3: a generic comment on a `blocked` issue should not wake the
+        // assignee unless the comment @-mentions them or actually reopens the issue.
+        // Without this, every comment on a gated issue churned the assignee through a
+        // ~5s "work blocked" run, the harness flagged the short exit, and the wake
+        // looped. Mentioned-agent wakes (including the assignee, if mentioned) and
+        // interaction responses (request_confirmation / ask_user_questions) flow
+        // through separate code paths and are unaffected.
+        const skipBlockedNoMention =
+          issue.status === "blocked" && !reopened && assigneeId !== null && !assigneeMentioned;
+        const skipAssigneeCommentWake = selfComment || isClosed || skipBlockedNoMention;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -4265,13 +4282,16 @@ export function issueRoutes(
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
-        }
-
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        } else if (skipBlockedNoMention && !assigneeChanged && assigneeId) {
+          logger.info(
+            {
+              issueId: id,
+              agentId: assigneeId,
+              commentId: comment.id,
+              wakeSkippedReason: "issue_blocked_no_mention",
+            },
+            "skipped assignee comment wake on blocked issue without mention",
+          );
         }
 
         for (const mentionedId of mentionedIds) {
@@ -5323,7 +5343,24 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      }
+      const assigneeMentioned = assigneeId !== null && mentionedIds.includes(assigneeId);
+      // HUM-126 Fix 3: a generic comment on a `blocked` issue should not wake the
+      // assignee unless the comment @-mentions them or actually reopens the issue.
+      // Without this, every comment on a gated issue churned the assignee through a
+      // ~5s "work blocked" run, the harness flagged the short exit, and the wake
+      // looped. Mentioned-agent wakes (including the assignee, if mentioned) and
+      // interaction responses (request_confirmation / ask_user_questions) flow
+      // through separate code paths and are unaffected.
+      const skipBlockedNoMention =
+        currentIssue.status === "blocked" && !reopened && assigneeId !== null && !assigneeMentioned;
+      const skipWake = selfComment || isClosed || skipBlockedNoMention;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -5378,13 +5415,16 @@ export function issueRoutes(
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      } else if (skipBlockedNoMention && assigneeId) {
+        logger.info(
+          {
+            issueId: currentIssue.id,
+            agentId: assigneeId,
+            commentId: comment.id,
+            wakeSkippedReason: "issue_blocked_no_mention",
+          },
+          "skipped assignee comment wake on blocked issue without mention",
+        );
       }
 
       for (const mentionedId of mentionedIds) {

@@ -141,6 +141,41 @@ describe("issue filters", () => {
     )).toBe(false);
   });
 
+  it("hides blocked issues and issues with unresolved blockers when hideBlocked is on", () => {
+    const issues = [
+      makeIssue({ id: "todo-no-blockers", status: "todo" }),
+      makeIssue({ id: "blocked-status", status: "blocked" }),
+      makeIssue({
+        id: "todo-with-blockers",
+        status: "todo",
+        blockerAttention: {
+          state: "needs_attention",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 2,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 2,
+          sampleBlockerIdentifier: "PAP-2",
+          sampleStalledBlockerIdentifier: null,
+        },
+      }),
+    ];
+
+    expect(applyIssueFilters(issues, { ...defaultIssueFilterState }).map((i) => i.id))
+      .toEqual(["todo-no-blockers"]);
+
+    expect(
+      applyIssueFilters(issues, { ...defaultIssueFilterState, hideBlocked: false }).map((i) => i.id),
+    ).toEqual(["todo-no-blockers", "blocked-status", "todo-with-blockers"]);
+  });
+
+  it("counts hideBlocked only when the user has turned the default off", () => {
+    expect(countActiveIssueFilters({ ...defaultIssueFilterState })).toBe(0);
+    expect(
+      countActiveIssueFilters({ ...defaultIssueFilterState, hideBlocked: false }),
+    ).toBe(1);
+  });
+
   it("keeps non-default project and isolated execution workspaces filterable", () => {
     const featureIssue = makeIssue({
       id: "feature-issue",
