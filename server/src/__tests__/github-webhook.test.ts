@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import {
+  __test_buildPrReviewerTaskKey,
   __test_buildPrReviewerWakeIdempotencyKey,
   __test_extractPaperclipIdentifiers,
   __test_hasPrReviewerRequestMention,
@@ -26,6 +27,7 @@ import {
   __test_shouldFirePrReviewerWake,
   __test_verifyGithubSignature,
   githubWebhookRoutes,
+  type GithubWebhookConfig,
 } from "../routes/github-webhook.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -157,6 +159,9 @@ describe("github-webhook pure helpers", () => {
     if (!__test_shouldFirePrReviewerWake(ctx)) {
       throw new Error("expected @ally PR comment to fire a reviewer wake");
     }
+    expect(__test_buildPrReviewerTaskKey(ctx)).toBe(
+      "pr_review:Blockcast/Network-Operator-Portal:47",
+    );
     expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-1")).toBe(
       "pr_review:Blockcast/Network-Operator-Portal:47:github_pr_review_requested:comment:123456",
     );
@@ -259,6 +264,10 @@ describeEmbeddedPostgres("github-webhook route", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
   const webhookSecret = "test-webhook-secret-do-not-use-in-prod";
+  const allowCcrotateGate: NonNullable<GithubWebhookConfig["heartbeatOptions"]>["ccrotateGate"] = {
+    checkAdapter: async () => ({ allow: true }),
+    _resetForTesting: () => {},
+  };
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-webhook-test-");
@@ -301,14 +310,22 @@ describeEmbeddedPostgres("github-webhook route", () => {
     await tempDb?.cleanup();
   });
 
-  function buildApp() {
+  function buildApp(config: Pick<GithubWebhookConfig, "prReviewerAgentId" | "heartbeatOptions"> = {}) {
     const app = express();
     app.use(express.json({
       verify: (req, _res, buf) => {
         (req as unknown as { rawBody: Buffer }).rawBody = buf;
       },
     }));
-    app.use("/api/webhooks/github", githubWebhookRoutes(db, { webhookSecret }));
+    app.use("/api/webhooks/github", githubWebhookRoutes(db, {
+      webhookSecret,
+      ...config,
+      heartbeatOptions: {
+        ccrotateGate: allowCcrotateGate,
+        skipQueuedRunDispatch: true,
+        ...config.heartbeatOptions,
+      },
+    }));
     return app;
   }
 
@@ -352,6 +369,29 @@ describeEmbeddedPostgres("github-webhook route", () => {
       identifier,
     });
     return { companyId, agentId, issueId };
+  }
+
+  async function seedCompanyAndAgent(opts?: { agentName?: string }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Test",
+      issuePrefix: "BLO",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: opts?.agentName ?? "TestAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_k8s",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
   }
 
   it("rejects unsigned requests with 401", async () => {
@@ -444,13 +484,108 @@ describeEmbeddedPostgres("github-webhook route", () => {
     expect(res.body).toMatchObject({ ignored: "no_matching_issue", identifiers: ["UNKNOWN-1234"] });
   });
 
-  // Kept LAST in the describe block on purpose: this test triggers a
-  // fire-and-forget `void executeRun(claimedRun.id)` in services/heartbeat.ts
-  // that can outlive the test under CI load. If any test ran after it, that
-  // test's beforeEach TRUNCATE would block on ACCESS EXCLUSIVE waiting for
-  // executeRun's row locks to drain — eventually tripping the 60s hook
-  // timeout. afterAll tears down the whole temp db so leftover background
-  // work is harmless once this is the final test.
+  it("does not coalesce reviewer PR wakes into a thin null-scope automation run (BLO-7457)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Ally" });
+    const activeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: {
+        wakeReason: "github_pr_opened",
+        wakeSource: "automation",
+        wakeTriggerDetail: "system",
+      },
+    });
+
+    const app = buildApp({ prReviewerAgentId: agentId });
+    const payload = {
+      action: "opened",
+      pull_request: {
+        number: 976,
+        title: "Migrate members page",
+        body: null,
+        head: { ref: "migration-blo-4959-members-page" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    };
+    const { body, signature } = signedRequest(payload);
+    const res = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "pull_request")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-blo-7457")
+      .set("content-type", "application/json")
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      reviewerWakeFired: true,
+    });
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const activeRun = runs.find((run) => run.id === activeRunId);
+    expect(activeRun?.contextSnapshot).toMatchObject({
+      wakeReason: "github_pr_opened",
+      wakeSource: "automation",
+      wakeTriggerDetail: "system",
+    });
+    expect((activeRun?.contextSnapshot as Record<string, unknown> | undefined)?.githubPrNumber).toBeUndefined();
+
+    const reviewerRun = runs.find((run) => run.id !== activeRunId);
+    expect(reviewerRun?.status).toBe("queued");
+    expect(reviewerRun?.contextSnapshot).toMatchObject({
+      taskKey: "pr_review:Blockcast/magma:976",
+      wakeReason: "github_pr_opened",
+      wakeSource: "automation",
+      wakeTriggerDetail: "system",
+      commentSource: "github",
+      githubEvent: "pull_request",
+      githubDeliveryId: "delivery-blo-7457",
+      githubPrNumber: 976,
+      githubRepoFullName: "Blockcast/magma",
+      reviewKind: "pr_review",
+      prRole: "reviewer",
+    });
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.map((wake) => wake.status)).not.toContain("coalesced");
+    expect(wakes).toContainEqual(expect.objectContaining({
+      status: "queued",
+      reason: "github_pr_opened",
+      payload: expect.objectContaining({
+        taskKey: "pr_review:Blockcast/magma:976",
+        source: "github",
+        event: "pull_request",
+        deliveryId: "delivery-blo-7457",
+        prNumber: 976,
+        repoFullName: "Blockcast/magma",
+        reviewKind: "pr_review",
+      }),
+    }));
+  });
+
   it("drives a wake on check_run.completed when the PR head_branch references a paperclip issue (CI completion)", async () => {
     const { agentId, issueId } = await seedIssueWithIdentifier("BLO-3182");
     const app = buildApp();

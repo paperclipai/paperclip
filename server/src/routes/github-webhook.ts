@@ -28,7 +28,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import { type Db, issues } from "@paperclipai/db";
-import { heartbeatService } from "../services/heartbeat.js";
+import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -50,6 +50,11 @@ export interface GithubWebhookConfig {
    * identifier. When null, only the legacy issue-assignee wake fires.
    */
   prReviewerAgentId?: string | null;
+  /**
+   * Test/service override for heartbeat dispatch behavior. Production callers
+   * normally leave this unset so queued webhook wakes dispatch immediately.
+   */
+  heartbeatOptions?: Pick<HeartbeatServiceOptions, "ccrotateGate" | "skipQueuedRunDispatch">;
 }
 
 // Conservative pattern: 2-10 uppercase letters, dash, 1-6 digits.
@@ -328,6 +333,11 @@ function buildPrReviewerWakeIdempotencyKey(
   return `pr_review:${repo}:${context.prNumber}:${commentScopedSuffix}`;
 }
 
+function buildPrReviewerTaskKey(context: ResolvedEventContext & { prNumber: number }) {
+  const repo = context.repoFullName ?? "unknown";
+  return `pr_review:${repo}:${context.prNumber}`;
+}
+
 export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
   const router = Router();
 
@@ -384,12 +394,15 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
       try {
         const heartbeat = heartbeatService(db, {
           pluginWorkerManager: config.pluginWorkerManager,
+          ...config.heartbeatOptions,
         });
+        const reviewerTaskKey = buildPrReviewerTaskKey(context);
         await heartbeat.wakeup(config.prReviewerAgentId, {
           source: "automation",
           triggerDetail: "system",
           reason: context.wakeReason,
           payload: {
+            taskKey: reviewerTaskKey,
             source: "github",
             event: eventName,
             deliveryId,
@@ -400,6 +413,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
             reviewKind: "pr_review",
           },
           contextSnapshot: {
+            taskKey: reviewerTaskKey,
             wakeReason: context.wakeReason,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
@@ -475,6 +489,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
 
     const heartbeat = heartbeatService(db, {
       pluginWorkerManager: config.pluginWorkerManager,
+      ...config.heartbeatOptions,
     });
     const wakes: Array<{ issueIdentifier: string | null; agentId: string }> = [];
     const skipped: Array<{ issueIdentifier: string | null; reason: string }> = [];
@@ -580,3 +595,4 @@ export const __test_verifyGithubSignature = verifyGithubSignature;
 export const __test_resolveEventContext = resolveEventContext;
 export const __test_shouldFirePrReviewerWake = shouldFirePrReviewerWake;
 export const __test_buildPrReviewerWakeIdempotencyKey = buildPrReviewerWakeIdempotencyKey;
+export const __test_buildPrReviewerTaskKey = buildPrReviewerTaskKey;
