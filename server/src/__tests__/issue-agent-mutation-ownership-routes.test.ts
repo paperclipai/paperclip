@@ -247,6 +247,13 @@ function ownerActor() {
   };
 }
 
+function ownerActorFromSweepRun() {
+  return {
+    ...ownerActor(),
+    runId: "88888888-8888-4888-8888-888888888888",
+  };
+}
+
 function boardActor() {
   return {
     type: "board",
@@ -547,6 +554,59 @@ describe("agent issue mutation checkout ownership", () => {
         lockedDocumentStrategy: "create_new_document",
       }),
     );
+  });
+
+  it("allows the assignee to append evidence comments from a different sweep run", async () => {
+    const app = await createApp(ownerActorFromSweepRun());
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    const runLockError = new HttpError(409, "Issue run ownership conflict");
+    mockIssueService.assertCheckoutOwner.mockRejectedValue(runLockError);
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "recurrence evidence" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "recurrence evidence",
+      expect.objectContaining({ agentId: ownerAgentId, runId: "88888888-8888-4888-8888-888888888888" }),
+      expect.any(Object),
+    );
+  });
+
+  it("requires an agent run id before bypassing checkout ownership for same-assignee comments", async () => {
+    const app = await createApp({ ...ownerActor(), runId: undefined });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "unaudited evidence" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still enforces checkout run ownership for same-assignee state mutations", async () => {
+    const app = await createApp(ownerActorFromSweepRun());
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    const runLockError = new HttpError(409, "Issue run ownership conflict");
+    mockIssueService.assertCheckoutOwner.mockRejectedValue(runLockError);
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Unsafe sweep update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(
+      issueId,
+      ownerAgentId,
+      "88888888-8888-4888-8888-888888888888",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it.each([
