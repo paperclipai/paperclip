@@ -179,6 +179,8 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
       DATABASE_URL: "postgres://example.test/paperclip",
       PAPERCLIP_HOME: "/tmp/paperclip-home",
       PAPERCLIP_INSTANCE_ID: "runtime-instance",
+      JADE_GATE_SECRET: "abc",
+      JADE_GATE_SIGNING_KEY: "def",
       npm_config_tailscale_auth: "true",
       npm_config_authenticated_private: "true",
       HOST: "0.0.0.0",
@@ -187,6 +189,8 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.PAPERCLIP_HOME).toBeUndefined();
     expect(sanitized.PAPERCLIP_INSTANCE_ID).toBeUndefined();
     expect(sanitized.DATABASE_URL).toBeUndefined();
+    expect(sanitized.JADE_GATE_SECRET).toBeUndefined();
+    expect(sanitized.JADE_GATE_SIGNING_KEY).toBeUndefined();
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");

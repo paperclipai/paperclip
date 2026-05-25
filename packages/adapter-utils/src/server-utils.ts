@@ -1122,6 +1122,12 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
 export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
+    // JADE_* are server-side secrets (gate validation, sync HMAC). Agents that read
+    // them can bypass the workspace gate and call the control plane as themselves.
+    if (key.startsWith("JADE_")) {
+      delete env[key];
+      continue;
+    }
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
