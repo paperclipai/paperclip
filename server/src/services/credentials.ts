@@ -259,20 +259,15 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "claude_oauth credential missing accessToken");
         return { env: {} };
       }
-      // Long-lived tokens (from `claude setup-token`) use a distinct prefix and
-      // have no refreshToken / expiresAt; flag them so we can route through the
-      // CLAUDE_CODE_OAUTH_TOKEN env var instead of synthesising a fake-expiry
-      // .credentials.json that the CLI would otherwise try to refresh.
+      // Detect long-lived tokens (from `claude setup-token`). They have no
+      // refreshToken / expiresAt of their own, so we synthesise a far-future
+      // expiry below. We still write `.credentials.json` because the interactive
+      // TUI (claude_tui adapter) ignores CLAUDE_CODE_OAUTH_TOKEN and only reads
+      // the credentials file. We additionally expose the env var as a redundant
+      // fallback for the headless claude_local path.
       const tokenKind = typeof payload.tokenKind === "string" ? payload.tokenKind : null;
       const isLongLivedToken =
         tokenKind === "long_lived" || (accessToken.startsWith("sk-ant-oat") && !payload.refreshToken);
-      if (isLongLivedToken) {
-        logger.info(
-          { agentId, credentialId },
-          "resolving claude_oauth long-lived token via CLAUDE_CODE_OAUTH_TOKEN env",
-        );
-        return { env: { CLAUDE_CODE_OAUTH_TOKEN: accessToken } };
-      }
       const refreshToken = typeof payload.refreshToken === "string" ? payload.refreshToken : "";
       const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
       const scopes = Array.isArray(payload.scopes) && payload.scopes.every((s) => typeof s === "string")
@@ -338,10 +333,14 @@ export async function resolveCredentialEnv(
       await fs.chmod(settingsFile, 0o600).catch(() => undefined);
 
       logger.info(
-        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, subscriptionType },
+        { agentId, credentialId, credFile, hasRefreshToken: refreshToken.length > 0, isLongLivedToken, subscriptionType },
         "wrote claude_oauth credentials.json for agent",
       );
-      return { env: { HOME: agentHome }, home: agentHome };
+      const oauthEnv: Record<string, string> = { HOME: agentHome };
+      if (isLongLivedToken) {
+        oauthEnv.CLAUDE_CODE_OAUTH_TOKEN = accessToken;
+      }
+      return { env: oauthEnv, home: agentHome };
     }
 
     case "claude_api_key": {
