@@ -297,7 +297,41 @@ describe("issue attachment routes", () => {
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
   });
 
-  it("serves html attachments as downloads with nosniff", async () => {
+  it("uses system default when company has null attachmentMaxBytes", async () => {
+    const storage = createStorageService();
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: null, // NULL = use system default (10 MB)
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), {
+        filename: "large.bin",
+        contentType: "application/octet-stream",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("caps the effective attachment limit at the platform hard limit", async () => {
+    // Verifies normalizeIssueAttachmentMaxBytes clamps against MAX_ATTACHMENT_HARD_LIMIT
+    const { normalizeIssueAttachmentMaxBytes, MAX_ATTACHMENT_HARD_LIMIT } = await import("../attachment-types.js");
+    expect(normalizeIssueAttachmentMaxBytes(MAX_ATTACHMENT_HARD_LIMIT + 1)).toBe(
+      Math.min(MAX_ATTACHMENT_HARD_LIMIT, 10 * 1024 * 1024), // also bounded by process-level cap
+    );
+    expect(MAX_ATTACHMENT_HARD_LIMIT).toBe(2 * 1024 * 1024 * 1024);
+  });
+
+    it("serves html attachments as downloads with nosniff", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/html", "report.html"));
 
