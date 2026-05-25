@@ -60,7 +60,12 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { deleteAgentJobsForRun, listLiveAgentJobRunIds } from "./k8s-job-liveness.js";
+import {
+  deleteAgentJobsForRun,
+  listAgentJobRunStatuses,
+  listLiveAgentJobRunIds,
+  type AgentJobRunStatus,
+} from "./k8s-job-liveness.js";
 import { processPendingImageBumpForAgent } from "./agent-image-bump.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -7284,6 +7289,128 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  function externalLifecycleTerminalOutcome(jobStatus: AgentJobRunStatus | null) {
+    if (!jobStatus) {
+      return {
+        status: "failed" as const,
+        wakeupStatus: "failed" as const,
+        errorCode: "job_missing",
+        error: "External lifecycle Job is missing while heartbeat run is still running",
+        recoveryReason: "job_missing",
+        jobPhase: "missing",
+        jobReason: null,
+        jobMessage: null,
+      };
+    }
+
+    if (jobStatus.phase === "succeeded") {
+      return {
+        status: "succeeded" as const,
+        wakeupStatus: "completed" as const,
+        errorCode: null,
+        error: null,
+        recoveryReason: "job_complete",
+        jobPhase: "succeeded",
+        jobReason: jobStatus.reason ?? null,
+        jobMessage: jobStatus.message ?? null,
+      };
+    }
+
+    if (jobStatus.phase === "failed") {
+      const reason = readNonEmptyString(jobStatus.reason) ?? "job_failed";
+      const message = readNonEmptyString(jobStatus.message);
+      return {
+        status: "failed" as const,
+        wakeupStatus: "failed" as const,
+        errorCode: "job_failed",
+        error: message
+          ? `External lifecycle Job failed: ${reason}: ${message}`
+          : `External lifecycle Job failed: ${reason}`,
+        recoveryReason: "job_failed",
+        jobPhase: "failed",
+        jobReason: reason,
+        jobMessage: message,
+      };
+    }
+
+    return null;
+  }
+
+  async function finalizeExternalLifecycleTerminalRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+    adapterConfig: unknown;
+    jobStatus: AgentJobRunStatus | null;
+    now: Date;
+  }) {
+    const terminalOutcome = externalLifecycleTerminalOutcome(input.jobStatus);
+    if (!terminalOutcome) return false;
+
+    const resultJson = mergeRunStopMetadataForAgent(
+      { adapterType: input.adapterType, adapterConfig: parseObject(input.adapterConfig) },
+      terminalOutcome.status,
+      {
+        resultJson: {
+          ...parseObject(input.run.resultJson),
+          externalLifecycleRecovery: {
+            reason: terminalOutcome.recoveryReason,
+            jobPhase: terminalOutcome.jobPhase,
+            jobReason: terminalOutcome.jobReason,
+            jobMessage: terminalOutcome.jobMessage,
+          },
+        },
+        errorCode: terminalOutcome.errorCode,
+        errorMessage: terminalOutcome.error,
+      },
+    );
+
+    let finalizedRun = await setRunStatus(input.run.id, terminalOutcome.status, {
+      error: terminalOutcome.error,
+      errorCode: terminalOutcome.errorCode,
+      finishedAt: input.now,
+      resultJson,
+    });
+    await setWakeupStatus(input.run.wakeupRequestId, terminalOutcome.wakeupStatus, {
+      finishedAt: input.now,
+      error: terminalOutcome.error,
+    });
+
+    if (!finalizedRun) finalizedRun = await getRun(input.run.id);
+    if (!finalizedRun) return true;
+
+    finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, resultJson) ?? finalizedRun;
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+    await releaseIssueExecutionAndPromote(finalizedRun);
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: terminalOutcome.status === "succeeded" ? "info" : "error",
+      message: terminalOutcome.error ?? "External lifecycle Job completed",
+      payload: {
+        externalLifecycleRecovery: true,
+        jobPhase: terminalOutcome.jobPhase,
+        jobReason: terminalOutcome.jobReason,
+        jobMessage: terminalOutcome.jobMessage,
+      },
+    });
+    await finalizeAgentStatus(input.run.agentId, terminalOutcome.status);
+    await startNextQueuedRunForAgent(input.run.agentId);
+    runningProcesses.delete(input.run.id);
+    activeRunExecutions.delete(input.run.id);
+    await environmentsSvc.releaseLeasesForRun(
+      input.run.id,
+      terminalOutcome.status === "succeeded" ? "released" : "failed",
+    );
+
+    return true;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -7307,7 +7434,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // failure) — the loop then falls back to the time-based staleness
     // window for those runs.
     const hasExternalCandidates = activeRuns.some((row) => hasExternalLifecycle(row.adapterType));
-    const liveJobRunIds = hasExternalCandidates ? await listLiveAgentJobRunIds() : null;
+    const jobRunStatuses = hasExternalCandidates ? await listAgentJobRunStatuses() : null;
+    const liveJobRunIds =
+      jobRunStatuses !== null
+        ? new Set(
+            [...jobRunStatuses.entries()]
+              .filter(([, status]) => status.phase === "active")
+              .map(([runId]) => runId),
+          )
+        : hasExternalCandidates
+          ? await listLiveAgentJobRunIds()
+          : null;
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
@@ -7334,13 +7471,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
       let cascadeDeleteLiveJob = false;
       if (externalLifecycleRun && externalLifecycleStarted) {
-        // RCA 2026-05-06: Job-alive ≠ process-progressing. The reaper used
-        // to trust `liveJobRunIds.has(run.id)` as an oracle and skip
-        // silence checks entirely, so pods stuck in tail-loop / MCP RPC /
-        // rate-limit-overage hangs survived for hours and wedged the
-        // dispatch lock. We now apply the silence threshold uniformly,
-        // and additionally flag the live Job for cascade-deletion so the
-        // next dispatch's "Concurrent run blocked" precondition unwedges.
         const lastSignalRef = run.lastOutputAt
           ? new Date(run.lastOutputAt).getTime()
           : run.startedAt
@@ -7348,7 +7478,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : 0;
         const isSilent = !lastSignalRef || now.getTime() - lastSignalRef >= EXTERNAL_LIFECYCLE_STALE_MS;
 
-        if (liveJobRunIds !== null) {
+        if (jobRunStatuses !== null) {
+          const jobStatus = jobRunStatuses.get(run.id) ?? null;
+          if (jobStatus && jobStatus.phase !== "active") {
+            const finalized = await finalizeExternalLifecycleTerminalRun({
+              run,
+              adapterType,
+              adapterConfig,
+              jobStatus,
+              now,
+            });
+            if (finalized) {
+              reaped.push(run.id);
+              continue;
+            }
+          }
+
+          if (!jobStatus) {
+            if (!isSilent) continue;
+            const finalized = await finalizeExternalLifecycleTerminalRun({
+              run,
+              adapterType,
+              adapterConfig,
+              jobStatus: null,
+              now,
+            });
+            if (finalized) {
+              reaped.push(run.id);
+              continue;
+            }
+          }
+
+          if (!isSilent) continue;
+          cascadeDeleteLiveJob = true;
+        } else if (liveJobRunIds !== null) {
+          // RCA 2026-05-06: Job-alive ≠ process-progressing. The reaper used
+          // to trust `liveJobRunIds.has(run.id)` as an oracle and skip
+          // silence checks entirely, so pods stuck in tail-loop / MCP RPC /
+          // rate-limit-overage hangs survived for hours and wedged the
+          // dispatch lock. We now apply the silence threshold uniformly,
+          // and additionally flag the live Job for cascade-deletion so the
+          // next dispatch's "Concurrent run blocked" precondition unwedges.
+          //
           // kube API path. Two sub-cases:
           //   - Job IS in our snapshot: if output is fresh, skip; if silent
           //     past the threshold, fall through AND cascade-delete the Job

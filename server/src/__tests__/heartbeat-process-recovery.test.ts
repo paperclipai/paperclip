@@ -54,8 +54,23 @@ const mockListLiveAgentJobRunIds = vi.hoisted(() =>
 const mockDeleteAgentJobsForRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<number | null>>(async () => 1),
 );
+const mockListAgentJobRunStatuses = vi.hoisted(() =>
+  vi.fn<
+    () => Promise<
+      Map<
+        string,
+        {
+          phase: "active" | "succeeded" | "failed";
+          reason?: string | null;
+          message?: string | null;
+        }
+      > | null
+    >
+  >(async () => null),
+);
 vi.mock("../services/k8s-job-liveness.ts", () => ({
   listLiveAgentJobRunIds: mockListLiveAgentJobRunIds,
+  listAgentJobRunStatuses: mockListAgentJobRunStatuses,
   deleteAgentJobsForRun: mockDeleteAgentJobsForRun,
 }));
 
@@ -907,6 +922,137 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).not.toBe("process_lost");
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("finalizes a completed external-lifecycle Job as succeeded and starts the next queued same-agent run", async () => {
+    const recent = new Date(Date.now() - 30 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: recent,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+
+    const queuedWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {},
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: queuedWakeupId,
+      contextSnapshot: {},
+      createdAt: new Date(Date.now() + 1000),
+      updatedAt: new Date(Date.now() + 1000),
+    });
+
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(
+      new Map([
+        [runId, { phase: "succeeded", reason: "Complete", message: "Job completed" }],
+      ]),
+    );
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const completedRun = await heartbeat.getRun(runId);
+    expect(completedRun?.status).toBe("succeeded");
+    expect(completedRun?.errorCode).toBeNull();
+    expect(completedRun?.resultJson).toMatchObject({
+      externalLifecycleRecovery: {
+        reason: "job_complete",
+        jobPhase: "succeeded",
+      },
+    });
+
+    const completedWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, completedRun!.wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(completedWakeup?.status).toBe("completed");
+
+    await waitForRunToSettle(heartbeat, queuedRunId);
+    const queuedRun = await heartbeat.getRun(queuedRunId);
+    expect(queuedRun?.status).not.toBe("queued");
+  });
+
+  it("finalizes a failed external-lifecycle Job as job_failed without waiting for output silence", async () => {
+    const recent = new Date(Date.now() - 30 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: recent,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(
+      new Map([
+        [runId, { phase: "failed", reason: "BackoffLimitExceeded", message: "Pod failed" }],
+      ]),
+    );
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("job_failed");
+    expect(run?.error).toContain("BackoffLimitExceeded");
+    expect(run?.resultJson).toMatchObject({
+      externalLifecycleRecovery: {
+        reason: "job_failed",
+        jobPhase: "failed",
+        jobReason: "BackoffLimitExceeded",
+      },
+    });
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("marks a missing external-lifecycle Job as job_missing only after the silence floor", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("job_missing");
+    expect(run?.resultJson).toMatchObject({
+      externalLifecycleRecovery: {
+        reason: "job_missing",
+        jobPhase: "missing",
+      },
+    });
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 

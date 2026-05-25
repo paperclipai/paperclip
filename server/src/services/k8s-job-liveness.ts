@@ -25,6 +25,12 @@ const K8S_JOB_LIVENESS_TIMEOUT_SECONDS = Math.max(
 const AGENT_JOB_LABEL_SELECTOR = "app.kubernetes.io/managed-by=paperclip";
 const RUN_ID_LABEL = "paperclip.io/run-id";
 
+export type AgentJobRunStatus = {
+  phase: "active" | "succeeded" | "failed";
+  reason?: string | null;
+  message?: string | null;
+};
+
 type ClientState =
   | { kind: "uninitialized" }
   | { kind: "unavailable"; reason: string }
@@ -79,17 +85,41 @@ function initClient(): ClientState {
 
 const RUN_ID_LABEL_FILTER_PREFIX = `${RUN_ID_LABEL}=`;
 
+function conditionIsTrue(condition: k8s.V1JobCondition | undefined) {
+  return condition?.status === "True";
+}
+
+export function classifyAgentJobRunStatus(job: k8s.V1Job): AgentJobRunStatus {
+  const conditions = job.status?.conditions ?? [];
+  const failedCondition = conditions.find((condition) => condition.type === "Failed");
+  if (conditionIsTrue(failedCondition)) {
+    return {
+      phase: "failed",
+      reason: failedCondition?.reason ?? null,
+      message: failedCondition?.message ?? null,
+    };
+  }
+
+  const completeCondition = conditions.find((condition) => condition.type === "Complete");
+  const active = job.status?.active ?? 0;
+  const succeeded = job.status?.succeeded ?? 0;
+  const expectedCompletions = job.spec?.completions ?? 1;
+  if (conditionIsTrue(completeCondition) || (active <= 0 && succeeded >= expectedCompletions)) {
+    return {
+      phase: "succeeded",
+      reason: completeCondition?.reason ?? "Complete",
+      message: completeCondition?.message ?? null,
+    };
+  }
+
+  return { phase: "active", reason: null, message: null };
+}
+
 /**
- * Returns the set of heartbeat run IDs that currently have a live Job in the
- * paperclip namespace. Runs whose Job has been deleted (helm restart, manual
- * cleanup, kube-state failure, etc.) are absent from the set and should be
- * eligible for immediate `process_lost` reaping.
- *
- * Returns null when the kube API is unavailable (not in cluster, RBAC missing,
- * transient API error). Callers fall back to the time-based staleness window
- * in that case.
+ * Returns the current Kubernetes Job phase by heartbeat run ID for managed
+ * external-lifecycle agent Jobs, or null when the kube API cannot be queried.
  */
-export async function listLiveAgentJobRunIds(): Promise<Set<string> | null> {
+export async function listAgentJobRunStatuses(): Promise<Map<string, AgentJobRunStatus> | null> {
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
@@ -101,19 +131,41 @@ export async function listLiveAgentJobRunIds(): Promise<Set<string> | null> {
       },
       requestOptionsWithTimeout(),
     );
-    const runIds = new Set<string>();
+    const statuses = new Map<string, AgentJobRunStatus>();
     for (const job of list.items ?? []) {
       const runId = job.metadata?.labels?.[RUN_ID_LABEL];
-      if (typeof runId === "string" && runId.length > 0) runIds.add(runId);
+      if (typeof runId === "string" && runId.length > 0) {
+        statuses.set(runId, classifyAgentJobRunStatus(job));
+      }
     }
-    return runIds;
+    return statuses;
   } catch (error) {
     logger.warn(
       { error: error instanceof Error ? error.message : String(error) },
-      "k8s job-liveness list failed; falling back to staleness heuristic",
+      "k8s job-liveness status list failed; falling back to staleness heuristic",
     );
     return null;
   }
+}
+
+/**
+ * Returns the set of heartbeat run IDs that currently have a live Job in the
+ * paperclip namespace. Runs whose Job has completed or failed are absent from
+ * the set so callers that only understand liveness don't treat terminal Jobs
+ * as still running.
+ *
+ * Returns null when the kube API is unavailable (not in cluster, RBAC missing,
+ * transient API error). Callers fall back to the time-based staleness window
+ * in that case.
+ */
+export async function listLiveAgentJobRunIds(): Promise<Set<string> | null> {
+  const statuses = await listAgentJobRunStatuses();
+  if (statuses === null) return null;
+  const runIds = new Set<string>();
+  for (const [runId, status] of statuses) {
+    if (status.phase === "active") runIds.add(runId);
+  }
+  return runIds;
 }
 
 /**
