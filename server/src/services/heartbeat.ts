@@ -7644,10 +7644,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
+        // Adapters typically pass their live spawnEnv into meta.env by reference
+        // (see e.g. claude-tui execute.ts:319). Redacting in place would clobber
+        // the env that's about to be passed to spawn() — silently replacing
+        // HOME/OAUTH tokens with "***REDACTED***" inside the child process.
+        // Redact a shallow copy so the logged event is sanitized but the live
+        // spawnEnv is untouched.
         if (meta.env && secretKeys.size > 0) {
+          const redactedEnv: Record<string, string> = { ...meta.env };
           for (const key of secretKeys) {
-            if (key in meta.env) meta.env[key] = "***REDACTED***";
+            if (key in redactedEnv) redactedEnv[key] = "***REDACTED***";
           }
+          meta = { ...meta, env: redactedEnv };
         }
         const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
         await appendRunEvent(currentRun, seq++, {
