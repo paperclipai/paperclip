@@ -140,7 +140,22 @@ def main() -> None:
                 login_performed = True
                 try:
                     auto_login(pm)  # added in T5
-                    li, reason = is_logged_in(pm.page)
+                    # Trust auto_login's internal success signal (URL
+                    # settled away from /login OR /api/user/profile
+                    # returned 200). The immediate re-probe right here
+                    # was returning HTTP 400 transiently for ~10-30s
+                    # after a successful form-submit login — likely a
+                    # CSRF / Origin freshness window — and the bot was
+                    # treating that as a hard failure even though
+                    # auto_login had already verified the session.
+                    # Live observation 2026-05-25 03:58: URL settled
+                    # at /files/team/.../recents-and-sharing within
+                    # 12s of RFB-click, but the very next is_logged_in
+                    # call returned http_400 → bot closed Camoufox and
+                    # tore down a valid session. The main loop's
+                    # `refresh_status` heartbeat (every REFRESH_SECONDS)
+                    # re-probes once the freshness window passes.
+                    li, reason = True, ""
                 except RFBConnectFailed as e:
                     state.log(f"auto_login[{pm.identity}]: RFBConnectFailed: {e}")
                     li, reason = False, "rfb_unreachable"
