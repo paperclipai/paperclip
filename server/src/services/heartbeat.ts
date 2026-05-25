@@ -1041,6 +1041,7 @@ type SessionCompactionDecision = {
 };
 
 type AgentContextUsageBand = "ok" | "warn" | "preempt";
+type AgentRetireRebuildStatus = "completed" | "skipped" | "not_found";
 
 export interface AgentContextUsageEstimate {
   agentId: string;
@@ -1057,6 +1058,18 @@ export interface AgentContextUsageEstimate {
     recentRunTokens: number;
     assignedTicketTokens: number;
   };
+}
+
+export interface AgentRetireRebuildResult {
+  status: AgentRetireRebuildStatus;
+  reason: string | null;
+  retiredAgentId: string;
+  replacementAgentId: string | null;
+  ticketsRedistributed: number;
+  reporteesUpdated: number;
+  wakeupsCancelled: number;
+  runsCancelled: number;
+  auditIssueId: string | null;
 }
 
 interface ParsedIssueAssigneeAdapterOverrides {
@@ -1144,6 +1157,10 @@ function isAgentContextQuietWindow(now = new Date()) {
   const day = now.getUTCDay();
   const hour = now.getUTCHours();
   return day >= 1 && day <= 5 && hour >= 2 && hour < 5;
+}
+
+export function isAgentRetireRebuildAllowedNow(now = new Date(), force = false) {
+  return force || isAgentContextQuietWindow(now);
 }
 
 export function buildAgentContextUsageEstimate(input: {
@@ -6943,6 +6960,205 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { created: true, issueId: issue.id };
   }
 
+  async function executeAgentRetireRebuild(input: {
+    agentId: string;
+    now?: Date;
+    force?: boolean;
+    auditIssueId?: string | null;
+    reason?: string | null;
+  }): Promise<AgentRetireRebuildResult> {
+    const now = input.now ?? new Date();
+    if (!isAgentRetireRebuildAllowedNow(now, input.force === true)) {
+      return {
+        status: "skipped",
+        reason: "outside_quiet_window",
+        retiredAgentId: input.agentId,
+        replacementAgentId: null,
+        ticketsRedistributed: 0,
+        reporteesUpdated: 0,
+        wakeupsCancelled: 0,
+        runsCancelled: 0,
+        auditIssueId: input.auditIssueId ?? null,
+      };
+    }
+
+    const activeStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+    const source = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, input.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!source || source.status === "terminated" || source.status === "pending_approval") {
+      return {
+        status: "not_found",
+        reason: "agent_not_active",
+        retiredAgentId: input.agentId,
+        replacementAgentId: null,
+        ticketsRedistributed: 0,
+        reporteesUpdated: 0,
+        wakeupsCancelled: 0,
+        runsCancelled: 0,
+        auditIssueId: input.auditIssueId ?? null,
+      };
+    }
+
+    const runsCancelled = await cancelActiveForAgentInternal(source.id, "Cancelled due to automatic agent retire/rebuild");
+    const replacementId = randomUUID();
+    const result = await db.transaction(async (tx) => {
+      const [replacement] = await tx
+        .insert(agents)
+        .values({
+          id: replacementId,
+          companyId: source.companyId,
+          name: source.name,
+          role: source.role,
+          title: source.title,
+          icon: source.icon,
+          status: "idle",
+          reportsTo: source.reportsTo,
+          capabilities: source.capabilities,
+          adapterType: source.adapterType,
+          adapterConfig: source.adapterConfig,
+          runtimeConfig: source.runtimeConfig,
+          defaultEnvironmentId: source.defaultEnvironmentId,
+          budgetMonthlyCents: source.budgetMonthlyCents,
+          permissions: source.permissions,
+          metadata: {
+            ...parseObject(source.metadata),
+            rebuiltFromAgentId: source.id,
+            rebuiltAt: now.toISOString(),
+            rebuildReason: input.reason ?? "agent_context_preempt",
+          },
+        })
+        .returning();
+
+      const redistributedRows = await tx
+        .update(issues)
+        .set({
+          assigneeAgentId: replacement.id,
+          updatedAt: now,
+        })
+        .where(and(eq(issues.assigneeAgentId, source.id), inArray(issues.status, [...activeStatuses])))
+        .returning({ id: issues.id });
+
+      const reporteeRows = await tx
+        .update(agents)
+        .set({
+          reportsTo: replacement.id,
+          updatedAt: now,
+        })
+        .where(eq(agents.reportsTo, source.id))
+        .returning({ id: agents.id });
+
+      const wakeupRows = await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: "Cancelled due to automatic agent retire/rebuild",
+          updatedAt: now,
+        })
+        .where(and(eq(agentWakeupRequests.agentId, source.id), inArray(agentWakeupRequests.status, ["queued", "claimed"])))
+        .returning({ id: agentWakeupRequests.id });
+
+      await tx
+        .update(agentRuntimeState)
+        .set({
+          agentId: replacement.id,
+          sessionId: null,
+          stateJson: {},
+          lastRunId: null,
+          lastRunStatus: null,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCachedInputTokens: 0,
+          totalCostCents: 0,
+          lastError: null,
+          updatedAt: now,
+        })
+        .where(eq(agentRuntimeState.agentId, source.id));
+
+      await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, source.id));
+
+      await tx
+        .update(agents)
+        .set({
+          status: "terminated",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: now,
+          metadata: {
+            ...parseObject(source.metadata),
+            retiredAt: now.toISOString(),
+            retiredBy: "agent_context_preempt",
+            replacementAgentId: replacement.id,
+          },
+        })
+        .where(eq(agents.id, source.id));
+
+      await tx.insert(activityLog).values({
+        companyId: source.companyId,
+        actorType: "system",
+        actorId: "agent-context-monitor",
+        action: "agent.retire_rebuild",
+        entityType: "agent",
+        entityId: source.id,
+        agentId: replacement.id,
+        details: {
+          retiredAgentId: source.id,
+          replacementAgentId: replacement.id,
+          auditIssueId: input.auditIssueId ?? null,
+          ticketsRedistributed: redistributedRows.length,
+          reporteesUpdated: reporteeRows.length,
+          wakeupsCancelled: wakeupRows.length,
+          runsCancelled,
+          forced: input.force === true,
+          reason: input.reason ?? "agent_context_preempt",
+        },
+      });
+
+      return {
+        replacementId: replacement.id,
+        ticketsRedistributed: redistributedRows.length,
+        reporteesUpdated: reporteeRows.length,
+        wakeupsCancelled: wakeupRows.length,
+      };
+    });
+
+    if (input.auditIssueId) {
+      await issuesSvc.addComment(
+        input.auditIssueId,
+        [
+          "Automatic retire/rebuild completed.",
+          "",
+          `Retired agent: ${source.name} (${source.id})`,
+          `Replacement agent: ${result.replacementId}`,
+          `Tickets redistributed: ${result.ticketsRedistributed}`,
+          `Reportees updated: ${result.reporteesUpdated}`,
+          `Queued wakeups cancelled: ${result.wakeupsCancelled}`,
+          `Active runs cancelled: ${runsCancelled}`,
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
+      await issuesSvc.update(input.auditIssueId, {
+        status: "done",
+      });
+    }
+
+    return {
+      status: "completed",
+      reason: null,
+      retiredAgentId: source.id,
+      replacementAgentId: result.replacementId,
+      ticketsRedistributed: result.ticketsRedistributed,
+      reporteesUpdated: result.reporteesUpdated,
+      wakeupsCancelled: result.wakeupsCancelled,
+      runsCancelled,
+      auditIssueId: input.auditIssueId ?? null,
+    };
+  }
+
   async function scanAgentContextUsage(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
     const agentRows = await db
@@ -6970,6 +7186,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (estimate.band === "preempt") {
         const result = await createAgentContextUsageIssue(agent, estimate, "preempt", now);
         if (result.created) preemptsCreated += 1;
+        if (estimate.quietWindow) {
+          await executeAgentRetireRebuild({
+            agentId: agent.id,
+            now,
+            auditIssueId: result.issueId,
+            reason: "agent_context_preempt",
+          });
+        }
       } else if (estimate.band === "warn") {
         const result = await createAgentContextUsageIssue(agent, estimate, "warning", now);
         if (result.created) warningsCreated += 1;
@@ -10127,6 +10351,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileProductivityReviews,
 
     scanAgentContextUsage,
+
+    executeAgentRetireRebuild,
 
     buildRunOutputSilence,
 
