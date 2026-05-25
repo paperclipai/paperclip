@@ -458,6 +458,11 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function isAutomaticContinuationRun(latestRun: SuccessfulLatestIssueRun) {
+  const latestContext = parseObject(latestRun.contextSnapshot);
+  return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed";
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -2864,8 +2869,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         if (isProductiveContinuationRun(latestRun)) {
-          result.productiveContinuationObserved += 1;
-          result.skipped += 1;
+          if (isRepeatedProductiveContinuationRecovery(latestRun)) {
+            result.productiveContinuationObserved += 1;
+            result.skipped += 1;
+            continue;
+          }
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "issue.productive_terminal_continuation_recovery",
+            retryOfRunId: latestRun.id,
+          });
+          if (queued) {
+            if (isAutomaticContinuationRun(latestRun)) {
+              result.productiveContinuationObserved += 1;
+            } else {
+              result.continuationRequeued += 1;
+              result.issueIds.push(issue.id);
+            }
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
         // Non-productive succeeded run: most stranding pattern is the agent

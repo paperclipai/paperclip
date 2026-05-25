@@ -123,6 +123,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",
@@ -177,6 +178,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
 
     __liveUpdatesTestUtils.invalidateActivityQueries(
       queryClient as never,
+      __makePassthroughCoalescerForTests(queryClient as { invalidateQueries: (opts: unknown) => unknown }),
       "company-1",
       {
         entityType: "issue",

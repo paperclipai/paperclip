@@ -527,6 +527,10 @@ describe("IssueProperties", () => {
       nativeSetter?.call(searchInput, "remote");
       searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+    await flush();
 
     await waitForAssertion(() => {
       // Upstream changed PICKER_RESULT_LIMIT from 50 to 20.

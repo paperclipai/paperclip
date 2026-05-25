@@ -829,13 +829,13 @@ function invalidateActivityQueries(
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          coalescer.byKey({ queryKey: queryKeys.issues.documents(ref), refetchType });
           if (documentKey) {
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+            coalescer.byKey({ queryKey: queryKeys.issues.document(ref, documentKey), refetchType });
+            coalescer.byKey({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), refetchType });
           } else {
-            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
+            coalescer.byKey({ queryKey: ["issues", "document", ref], refetchType });
+            coalescer.byKey({ queryKey: ["issues", "document-revisions", ref], refetchType });
           }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
