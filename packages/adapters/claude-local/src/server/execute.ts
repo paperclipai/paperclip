@@ -57,6 +57,7 @@ import {
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
+import { applyRoleSkillFilter } from "./role-skill-manifest.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
@@ -425,7 +426,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
+  const resolvedSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
+  const desiredSkillNames = applyRoleSkillFilter(
+    resolvedSkillNames,
+    agent.name,
+    async (elided) => {
+      await onLog(
+        "stdout",
+        `[paperclip] Role skill filter (${agent.name}): elided ${elided.length} skill(s): ${elided.join(", ")}\n`,
+      );
+    },
+  );
   // When instructionsFilePath is configured, build a stable content-addressed
   // file that includes both the file content and the path directive, so we only
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
