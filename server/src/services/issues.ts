@@ -106,6 +106,9 @@ function assertTransition(from: string, to: string) {
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
   }
+  if (TERMINAL_ISSUE_STATUSES.has(from) && !TERMINAL_ISSUE_STATUSES.has(to)) {
+    throw conflict(`Cannot transition terminal issue from ${from} to ${to}`);
+  }
 }
 
 function applyStatusSideEffects(
@@ -799,7 +802,7 @@ async function clearTerminalBlockersForIssue(
         eq(issueRelations.companyId, companyId),
         eq(issueRelations.relatedIssueId, issueId),
         eq(issueRelations.type, "blocks"),
-        inArray(issues.status, [...TERMINAL_ISSUE_STATUSES]),
+        eq(issues.status, "done"),
       ),
     );
   const terminalBlockerIssueIds = terminalBlockerRows.map((row) => row.blockerIssueId);
@@ -815,6 +818,48 @@ async function clearTerminalBlockersForIssue(
         inArray(issueRelations.issueId, terminalBlockerIssueIds),
       ),
     );
+}
+
+async function autoUnblockResolvedDependents(
+  dbOrTx: Pick<Db, "select" | "update">,
+  companyId: string,
+  blockerIssueId: string,
+) {
+  const candidates = await dbOrTx
+    .select({
+      id: issues.id,
+      status: issues.status,
+    })
+    .from(issueRelations)
+    .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issues.status, "blocked"),
+      ),
+    );
+  if (candidates.length === 0) return;
+
+  const candidateIds = candidates.map((candidate) => candidate.id);
+  const readinessMap = await listIssueDependencyReadinessMap(dbOrTx, companyId, candidateIds);
+  const now = new Date();
+  for (const candidateId of candidateIds) {
+    const readiness = readinessMap.get(candidateId);
+    if (!readiness || !readiness.allBlockersDone || readiness.unresolvedBlockerCount > 0) continue;
+    await dbOrTx
+      .update(issues)
+      .set({
+        status: "todo",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, candidateId), eq(issues.status, "blocked")));
+  }
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -5496,8 +5541,11 @@ export function issueService(db: Db) {
                   eq(issueRelations.relatedIssueId, parsedIncident.issueId),
                   eq(issueRelations.type, "blocks"),
                 ),
-              );
+            );
           }
+        }
+        if (issueData.status === "done" && existing.status !== "done") {
+          await autoUnblockResolvedDependents(tx, existing.companyId, existing.id);
         }
         return enriched;
       };
@@ -5576,6 +5624,13 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      const currentStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0]?.status ?? null);
+      if (!currentStatus) throw notFound("Issue not found");
+      assertTransition(currentStatus, "in_progress");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -5652,6 +5707,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+      assertTransition(current.status, "in_progress");
 
       if (
         current.assigneeAgentId === agentId &&
@@ -5923,6 +5979,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
+        assertTransition(existing.status, "todo");
         if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
           throw conflict("Only assignee can release issue");
         }
@@ -5971,6 +6028,7 @@ export function issueService(db: Db) {
         const existing = await tx
           .select({
             id: issues.id,
+            status: issues.status,
             checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
           })
@@ -5978,6 +6036,7 @@ export function issueService(db: Db) {
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+        assertTransition(existing.status, "todo");
 
         const patch: Partial<typeof issues.$inferInsert> = {
           checkoutRunId: null,
