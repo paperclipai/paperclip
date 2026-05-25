@@ -45,7 +45,6 @@ from figma_bot.job_queue import (
     submit_switch_job,
 )
 
-
 MAIN_PY = Path(__file__).resolve().parents[1] / "src" / "figma_bot" / "__main__.py"
 
 
