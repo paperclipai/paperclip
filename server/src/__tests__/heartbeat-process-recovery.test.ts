@@ -2985,8 +2985,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "succeeded",
       livenessState: "advanced",
     });
-    const heartbeat = heartbeatService(db);
-
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(sourceIssue).toMatchObject({
       status: "in_progress",
