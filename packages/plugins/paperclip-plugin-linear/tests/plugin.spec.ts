@@ -150,6 +150,7 @@ describe("paperclip-plugin-linear", () => {
         teamId: "team-1",
         syncComments: true,
         syncDirection: "bidirectional",
+        disableLinearOriginatedCreates: false,
       },
     });
     await plugin.definition.setup(harness.ctx);
@@ -1272,7 +1273,57 @@ describe("paperclip-plugin-linear", () => {
   // -----------------------------------------------------------------------
 
   describe("webhook: duplicate issue prevention", () => {
-    it("creates a Paperclip issue from Linear webhook", async () => {
+    it("skips creating a Paperclip issue from Linear webhook by default", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      const createSpy = vi.spyOn(harness.ctx.issues, "create");
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "create",
+          data: {
+            id: "lin-default-skip-1",
+            identifier: "LUC-49",
+            title: "Skipped from Linear",
+            description: "Test",
+            priority: 3,
+            state: { type: "started", name: "In Progress" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+        requestId: "test-webhook-req-default-skip",
+      });
+
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(syncModule.createLink).not.toHaveBeenCalled();
+      expect(harness.activity.some((a) => a.message === "issue.synced_from_linear")).toBe(false);
+      expect(
+        harness.logs.some(
+          (l) => l.level === "info" &&
+            l.message.includes("Skipping Linear issue.create webhook for LUC-49") &&
+            l.message.includes("disableLinearOriginatedCreates=true"),
+        ),
+      ).toBe(true);
+    });
+
+    it("creates a Paperclip issue from Linear webhook when disableLinearOriginatedCreates is false", async () => {
       await harness.ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
         "comp-1",
@@ -1301,6 +1352,74 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.createLink).toHaveBeenCalled();
     });
 
+    it("syncs issue updates even when Linear-originated creates are disabled", async () => {
+      harness.setConfig({ disableLinearOriginatedCreates: true });
+      syncModule.getLinkByLinear.mockResolvedValueOnce({
+        paperclipIssueId: "iss-linked-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-linked-1",
+        linearIdentifier: "LUC-52",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-52",
+        syncDirection: "bidirectional",
+        lastLinearStateType: "backlog",
+      });
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "update",
+          data: {
+            id: "lin-linked-1",
+            identifier: "LUC-52",
+            title: "Updated linked issue",
+            state: { type: "started", name: "In Progress" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+        requestId: "test-webhook-req-update-flag",
+      });
+
+      expect(syncModule.syncFromLinear).toHaveBeenCalledOnce();
+    });
+
+    it("bridges comments even when Linear-originated creates are disabled", async () => {
+      harness.setConfig({ disableLinearOriginatedCreates: true });
+      const paperclipIssue = await harness.ctx.issues.create({
+        companyId: "comp-1",
+        title: "Issue with Linear comments",
+      });
+      syncModule.getLinkByLinear.mockResolvedValueOnce({
+        paperclipIssueId: paperclipIssue.id,
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-linked-comment-1",
+        linearIdentifier: "LUC-53",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-53",
+        syncDirection: "bidirectional",
+      });
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Comment",
+          action: "create",
+          data: {
+            id: "lin-comment-flag-1",
+            body: "Still sync me",
+            issue: { id: "lin-linked-comment-1" },
+            user: { name: "Linear Author" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+        requestId: "test-webhook-req-comment-flag",
+      });
+
+      const comments = await harness.ctx.issues.listComments(paperclipIssue.id, "comp-1");
+      expect(comments.some((c) => c.body.includes("Still sync me"))).toBe(true);
+    });
+
     it("BLO-3780: writes Paperclip back-link on webhook-driven creation", async () => {
       // PR-130 (Blockcast/paperclip#130) wired the back-link write into the
       // polling import path only. The webhook handler creates the mirror
@@ -1318,6 +1437,7 @@ describe("paperclip-plugin-linear", () => {
           syncComments: true,
           syncDirection: "bidirectional",
           paperclipBaseUrl: "https://paperclip.test",
+          disableLinearOriginatedCreates: false,
           // best-effort=true to avoid throwing if the mocked Linear fetch
           // returns something unexpected — assertion is on the call itself.
           linearBacklinkBestEffort: true,
@@ -1665,6 +1785,7 @@ describe("paperclip-plugin-linear", () => {
         defaultProjectId: "pap-proj-default",
         syncComments: true,
         syncDirection: "bidirectional",
+        disableLinearOriginatedCreates: false,
       });
 
       await harness.ctx.state.set(

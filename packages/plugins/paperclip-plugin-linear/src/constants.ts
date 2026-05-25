@@ -103,4 +103,5 @@ export const DEFAULT_CONFIG = {
   defaultProjectId: "",
   syncComments: true,
   syncDirection: "bidirectional" as const,
+  disableLinearOriginatedCreates: true,
 };

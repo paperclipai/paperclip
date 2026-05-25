@@ -112,6 +112,13 @@ const manifest: PaperclipPluginManifestV1 = {
         enum: ["bidirectional", "linear-to-paperclip", "paperclip-to-linear"],
         default: DEFAULT_CONFIG.syncDirection,
       },
+      disableLinearOriginatedCreates: {
+        type: "boolean",
+        title: "Disable Linear-Originated Creates",
+        description:
+          "When true, Linear issue.create webhooks do not auto-create Paperclip issues. Use the Link Linear Issue action to pair issues explicitly. Set to false to restore auto-mirroring.",
+        default: DEFAULT_CONFIG.disableLinearOriginatedCreates,
+      },
       paperclipBaseUrl: {
         type: "string",
         title: "Paperclip base URL",
