@@ -12,6 +12,7 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  CalendarDays,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -96,6 +97,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/training" label="Training" icon={CalendarDays} textBadge="New" textBadgeTone="amber" />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
