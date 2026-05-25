@@ -110,6 +110,32 @@ async function hookDecision(opts: {
   }
   const stage = videoTitleMatch[1];
   const requestId = videoTitleMatch[2];
+  // Bug H mirror: read brief.json BEFORE upload (which cleans uploaded
+  // files from the sandbox) so we can include rubric_pass +
+  // ai_disclosure_required in the final_cut_ready emit downstream.
+  // Best-effort -- read or parse failure degrades to null silently.
+  let editStageBrief: {
+    rubric_pass?: Record<string, boolean>;
+    ai_disclosure_required?: boolean;
+  } | null = null;
+  if (stage === "edit") {
+    const briefPath = path.join(opts.agentHomeDir, "artifacts", "out", "brief.json");
+    try {
+      const raw = await fsp.readFile(briefPath, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const rubricPass =
+        parsed.rubric_pass && typeof parsed.rubric_pass === "object"
+          ? (parsed.rubric_pass as Record<string, boolean>)
+          : undefined;
+      const aiDisclosure =
+        typeof parsed.ai_disclosure_required === "boolean"
+          ? parsed.ai_disclosure_required
+          : undefined;
+      editStageBrief = { rubric_pass: rubricPass, ai_disclosure_required: aiDisclosure };
+    } catch {
+      editStageBrief = null;
+    }
+  }
   const result = await uploadWorkerArtifacts({
     agentHomeDir: opts.agentHomeDir,
     requestId,
@@ -132,6 +158,37 @@ async function hookDecision(opts: {
         agent_id: "test-agent-id",
       },
     });
+    // Bug H mirror: emit video.ad.final_cut_ready when the edit stage
+    // completes AND both final.mp4 + brief.json uploaded.
+    if (
+      stage === "edit" &&
+      result.uploaded.includes("final.mp4") &&
+      result.uploaded.includes("brief.json")
+    ) {
+      opts.onLogActivity({
+        action: "video.ad.final_cut_ready",
+        details: {
+          request_id: requestId,
+          mp4_path: `agent-fs:/${requestId}/edit/final.mp4`,
+          brief_path: `agent-fs:/${requestId}/edit/brief.json`,
+          ...(result.uploaded.includes("captions.srt")
+            ? { srt_path: `agent-fs:/${requestId}/edit/captions.srt` }
+            : {}),
+          ...(result.uploaded.includes("caption_variants.json")
+            ? { caption_variants_path: `agent-fs:/${requestId}/edit/caption_variants.json` }
+            : {}),
+          ...(result.uploaded.includes("caption_text.txt")
+            ? { caption_text_path: `agent-fs:/${requestId}/edit/caption_text.txt` }
+            : {}),
+          ...(editStageBrief?.rubric_pass ? { rubric_pass: editStageBrief.rubric_pass } : {}),
+          ...(editStageBrief?.ai_disclosure_required !== undefined
+            ? { ai_disclosure_required: editStageBrief.ai_disclosure_required }
+            : {}),
+          run_id: "test-run-id",
+          agent_id: "test-agent-id",
+        },
+      });
+    }
   }
   return { calledUpload: true, result };
 }
@@ -553,6 +610,236 @@ describe("heartbeat artifact upload integration (Phase 3.5 Step 2)", () => {
       expect(env["GUILD_ID"]).toBe(guildAgent.id);
       expect(env["GUILD_SLUG"]).toBe(guildAgent.name);
       expect(env["WORKER_LEARNINGS_PATH"]).toBeTruthy();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bug H: video.ad.final_cut_ready emit on edit stage completion.
+  //
+  // Before this fix, the operator had to manually INSERT a
+  // video.ad.final_cut_ready row into activity_log after each edit
+  // worker exited so the ceo-chat notifier would dispatch the 5-file
+  // Telegram bundle. The fix reads brief.json BEFORE the upload helper
+  // cleans uploaded files from the sandbox, then emits the row right
+  // after the existing video.artifacts.uploaded emit, but ONLY when
+  // both final.mp4 + brief.json land in agent-fs.
+  // ---------------------------------------------------------------------------
+  describe("Bug H: video.ad.final_cut_ready emit", () => {
+    async function writeBriefJson(
+      agentHomeDir: string,
+      contents: Record<string, unknown>,
+    ): Promise<void> {
+      const outDir = path.join(agentHomeDir, "artifacts", "out");
+      await fsp.mkdir(outDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(outDir, "brief.json"),
+        JSON.stringify(contents),
+      );
+    }
+
+    it("emits video.ad.final_cut_ready when edit stage uploads final.mp4 + brief.json", async () => {
+      const agentHome = await makeArtifactFiles(tmpRoot, [
+        "final.mp4",
+        "captions.srt",
+        "caption_variants.json",
+        "caption_text.txt",
+      ]);
+      await writeBriefJson(agentHome, {
+        ai_disclosure_required: true,
+        rubric_pass: {
+          item_1_no_ai_tells: true,
+          item_5_multi_source_visuals: false,
+        },
+      });
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      const { calledUpload } = await hookDecision({
+        issueTitle: "video-edit/req-bug-h-happy",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      expect(calledUpload).toBe(true);
+      // Both video.artifacts.uploaded AND video.ad.final_cut_ready emit.
+      expect(logActivitySpy).toHaveBeenCalledTimes(2);
+
+      const finalCutCall = logActivitySpy.mock.calls
+        .map((c) => c[0] as LogActivityCall)
+        .find((c) => c.action === "video.ad.final_cut_ready");
+      expect(finalCutCall).toBeDefined();
+      expect(finalCutCall!.details.request_id).toBe("req-bug-h-happy");
+      expect(finalCutCall!.details.mp4_path).toBe(
+        "agent-fs:/req-bug-h-happy/edit/final.mp4",
+      );
+      expect(finalCutCall!.details.srt_path).toBe(
+        "agent-fs:/req-bug-h-happy/edit/captions.srt",
+      );
+      expect(finalCutCall!.details.caption_variants_path).toBe(
+        "agent-fs:/req-bug-h-happy/edit/caption_variants.json",
+      );
+      expect(finalCutCall!.details.caption_text_path).toBe(
+        "agent-fs:/req-bug-h-happy/edit/caption_text.txt",
+      );
+      expect(finalCutCall!.details.brief_path).toBe(
+        "agent-fs:/req-bug-h-happy/edit/brief.json",
+      );
+      expect(finalCutCall!.details.ai_disclosure_required).toBe(true);
+      expect(finalCutCall!.details.rubric_pass).toEqual({
+        item_1_no_ai_tells: true,
+        item_5_multi_source_visuals: false,
+      });
+    });
+
+    it("does NOT emit final_cut_ready for non-edit stages even when both files upload", async () => {
+      // Research stage with a (suspicious) final.mp4 + brief.json on
+      // disk should still NOT trigger the final-cut path.
+      const agentHome = await makeArtifactFiles(tmpRoot, [
+        "final.mp4",
+        "brief.json",
+      ]);
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      await hookDecision({
+        issueTitle: "video-research/req-non-edit",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      const actions = logActivitySpy.mock.calls.map(
+        (c) => (c[0] as LogActivityCall).action,
+      );
+      expect(actions).toContain("video.artifacts.uploaded");
+      expect(actions).not.toContain("video.ad.final_cut_ready");
+    });
+
+    it("does NOT emit final_cut_ready when final.mp4 is missing from uploaded", async () => {
+      // Edit stage, brief.json present, but worker never produced
+      // final.mp4 -- the emit gate must hold.
+      const agentHome = await makeArtifactFiles(tmpRoot, [
+        "captions.srt",
+        "caption_variants.json",
+      ]);
+      await writeBriefJson(agentHome, { ai_disclosure_required: false });
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      await hookDecision({
+        issueTitle: "video-edit/req-no-mp4",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      const actions = logActivitySpy.mock.calls.map(
+        (c) => (c[0] as LogActivityCall).action,
+      );
+      expect(actions).toContain("video.artifacts.uploaded");
+      expect(actions).not.toContain("video.ad.final_cut_ready");
+    });
+
+    it("does NOT emit final_cut_ready when brief.json is missing from uploaded", async () => {
+      // Edit stage, final.mp4 present but no brief.json on disk: the
+      // payload would lack rubric details + downstream fetch order
+      // depends on brief.json existing in agent-fs, so the emit gate
+      // requires brief.json in uploaded[].
+      const agentHome = await makeArtifactFiles(tmpRoot, [
+        "final.mp4",
+        "captions.srt",
+      ]);
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      await hookDecision({
+        issueTitle: "video-edit/req-no-brief",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      const actions = logActivitySpy.mock.calls.map(
+        (c) => (c[0] as LogActivityCall).action,
+      );
+      expect(actions).toContain("video.artifacts.uploaded");
+      expect(actions).not.toContain("video.ad.final_cut_ready");
+    });
+
+    it("omits caption path fields when only final.mp4 + brief.json upload (partial-upload guard)", async () => {
+      // Worker produced final.mp4 + brief.json but no captions.srt /
+      // caption_variants.json / caption_text.txt -- e.g. captioning
+      // step failed silently. We still emit final_cut_ready (the gate
+      // passes on mp4 + brief), but the optional caption paths must
+      // be OMITTED so the operator's Telegram caption does not list
+      // paths that will 404 on the notifier's fetch.
+      const agentHome = await makeArtifactFiles(tmpRoot, ["final.mp4"]);
+      await writeBriefJson(agentHome, { ai_disclosure_required: false });
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      await hookDecision({
+        issueTitle: "video-edit/req-partial-upload",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      const finalCutCall = logActivitySpy.mock.calls
+        .map((c) => c[0] as LogActivityCall)
+        .find((c) => c.action === "video.ad.final_cut_ready");
+      expect(finalCutCall).toBeDefined();
+      expect(finalCutCall!.details.mp4_path).toBe(
+        "agent-fs:/req-partial-upload/edit/final.mp4",
+      );
+      expect(finalCutCall!.details.brief_path).toBe(
+        "agent-fs:/req-partial-upload/edit/brief.json",
+      );
+      expect(finalCutCall!.details.srt_path).toBeUndefined();
+      expect(finalCutCall!.details.caption_variants_path).toBeUndefined();
+      expect(finalCutCall!.details.caption_text_path).toBeUndefined();
+    });
+
+    it("emits final_cut_ready with NO rubric_pass when brief.json fails to parse", async () => {
+      const agentHome = await makeArtifactFiles(tmpRoot, [
+        "final.mp4",
+        "captions.srt",
+      ]);
+      // Malformed JSON -- read succeeds, parse throws, brief cache
+      // stays null. But brief.json is still uploaded (the upload helper
+      // does not validate JSON), so the gate trips and we emit a
+      // bare-bones final_cut_ready row.
+      const outDir = path.join(agentHome, "artifacts", "out");
+      await fsp.writeFile(path.join(outDir, "brief.json"), "{not-json");
+      const client = new FakeUploadClient();
+      const logActivitySpy = vi.fn();
+
+      await hookDecision({
+        issueTitle: "video-edit/req-malformed-brief",
+        runStatus: "succeeded",
+        agentHomeDir: agentHome,
+        uploadClient: client,
+        onLogActivity: logActivitySpy,
+      });
+
+      const finalCutCall = logActivitySpy.mock.calls
+        .map((c) => c[0] as LogActivityCall)
+        .find((c) => c.action === "video.ad.final_cut_ready");
+      expect(finalCutCall).toBeDefined();
+      expect(finalCutCall!.details.request_id).toBe("req-malformed-brief");
+      expect(finalCutCall!.details.rubric_pass).toBeUndefined();
+      expect(finalCutCall!.details.ai_disclosure_required).toBeUndefined();
+      // Path strings are constructed from the requestId so they survive
+      // a brief.json parse failure.
+      expect(finalCutCall!.details.mp4_path).toBe(
+        "agent-fs:/req-malformed-brief/edit/final.mp4",
+      );
     });
   });
 });

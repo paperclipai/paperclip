@@ -6897,6 +6897,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       skipped: { reason: "no-artifacts-dir" } | null;
       artifactsOutCleaned: boolean;
     } | null = null;
+    // Bug H fix: cache the edit-stage brief.json BEFORE
+    // uploadWorkerArtifacts deletes uploaded files from
+    // artifacts/out/. Used below to populate the
+    // video.ad.final_cut_ready emit so the ceo-chat notifier can
+    // dispatch the 5-file Telegram bundle without a manual SQL INSERT.
+    let editStageBrief: {
+      rubric_pass?: Record<string, boolean>;
+      ai_disclosure_required?: boolean;
+    } | null = null;
     try {
       const videoTitleMatch =
         typeof args.issueTitle === "string"
@@ -6905,6 +6914,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (videoTitleMatch && args.runStatus === "succeeded") {
         const uploadStage = videoTitleMatch[1];
         const uploadRequestId = videoTitleMatch[2];
+        if (uploadStage === "edit") {
+          const briefPath = path.join(
+            args.guildSandboxDir,
+            "artifacts",
+            "out",
+            "brief.json",
+          );
+          try {
+            const raw = await fs.readFile(briefPath, "utf-8");
+            const parsed = JSON.parse(raw) as Record<string, unknown>;
+            const rubricPass =
+              parsed.rubric_pass && typeof parsed.rubric_pass === "object"
+                ? (parsed.rubric_pass as Record<string, boolean>)
+                : undefined;
+            const aiDisclosure =
+              typeof parsed.ai_disclosure_required === "boolean"
+                ? parsed.ai_disclosure_required
+                : undefined;
+            editStageBrief = { rubric_pass: rubricPass, ai_disclosure_required: aiDisclosure };
+          } catch (briefErr) {
+            logger.warn(
+              {
+                err: briefErr,
+                runId: args.run.id,
+                agentId: args.agent.id,
+                briefPath,
+              },
+              "video-guild edit-stage: failed to read brief.json; final_cut_ready emit will lack rubric details",
+            );
+          }
+        }
         // Resolve upload client: prefer injected (tests / operator
         // override), fall back to constructing from env vars.
         let uploadClient: ArtifactUploadClient | null =
@@ -6979,6 +7019,62 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               { err: activityErr, runId: args.run.id, agentId: args.agent.id },
               "video-guild artifact upload: failed to write activity_log(video.artifacts.uploaded)",
             );
+          }
+          // Bug H fix: emit video.ad.final_cut_ready when the edit
+          // stage completes AND both final.mp4 and brief.json
+          // uploaded. The ceo-chat notifier polls this row and
+          // dispatches the 5-file Telegram bundle. Before this,
+          // the operator had to manually INSERT the row each time.
+          if (
+            uploadStage === "edit" &&
+            videoArtifactsUploaded.uploaded.includes("final.mp4") &&
+            videoArtifactsUploaded.uploaded.includes("brief.json")
+          ) {
+            try {
+              await logActivity(db, {
+                companyId: args.agent.companyId,
+                actorType: "agent",
+                actorId: args.agent.id,
+                action: "video.ad.final_cut_ready",
+                entityType: "heartbeat_run",
+                entityId: args.run.id,
+                agentId: args.agent.id,
+                runId: args.run.id,
+                details: {
+                  request_id: uploadRequestId,
+                  // mp4_path + brief_path are unconditional: the
+                  // outer gate already requires both in uploaded[].
+                  mp4_path: `agent-fs:/${uploadRequestId}/edit/final.mp4`,
+                  brief_path: `agent-fs:/${uploadRequestId}/edit/brief.json`,
+                  // Optional caption files: emit ONLY when they
+                  // actually landed in agent-fs so the operator's
+                  // Telegram caption does not list paths to files
+                  // that 404'd on dispatch.
+                  ...(videoArtifactsUploaded.uploaded.includes("captions.srt")
+                    ? { srt_path: `agent-fs:/${uploadRequestId}/edit/captions.srt` }
+                    : {}),
+                  ...(videoArtifactsUploaded.uploaded.includes("caption_variants.json")
+                    ? { caption_variants_path: `agent-fs:/${uploadRequestId}/edit/caption_variants.json` }
+                    : {}),
+                  ...(videoArtifactsUploaded.uploaded.includes("caption_text.txt")
+                    ? { caption_text_path: `agent-fs:/${uploadRequestId}/edit/caption_text.txt` }
+                    : {}),
+                  ...(editStageBrief?.rubric_pass
+                    ? { rubric_pass: editStageBrief.rubric_pass }
+                    : {}),
+                  ...(editStageBrief?.ai_disclosure_required !== undefined
+                    ? { ai_disclosure_required: editStageBrief.ai_disclosure_required }
+                    : {}),
+                  run_id: args.run.id,
+                  agent_id: args.agent.id,
+                },
+              });
+            } catch (finalCutErr) {
+              logger.warn(
+                { err: finalCutErr, runId: args.run.id, agentId: args.agent.id },
+                "video-guild final_cut_ready: failed to write activity_log(video.ad.final_cut_ready)",
+              );
+            }
           }
         }
       }
