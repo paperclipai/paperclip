@@ -1,9 +1,18 @@
-"""Figma session probing + Google-SSO auto-login.
+"""Figma session probing + direct email/password auto-login.
 
 `is_logged_in` is the cheap probe (in-page fetch to
-/api/user/profile). `auto_login` drives the full SSO flow when the probe
-returns 401, using `rfb.rfb_click` to bypass Camoufox's
-isTrusted=false trap on React-protected buttons.
+/api/user/profile). `auto_login` drives Figma's native email/password
+form (NOT Google SSO) when the probe returns 401, using `rfb.rfb_click`
+with a chrome offset to bypass Camoufox's isTrusted=false trap on the
+React-protected "Log in" button.
+
+Why not Google SSO: when the identity is in the ccrotate pool (e.g.
+ally@blockcast.net), Codex device-auth churn keeps rotating Google's
+session server-side, invalidating any figma.session we obtain via the
+OAuth chain (see `figma_bot_ccrotate_workspace_sso_invalidation.md`).
+Figma's native password login lives entirely server-side at figma.com
+and is immune to Google session rotation. Identities.json must hold
+a real figma password (not Google's) for this to work.
 """
 
 from __future__ import annotations
@@ -65,7 +74,7 @@ def refresh_status(page: Page) -> bool:
 
 
 def auto_login(pm: ProfileManager) -> None:
-    """Drive Google SSO for pm.identity using stored credentials.
+    """Drive Figma's native email/password form for pm.identity.
 
     Single attempt; raises on failure (caller catches + records reason).
     Lazy-imports PWTimeout so this module is importable without playwright.
@@ -80,81 +89,101 @@ def auto_login(pm: ProfileManager) -> None:
     password = entry.get("password")
     if not password:
         raise RuntimeError(f"identity {pm.identity} has no password")
+    if password.startswith("PLACEHOLDER"):
+        raise RuntimeError(
+            f"identity {pm.identity} password is still the placeholder; "
+            f"update paperclip-figma-bot-identities Secret with the real figma password"
+        )
     page = pm.page
 
-    def _refetch_page_after_target_closed():
-        nonlocal page
-        try:
-            pages = pm._context.pages
-            page = pages[0] if pages else pm._context.new_page()
-            pm.page = page
-            state.log(
-                f"auto_login[{pm.identity}]: re-acquired page after TargetClosedError"
-            )
-        except Exception as e:
-            raise RuntimeError(f"page re-acquire failed: {type(e).__name__}: {e}") from e
-
-    state.log(f"auto_login[{pm.identity}]: starting")
+    state.log(f"auto_login[{pm.identity}]: starting (figma email+password)")
     try:
         page.goto("https://www.figma.com/login", wait_until="domcontentloaded", timeout=20_000)
 
-        loc = page.locator('button:has-text("Continue with Google")')
-        loc.wait_for(state="visible", timeout=10_000)
-        bbox = loc.bounding_box()
-        if not bbox:
-            raise RuntimeError("Continue with Google button has no bbox")
-        # Empirical default: 1:1 mapping at offset (0,0) within Xvfb.
-        cx = int(round(bbox["x"] + bbox["width"] / 2))
-        cy = int(round(bbox["y"] + bbox["height"] / 2))
-        state.log(f"auto_login[{pm.identity}]: RFB-click at xvfb=({cx},{cy})")
-        rfb_click(cx, cy)
-
-        page.wait_for_load_state("domcontentloaded", timeout=20_000)
+        # Wait for figma's own email + password form to be ready.
         try:
             page.wait_for_selector('input[type="email"]', state="visible", timeout=20_000)
         except PWTimeout:
             raise RuntimeError("email input did not appear within 20s") from None
-        page.evaluate(
-            "(email)=>{const em=document.querySelector('input[type=\"email\"]');"
-            "const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;"
-            "s.call(em,email);"
-            "em.dispatchEvent(new Event('input',{bubbles:true}));"
-            "em.dispatchEvent(new Event('change',{bubbles:true}));}",
-            pm.identity,
-        )
-        page.evaluate("document.getElementById('identifierNext').click()")
-
         try:
-            page.wait_for_selector('input[type="password"]', state="visible", timeout=30_000)
+            page.wait_for_selector('input[type="password"]', state="visible", timeout=5_000)
         except PWTimeout:
-            raise RuntimeError(
-                "password input did not appear within 30s (google challenge?)"
-            ) from None
-        page.evaluate(
-            "(pw)=>{const pe=document.querySelector('input[type=\"password\"]');"
-            "const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;"
-            "s.call(pe,pw);"
-            "pe.dispatchEvent(new Event('input',{bubbles:true}));"
-            "pe.dispatchEvent(new Event('change',{bubbles:true}));}",
-            password,
-        )
-        page.evaluate("document.getElementById('passwordNext').click()")
+            raise RuntimeError("password input did not appear within 5s") from None
 
+        # React-protected inputs: writing .value directly is silently
+        # ignored. The HTMLInputElement.prototype .value setter + input
+        # event is the standard React-bypass pattern.
+        page.evaluate(
+            "([email, pw]) => {"
+            "  const setter = Object.getOwnPropertyDescriptor("
+            "    window.HTMLInputElement.prototype, 'value').set;"
+            "  const em = document.querySelector('input[type=\"email\"]');"
+            "  const pe = document.querySelector('input[type=\"password\"]');"
+            "  setter.call(em, email);"
+            "  em.dispatchEvent(new Event('input', {bubbles: true}));"
+            "  em.dispatchEvent(new Event('change', {bubbles: true}));"
+            "  setter.call(pe, pw);"
+            "  pe.dispatchEvent(new Event('input', {bubbles: true}));"
+            "  pe.dispatchEvent(new Event('change', {bubbles: true}));"
+            "}",
+            [pm.identity, password],
+        )
+
+        # Click the "Log in" button via RFB pointer injection — same
+        # isTrusted=false trap as the prior Google-SSO path. bbox is
+        # viewport-relative CSS pixels; RFB pointer events are absolute
+        # Xvfb screen coordinates. Camoufox renders with browser chrome
+        # (~86 px URL+tab bar) on top, so we add mozInnerScreen{X,Y} to
+        # translate. See memory `camoufox_istrusted_false_rfb_workaround.md`.
+        login_btn = page.locator('button:has-text("Log in")')
+        try:
+            login_btn.wait_for(state="visible", timeout=5_000)
+        except PWTimeout:
+            raise RuntimeError("Log in button did not appear within 5s") from None
+        bbox = login_btn.bounding_box()
+        if not bbox:
+            raise RuntimeError("Log in button has no bbox")
+        screen_x = page.evaluate("() => window.mozInnerScreenX") or 0
+        screen_y = page.evaluate("() => window.mozInnerScreenY") or 0
+        cx = int(round(bbox["x"] + bbox["width"] / 2 + screen_x))
+        cy = int(round(bbox["y"] + bbox["height"] / 2 + screen_y))
+        state.log(
+            f"auto_login[{pm.identity}]: RFB-click 'Log in' at xvfb=({cx},{cy}) "
+            f"bbox=({bbox['x']:.0f},{bbox['y']:.0f}) "
+            f"chrome_offset=({screen_x},{screen_y})"
+        )
+        rfb_click(cx, cy)
+
+        # Wait for figma to navigate away from /login. A successful
+        # email+password login lands at /files/recent (or wherever
+        # the deep-link redirected from). A wrong password keeps the
+        # URL on /login with a visible error message.
         deadline = time.time() + 30
         last_url = None
         while time.time() < deadline:
             try:
                 u = page.url
-            except Exception:
-                _refetch_page_after_target_closed()
-                continue
+            except Exception as e:
+                raise RuntimeError(
+                    f"page closed mid-redirect: {type(e).__name__}: {str(e)[:120]}"
+                ) from e
             last_url = u
             if "://www.figma.com" in u and "/login" not in u:
                 break
             time.sleep(0.5)
         else:
-            if last_url and "challenge" in last_url:
-                raise RuntimeError(f"google_challenge_in_url:{last_url[:120]}")
+            # Still on /login — check for a visible error on the page
+            # before giving up so callers can distinguish "bad password"
+            # from "stuck".
+            try:
+                err = page.evaluate(
+                    "() => { const e = document.querySelector('[class*=\"error\"]'); "
+                    "return e ? (e.innerText || '').slice(0, 200) : ''; }"
+                ) or ""
+            except Exception:
+                err = ""
+            if err:
+                raise RuntimeError(f"figma_login_error:{err[:200]}")
             raise RuntimeError(f"login redirect timeout; last_url={last_url}")
         state.log(f"auto_login[{pm.identity}]: redirect settled at {page.url}")
     except RFBConnectFailed:
