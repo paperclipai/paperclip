@@ -20,10 +20,11 @@
 	# app.ops.* on Railway), this Caddy only sees `app.ops.*` traffic,
 	# so `{host}` would redirect to a non-existent `/login` on the
 	# Railway app. Send the user back to the Vercel auth portal —
-	# `OPS_PORTAL_URL` is set on the Railway service (default
-	# `https://ops.binelek.io` if unset, for the legacy host).
+	# `OPS_PORTAL_URL` is set on the Railway service (defaults to
+	# `https://ops.torinagi.com`; override if you need the legacy
+	# `https://ops.binelek.io` while both hosts are in flight).
 	handle_errors 401 {
-		redir {$OPS_PORTAL_URL:https://ops.binelek.io}/login 302
+		redir {$OPS_PORTAL_URL:https://ops.torinagi.com}/login 302
 	}
 
 	@websocket {

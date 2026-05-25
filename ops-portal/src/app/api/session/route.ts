@@ -11,14 +11,14 @@ import { AuthProxyError, OIDCConfigurationError, SessionInvalidError } from '@/l
 //   4. Redirects the browser to app.ops.binelek.io.
 
 const APP_URL =
-  process.env['APP_URL'] ?? 'https://app.ops.binelek.io';
+  process.env['APP_URL'] ?? 'https://app.ops.torinagi.com';
 
 // Cookie domain follows wherever the auth portal lives so the
 // jaban_session cookie is readable by the matching `app.ops.*` host.
-// Defaults to `.binelek.io` for the legacy host; flip
-// SESSION_COOKIE_DOMAIN=.torinagi.com once the cutover happens.
+// Defaults to `.torinagi.com` (the canonical going forward); set
+// SESSION_COOKIE_DOMAIN=.binelek.io to keep a binelek host working.
 const SESSION_COOKIE_DOMAIN =
-  process.env['SESSION_COOKIE_DOMAIN'] ?? '.binelek.io';
+  process.env['SESSION_COOKIE_DOMAIN'] ?? '.torinagi.com';
 
 export async function GET(): Promise<NextResponse> {
   try {
@@ -50,7 +50,7 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     if (err instanceof SessionInvalidError) {
       return NextResponse.redirect(
-        new URL('/login', process.env['NEXTAUTH_URL'] ?? 'https://ops.binelek.io'),
+        new URL('/login', process.env['NEXTAUTH_URL'] ?? 'https://ops.torinagi.com'),
         { status: 302 }
       );
     }
