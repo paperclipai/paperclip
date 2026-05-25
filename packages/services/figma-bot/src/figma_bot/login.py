@@ -154,24 +154,41 @@ def auto_login(pm: ProfileManager) -> None:
         )
         rfb_click(cx, cy)
 
-        # Probe figma.session validity directly instead of waiting for
-        # a URL redirect. Live observation 2026-05-25 03:27 showed
-        # figma sets the session cookie successfully (visible toast
-        # "Authenticated as ...") but does NOT redirect when /login
-        # is loaded directly (no deep-link to bounce back to). The
-        # `is_logged_in` probe hits /api/user/profile which is the
-        # cookie's real-world authority — if 200, we're in.
+        # Two independent success signals — accept whichever fires first:
+        #   (A) URL navigates away from /login — figma redirected us to
+        #       the workspace, definitive proof of auth.
+        #   (B) /api/user/profile returns 200 — the cookie's real-world
+        #       authority.
+        # Live observation 2026-05-25 03:46: (A) actually fires reliably
+        # after a successful direct-/login submit (the redirect goes to
+        # /files/team/<team_id>/recents-and-sharing?fuid=<user_id>).
+        # (B) sometimes returns HTTP 400 transiently right after the
+        # session is set — possibly a CSRF / Origin freshness issue —
+        # so it's the slower-but-eventually-correct signal.
         deadline = time.time() + 45
-        time.sleep(2)  # let figma's server set the cookie
+        time.sleep(2)  # let figma's server set the cookie + start redirect
         last_reason = ""
+        last_url = ""
         while time.time() < deadline:
+            try:
+                u = page.url
+            except Exception as e:
+                raise RuntimeError(
+                    f"page closed mid-probe: {type(e).__name__}: {str(e)[:120]}"
+                ) from e
+            last_url = u
+            if "://www.figma.com" in u and "/login" not in u:
+                state.log(f"auto_login[{pm.identity}]: URL settled at {u}")
+                return
+
             li, reason = is_logged_in(page)
             if li:
-                state.log(f"auto_login[{pm.identity}]: probe ok at {page.url}")
+                state.log(f"auto_login[{pm.identity}]: probe ok at {u}")
                 return
             last_reason = reason
-            # Also surface any visible error message that would tell us
-            # this is a bad-password situation (no point waiting further).
+
+            # Surface visible errors immediately so bad-password attempts
+            # don't wait the full timeout.
             try:
                 err = page.evaluate(
                     "() => { const e = document.querySelector('[class*=\"error\"]'); "
@@ -183,8 +200,7 @@ def auto_login(pm: ProfileManager) -> None:
                 raise RuntimeError(f"figma_login_error:{err[:200]}")
             time.sleep(2)
         raise RuntimeError(
-            f"login probe timeout after 45s; last_probe={last_reason}; "
-            f"last_url={page.url}"
+            f"login timeout after 45s; last_probe={last_reason}; last_url={last_url}"
         )
     except RFBConnectFailed:
         raise
