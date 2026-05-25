@@ -1071,6 +1071,7 @@ export const PLUGIN_EVENT_TYPES = [
   "issue.assignment_wakeup_requested",
   "agent.created",
   "agent.updated",
+  "agent.deleted",
   "agent.status_changed",
   "agent.run.started",
   "agent.run.finished",
