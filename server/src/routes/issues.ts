@@ -3654,6 +3654,16 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    if (
+      transition.workflowControlledAssignment &&
+      transition.decision?.outcome === "changes_requested" &&
+      updateFields.status === "in_progress"
+    ) {
+      updateFields.checkoutRunId = null;
+      updateFields.executionRunId = null;
+      updateFields.executionAgentNameKey = null;
+      updateFields.executionLockedAt = null;
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
