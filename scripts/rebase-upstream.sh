@@ -54,6 +54,31 @@
 #       discovered the upstream queue already had 7 PRs for this. When
 #       #5850 merges, the rebase will detect the patch as already-applied
 #       (cherry-pick equivalence) and our commit drops out cleanly.
+#   - paperclipai/paperclip#6592  enable plugin secrets.read-ref with
+#                                 company-scoped resolution (the unlock for
+#                                 PLUGIN_SECRET_REFS_DISABLED gate from #5429)
+#       Tracking issue: paperclipai/paperclip#6057. Stack predecessors
+#       (#6148 plugin-config-by-company, #6173 worker-RPC plumbing) are
+#       NOT required — #6592 derives companyId from the existing RPC
+#       ActorContext and works on upstream master directly.
+#       Carried as 4 cherry-picked commits (the 4 linear feature commits
+#       from the PR — merge commit 82b7a6dd and post-merge cleanup
+#       8fe5c531 are PR-branch-internal artifacts not needed on our master):
+#         05008772 → 0d9588ed  feat(server): enable plugin secrets.read-ref
+#         90acacc7 → 0a2b2b91  test(server): align plugin config authz
+#         d0deb4b2 → 7dcf9cdf  fix(server): clarify disabled message
+#         dab4a752 → ad45dae4  fix(server,sdk): enforce company scope
+#       Files: server/src/services/plugin-secrets-handler.ts,
+#       server/src/routes/plugins.ts, packages/plugins/sdk/src/protocol.ts,
+#       packages/plugins/sdk/src/worker-rpc-host.ts (plus tests).
+#       Why this matters: PR #5429 (merged upstream 2026-05-09 as 778e775c)
+#       added an unconditional fail-closed throw in createPluginSecretsHandler;
+#       our 2026-05-12 rebase pulled it in, silently breaking every
+#       transcript-fetch in downstream plugins from that date forward.
+#       Opt-out env: PAPERCLIP_PLUGIN_SECRET_REFS_DISABLED=true restores
+#       fail-closed behavior. When #6592 lands upstream, the rebase will
+#       detect our four cherry-picks as previously-applied and drop them
+#       out cleanly.
 #
 # Plugin-side carries (separate private repos; same retire-on-merge logic):
 #   - gooseworks-ai/gooseworks-skills#2  quote argument-hint in
