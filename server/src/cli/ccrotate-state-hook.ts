@@ -116,6 +116,12 @@ function runCcrotate(
   return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status };
 }
 
+function adapterToTarget(adapterType: string): "claude" | "codex" | null {
+  if (/(^|_)(claude)(_|$)/.test(adapterType)) return "claude";
+  if (/(^|_)(opencode|codex)(_|$)/.test(adapterType)) return "codex";
+  return null;
+}
+
 async function doImport(): Promise<void> {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) exitWith(1, "DATABASE_URL not set");
@@ -140,8 +146,9 @@ async function doExport(): Promise<void> {
   const pluginId = await loadPluginIdOrExit(db);
   if (!pluginId) exitWith(0, `[ccrotate-hook] plugin ${PLUGIN_KEY} not installed; nothing to export`);
 
-  // Snap the active account's freshly-rotated tokens for both targets back
-  // into ccrotate's profiles.* JSONs before export. Without this, codex CLI's
+  // Snap the active account's freshly-rotated tokens for the target that just
+  // ran back into ccrotate's profiles.* JSON before export. Without this,
+  // codex CLI's
   // automatic refresh_token rotation (writes new tokens to
   // /paperclip/.codex/auth.json on first refresh) is invisible to ccrotate's
   // pool snapshot — `ccrotate refresh` is claude-only ("refresh-one is only
@@ -153,11 +160,23 @@ async function doExport(): Promise<void> {
   // is mis-classified as adapter_failed. We saw this live: 5/5 codex pool
   // accounts had id_tokens 16h–9d expired, snap-after-rotation never ran.
   //
-  // `--force` overwrites without confirmation. Each target's snap is
-  // best-effort: if the target's CLI hasn't been used in this pod (no
-  // ~/.<target>/auth.json), the snap errors harmlessly. The export below
-  // captures whichever updates landed.
-  for (const target of ["claude", "codex"] as const) {
+  // `--force` overwrites without confirmation. The snap is best-effort: if the
+  // target CLI hasn't been used in this pod (no ~/.<target>/auth.json), the
+  // snap errors harmlessly. In Paperclip's served ccrotate pool, snapping the
+  // unrelated target is actively noisy: opencode runs do not own a stable
+  // Claude CLI session, and a best-effort Claude snap can report false active
+  // config mismatches while the cluster auth-bot is rotating accounts.
+  const adapterType = (process.env.PAPERCLIP_ADAPTER_TYPE ?? "").trim();
+  const target = adapterType ? adapterToTarget(adapterType) : null;
+  const targets: readonly ("claude" | "codex")[] = target
+    ? [target]
+    : adapterType
+      ? []
+      : ["claude", "codex"];
+  if (adapterType && !target) {
+    console.error(`[ccrotate-hook] adapterType=${adapterType} has no ccrotate target; skipping snap`);
+  }
+  for (const target of targets) {
     const snap = runCcrotate(["--target", target, "snap", "--force"], 30_000);
     if (snap.status !== 0) {
       console.error(
