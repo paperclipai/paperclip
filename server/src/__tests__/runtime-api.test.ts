@@ -17,6 +17,54 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("does not promote allowedHostnames to the canonical URL when bound to loopback", () => {
+    // Regression: a tailnet hostname registered in allowedHostnames for UI
+    // access must not be returned as the canonical runtime URL when the API
+    // only listens on loopback — local-adapter agents would otherwise be
+    // spawned with PAPERCLIP_API_URL pointing at an unreachable host:port.
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["issams-mac-mini-1.tail684793.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("honors an explicit authPublicBaseUrl over allowedHostnames", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "https://paperclip.example.com",
+        allowedHostnames: ["other.example"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("https://paperclip.example.com");
+  });
+
+  it("falls back to the configured bind host for LAN binds", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: ["foo"],
+        bindHost: "192.168.1.10",
+        port: 3100,
+      }),
+    ).toBe("http://192.168.1.10:3100");
+  });
+
+  it("falls back to localhost when bind is wildcard", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: null,
+        allowedHostnames: [],
+        bindHost: "0.0.0.0",
+        port: 3100,
+      }),
+    ).toBe("http://localhost:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

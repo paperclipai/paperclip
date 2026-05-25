@@ -61,13 +61,13 @@ export function choosePrimaryRuntimeApiUrl(input: {
     }
   }
 
-  const allowedHostname = input.allowedHostnames
-    .map((value) => value.trim())
-    .find(Boolean);
-  if (allowedHostname) {
-    return formatOrigin("http:", allowedHostname, input.port);
-  }
-
+  // Allowed hostnames are an incoming-origin allow-list (CORS / Host header).
+  // They MUST NOT be promoted to the canonical outbound runtime URL because
+  // there is no guarantee the listener is reachable on that host:port — e.g.
+  // a tailnet hostname registered for UI access while the API still binds to
+  // 127.0.0.1 only. Local-adapter agents spawned with such a URL would fail
+  // every API call with ECONNREFUSED. Operators who need a non-loopback
+  // canonical URL should set authPublicBaseUrl explicitly.
   const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
