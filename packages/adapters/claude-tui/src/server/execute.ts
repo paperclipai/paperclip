@@ -394,6 +394,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const spawnHomeIsProcessHome = homeForCheck === process.env.HOME;
     const spawnHomeLen = homeForCheck.length;
     const expectedHomeLen = expectedAgentHome.length;
+    const processHomeLen = (process.env.HOME ?? "").length;
+    // Base64 the spawn HOME so the path-redactor can't mangle it — we need to
+    // know exactly what 14-char path is showing up where env.HOME (77 chars)
+    // should be.
+    const spawnHomeB64 = Buffer.from(homeForCheck, "utf-8").toString("base64");
+    const envHomeB64 = Buffer.from(envHomeRaw, "utf-8").toString("base64");
+    const processHomeB64 = Buffer.from(process.env.HOME ?? "", "utf-8").toString("base64");
     await onLog(
       "stdout",
       `[claude_tui:info] credential-snapshot HOME=${homeForCheck || "<unset>"} ` +
@@ -410,7 +417,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `envHasHome=${envHasHome} envHomeMatchesAgentHome=${envHomeMatchesAgentHome} ` +
         `envHomeMatchesProcessHome=${envHomeMatchesProcessHome} ` +
         `spawnHomeIsProcessHome=${spawnHomeIsProcessHome} ` +
-        `spawnHomeLen=${spawnHomeLen} expectedHomeLen=${expectedHomeLen} ` +
+        `spawnHomeLen=${spawnHomeLen} expectedHomeLen=${expectedHomeLen} processHomeLen=${processHomeLen} ` +
+        `spawnHomeB64=${spawnHomeB64} envHomeB64=${envHomeB64} processHomeB64=${processHomeB64} ` +
         `hasOAuthTokenEnv=${typeof spawnEnv.CLAUDE_CODE_OAUTH_TOKEN === "string" && spawnEnv.CLAUDE_CODE_OAUTH_TOKEN.length > 0} ` +
         `hasApiKeyEnv=${typeof spawnEnv.ANTHROPIC_API_KEY === "string" && spawnEnv.ANTHROPIC_API_KEY.length > 0}\n`
     ).catch(() => undefined);
