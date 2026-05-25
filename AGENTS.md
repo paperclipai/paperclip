@@ -157,7 +157,7 @@ When adding endpoints:
 
 ## 10. Pull Request Requirements
 
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Preserve markdown newlines by using `scripts/paperclip-pr-create.sh --body-stdin`, `gh pr create --body-file <file>`, or an equivalent body-file workflow; never pass multiline markdown as a shell-escaped `--body "...\n..."` string. Required sections:
 
 - **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
 - **What Changed** — bullet list of concrete changes

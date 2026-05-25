@@ -164,7 +164,16 @@ If any section is missing or empty, do NOT submit the PR. Go back and fill it in
 
 ### Step 3 — Create the PR
 
-Only after completing Steps 1 and 2, run `gh pr create`. Use the template contents as the structure for `--body` — do not write a freeform summary.
+Only after completing Steps 1 and 2, create the PR with a body-file/stdin path so literal newlines are preserved. Prefer the repo helper:
+
+```bash
+scripts/paperclip-pr-create.sh --title "..." --base master --head "..." --body-stdin <<'MD'
+## Thinking Path
+> - ...
+MD
+```
+
+If you call `gh pr create` directly, use `--body-file <file>` (or an equivalent stdin/file workflow). Do **not** pass multiline markdown through `--body "...\n..."`; that can publish visible `\n` escape sequences in GitHub.
 
 ## Hard Rules — Do NOT Bypass
 
