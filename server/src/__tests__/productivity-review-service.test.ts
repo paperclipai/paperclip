@@ -255,6 +255,92 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
   });
 
+  it("stops refreshing once the review issue is blocked", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, review!.id));
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+
+    expect(result.updated).toBe(0);
+    expect(result.existing).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(0);
+  });
+
+  it("stops refreshing once the review issue is handed off for review", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, review!.id));
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+
+    expect(result.updated).toBe(0);
+    expect(result.existing).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(0);
+  });
+
+  it("stops refreshing once a manager decision comment is recorded", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    // Review is still `todo` but the manager owner has recorded a decision via comment.
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: review!.id,
+      authorAgentId: seeded.managerId,
+      body: "Decision: continue, this churn is expected for the import backfill.",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+
+    expect(result.updated).toBe(0);
+    expect(result.existing).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(0);
+  });
+
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
