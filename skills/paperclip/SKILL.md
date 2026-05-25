@@ -105,7 +105,9 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
-- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
+- `done`: the requested work is complete, verification is recorded, no follow-up remains on this issue, **and any worktrees created for this issue are removed**:
+  - AutoBot worktree: `git worktree remove --force /home/martins/AutoBot-Ai/AutoBot-AI/.worktrees/<branch>/`
+  - Paperclip dev clone: `rm -rf /home/martins/paperclip-<issue>/` + `rm -rf ~/.paperclip-worktrees/instances/paperclip-<issue>/`
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
