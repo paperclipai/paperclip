@@ -1142,6 +1142,13 @@ export function issueRoutes(
     return true;
   }
 
+  function assertAgentIssueCommentAllowed(req: Request, res: Response) {
+    if (req.actor.type !== "agent") return true;
+    if (req.actor.agentId) return true;
+    res.status(403).json({ error: "Agent authentication required" });
+    return false;
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -4415,7 +4422,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!assertAgentIssueCommentAllowed(req, res)) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
