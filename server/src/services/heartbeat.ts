@@ -2376,6 +2376,23 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
   };
 }
 
+function isCrossPrReviewWakeForActiveRun(input: {
+  activeContextSnapshot: unknown;
+  incomingContextSnapshot: Record<string, unknown>;
+}) {
+  const incomingReview = derivePaperclipPrReview(input.incomingContextSnapshot);
+  if (incomingReview?.reviewKind !== "pr_review") return false;
+
+  const activeReview = derivePaperclipPrReview(parseObject(input.activeContextSnapshot));
+  if (!activeReview) return false;
+  if (activeReview.prNumber !== incomingReview.prNumber) return true;
+  return Boolean(
+    activeReview.repoFullName &&
+    incomingReview.repoFullName &&
+    activeReview.repoFullName !== incomingReview.repoFullName,
+  );
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -10197,7 +10214,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForRunningWake) {
+          const shouldDeferCrossPrReviewWake = isCrossPrReviewWakeForActiveRun({
+            activeContextSnapshot: activeExecutionRun.contextSnapshot,
+            incomingContextSnapshot: enrichedContextSnapshot,
+          });
+
+          if (
+            isSameExecutionAgent &&
+            !shouldQueueFollowupForRunningWake &&
+            !shouldDeferCrossPrReviewWake
+          ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
