@@ -10,14 +10,23 @@ name: Docker (figma-bot)
 # succeed. PR 1 (BLO-6870) added the docker-webflow-bot.yml workflow
 # that publishes that base image.
 #
-# Trigger: any change under packages/services/figma-bot/. Master and tags
-# only; no PR builds (HARBOR_PASSWORD org secret isn't available to forks).
-# Pre-build gate runs pytest + ruff so an invalid extract / removed
-# chicken-and-egg fix fails CI before the Docker layer wastes runner time.
+# Trigger: any change under packages/services/figma-bot/.
+#
+# - pull_request: runs ONLY the `test` job (ruff + pytest) so PRs get
+#   gated before merge. Closes the gap that bit PR #173 on 2026-05-25:
+#   PR-level CI did not include this workflow, so a ruff I001 violation
+#   merged green but blocked the post-merge image rebuild in 1m3s.
+#   build-and-push is gated on `github.event_name != pull_request`
+#   so forks (which lack HARBOR_PASSWORD) cannot 401 attempting to push.
+# - push to master or figma-bot-v* tags: runs both jobs.
+# - workflow_dispatch: manually fires both jobs from any ref.
 #
 # Security: this workflow does NOT interpolate any untrusted event input
-# (github.event.*, github.head_ref, etc.) into run: commands — only
-# repository secrets via env. Same posture as docker-webflow-bot.yml.
+# (github.event.*, github.head_ref, etc.) into run: commands. The only
+# secrets used are HARBOR_USERNAME/HARBOR_PASSWORD via env (build-and-push
+# job only). Same posture as docker-webflow-bot.yml. Adding pull_request
+# does NOT expose secrets to fork PRs because the `if:` gate on
+# build-and-push prevents that job from running on pull_request events.
 
 on:
   push:
@@ -28,6 +37,10 @@ on:
       - ".github/workflows/docker-figma-bot.yml"
     tags:
       - "figma-bot-v*"
+  pull_request:
+    paths:
+      - "packages/services/figma-bot/**"
+      - ".github/workflows/docker-figma-bot.yml"
   workflow_dispatch:
 
 permissions:
@@ -63,6 +76,11 @@ jobs:
         run: pytest tests/ -v
 
   build-and-push:
+    # Skip the push step on pull_request events. Forks don't have
+    # HARBOR_PASSWORD, and even same-repo PRs shouldn't push transient
+    # sha tags pre-merge — `test` is the PR gate; push fires post-merge
+    # on the master push event.
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: self-hosted
     timeout-minutes: 30
