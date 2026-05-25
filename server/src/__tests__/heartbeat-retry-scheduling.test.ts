@@ -9,10 +9,12 @@ import {
   companies,
   createDb,
   environmentLeases,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -50,6 +52,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -309,6 +313,136 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("copies execution workspace fields from the issue into scheduled retry context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const issueId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const now = new Date("2026-05-25T18:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "TWS",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Atendevet",
+      status: "in_progress",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "ATE-test",
+      status: "active",
+      cwd: "C:\\Users\\lucas\\source\\repos\\Atendevet",
+      providerType: "local_fs",
+      lastUsedAt: now,
+      openedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Retry workspace inheritance",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "TWS-1",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      assigneeAdapterOverrides: { useProjectWorkspace: true },
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      error: "upstream overload",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryRun = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      retryOfRunId: sourceRunId,
+    });
+
+    const wakeup = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
   });
 
   it("schedules max-turn continuations with distinct retry metadata", async () => {

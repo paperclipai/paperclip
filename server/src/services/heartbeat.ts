@@ -614,6 +614,19 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
   return nextConfig;
 }
 
+export function shouldReuseIssueExecutionWorkspace(input: {
+  executionWorkspacePreference?: string | null;
+  executionWorkspaceId?: string | null;
+  existingExecutionWorkspace?: { status: string } | null;
+}): boolean {
+  return (
+    input.existingExecutionWorkspace !== null &&
+    input.existingExecutionWorkspace !== undefined &&
+    input.existingExecutionWorkspace.status !== "archived" &&
+    (input.executionWorkspacePreference === "reuse_existing" || Boolean(input.executionWorkspaceId))
+  );
+}
+
 export function buildRealizedExecutionWorkspaceFromPersisted(input: {
   base: ExecutionWorkspaceInput;
   workspace: ExecutionWorkspace;
@@ -2500,6 +2513,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  function mergeIssueWorkspaceContextSnapshot(
+    contextSnapshot: Record<string, unknown>,
+    issue: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+  ): Record<string, unknown> {
+    if (!issue) return contextSnapshot;
+    const next: Record<string, unknown> = { ...contextSnapshot };
+    if (issue.projectId) next.projectId = issue.projectId;
+    if (issue.projectWorkspaceId) next.projectWorkspaceId = issue.projectWorkspaceId;
+    if (issue.executionWorkspaceId) next.executionWorkspaceId = issue.executionWorkspaceId;
+    if (issue.executionWorkspacePreference) {
+      next.executionWorkspacePreference = issue.executionWorkspacePreference;
+    }
+    return next;
+  }
+
+  function applyContextExecutionWorkspaceFallbackToIssueContext(
+    issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+    context: Record<string, unknown>,
+  ): Awaited<ReturnType<typeof getIssueExecutionContext>> | null {
+    if (!issueContext) return issueContext;
+    if (issueContext.executionWorkspaceId) return issueContext;
+    const executionWorkspaceId = readNonEmptyString(context.executionWorkspaceId);
+    if (!executionWorkspaceId) return issueContext;
+    const contextPreference = context.executionWorkspacePreference;
+    const executionWorkspacePreference =
+      issueContext.executionWorkspacePreference ??
+      (typeof contextPreference === "string" ? contextPreference : null);
+    return {
+      ...issueContext,
+      executionWorkspaceId,
+      executionWorkspacePreference,
+    };
+  }
+
   async function getRoutineEnvForExecutionIssue(
     companyId: string,
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
@@ -3540,6 +3587,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .select({
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
+            executionWorkspaceId: issues.executionWorkspaceId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -3551,6 +3599,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resolvedProjectId = issueProjectId ?? contextProjectId;
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+    const boundExecutionWorkspaceId =
+      issueProjectRef?.executionWorkspaceId ?? readNonEmptyString(context.executionWorkspaceId);
 
     const unorderedProjectWorkspaceRows = workspaceProjectId
       ? await db
@@ -3575,6 +3625,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+
+    if (boundExecutionWorkspaceId && useProjectWorkspace) {
+      const boundExecutionWorkspace = await executionWorkspacesSvc.getById(boundExecutionWorkspaceId);
+      const boundCwd = boundExecutionWorkspace
+        ? readNonEmptyString(boundExecutionWorkspace.cwd) ??
+          readNonEmptyString(boundExecutionWorkspace.providerRef)
+        : null;
+      if (
+        boundExecutionWorkspace &&
+        boundExecutionWorkspace.status !== "archived" &&
+        boundCwd
+      ) {
+        const boundCwdExists = await fs
+          .stat(boundCwd)
+          .then((stats) => stats.isDirectory())
+          .catch(() => false);
+        if (boundCwdExists) {
+          return {
+            cwd: boundCwd,
+            source: "project_primary" as const,
+            projectId: boundExecutionWorkspace.projectId ?? resolvedProjectId,
+            workspaceId: boundExecutionWorkspace.projectWorkspaceId ?? preferredProjectWorkspaceId,
+            repoUrl: boundExecutionWorkspace.repoUrl,
+            repoRef: boundExecutionWorkspace.baseRef,
+            workspaceHints,
+            warnings: [],
+          };
+        }
+      }
+    }
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -5287,6 +5367,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const issueWorkspaceRow = issueId ? await getIssueExecutionContext(run.companyId, issueId) : null;
+    const retryIssueContextSnapshot = mergeIssueWorkspaceContextSnapshot(contextSnapshot, issueWorkspaceRow);
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
@@ -5313,7 +5395,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
-      ...contextSnapshot,
+      ...retryIssueContextSnapshot,
       retryOfRunId: run.id,
       wakeReason,
       retryReason,
@@ -5485,6 +5567,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: wakeReason,
           payload: withRecoveryModelProfileHint({
             ...(issueId ? { issueId } : {}),
+            ...(issueWorkspaceRow?.projectId ? { projectId: issueWorkspaceRow.projectId } : {}),
+            ...(issueWorkspaceRow?.projectWorkspaceId
+              ? { projectWorkspaceId: issueWorkspaceRow.projectWorkspaceId }
+              : {}),
+            ...(issueWorkspaceRow?.executionWorkspaceId
+              ? { executionWorkspaceId: issueWorkspaceRow.executionWorkspaceId }
+              : {}),
+            ...(issueWorkspaceRow?.executionWorkspacePreference
+              ? { executionWorkspacePreference: issueWorkspaceRow.executionWorkspacePreference }
+              : {}),
             retryOfRunId: run.id,
             retryReason,
             ...(transientRecovery ? { errorFamily: transientRecovery.errorFamily } : {}),
@@ -6916,6 +7008,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
+    issueContext = applyContextExecutionWorkspaceFallbackToIssueContext(issueContext, context);
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
@@ -7106,10 +7199,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const shouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace !== null &&
-      existingExecutionWorkspace.status !== "archived";
+    const shouldReuseExisting = shouldReuseIssueExecutionWorkspace({
+      executionWorkspacePreference: issueRef?.executionWorkspacePreference,
+      executionWorkspaceId: issueRef?.executionWorkspaceId,
+      existingExecutionWorkspace,
+    });
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
