@@ -96,6 +96,9 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { setPluginEventBus } from "../services/activity-log.ts";
+import type { PluginEventBus, ScopedPluginEventBus } from "../services/plugin-event-bus.ts";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -202,6 +205,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let emittedPluginEvents: PluginEvent[] = [];
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
@@ -209,10 +213,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    const noopScopedBus: ScopedPluginEventBus = {
+      subscribe: vi.fn(),
+      emit: vi.fn(async () => ({ errors: [] })),
+      clear: vi.fn(),
+    };
+    setPluginEventBus({
+      emit: vi.fn(async (event: PluginEvent) => {
+        emittedPluginEvents.push(event);
+        return { errors: [] };
+      }),
+      forPlugin: vi.fn(() => noopScopedBus),
+      clearPlugin: vi.fn(),
+      subscriptionCount: vi.fn(() => 0),
+    } satisfies PluginEventBus);
   });
 
   afterEach(async () => {
     vi.clearAllMocks();
+    emittedPluginEvents = [];
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
       signal: null,
@@ -2634,6 +2653,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // — see the explicit `not.toContain` assertion above where applicable.
     expect(comments[0]?.body).toContain("Latest retry failure:");
     expect(comments[0]?.body).toContain(`Recovery action: ${recovery.id}`);
+  });
+
+  it("emits issue.escalation.needs_human_decision once when stranded assigned recovery blocks the issue", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstResult.escalated).toBe(1);
+
+    const event = await waitForValue(async () =>
+      emittedPluginEvents.find(
+        (item) => item.eventType === "issue.escalation.needs_human_decision" && item.entityId === issueId,
+      ) ?? null,
+    );
+
+    expect(event).toMatchObject({
+      eventType: "issue.escalation.needs_human_decision",
+      actorType: "system",
+      actorId: "system",
+      entityType: "issue",
+      entityId: issueId,
+      companyId,
+      payload: expect.objectContaining({
+        issueId,
+        identifier: expect.stringMatching(/^T[A-F0-9]{6}-1$/),
+        title: "Recover stranded assigned work",
+        assigneeAgentId: agentId,
+        assigneeAgentName: "CodexCoder",
+        blockedByIssueIds: [],
+        originSweep: "recovery.reconcile_stranded_assigned_issue",
+        transitionedAt: expect.any(String),
+      }),
+    });
+    expect(new Date(String(event?.payload?.transitionedAt)).toString()).not.toBe("Invalid Date");
+
+    for (let index = 0; index < 2; index += 1) {
+      const repeatResult = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(repeatResult.escalated).toBe(0);
+    }
+
+    const matchingEvents = emittedPluginEvents.filter(
+      (item) => item.eventType === "issue.escalation.needs_human_decision" && item.entityId === issueId,
+    );
+    expect(matchingEvents).toHaveLength(1);
   });
 
   // BLO-1498: when an in-progress run fails with a non-retryable code like

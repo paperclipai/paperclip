@@ -1059,7 +1059,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issueRelations.type, "blocks"),
           ),
         );
-      const unresolvedAfterDetach = await existingUnresolvedBlockerIssueIds(source.companyId, source.id);
+      const { blockerIssueIds: unresolvedAfterDetach } = await unresolvedBlockerHumanDecisionEscalationState(source.companyId, source.id);
       let restoredSourceStatus = false;
       let restoreSkippedReason: string | null = null;
       if (source.status === "blocked" && unresolvedAfterDetach.length === 0) {
@@ -2677,9 +2677,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function existingUnresolvedBlockerIssueIds(companyId: string, issueId: string) {
-    return db
-      .select({ blockerIssueId: issueRelations.issueId })
+  async function unresolvedBlockerHumanDecisionEscalationState(companyId: string, issueId: string) {
+    const blockerRows = await db
+      .select({
+        blockerIssueId: issueRelations.issueId,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
       .from(issueRelations)
       .innerJoin(
         issues,
@@ -2695,8 +2699,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRelations.type, "blocks"),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
-      )
-      .then((rows) => rows.map((row) => row.blockerIssueId));
+      );
+
+    const blockerIssueIds = blockerRows.map((row) => row.blockerIssueId);
+    const needsHumanDecision = blockerRows.length === 0 || blockerRows.every(
+      (row) => row.assigneeAgentId && !row.assigneeUserId,
+    );
+    return { blockerIssueIds, needsHumanDecision };
+  }
+
+  async function emitNeedsHumanDecisionEscalationEvent(input: {
+    issue: typeof issues.$inferSelect;
+    assigneeAgentName: string | null;
+    blockedByIssueIds: string[];
+  }) {
+    const transitionedAt = new Date().toISOString();
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.escalation.needs_human_decision",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        issueId: input.issue.id,
+        identifier: input.issue.identifier,
+        title: input.issue.title,
+        assigneeAgentId: input.issue.assigneeAgentId,
+        assigneeAgentName: input.assigneeAgentName,
+        blockedByIssueIds: input.blockedByIssueIds,
+        originSweep: "recovery.reconcile_stranded_assigned_issue",
+        transitionedAt,
+      },
+    });
   }
 
   async function escalateStrandedAssignedIssue(input: {
@@ -2743,7 +2780,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryCause: input.recoveryCause,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
-      const blockerIds = await existingUnresolvedBlockerIssueIds(fresh.companyId, fresh.id);
+      const {
+        blockerIssueIds: blockerIds,
+        needsHumanDecision,
+      } = await unresolvedBlockerHumanDecisionEscalationState(fresh.companyId, fresh.id);
 
       await enqueueSourceScopedStrandedRecoveryWake({
         action,
@@ -2796,6 +2836,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           blockerIssueIds: blockerIds,
         },
       });
+
+      if (needsHumanDecision) {
+        const assigneeAgent = fresh.assigneeAgentId
+          ? await db
+            .select({ name: agents.name })
+            .from(agents)
+            .where(and(eq(agents.companyId, fresh.companyId), eq(agents.id, fresh.assigneeAgentId)))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : null;
+        await emitNeedsHumanDecisionEscalationEvent({
+          issue: fresh,
+          assigneeAgentName: assigneeAgent?.name ?? null,
+          blockedByIssueIds: blockerIds,
+        });
+      }
 
       return updated;
     });
