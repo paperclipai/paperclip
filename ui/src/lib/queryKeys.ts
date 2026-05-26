@@ -98,6 +98,9 @@ export const queryKeys = {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  brabrix: {
+    nextTaskSync: (companyId: string) => ["brabrix", companyId, "sync-next-task"] as const,
+  },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,
   },
