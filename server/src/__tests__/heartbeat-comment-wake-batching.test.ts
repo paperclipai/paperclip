@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  activityLog,
   companies,
   createDb,
   heartbeatRuns,
@@ -625,7 +626,7 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  it("does not reopen a finished issue when the deferred comment predates terminal completion", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -709,6 +710,8 @@ describe("heartbeat comment wake batching", () => {
         return run?.status === "running";
       });
 
+      const staleCommentAt = new Date("2026-01-01T00:00:00.000Z");
+      const terminalAt = new Date("2026-01-01T00:01:00.000Z");
       const comment2 = await db
         .insert(issueComments)
         .values({
@@ -716,6 +719,8 @@ describe("heartbeat comment wake batching", () => {
           issueId,
           authorUserId: "user-1",
           body: "Please handle this follow-up after you finish",
+          createdAt: staleCommentAt,
+          updatedAt: staleCommentAt,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -756,13 +761,206 @@ describe("heartbeat comment wake batching", () => {
         .update(issues)
         .set({
           status: "done",
-          completedAt: new Date(),
+          completedAt: terminalAt,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          updatedAt: new Date(),
+          updatedAt: terminalAt,
         })
         .where(eq(issues.id, issueId));
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        agentId,
+        runId: firstRun?.id ?? null,
+        details: { status: "done" },
+        createdAt: terminalAt,
+      });
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        const [initialRun, promotedRun] = runs;
+        return (
+          initialRun?.id === firstRun?.id &&
+          initialRun.status === "succeeded" &&
+          promotedRun?.status === "succeeded"
+        );
+      }, 90_000);
+
+      const reopenedIssue = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+
+      expect(reopenedIssue).toMatchObject({
+        status: "done",
+      });
+      expect(reopenedIssue?.completedAt).not.toBeNull();
+
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      expect(secondPayload.paperclip).toMatchObject({
+        wake: {
+          reason: "issue_commented",
+          commentIds: [comment2.id],
+          latestCommentId: comment2.id,
+          issue: {
+            id: issueId,
+            identifier: `${issuePrefix}-1`,
+            title: "Reopen after deferred comment",
+            status: "done",
+            priority: "medium",
+          },
+        },
+      });
+      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("reopens a finished issue when the deferred comment is newer than terminal completion", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Fresh deferred comment",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      const terminalAt = new Date("2026-01-01T00:01:00.000Z");
+      const freshCommentAt = new Date("2026-01-01T00:02:00.000Z");
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: terminalAt,
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway-agent",
+          executionLockedAt: terminalAt,
+          updatedAt: terminalAt,
+        })
+        .where(eq(issues.id, issueId));
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        agentId,
+        runId: firstRun!.id,
+        details: { status: "done" },
+        createdAt: terminalAt,
+      });
+
+      const comment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "Fresh comment after completion",
+          createdAt: freshCommentAt,
+          updatedAt: freshCommentAt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const deferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: comment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(deferredRun).toBeNull();
 
       gateway.releaseFirstWait();
 
@@ -799,18 +997,18 @@ describe("heartbeat comment wake batching", () => {
       expect(secondPayload.paperclip).toMatchObject({
         wake: {
           reason: "issue_commented",
-          commentIds: [comment2.id],
-          latestCommentId: comment2.id,
+          commentIds: [comment.id],
+          latestCommentId: comment.id,
           issue: {
             id: issueId,
             identifier: `${issuePrefix}-1`,
-            title: "Reopen after deferred comment",
+            title: "Fresh deferred comment",
             status: "in_progress",
             priority: "medium",
           },
         },
       });
-      expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+      expect(String(secondPayload.message ?? "")).toContain("Fresh comment after completion");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

@@ -8366,11 +8366,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        let deferredCommentAfterTerminalCompletion = true;
+        if (deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled")) {
+          const latestDeferredComment = await tx
+            .select({
+              createdAt: sql<Date | null>`max(${issueComments.createdAt})`,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, issue.companyId),
+                eq(issueComments.issueId, issue.id),
+                inArray(issueComments.id, deferredCommentIds),
+              ),
+            )
+            .then((rows) => rows[0]?.createdAt ?? null);
+          const latestTerminalCompletion = await tx
+            .select({ createdAt: activityLog.createdAt })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, issue.companyId),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, issue.id),
+                eq(activityLog.action, "issue.updated"),
+                or(
+                  sql`${activityLog.details} ->> 'status' = 'done'`,
+                  sql`${activityLog.details} ->> 'status' = 'cancelled'`,
+                ),
+              ),
+            )
+            .orderBy(desc(activityLog.createdAt))
+            .limit(1)
+            .then((rows) => rows[0]?.createdAt ?? null);
+          if (latestDeferredComment && latestTerminalCompletion) {
+            deferredCommentAfterTerminalCompletion =
+              new Date(latestDeferredComment).getTime() > new Date(latestTerminalCompletion).getTime();
+          }
+        }
         // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        // system follow-ups and stale comment wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          deferredCommentAfterTerminalCompletion &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
