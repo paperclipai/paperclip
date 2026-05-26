@@ -60,7 +60,7 @@ function sanitizeMessage(value: unknown): string {
   return message
     .replace(/(service[_-]?role|anon|api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
     .replace(/postgres(?:ql)?:\/\/[^\s"']+/gi, "postgres://[REDACTED]")
-    .replace(/https?:\/\/[^\s"']*(supabase|db)[^\s"']*/gi, "https://[REDACTED]");
+    .replace(/https?:\/\/[^\s"']*(?:supabase|\bdb\b)[^\s"']*/gi, "https://[REDACTED]");
 }
 
 function redactOperationalDetails(value: unknown): string {
