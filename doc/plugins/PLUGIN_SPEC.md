@@ -596,6 +596,55 @@ The host provides:
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
 
+### 13.11 `artifacts.fetch` (worker → host)
+
+A worker→host RPC available only from inside a tool handler via
+`runCtx.artifacts.fetch(attachmentId)`. Returns attachment bytes on behalf of
+the **dispatching agent** (the agent identified by `runCtx`), not the plugin
+worker's own tenant.
+
+Wire payload: `{ attachmentId: string, runId: string }`. The worker is never
+trusted to assert agent or company identity — the host derives both from a
+server-validated `(pluginDbId, runId)` registry entry populated when the
+`executeTool` dispatch was about to call the worker.
+
+Success result: `{ filename, contentType, byteSize, contentBase64 }`. The SDK
+decodes the base64 payload into a `Uint8Array` before returning to the tool
+handler.
+
+Authorization semantics:
+
+- The dispatching agent's `companyId` must equal the attachment's `companyId`.
+  (Agents are single-company-scoped per the actor model.)
+- Existence and access denials are collapsed to a single `not_found` shape so
+  a worker cannot probe which IDs exist in other tenants.
+
+Rate limits enforced server-side:
+
+- 60 fetches / minute per dispatching agent (global ceiling)
+- 30 fetches / minute per (dispatching agent, attachment company) sub-bucket
+
+Every call — success or denial — emits an `artifact.fetched` audit log entry
+in the dispatching agent's tenant carrying: outcome, denied reason (if any),
+dispatchingAgentId, dispatchingCompanyId, attachmentCompanyId, attachmentId,
+plugin identity, and (on success) the byte size. Bytes themselves are never
+written to logs.
+
+Capability: **none** — tool dispatch implies attachment-read authority, and
+the host's per-call authorization is what governs access.
+
+Typed errors surfaced to the worker:
+
+| code                  | meaning                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `runcontext_invalid`  | No active dispatch registered for this `(pluginDbId, runId)` — likely worker forgery     |
+| `forbidden`           | Reserved — authorization failures collapse to `not_found`                                |
+| `not_found`           | Attachment missing OR dispatching agent has no access (collapsed to deny enumeration)    |
+| `rate_limited`        | Either ceiling tripped                                                                   |
+| `too_large`           | Attachment exceeds the host's per-call payload cap (default 10 MiB)                      |
+
+See PLA-574 for the threat model and seven-point security checklist.
+
 ## 14. SDK Surface
 
 Plugins do not talk to the DB directly.
