@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPaperclipTaskMarkdown,
   derivePaperclipPrReview,
+  evaluatePrReviewCompletionEvidence,
   mergeCoalescedContextSnapshot,
   summarizeHeartbeatRunContextSnapshot,
   summarizeHeartbeatRunListResultJson,
@@ -286,6 +287,73 @@ describe("derivePaperclipPrReview", () => {
         githubRepoFullName: "Blockcast/paperclip",
       })?.wakeReason,
     ).toBe("github_pull_request");
+  });
+});
+
+describe("evaluatePrReviewCompletionEvidence", () => {
+  const reviewerContext = {
+    reviewKind: "pr_review",
+    prRole: "reviewer",
+    githubPrNumber: 519,
+    githubRepoFullName: "Blockcast/trafficcontrol",
+  };
+
+  it("fails reviewer PR runs that exit without a posted review or explicit skip", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        resultJson: {
+          summary:
+            "No prior Ally review exists for head abc123; I am fetching metadata and diff now.",
+        },
+      }),
+    ).toMatchObject({
+      status: "missing",
+      errorCode: "pr_review_output_missing",
+    });
+  });
+
+  it("accepts a durable posted-review marker", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        summary:
+          "Posted the consolidated Ally review on `Blockcast/trafficcontrol#519` for head abc123.",
+      }),
+    ).toEqual({ status: "posted_review" });
+  });
+
+  it("accepts idempotent already-reviewed skips", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        summary: "already reviewed at 2026-05-26T04:38:27Z for 86fd374dc3b456622b3852c98320f38997ef46b6",
+      }),
+    ).toEqual({ status: "already_reviewed" });
+  });
+
+  it("accepts archived Network-Management-Portal skips", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        {
+          ...reviewerContext,
+          githubRepoFullName: "Blockcast/Network-Management-Portal",
+        },
+        {
+          summary:
+            "Archive notice already present on `Blockcast/Network-Management-Portal#361`; NMP is archived, so Ally skipped review as required.",
+        },
+      ),
+    ).toEqual({ status: "archived_repo_skipped" });
+  });
+
+  it("does not apply to author-shaped PR wakes", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(
+        {
+          ...reviewerContext,
+          prRole: "author",
+        },
+        { summary: "" },
+      ),
+    ).toEqual({ status: "not_applicable" });
   });
 });
 

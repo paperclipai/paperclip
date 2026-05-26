@@ -2511,6 +2511,83 @@ export function derivePaperclipPrReview(contextSnapshot: Record<string, unknown>
   };
 }
 
+const PR_REVIEW_OUTPUT_EVIDENCE_MAX_CHARS = 240_000;
+
+function appendReviewOutputEvidenceText(parts: string[], value: unknown, budget: { remaining: number }) {
+  if (budget.remaining <= 0 || value == null) return;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    if (text.length === 0) return;
+    const chunk = text.slice(0, budget.remaining);
+    parts.push(chunk);
+    budget.remaining -= chunk.length;
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      appendReviewOutputEvidenceText(parts, item, budget);
+      if (budget.remaining <= 0) return;
+    }
+    return;
+  }
+  if (typeof value === "object") {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      appendReviewOutputEvidenceText(parts, nested, budget);
+      if (budget.remaining <= 0) return;
+    }
+  }
+}
+
+function buildPrReviewOutputEvidenceText(input: {
+  resultJson?: Record<string, unknown> | null;
+  summary?: string | null;
+}) {
+  const parts: string[] = [];
+  const budget = { remaining: PR_REVIEW_OUTPUT_EVIDENCE_MAX_CHARS };
+  appendReviewOutputEvidenceText(parts, input.summary, budget);
+  appendReviewOutputEvidenceText(parts, input.resultJson, budget);
+  return parts.join("\n");
+}
+
+export function evaluatePrReviewCompletionEvidence(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  output: {
+    resultJson?: Record<string, unknown> | null;
+    summary?: string | null;
+  },
+) {
+  const prReview = derivePaperclipPrReview(contextSnapshot);
+  if (prReview?.reviewKind !== "pr_review") return { status: "not_applicable" as const };
+  if (prReview.prRole && prReview.prRole !== "reviewer") return { status: "not_applicable" as const };
+
+  const text = buildPrReviewOutputEvidenceText(output);
+  if (/\bposted\s+(?:the\s+)?consolidated\s+Ally\s+review\b/i.test(text)) {
+    return { status: "posted_review" as const };
+  }
+  if (/\bverif(?:y|ies|ied)\s+posted\s+Ally\s+review\b/i.test(text)) {
+    return { status: "posted_review" as const };
+  }
+  if (/\bgh\s+pr\s+review\b[\s\S]{0,400}\bexit["']?\s*:\s*0\b/i.test(text)) {
+    return { status: "posted_review" as const };
+  }
+  if (/\balready\s+reviewed\s+at\b[\s\S]{0,160}\bfor\b\s+[0-9a-f]{7,40}\b/i.test(text)) {
+    return { status: "already_reviewed" as const };
+  }
+  if (
+    /\bNetwork-Management-Portal\b[\s\S]{0,240}\barchived\b[\s\S]{0,240}\bskipped\s+review\b/i.test(text) ||
+    /\barchive\s+notice\s+already\s+present\b/i.test(text)
+  ) {
+    return { status: "archived_repo_skipped" as const };
+  }
+
+  return {
+    status: "missing" as const,
+    errorCode: "pr_review_output_missing",
+    errorMessage:
+      "PR reviewer run exited successfully but did not leave durable evidence of a posted review or intentional skip",
+  };
+}
+
 function isCrossPrReviewWakeForActiveRun(input: {
   activeContextSnapshot: unknown;
   incomingContextSnapshot: Record<string, unknown>;
@@ -9233,8 +9310,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // recoverable / retry-with-rotation path.
         rateLimitExhaustedOverride = true;
       }
+      const prReviewCompletionEvidence = outcome === "succeeded"
+        ? evaluatePrReviewCompletionEvidence(context, {
+          resultJson: adapterResult.resultJson ?? null,
+          summary: adapterResult.summary ?? null,
+        })
+        : { status: "not_applicable" as const };
+      const prReviewOutputMissingOverride =
+        prReviewCompletionEvidence.status === "missing" ? prReviewCompletionEvidence : null;
+      if (prReviewOutputMissingOverride) {
+        outcome = "failed";
+      }
       const runErrorMessage = rateLimitExhaustedOverride
         ? "Run hit Anthropic rate limit (out of extra usage); scheduled for transient retry"
+        : prReviewOutputMissingOverride
+          ? prReviewOutputMissingOverride.errorMessage
         : outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
@@ -9245,6 +9335,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const runErrorCode = rateLimitExhaustedOverride
         ? "rate_limit_exhausted"
+        : prReviewOutputMissingOverride
+          ? prReviewOutputMissingOverride.errorCode
         : outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
@@ -9313,7 +9405,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
+              resultJson: prReviewOutputMissingOverride
+                ? {
+                    ...parseObject(adapterResult.resultJson),
+                    prReviewOutputGate: {
+                      status: prReviewOutputMissingOverride.status,
+                      errorCode: prReviewOutputMissingOverride.errorCode,
+                    },
+                  }
+                : adapterResult.resultJson ?? null,
               // Tag the recovery family so scheduleBoundedRetryForRun picks the
               // right schedule curve. rate_limit_exhausted -> flat 90s retry
               // (gate decides if pool has capacity); generic adapter-reported
