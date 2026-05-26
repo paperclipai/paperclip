@@ -1,5 +1,7 @@
 import { Router, type Request } from "express";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companies as companiesTable } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -9,6 +11,7 @@ import {
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
+  recurringCostsSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -73,6 +76,20 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     if (actorAgent.role !== "ceo") {
       throw forbidden(`Only CEO agents can manage company ${capability}`);
+    }
+  }
+
+  async function assertCanManageRecurringCosts(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") return;
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    if (actorAgent.role !== "ceo") {
+      throw forbidden("Only CEO agents can manage recurring costs");
     }
   }
 
@@ -368,6 +385,49 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       details: req.body,
     });
     res.json(company);
+  });
+
+  router.get("/:companyId/recurring-costs", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManageRecurringCosts(req, companyId);
+    const row = await db
+      .select({ recurringCosts: companiesTable.recurringCosts })
+      .from(companiesTable)
+      .where(eq(companiesTable.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.json({ recurringCosts: row.recurringCosts ?? [] });
+  });
+
+  router.put("/:companyId/recurring-costs", validate(recurringCostsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManageRecurringCosts(req, companyId);
+    const updated = await db
+      .update(companiesTable)
+      .set({ recurringCosts: req.body, updatedAt: new Date() })
+      .where(eq(companiesTable.id, companyId))
+      .returning({ recurringCosts: companiesTable.recurringCosts })
+      .then((rows) => rows[0] ?? null);
+    if (!updated) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.recurring_costs_updated",
+      entityType: "company",
+      entityId: companyId,
+      details: { count: (req.body as unknown[]).length },
+    });
+    res.json({ recurringCosts: updated.recurringCosts ?? [] });
   });
 
   router.post("/:companyId/archive", async (req, res) => {
