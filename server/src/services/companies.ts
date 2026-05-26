@@ -124,17 +124,23 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
-  function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
+  function isIssuePrefixConflict(error: unknown): boolean {
+    function findConstraint(err: unknown): string | undefined {
+      if (typeof err !== "object" || err === null) return undefined;
+      const e = err as Record<string, unknown>;
+      if (typeof e.constraint === "string") return e.constraint;
+      if (typeof e.constraint_name === "string") return e.constraint_name;
+      if (e.cause) return findConstraint(e.cause);
+      return undefined;
+    }
+    function findCode(err: unknown): string | undefined {
+      if (typeof err !== "object" || err === null) return undefined;
+      const e = err as Record<string, unknown>;
+      if (typeof e.code === "string") return e.code;
+      if (e.cause) return findCode(e.cause);
+      return undefined;
+    }
+    return findCode(error) === "23505" && findConstraint(error) === "companies_issue_prefix_idx";
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
