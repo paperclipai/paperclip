@@ -224,5 +224,5 @@ export function isPiUnknownSessionError(stdout: string, stderr: string): boolean
     .filter(Boolean)
     .join("\n");
 
-  return /unknown\s+session|session\s+not\s+found|session\s+.*\s+not\s+found|no\s+session/i.test(haystack);
+  return /unknown\s+session|session\s+not\s+found|session\s+.*\s+not\s+found|no\s+session|404\s+(?:Not\s+Found|Error)/i.test(haystack);
 }
