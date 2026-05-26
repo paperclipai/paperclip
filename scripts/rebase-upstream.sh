@@ -79,6 +79,21 @@
 #       fail-closed behavior. When #6592 lands upstream, the rebase will
 #       detect our four cherry-picks as previously-applied and drop them
 #       out cleanly.
+#   - paperclipai/paperclip#1177  Clarification: agent keys vs board session
+#                                 (downstream comment 4548879122 proposes
+#                                 relaxing assertBoardOrgAccess →
+#                                 assertCompanyAccess on plugin action +
+#                                 tools-execute endpoints)
+#       No fork patch here — discussion-only. Tracking so we know when
+#       upstream changes the auth model on /api/plugins/:id/actions/:key
+#       and /api/plugins/tools/execute. When they do, the routine prompt's
+#       "loud warning for non-local_trusted modes" branch in
+#       packages/plugins/harper-cmo/scripts/install.ts:authInstructionsForMode
+#       becomes outdated — agents will be able to call action endpoints
+#       with their JWT in authenticated mode and the prompt should just
+#       say "send Authorization: Bearer \$PAPERCLIP_API_KEY".
+#       Watch trigger: any merge in paperclipai/paperclip that touches
+#       assertBoardOrgAccess calls inside server/src/routes/plugins.ts.
 #
 # Plugin-side carries (separate private repos; same retire-on-merge logic):
 #   - gooseworks-ai/gooseworks-skills#2  quote argument-hint in
