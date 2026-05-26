@@ -57,3 +57,14 @@ export const updateCompanyBrandingSchema = z
   );
 
 export type UpdateCompanyBranding = z.infer<typeof updateCompanyBrandingSchema>;
+
+export const DELEGATE_GRANT_SCOPES = ["issues:read", "issues:write", "checkout", "comments:write"] as const;
+export type DelegateGrantScope = (typeof DELEGATE_GRANT_SCOPES)[number];
+
+export const createDelegateGrantSchema = z.object({
+  delegateAgentId: z.string().uuid(),
+  scopes: z.array(z.enum(DELEGATE_GRANT_SCOPES)).min(1),
+  expiresAt: z.string().datetime().optional(),
+});
+
+export type CreateDelegateGrant = z.infer<typeof createDelegateGrantSchema>;

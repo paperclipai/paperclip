@@ -22,9 +22,13 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  DELEGATE_GRANT_SCOPES,
+  createDelegateGrantSchema,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type DelegateGrantScope,
+  type CreateDelegateGrant,
 } from "./company.js";
 export {
   environmentDriverSchema,
@@ -116,6 +120,7 @@ export {
   agentMineInboxQuerySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  recoverAgentSessionSchema,
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
@@ -129,6 +134,7 @@ export {
   type AgentMineInboxQuery,
   type WakeAgent,
   type ResetAgentSession,
+  type RecoverAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
 } from "./agent.js";
