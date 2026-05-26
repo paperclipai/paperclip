@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -391,6 +391,7 @@ export function authorizationService(db: Db) {
           eq(principalPermissionGrants.principalType, principalType),
           eq(principalPermissionGrants.principalId, principalId),
           eq(principalPermissionGrants.permissionKey, permissionKey),
+          isNull(principalPermissionGrants.revokedAt),
         ),
       )
       .then((rows) => rows[0] ?? null);

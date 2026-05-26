@@ -2212,7 +2212,12 @@ export function buildHostServices(
         const grants = await db
           .select()
           .from(principalPermissionGrants)
-          .where(eq(principalPermissionGrants.companyId, companyId));
+          .where(
+            and(
+              eq(principalPermissionGrants.companyId, companyId),
+              isNull(principalPermissionGrants.revokedAt),
+            ),
+          );
         const grantsByPrincipal = new Map<string, typeof grants>();
         for (const grant of grants) {
           const key = `${grant.principalType}:${grant.principalId}`;
@@ -2349,6 +2354,7 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const conditions = [
           eq(principalPermissionGrants.companyId, companyId),
+          isNull(principalPermissionGrants.revokedAt),
           params.principalType ? eq(principalPermissionGrants.principalType, params.principalType) : undefined,
           params.principalId ? eq(principalPermissionGrants.principalId, params.principalId) : undefined,
         ].filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
@@ -2400,7 +2406,12 @@ export function buildHostServices(
           db
             .select({ id: principalPermissionGrants.id })
             .from(principalPermissionGrants)
-            .where(eq(principalPermissionGrants.companyId, companyId)),
+            .where(
+              and(
+                eq(principalPermissionGrants.companyId, companyId),
+                isNull(principalPermissionGrants.revokedAt),
+              ),
+            ),
         ]);
         return {
           companyId,

@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { issueVisibilityCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
 
 export interface ActivityFilters {
@@ -24,6 +25,13 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
+  /**
+   * Optional per-user issue visibility. When `{mode:"scoped"}`, activity
+   * rows that reference an issue the user can't see are filtered out;
+   * non-issue activity is unaffected.
+   * @see services/issue-visibility.ts
+   */
+  visibility?: import("./issue-visibility.js").IssueVisibility;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -339,6 +347,10 @@ export function activityService(db: Db) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
       }
 
+      const visCond = filters.visibility
+        ? issueVisibilityCondition(filters.visibility, filters.companyId)
+        : undefined;
+
       return db
         .select({ activityLog })
         .from(activityLog)
@@ -354,7 +366,10 @@ export function activityService(db: Db) {
             ...conditions,
             or(
               sql`${activityLog.entityType} != 'issue'`,
-              isNull(issues.hiddenAt),
+              and(
+                isNull(issues.hiddenAt),
+                ...(visCond ? [visCond] : []),
+              ),
             ),
           ),
         )

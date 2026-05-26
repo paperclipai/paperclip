@@ -66,6 +66,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
+import { issueVisibilityCondition } from "./issue-visibility.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
@@ -241,6 +242,13 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /**
+   * Optional per-user issue visibility, injected by the route layer.
+   * When omitted (or `{mode:"all"}`) no scope filtering is applied — the
+   * existing all-issues-of-company behavior is preserved.
+   * @see services/issue-visibility.ts
+   */
+  visibility?: import("./issue-visibility.js").IssueVisibility;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2546,6 +2554,11 @@ async function blockedInboxIssueConditions(
   const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
   const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
 
+  if (filters?.visibility) {
+    const visCond = issueVisibilityCondition(filters.visibility, companyId);
+    if (visCond) conditions.push(visCond);
+  }
+
   if (filters?.descendantOf) {
     conditions.push(sql<boolean>`
       ${issues.id} IN (
@@ -3448,6 +3461,10 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId)];
+      if (filters?.visibility) {
+        const visCond = issueVisibilityCondition(filters.visibility, companyId);
+        if (visCond) conditions.push(visCond);
+      }
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
@@ -3677,6 +3694,10 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
+      if (filters?.visibility) {
+        const visCond = issueVisibilityCondition(filters.visibility, companyId);
+        if (visCond) conditions.push(visCond);
+      }
       if (filters?.status) {
         const statuses = filters.status.split(",").map((status) => status.trim()).filter(Boolean);
         if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
