@@ -30,7 +30,7 @@ Gateway connect identity fields:
 - disableDeviceAuth (boolean, optional): disable signed device payload in connect params (default false)
 
 Request behavior fields:
-- payloadTemplate (object, optional): additional fields merged into gateway agent params
+- payloadTemplate (object, optional): additional fields merged into gateway agent params; \`text\` is folded into \`message\`, and \`paperclip\` is rendered into the wake message instead of being sent as a top-level request property
 - workspaceRuntime (object, optional): reserved workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - timeoutSec (number, optional): adapter timeout in seconds (default 120)
 - waitTimeoutMs (number, optional): agent.wait timeout override (default timeoutSec * 1000)
@@ -43,10 +43,10 @@ Session routing fields:
 - sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
 
 Standard outbound payload additions:
-- paperclip (object): standardized Paperclip context added to every gateway agent request
-- paperclip.workspace (object, optional): resolved execution workspace for this run
-- paperclip.workspaces (array, optional): additional workspace hints Paperclip exposed to the run
-- paperclip.workspaceRuntime (object, optional): reserved workspace runtime metadata when explicitly supplied outside normal heartbeat execution
+- No top-level \`paperclip\` object is sent to the gateway; the adapter delivers Paperclip wake metadata through \`message\`
+- Resolved execution workspace hints are appended to the wake message as structured JSON context
+- Additional exposed workspaces are appended to the wake message as structured JSON context
+- Workspace runtime metadata is appended to the wake message as structured JSON context when explicitly supplied outside normal heartbeat execution
 
 Standard result metadata supported:
 - meta.runtimeServices (array, optional): normalized adapter-managed runtime service reports
