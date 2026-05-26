@@ -449,6 +449,7 @@ export interface Issue {
   executionLockedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  requestedByUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;

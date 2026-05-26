@@ -20,6 +20,7 @@ function makeIssue(id: string, parentId: string | null = null): Issue {
     assigneeUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
+  requestedByUserId: null,
     issueNumber: 1,
     requestDepth: 0,
     billingCode: null,

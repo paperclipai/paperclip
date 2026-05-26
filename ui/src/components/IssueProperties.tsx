@@ -783,6 +783,7 @@ export function IssueProperties({
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const requesterUserLabel = userLabel(issue.requestedByUserId);
   const selectedAssigneeValue = issue.assigneeAgentId
     ? `agent:${issue.assigneeAgentId}`
     : issue.assigneeUserId
@@ -2088,6 +2089,12 @@ export function IssueProperties({
                 <span className="text-sm">{creatorUserLabel ?? "User"}</span>
               </>
             )}
+          </PropertyRow>
+        )}
+        {issue.requestedByUserId && issue.requestedByUserId !== issue.createdByUserId && (
+          <PropertyRow label="Requested by">
+            <User className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-sm">{requesterUserLabel ?? "User"}</span>
           </PropertyRow>
         )}
         {issue.startedAt && (
