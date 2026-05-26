@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
+  approvals,
   agents,
   companySecretBindings,
   companySecretVersions,
@@ -9,8 +11,11 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  issueApprovals,
   issueInboxArchives,
   issueReadStates,
+  issueRecoveryActions,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -62,9 +67,17 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
+const ACTIVE_WAKEUP_REQUEST_STATUSES = ["queued", "claimed"];
+const PENDING_INTERACTION_STATUSES = ["pending"];
+const PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
+const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+
+function sqlStringList(values: string[]) {
+  return sql.join(values.map((value) => sql`${value}`), sql`, `);
+}
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -911,7 +924,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const legacyExecutionIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -935,6 +948,70 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (legacyExecutionIssue) return legacyExecutionIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+          or(
+            isNotNull(issues.assigneeUserId),
+            isNotNull(issues.executionState),
+            isNotNull(issues.monitorNextCheckAt),
+            sql`exists (
+              select 1
+              from ${agentWakeupRequests}
+              where ${agentWakeupRequests.companyId} = ${issues.companyId}
+                and ${agentWakeupRequests.runId} is null
+                and ${agentWakeupRequests.status} in (${sqlStringList(ACTIVE_WAKEUP_REQUEST_STATUSES)})
+                and ${agentWakeupRequests.payload} ->> 'issueId' = cast(${issues.id} as text)
+            )`,
+            sql`exists (
+              select 1
+              from ${issueThreadInteractions}
+              where ${issueThreadInteractions.companyId} = ${issues.companyId}
+                and ${issueThreadInteractions.issueId} = ${issues.id}
+                and ${issueThreadInteractions.status} in (${sqlStringList(PENDING_INTERACTION_STATUSES)})
+            )`,
+            sql`exists (
+              select 1
+              from ${issueApprovals}
+              inner join ${approvals} on ${approvals.id} = ${issueApprovals.approvalId}
+              where ${issueApprovals.companyId} = ${issues.companyId}
+                and ${issueApprovals.issueId} = ${issues.id}
+                and ${approvals.status} in (${sqlStringList(PENDING_APPROVAL_STATUSES)})
+            )`,
+            sql`exists (
+              select 1
+              from ${issueRecoveryActions}
+              where ${issueRecoveryActions.companyId} = ${issues.companyId}
+                and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+                and ${issueRecoveryActions.status} in (${sqlStringList(ACTIVE_RECOVERY_ACTION_STATUSES)})
+            )`,
+            sql`exists (
+              select 1
+              from issue_relations routine_blocker_relation
+              inner join issues routine_blocker
+                on routine_blocker.id = routine_blocker_relation.issue_id
+              where routine_blocker_relation.company_id = ${issues.companyId}
+                and routine_blocker_relation.related_issue_id = ${issues.id}
+                and routine_blocker_relation.type = 'blocks'
+                and routine_blocker.hidden_at is null
+                and routine_blocker.status not in ('done', 'cancelled')
+            )`,
+          ),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {

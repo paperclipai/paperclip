@@ -13,6 +13,7 @@ import {
   instanceSettings,
   issueInboxArchives,
   issueReadStates,
+  issueRelations,
   issues,
   projectWorkspaces,
   projects,
@@ -57,6 +58,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
+    await db.delete(issueRelations);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
@@ -257,6 +259,125 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         id: issues.id,
         originRunId: issues.originRunId,
       })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
+    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  it.each([
+    ["skip_if_active", "skipped"],
+    ["coalesce_if_active", "coalesced"],
+  ] as const)(
+    "%s reuses a matching blocked routine issue with an unresolved blocker",
+    async (concurrencyPolicy, expectedStatus) => {
+      const { companyId, issueSvc, routine, svc } = await seedFixture();
+      const previousRunId = randomUUID();
+
+      await db
+        .update(routines)
+        .set({ concurrencyPolicy })
+        .where(eq(routines.id, routine.id));
+
+      const blockerIssue = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: "External blocker",
+        description: "Keeps the routine execution active.",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: routine.assigneeAgentId,
+      });
+      const previousIssue = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: "blocked",
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: previousRunId,
+        blockedByIssueIds: [blockerIssue.id],
+      });
+
+      await db.insert(routineRuns).values({
+        id: previousRunId,
+        companyId,
+        routineId: routine.id,
+        triggerId: null,
+        source: "manual",
+        status: "issue_created",
+        triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+        linkedIssueId: previousIssue.id,
+      });
+
+      const detailBefore = await svc.getDetail(routine.id);
+      expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
+
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe(expectedStatus);
+      expect(run.linkedIssueId).toBe(previousIssue.id);
+      expect(run.coalescedIntoRunId).toBe(previousRunId);
+
+      const routineIssues = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.originId, routine.id));
+
+      expect(routineIssues).toHaveLength(1);
+      expect(routineIssues[0]?.id).toBe(previousIssue.id);
+    },
+  );
+
+  it("always_enqueue creates a fresh issue even when a matching routine issue is blocked", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "always_enqueue" })
+      .where(eq(routines.id, routine.id));
+
+    const blockerIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "External blocker",
+      description: "Keeps the routine execution active.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: routine.assigneeAgentId,
+    });
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "blocked",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+      blockedByIssueIds: [blockerIssue.id],
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
