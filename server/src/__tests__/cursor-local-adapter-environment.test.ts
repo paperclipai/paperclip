@@ -29,7 +29,7 @@ console.log(JSON.stringify({
 }
 
 async function writeFakeCursorAgentCommand(commandPath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
+  const script = `#!${process.execPath}
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
@@ -210,6 +210,7 @@ describe("cursor environment diagnostics", () => {
           command: "agent",
           cwd: remoteCwd,
           env: {
+            HOME: homeDir,
             CURSOR_API_KEY: "test-key",
             PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,
           },

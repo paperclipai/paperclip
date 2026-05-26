@@ -61,6 +61,12 @@ pnpm dev
 
 ## 5. Core Engineering Rules
 
+0. Practice agent scope discipline.
+- Think before acting: clarify ambiguous requirements before coding or restructuring.
+- Make the smallest safe change that satisfies the issue.
+- Keep changes surgical: avoid unrelated refactors, formatting churn, dependency upgrades, or opportunistic cleanup unless explicitly requested.
+- Prove completion with targeted verification before handoff; changed files are not proof by themselves.
+
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
 
