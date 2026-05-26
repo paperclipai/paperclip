@@ -48,7 +48,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { usePluginSlots, PluginSlotOutlet } from "@/plugins/slots";
+import { PluginSlotOutlet } from "@/plugins/slots";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
@@ -2120,27 +2120,19 @@ export function IssueProperties({
  * panel. Each plugin slot receives the issue entity context and renders a
  * compact read-only view (e.g. linked PRs, Jira tickets, Slack threads).
  *
- * @see PLUGIN_SPEC.md §19 — UI Extension Model
+ * Uses PluginSlotOutlet which internally calls usePluginSlots and handles
+ * empty state (returns null when no slots match).
+ *
+ * @see PLUGIN_SPEC.md §19.3.1 — Issue Property Slots
  */
 function PluginIssuePropertySlots({ issueId, companyId }: { issueId: string; companyId: string }) {
-  const { slots } = usePluginSlots({
-    slotTypes: ["issueProperty"],
-    entityType: "issue",
-    companyId,
-  });
-
-  if (slots.length === 0) return null;
-
   return (
-    <>
-      <Separator className="my-2" />
-      <PluginSlotOutlet
-        slotTypes={["issueProperty"]}
-        entityType="issue"
-        context={{ entityId: issueId, entityType: "issue", companyId }}
-        className="flex flex-col gap-1"
-        itemClassName="text-sm"
-      />
-    </>
+    <PluginSlotOutlet
+      slotTypes={["issueProperty"]}
+      entityType="issue"
+      context={{ entityId: issueId, entityType: "issue", companyId }}
+      className="flex flex-col gap-1 border-t border-border pt-2 mt-2"
+      itemClassName="text-sm"
+    />
   );
 }
