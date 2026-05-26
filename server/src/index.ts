@@ -716,8 +716,13 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
   
+  // The scheduler-bound heartbeat service tracks active executions in-memory; keep a
+  // reference accessible from the SIGTERM/SIGINT shutdown handler below so it can call
+  // `terminateInFlightRunsForShutdown` and release stale issue locks (GAT-205).
+  let schedulerHeartbeat: ReturnType<typeof heartbeatService> | null = null;
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    schedulerHeartbeat = heartbeat;
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -923,6 +928,23 @@ export async function startServer(): Promise<StartedServer> {
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
+      }
+
+      // GAT-205 Option 3 — release any in-flight heartbeat run locks before exit so
+      // subsequent same-agent wakes are not blocked by stale checkoutRunId/executionRunId
+      // entries. Best-effort; failures must not block process exit.
+      if (schedulerHeartbeat) {
+        try {
+          const result = await schedulerHeartbeat.terminateInFlightRunsForShutdown(signal);
+          if (result.terminatedRunCount > 0 || result.releasedIssueCount > 0) {
+            logger.info(
+              { signal, ...result },
+              "Released in-flight heartbeat run locks during server shutdown",
+            );
+          }
+        } catch (err) {
+          logger.warn({ err, signal }, "Failed to release in-flight heartbeat run locks during shutdown");
+        }
       }
 
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;

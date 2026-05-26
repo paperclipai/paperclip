@@ -283,4 +283,236 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       },
     });
   });
+
+  // ---- GAT-205 / stale checkout-run lock takeover (Option 1 safety net) ----
+
+  it("writes a stale_lock_takeover audit row when same-agent checkout adopts a terminal-prior checkoutRunId", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock takeover",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const audit = await db
+      .select({
+        action: activityLog.action,
+        actorType: activityLog.actorType,
+        actorId: activityLog.actorId,
+        agentId: activityLog.agentId,
+        runId: activityLog.runId,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.action, "stale_lock_takeover"))
+      .then((rows) => rows[0]);
+    expect(audit).toMatchObject({
+      action: "stale_lock_takeover",
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: currentRunId,
+      details: {
+        issueId,
+        actorAgentId: agentId,
+        actorRunId: currentRunId,
+        priorRunId: failedRunId,
+        priorRunStatus: "failed",
+        trigger: "checkout",
+      },
+    });
+  });
+
+  it("does not adopt when the prior checkoutRunId belongs to a different agent (cross-agent contention stays 409)", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // Other agent's run is `failed` (terminal) but the issue assignee is `agentId` — the
+    // current agent should NOT be able to take over a checkout lock owned by a foreign
+    // agent's run even when that foreign run is terminal: the assignee guard is the
+    // authoritative cross-agent boundary.
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "failed",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cross-agent contention",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: otherAgentId,
+      checkoutRunId: otherRunId,
+      executionRunId: otherRunId,
+      executionAgentNameKey: "otheragent",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    // The current agent is not the assignee and lacks task-assignment privileges in this
+    // test app, so the response must not succeed and must not adopt the prior lock.
+    expect(res.status).not.toBe(200);
+
+    const auditCount = await db
+      .select({ count: activityLog.id })
+      .from(activityLog)
+      .where(eq(activityLog.action, "stale_lock_takeover"));
+    expect(auditCount).toHaveLength(0);
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    // The foreign agent must NOT become the owner. `executionRunId` may be cleared by
+    // `clearExecutionRunIfTerminal` (a separate, agent-agnostic hygiene path that runs at
+    // the top of checkout) but `checkoutRunId` and `assigneeAgentId` must stay pinned to
+    // the original owner — that is the cross-agent boundary the test is guarding.
+    expect(row).toEqual({ checkoutRunId: otherRunId, assigneeAgentId: otherAgentId });
+  });
+
+  it("rejects checkout when the prior checkoutRunId belongs to a non-terminal (still-active) same-agent run", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    // Add a second run owned by the SAME agent that is still `running` (not terminal).
+    // The checkout endpoint must refuse to take over because the prior run is active.
+    const concurrentRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: concurrentRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Concurrent active prior run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: concurrentRunId,
+      executionRunId: concurrentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status).toBe(409);
+
+    // Lock must remain pointed at the still-active prior run.
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ checkoutRunId: concurrentRunId, executionRunId: concurrentRunId });
+
+    const audit = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.action, "stale_lock_takeover"));
+    expect(audit).toHaveLength(0);
+  });
+
+  it("allows takeover when the prior run is `terminated` (server-shutdown hook ran)", async () => {
+    // Exercises the integration with Change 1: after the run-termination hook marks a
+    // dying run as `terminated` (a new terminal status), a fresh same-agent wake should
+    // be able to take over without 409.
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const terminatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: terminatedRunId,
+      companyId,
+      agentId,
+      status: "terminated",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+      error: "Run terminated during server shutdown",
+      errorCode: "server_shutdown",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Adopt after shutdown-hook termination",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: terminatedRunId,
+      executionRunId: terminatedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
+    const audit = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "stale_lock_takeover"))
+      .then((rows) => rows[0]);
+    expect(audit).toMatchObject({
+      action: "stale_lock_takeover",
+      details: { priorRunId: terminatedRunId, priorRunStatus: "terminated", trigger: "checkout" },
+    });
+  });
 });
