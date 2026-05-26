@@ -2999,7 +2999,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .where(eq(agents.id, agentId))
           .then((rows) => {
             const row = rows[0];
-            return row && row.status !== "running" ? row : null;
+            return row && row.status === "idle" ? row : null;
           }),
       5_000,
     );
