@@ -168,6 +168,26 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not re-run a successful GitHub PR review after only the issue disposition write failed", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "github_pr_review_requested",
+          reviewKind: "pr_review",
+          githubRepoFullName: "Blockcast/linux-amt",
+          githubPrNumber: 51,
+          githubHeadSha: "54900568",
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "successful PR review run already may have emitted an external side effect",
+    });
+  });
+
   it("does not queue for issue monitor maintenance runs", () => {
     expect(decide({
       run: {

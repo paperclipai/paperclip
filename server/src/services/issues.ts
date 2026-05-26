@@ -387,7 +387,14 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "error",
+  "adapter_failed",
+  "cancelled",
+  "timed_out",
+]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 
 function escapeLikePattern(value: string): string {

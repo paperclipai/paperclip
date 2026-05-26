@@ -19,6 +19,7 @@ import {
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   heartbeatService,
+  shouldScheduleAutomaticRunRetry,
 } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -217,6 +218,56 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("treats idempotent GitHub PR-review adapter failures as retry-eligible", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: {
+          wakeReason: "github_pr_opened",
+          reviewKind: "pr_review",
+          githubPrNumber: 976,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: {
+          wakeReason: "github_pr_review_submitted",
+          reviewKind: "pr_review",
+          githubPrNumber: 976,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retry plain adapter failures when the wake is not an idempotent PR review", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_assigned",
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_assigned",
+        },
+      }),
+    ).toBe(false);
   });
 
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {

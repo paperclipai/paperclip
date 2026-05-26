@@ -66,11 +66,12 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     return app;
   }
 
-  async function seedCompanyAgentAndRuns() {
+  async function seedCompanyAgentAndRuns(options: { staleRunStatus?: string } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const failedRunId = randomUUID();
     const currentRunId = randomUUID();
+    const staleRunStatus = options.staleRunStatus ?? "failed";
 
     await db.insert(companies).values({
       id: companyId,
@@ -94,7 +95,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         id: failedRunId,
         companyId,
         agentId,
-        status: "failed",
+        status: staleRunStatus,
         invocationSource: "manual",
         finishedAt: new Date(),
       },
@@ -169,6 +170,73 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });
+  });
+
+  it("allows a same-agent current run to close an issue owned by a stale adapter_failed checkout run", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "adapter_failed",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine close after adapter wedge",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("keeps live different-run ownership protected", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "running",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live run conflict",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
   });
 
   it("allows the rightful assignee to release after the owning run failed", async () => {

@@ -295,6 +295,12 @@ function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
   return Boolean(wakeReason?.startsWith("issue_monitor") || source?.startsWith("issue.monitor"));
 }
 
+function isGithubPrReviewRun(run: HeartbeatRunRow) {
+  const context = readRecord(run.contextSnapshot);
+  const reviewKind = readString(context.reviewKind);
+  return reviewKind === "pr_review";
+}
+
 function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
@@ -350,6 +356,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
+  if (isGithubPrReviewRun(run)) {
+    return { kind: "skip", reason: "successful PR review run already may have emitted an external side effect" };
+  }
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }

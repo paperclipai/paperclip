@@ -372,6 +372,17 @@ function readTransientRecoveryContractFromRun(
   return null;
 }
 
+export function shouldScheduleAutomaticRunRetry(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson" | "contextSnapshot">,
+) {
+  if (readTransientRecoveryContractFromRun(run)) return true;
+
+  if (run.errorCode !== "adapter_failed" && run.errorCode !== "process_lost") return false;
+
+  const prReview = derivePaperclipPrReview(parseObject(run.contextSnapshot));
+  return prReview?.reviewKind === "pr_review";
+}
+
 function mergeAdapterRecoveryMetadata(input: {
   resultJson: Record<string, unknown> | null | undefined;
   errorFamily?: string | null;
@@ -9322,7 +9333,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (outcome === "failed" && shouldScheduleAutomaticRunRetry(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
@@ -11421,6 +11432,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let skipped = 0;
       let idleSkipped = 0;
 
+      const writeNoInFlightWorkSkip = async (agent: typeof agents.$inferSelect) => {
+        await db.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          source: "timer",
+          triggerDetail: "system",
+          reason: "no_in_flight_work",
+          payload: {
+            skipped: "no_in_flight_work",
+            assignedLiveIssueCount: 0,
+          },
+          status: "skipped",
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_scheduler",
+          finishedAt: now,
+        });
+
+        await db
+          .update(agents)
+          .set({ lastHeartbeatAt: now, updatedAt: now })
+          .where(eq(agents.id, agent.id));
+      };
+
+      const opencodeK8sAgentIds = allAgents
+        .filter((agent) => agent.adapterType === "opencode_k8s")
+        .map((agent) => agent.id);
+      const assignedLiveWorkAgentIds = new Set<string>();
+      if (opencodeK8sAgentIds.length > 0) {
+        const assignedLiveWorkRows = await db
+          .select({ agentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(
+            and(
+              inArray(issues.assigneeAgentId, opencodeK8sAgentIds),
+              inArray(issues.status, ["todo", "in_progress", "in_review"]),
+              isNull(issues.hiddenAt),
+            ),
+          );
+        for (const row of assignedLiveWorkRows) {
+          if (row.agentId) assignedLiveWorkAgentIds.add(row.agentId);
+        }
+      }
+
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -11446,6 +11500,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             skipped += 1;
             continue;
           }
+        }
+
+        if (agent.adapterType === "opencode_k8s" && !assignedLiveWorkAgentIds.has(agent.id)) {
+          await writeNoInFlightWorkSkip(agent);
+          logger.info(
+            { agentId: agent.id, agentName: agent.name, adapterType: agent.adapterType, skipped: "no_in_flight_work" },
+            "opencode_k8s timer wakeup skipped because agent has no assigned live work",
+          );
+          skipped += 1;
+          continue;
         }
 
         const run = await enqueueWakeup(agent.id, {
