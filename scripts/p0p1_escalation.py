@@ -8,7 +8,7 @@ Thresholds:
 Suppression (skip if any of the following):
   - ESCALATION comment posted on this issue within the last 30 minutes
   - All direct blockers are in_review AND have pending request_confirmation/suggest_tasks interactions
-  - CEO has commented on this issue within the last 24 hours (covered-hold)
+  - Any comment containing "CEO-HOLD" posted within the last 24 hours (any agent may issue a hold)
 """
 import json, os, sys, time, urllib.request, urllib.error
 from datetime import datetime, timezone
@@ -92,9 +92,9 @@ def should_suppress(issue, comments):
         if "ESCALATION" in body and now - created < DEDUP_WINDOW_S:
             return "recent-escalation-comment"
 
-    # 2. CEO covered-hold: CEO commented in last 24 h
+    # 2. CEO covered-hold: any "CEO-HOLD" comment in last 24 h (any agent may post it)
     for c in (comments if isinstance(comments, list) else []):
-        if c.get("authorAgentId") == CEO and now - parse_ts(c.get("createdAt")) < CEO_HOLD_S:
+        if "CEO-HOLD" in c.get("body", "") and now - parse_ts(c.get("createdAt")) < CEO_HOLD_S:
             return "ceo-hold"
 
     # 3. All direct blockers are in_review with pending interactions
