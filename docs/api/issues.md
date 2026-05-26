@@ -176,9 +176,13 @@ For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assi
 POST /api/issues/{issueId}/interactions/{interactionId}/accept
 POST /api/issues/{issueId}/interactions/{interactionId}/reject
 POST /api/issues/{issueId}/interactions/{interactionId}/respond
+POST /api/issues/{issueId}/interactions/{interactionId}/cancel
+POST /api/issues/{issueId}/interactions/{interactionId}/withdraw
 ```
 
 Board users resolve interactions from the UI. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
+
+`withdraw` is agent-only: the creating agent may withdraw its own pending interaction when subsequent context makes the request stale. The interaction status flips from `pending` to `withdrawn`, which clears it from board-user blocker queues. Returns `403` if called by a non-agent actor, and `422` if the caller is not the creator agent. Accepts an optional `reason` string (max 4000 chars).
 
 ## Documents
 
