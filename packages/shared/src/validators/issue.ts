@@ -390,6 +390,10 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  backlogSweepConfig: z.object({
+    ageThresholdHours: z.number().int().positive().optional(),
+    disabled: z.boolean().optional(),
+  }).optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
@@ -439,6 +443,18 @@ export const checkoutIssueSchema = z.object({
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;
+
+const NUDGE_IDEMPOTENCY_KEY_REGEX = /^nudge:[0-9a-f-]+:[0-9a-f-]+:\d{4}-\d{2}-\d{2}$/;
+
+export const nudgeIssueSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().regex(
+    NUDGE_IDEMPOTENCY_KEY_REGEX,
+    "idempotencyKey must follow format: nudge:{targetIssueId}:{actorAgentId}:{YYYY-MM-DD}",
+  ),
+});
+
+export type NudgeIssue = z.infer<typeof nudgeIssueSchema>;
 
 const commentMetadataLabelSchema = z.string().trim().min(1).max(120);
 const commentMetadataTextSchema = z.string().trim().min(1).max(2000);

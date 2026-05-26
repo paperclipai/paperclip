@@ -28,6 +28,10 @@ type WakePayload = {
   approvalId: string | null;
   approvalStatus: string | null;
   issueIds: string[];
+  wakeNudgeId: string | null;
+  wakeActorAgentId: string | null;
+  wakeBacklogAgeDays: string | null;
+  wakeSweepTaskId: string | null;
 };
 
 type GatewayDeviceIdentity = {
@@ -316,6 +320,10 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
           (value): value is string => typeof value === "string" && value.trim().length > 0,
         )
       : [],
+    wakeNudgeId: nonEmpty(context.wakeNudgeId),
+    wakeActorAgentId: nonEmpty(context.wakeActorAgentId),
+    wakeBacklogAgeDays: typeof context.wakeBacklogAgeDays === "number" ? String(context.wakeBacklogAgeDays) : null,
+    wakeSweepTaskId: nonEmpty(context.wakeSweepTaskId),
   };
 }
 
@@ -357,6 +365,10 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (wakePayload.issueIds.length > 0) {
     paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
   }
+  if (wakePayload.wakeNudgeId) paperclipEnv.PAPERCLIP_WAKE_NUDGE_ID = wakePayload.wakeNudgeId;
+  if (wakePayload.wakeActorAgentId) paperclipEnv.PAPERCLIP_WAKE_ACTOR_AGENT_ID = wakePayload.wakeActorAgentId;
+  if (wakePayload.wakeBacklogAgeDays) paperclipEnv.PAPERCLIP_WAKE_BACKLOG_AGE_DAYS = wakePayload.wakeBacklogAgeDays;
+  if (wakePayload.wakeSweepTaskId) paperclipEnv.PAPERCLIP_WAKE_TASK_ID = wakePayload.wakeSweepTaskId;
 
   return paperclipEnv;
 }

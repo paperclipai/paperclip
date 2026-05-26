@@ -194,6 +194,37 @@ GET /api/routines/{routineId}/runs?limit=50
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
 
+## Backlog Stale Sweep
+
+```
+POST /api/companies/{companyId}/backlog-stale-sweep
+{
+  "ageThresholdHours": 72,
+  "commentInactivityThresholdHours": 72,
+  "perAgentDailyCap": 5
+}
+```
+
+Manually fires the backlog stale-issue wake sweep. Scans `backlog` issues with an assigned agent that have been idle for more than `ageThresholdHours` and have no comment activity in `commentInactivityThresholdHours`. Eligible issues are ordered oldest-first (ties broken by priority), capped at `perAgentDailyCap` per assignee, then each selected assignee is woken with `reason: "backlog_stale"`.
+
+A daily auto-sweep also fires from the periodic heartbeat loop at 13:00 Europe/Warsaw, using the defaults above.
+
+Body fields (all optional, defaults shown):
+
+| Field | Default | Cap | Description |
+|-------|---------|-----|-------------|
+| `ageThresholdHours` | 72 | — | Minimum hours since last issue update |
+| `commentInactivityThresholdHours` | 72 | — | Minimum hours since last comment on the issue |
+| `perAgentDailyCap` | 5 | 50 | Max wakes per assignee per invocation |
+
+Auth: agent or board. Other actor types return `403`.
+
+Per-issue opt-out: an issue may set `backlogSweepConfig: { disabled: true }` to skip the sweep entirely, or `backlogSweepConfig: { ageThresholdHours: N }` to override the threshold for that issue.
+
+Response: `200` with `{ scanned, woken }` — `scanned` is the candidate count after the age cutoff but before the comment-inactivity and per-issue-config filters; `woken` is the number of assignees actually woken.
+
+Activity log: each emitted wake records `issue.backlog_stale_wake_emitted` with `{ agentId, ageDays, ageThresholdHours }`. The sweep itself records `routine.backlog_stale_sweep_run` with the resolved payload and counts.
+
 ## Agent Access Rules
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:

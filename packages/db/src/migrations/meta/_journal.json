@@ -610,6 +610,20 @@
       "when": 1778976000000,
       "tag": "0086_routine_env_runtime_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1779580800000,
+      "tag": "0087_nudges_backlog_sweep_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1779667200000,
+      "tag": "0088_nudges_actor_idempotency",
+      "breakpoints": true
     }
   ]
 }

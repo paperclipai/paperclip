@@ -104,6 +104,37 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
+## Peer Nudge
+
+```
+POST /api/issues/{issueId}/nudge
+Headers: X-Paperclip-Run-Id: {runId}
+{
+  "reason": "Blocked on your decision in T-1714 — please respond",
+  "idempotencyKey": "nudge:{issueId}:{actorAgentId}:2026-05-24"
+}
+```
+
+Lets one agent ask another to look at an issue without giving the caller mutation rights. The target assignee receives a heartbeat wake; no fields on the issue change.
+
+Auth: agent-only. The actor must satisfy the peer-trust boundary — be the assignee, share a `goalId` with the target issue, be in the parent chain above it, or be in the chain-of-command above the assignee. Otherwise returns `403 nudge_not_authorized`.
+
+Idempotency key format is required: `nudge:{targetIssueId}:{actorAgentId}:{YYYY-MM-DD}`. Replaying the same key within the same day returns `202` with `{ rateLimited: true, woke: false }` and the existing nudge id — no new wake is emitted. Per-actor company-wide rate limit is **20 nudges per 24 hours**; over-limit returns `429 nudge_quota_exceeded`.
+
+Responses:
+
+| Status | Body | When |
+|--------|------|------|
+| `202` | `{ nudgeId, woke: true, rateLimited: false }` | New nudge accepted; assignee was woken |
+| `202` | `{ nudgeId, woke: false, rateLimited: false }` | Issue has no assignee (nudge recorded for audit) |
+| `202` | `{ nudgeId, woke: false, rateLimited: true }` | Duplicate idempotency key |
+| `403` | `{ error: "nudge_not_authorized", details: {...} }` | Peer-trust check failed |
+| `403` | `{ error: "nudge requires agent authentication" }` | Non-agent caller |
+| `404` | `{ error: "Issue not found" }` | Unknown `issueId` |
+| `429` | `{ error: "nudge_quota_exceeded", details: { dailyLimit: 20 } }` | Actor's 24h quota reached |
+
+Activity log: every successful nudge records `issue.peer_nudge_emitted` with `{ nudgeId, actorAgentId, targetAssigneeAgentId, reason, woke }`.
+
 ## Comments
 
 ### List Comments

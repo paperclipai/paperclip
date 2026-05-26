@@ -116,6 +116,21 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
+
+  const wakeNudgeId =
+    typeof context.wakeNudgeId === "string" && context.wakeNudgeId.trim().length > 0
+      ? context.wakeNudgeId.trim()
+      : null;
+  const wakeActorAgentId =
+    typeof context.wakeActorAgentId === "string" && context.wakeActorAgentId.trim().length > 0
+      ? context.wakeActorAgentId.trim()
+      : null;
+  const wakeBacklogAgeDays =
+    typeof context.wakeBacklogAgeDays === "number" ? String(context.wakeBacklogAgeDays) : null;
+  const wakeSweepTaskId =
+    typeof context.wakeSweepTaskId === "string" && context.wakeSweepTaskId.trim().length > 0
+      ? context.wakeSweepTaskId.trim()
+      : null;
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
 
@@ -126,6 +141,10 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+  if (wakeNudgeId) env.PAPERCLIP_WAKE_NUDGE_ID = wakeNudgeId;
+  if (wakeActorAgentId) env.PAPERCLIP_WAKE_ACTOR_AGENT_ID = wakeActorAgentId;
+  if (wakeBacklogAgeDays) env.PAPERCLIP_WAKE_BACKLOG_AGE_DAYS = wakeBacklogAgeDays;
+  if (wakeSweepTaskId) env.PAPERCLIP_WAKE_TASK_ID = wakeSweepTaskId;
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
   if (!trimNullable(env.PAPERCLIP_API_KEY) && authToken) {
     env.PAPERCLIP_API_KEY = authToken;

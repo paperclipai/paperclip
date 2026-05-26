@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -10,21 +11,28 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, routineService } from "../services/index.js";
+import { accessService, heartbeatService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const backlogStaleSweepPayloadSchema = z.object({
+  ageThresholdHours: z.number().int().positive().default(72),
+  commentInactivityThresholdHours: z.number().int().positive().default(72),
+  perAgentDailyCap: z.number().int().positive().max(50).default(5),
+});
+
 export function routineRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; heartbeat?: ReturnType<typeof heartbeatService> } = {},
 ) {
   const router = Router();
   const svc = routineService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
   const access = accessService(db);
+  const hb = options.heartbeat ?? heartbeatService(db as Parameters<typeof heartbeatService>[0]);
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -448,6 +456,41 @@ export function routineRoutes(
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,
     });
     res.status(202).json(result);
+  });
+
+  // POST /api/companies/:companyId/backlog-stale-sweep — run stale backlog wake sweep (§6)
+  router.post("/companies/:companyId/backlog-stale-sweep", validate(backlogStaleSweepPayloadSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent" && req.actor.type !== "board") {
+      res.status(403).json({ error: "backlog-stale-sweep requires agent or board authentication" });
+      return;
+    }
+
+    const payload = req.body as { ageThresholdHours: number; commentInactivityThresholdHours: number; perAgentDailyCap: number };
+
+    const { sweepBacklogStale } = await import("../services/backlog-stale-sweep.js");
+    const result = await sweepBacklogStale(db, hb, {
+      ageThresholdHours: payload.ageThresholdHours,
+      commentInactivityThresholdHours: payload.commentInactivityThresholdHours,
+      perAgentDailyCap: payload.perAgentDailyCap,
+      companyId,
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "routine.backlog_stale_sweep_run",
+      entityType: "company",
+      entityId: companyId,
+      details: { ...payload, ...result, auditEvent: "backlog_stale_sweep_run" },
+    });
+
+    res.status(200).json(result);
   });
 
   return router;

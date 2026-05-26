@@ -430,6 +430,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
+
+  const wakeNudgeId =
+    typeof context.wakeNudgeId === "string" && context.wakeNudgeId.trim().length > 0
+      ? context.wakeNudgeId.trim()
+      : null;
+  const wakeActorAgentId =
+    typeof context.wakeActorAgentId === "string" && context.wakeActorAgentId.trim().length > 0
+      ? context.wakeActorAgentId.trim()
+      : null;
+  const wakeBacklogAgeDays =
+    typeof context.wakeBacklogAgeDays === "number" ? String(context.wakeBacklogAgeDays) : null;
+  const wakeSweepTaskId =
+    typeof context.wakeSweepTaskId === "string" && context.wakeSweepTaskId.trim().length > 0
+      ? context.wakeSweepTaskId.trim()
+      : null;
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
   if (wakeTaskId) {
@@ -456,6 +471,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakePayloadJson) {
     env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
   }
+  if (wakeNudgeId) env.PAPERCLIP_WAKE_NUDGE_ID = wakeNudgeId;
+  if (wakeActorAgentId) env.PAPERCLIP_WAKE_ACTOR_AGENT_ID = wakeActorAgentId;
+  if (wakeBacklogAgeDays) env.PAPERCLIP_WAKE_BACKLOG_AGE_DAYS = wakeBacklogAgeDays;
+  if (wakeSweepTaskId) env.PAPERCLIP_WAKE_TASK_ID = wakeSweepTaskId;
   refreshPaperclipWorkspaceEnvForExecution({
     env,
     envConfig,

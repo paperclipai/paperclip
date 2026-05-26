@@ -2410,6 +2410,146 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
   });
 
+  // EDE-34 §4.3: wake-dispatcher matrix. Every non-terminal dependent must
+  // surface in listWakeableBlockedDependents once its sole blocker reaches done.
+  // Terminal dependents must not surface; cancelled blockers must not count.
+  for (const dependentStatus of ["todo", "in_progress", "in_review", "blocked", "backlog"] as const) {
+    it(`returns a ${dependentStatus} dependent once its blocker is done`, async () => {
+      const companyId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: assigneeAgentId,
+        companyId,
+        name: `Assignee-${dependentStatus}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const blockerId = randomUUID();
+      const dependentId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Blocker", status: "in_progress", priority: "medium" },
+        {
+          id: dependentId,
+          companyId,
+          title: `Dependent (${dependentStatus})`,
+          status: dependentStatus,
+          priority: "medium",
+          assigneeAgentId,
+        },
+      ]);
+      await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+      await svc.update(blockerId, { status: "done" });
+
+      await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([
+        expect.objectContaining({
+          id: dependentId,
+          assigneeAgentId,
+          blockerIssueIds: [blockerId],
+        }),
+      ]);
+
+      // Dependent's own status MUST NOT auto-change — the assignee owns transitions.
+      const reloaded = await svc.getById(dependentId);
+      expect(reloaded?.status).toBe(dependentStatus);
+    });
+  }
+
+  for (const dependentStatus of ["done", "cancelled"] as const) {
+    it(`skips ${dependentStatus} dependents when blocker resolves`, async () => {
+      const companyId = randomUUID();
+      const assigneeAgentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: assigneeAgentId,
+        companyId,
+        name: `Terminal-${dependentStatus}`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const blockerId = randomUUID();
+      const dependentId = randomUUID();
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Blocker", status: "in_progress", priority: "medium" },
+        {
+          id: dependentId,
+          companyId,
+          title: `Terminal dependent (${dependentStatus})`,
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId,
+        },
+      ]);
+      await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+      // Move dependent to terminal before the blocker resolves.
+      await svc.update(dependentId, { status: dependentStatus });
+      await svc.update(blockerId, { status: "done" });
+
+      await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+    });
+  }
+
+  it("does not treat a cancelled blocker as resolved (still has open dependents)", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Cancelled-blocker-test",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "in_progress", priority: "medium" },
+      {
+        id: dependentId,
+        companyId,
+        title: "Dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+    await svc.update(blockerId, { status: "cancelled" });
+
+    // The dependent still has blockedBy=[B]; "cancelled" is not "resolved".
+    await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([]);
+  });
+
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

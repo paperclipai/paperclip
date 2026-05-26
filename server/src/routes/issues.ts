@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -11,6 +11,7 @@ import {
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
+  nudges,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
@@ -40,6 +41,7 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  nudgeIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -109,6 +111,7 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { canActOnTargetIssue } from "../services/peer-trust.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
@@ -5653,6 +5656,150 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // POST /api/issues/:id/nudge — peer wake without mutation rights (§5)
+  router.post("/issues/:id/nudge", validate(nudgeIssueSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "nudge requires agent authentication" });
+      return;
+    }
+    const actorAgentId = req.actor.agentId;
+    const issueId = req.params.id as string;
+
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    // Trust boundary: same as canRequestUnstick from EDE-35
+    const authorized = await canActOnTargetIssue(actorAgentId, {
+      id: issue.id,
+      companyId: issue.companyId,
+      goalId: issue.goalId ?? null,
+      parentId: issue.parentId ?? null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
+    }, db);
+    if (!authorized) {
+      res.status(403).json({
+        error: "nudge_not_authorized",
+        details: {
+          issueId: issue.id,
+          actorAgentId,
+          message: "Actor must share goalId, be in ancestor chain, or be in chain of command of target assignee",
+        },
+      });
+      return;
+    }
+
+    const { reason, idempotencyKey } = req.body as { reason: string; idempotencyKey: string };
+
+    // Per-actor per-target idempotency: lookup includes actorAgentId so two
+    // different agents using the same key never collide. Pairs with the
+    // (companyId, actorAgentId, idempotencyKey) unique constraint on the table.
+    const existing = await db
+      .select()
+      .from(nudges)
+      .where(and(
+        eq(nudges.companyId, issue.companyId),
+        eq(nudges.actorAgentId, actorAgentId),
+        eq(nudges.idempotencyKey, idempotencyKey),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (existing) {
+      res.status(202).json({
+        nudgeId: existing.id,
+        woke: false,
+        rateLimited: true,
+      });
+      return;
+    }
+
+    // Company-wide actor rate limit: max 20 per 24h (§5.2)
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const actorDailyCount = await db
+      .select({ cnt: count() })
+      .from(nudges)
+      .where(and(
+        eq(nudges.companyId, issue.companyId),
+        eq(nudges.actorAgentId, actorAgentId),
+        gte(nudges.createdAt, dayAgo),
+      ))
+      .then((rows) => rows[0]?.cnt ?? 0);
+
+    if (actorDailyCount >= 20) {
+      res.status(429).json({
+        error: "nudge_quota_exceeded",
+        details: { companyId: issue.companyId, actorAgentId, dailyLimit: 20 },
+      });
+      return;
+    }
+
+    const woke = Boolean(issue.assigneeAgentId);
+    const nudgeId = randomUUID();
+
+    await db.insert(nudges).values({
+      id: nudgeId,
+      companyId: issue.companyId,
+      actorAgentId,
+      targetIssueId: issue.id,
+      targetAssigneeAgentId: issue.assigneeAgentId ?? null,
+      idempotencyKey,
+      reason,
+      woke,
+      rateLimited: false,
+    });
+
+    if (issue.assigneeAgentId) {
+      void heartbeat.wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "peer_nudged",
+        payload: {
+          issueId: issue.id,
+          nudgeId,
+          actorAgentId,
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: actorAgentId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "peer_nudged",
+          wakeNudgeId: nudgeId,
+          wakeActorAgentId: actorAgentId,
+          nudgeId,
+          actorAgentId,
+          source: "issue.nudge",
+        },
+      }).catch((err) => logger.warn({ err, issueId: issue.id, nudgeId }, "failed to wake assignee on nudge"));
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.peer_nudge_emitted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        nudgeId,
+        actorAgentId,
+        targetAssigneeAgentId: issue.assigneeAgentId ?? null,
+        reason,
+        woke,
+        auditEvent: "peer_nudge_emitted",
+      },
+    });
+
+    res.status(202).json({ nudgeId, woke, rateLimited: false });
   });
 
   return router;

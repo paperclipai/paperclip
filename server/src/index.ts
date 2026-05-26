@@ -805,6 +805,13 @@ export async function startServer(): Promise<StartedServer> {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
         })
+        .then(async () => {
+          const { maybeSweepBacklogStale } = await import("./services/backlog-stale-sweep.js");
+          const result = await maybeSweepBacklogStale(db, heartbeat);
+          if (result && result.woken > 0) {
+            logger.warn({ ...result }, "backlog stale sweep woke stale backlog assignees");
+          }
+        })
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });

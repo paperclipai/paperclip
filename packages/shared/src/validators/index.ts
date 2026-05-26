@@ -219,6 +219,8 @@ export {
   type IssueDocumentFormat,
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
+  nudgeIssueSchema,
+  type NudgeIssue,
 } from "./issue.js";
 
 export {
