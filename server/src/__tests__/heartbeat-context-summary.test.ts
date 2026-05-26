@@ -330,16 +330,30 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     ).toEqual({ status: "posted_review" });
   });
 
-  it("accepts the live posted-review verifier marker", () => {
+  it("does not accept negated posted-review verifier text", () => {
     expect(
       evaluatePrReviewCompletionEvidence(reviewerContext, {
         resultJson: {
-          title: "Verifies review was posted",
+          title: "Could not verify that the review was posted",
           output:
-            '{"latest_ally":{"author":"blockcast-ci-packages","submittedAt":"2026-05-26T06:56:29Z"}}',
+            "No matching Ally review was found for head a563570063ed679e325da8da3f5376a019e7b615.",
         },
       }),
-    ).toEqual({ status: "posted_review" });
+    ).toMatchObject({
+      status: "missing",
+      errorCode: "pr_review_output_missing",
+    });
+  });
+
+  it("does not accept generic verifier text as posted-review evidence", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        summary: "Could not verify posted Ally review for head abc123.",
+      }),
+    ).toMatchObject({
+      status: "missing",
+      errorCode: "pr_review_output_missing",
+    });
   });
 
   it("accepts idempotent already-reviewed skips", () => {
