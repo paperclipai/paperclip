@@ -1135,4 +1135,386 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // CYC-6101 Layer 1: atomic blocked → in_progress on request_confirmation
+  // accept. Fixture coverage:
+  //   1. blocked w/ no engineering blocker → transitions to in_progress
+  //   2. blocked w/ unresolved engineering blocker → card accepts, issue stays
+  //      blocked
+  //   3. already-in_progress → idempotent no-op (status unchanged)
+  //   4. already-accepted card replay → idempotent no-op (re-accept rejected)
+  // Each fixture independently exercises the new branch in
+  // `acceptRequestConfirmation`. Together they pin the contract that the brief
+  // requires (single-transaction, audit-friendly continuationIssue, idempotent).
+  // ---------------------------------------------------------------------------
+
+  it("CYC-6101 Layer 1: accepting a confirmation on a blocked, unblocked-by-relations issue transitions it to in_progress atomically", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Layer 1 — board-only blocker",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Founding Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The blocked-without-engineering-blocker case is the canonical CYC-5647
+    // shape: `status='blocked'`, no `issueRelations` rows pointing at this
+    // issue. The agent posed a request_confirmation card and is waiting for
+    // the board to accept it.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Awaiting board confirmation",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the proposed plan?",
+        acceptLabel: "Approve",
+        rejectLabel: "Reject",
+      },
+    }, {
+      agentId: assigneeAgentId,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.interaction.status).toBe("accepted");
+    // continuationIssue is what the route handler reads to decide whether to
+    // emit the `issue.updated` activity log row with the
+    // `source: "request_confirmation_accept"` audit reason. Layer 1 sets it
+    // whenever a transition actually happened.
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+
+    // Persisted state matches the contract: blocked → in_progress, assignee
+    // preserved, startedAt populated by `applyStatusSideEffects`.
+    const persisted = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(persisted).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId,
+    });
+    expect(persisted?.startedAt).toBeInstanceOf(Date);
+  });
+
+  it("CYC-6101 Layer 1: accepting a confirmation on a blocked issue with an unresolved engineering blocker accepts the card but keeps the issue blocked", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const dependentIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Layer 1 — engineering blocker present",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Founding Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // Blocker issue is still in_progress — the dependency edge is unresolved.
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      goalId,
+      title: "Upstream dependency",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issues).values({
+      id: dependentIssueId,
+      companyId,
+      goalId,
+      title: "Awaiting both board and dependency",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    // issue_relations row: dependentIssueId is blocked by blockerIssueId.
+    // (In drizzle the row's `issueId` is the blocker, `relatedIssueId` is
+    // the dependent — see services/issues.ts listIssueDependencyReadinessMap.)
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const created = await interactionsSvc.create({
+      id: dependentIssueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Proceed regardless of dependency?",
+      },
+    }, {
+      agentId: assigneeAgentId,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: dependentIssueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    // The card itself is accepted...
+    expect(accepted.interaction.status).toBe("accepted");
+    // ...but no issue-status transition fired (engineering blocker still
+    // unresolved), so continuationIssue stays null and the route handler
+    // does NOT emit an `issue.updated` audit row.
+    expect(accepted.continuationIssue ?? null).toBeNull();
+
+    const persisted = (await db.select().from(issues)).find((row) => row.id === dependentIssueId);
+    expect(persisted).toMatchObject({
+      id: dependentIssueId,
+      status: "blocked",
+      assigneeAgentId,
+    });
+  });
+
+  it("CYC-6101 Layer 1: accepting a confirmation on an already-in_progress issue is an idempotent no-op (no second transition)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Layer 1 — already in_progress",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Founding Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const startedAt = new Date("2026-04-30T10:00:00.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Already running",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      startedAt,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Continue?",
+      },
+    }, {
+      agentId: assigneeAgentId,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(accepted.interaction.status).toBe("accepted");
+    // No transition fires because the issue is not `blocked`. The Layer 1
+    // branch is bypassed entirely; the existing `touchIssue` else-branch
+    // handles the bookkeeping.
+    expect(accepted.continuationIssue ?? null).toBeNull();
+
+    const persisted = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(persisted).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId,
+    });
+    // startedAt MUST NOT be re-stamped on the no-op path; that would be the
+    // signature of a second transition firing.
+    expect(persisted?.startedAt?.getTime()).toBe(startedAt.getTime());
+  });
+
+  it("CYC-6101 Layer 1: replaying accept on a card that is already accepted is an idempotent no-op (no double transition, no double audit row)", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Layer 1 — replay accept",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "Founding Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Awaiting board confirmation (replay)",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Proceed?",
+      },
+    }, {
+      agentId: assigneeAgentId,
+    });
+
+    // First accept transitions blocked → in_progress.
+    const firstAccept = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    });
+    expect(firstAccept.continuationIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+    });
+
+    const persistedAfterFirst = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(persistedAfterFirst?.status).toBe("in_progress");
+    const startedAtAfterFirst = persistedAfterFirst?.startedAt;
+    expect(startedAtAfterFirst).toBeInstanceOf(Date);
+
+    // Second accept on the same (already-accepted) interaction must be a
+    // no-op. The interaction-update WHERE clause matches `status='pending'`
+    // and finds zero rows on replay, so the service throws — neither the
+    // interaction row nor the issue row mutates.
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction has already been resolved");
+
+    const persistedAfterReplay = (await db.select().from(issues)).find((row) => row.id === issueId);
+    expect(persistedAfterReplay?.status).toBe("in_progress");
+    // startedAt still stamped exactly once — the second call did not re-fire
+    // the transition path.
+    expect(persistedAfterReplay?.startedAt?.getTime()).toBe(startedAtAfterFirst!.getTime());
+  });
 });

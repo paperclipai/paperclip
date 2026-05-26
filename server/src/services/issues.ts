@@ -452,6 +452,26 @@ async function listUnresolvedBlockerIssueIds(
     )
     .then((rows) => rows.map((row) => row.id));
 }
+
+/**
+ * Returns the ids of the issue's unresolved blockers (blocker rows whose
+ * `issues.status` is not `done`). Used by `acceptRequestConfirmation` (CYC-6101
+ * Layer 1) so it can decide whether the dependent issue is safe to transition
+ * out of `blocked` when a board confirmation card is accepted.
+ *
+ * Exported so callers outside `issueService(db)` (specifically
+ * `issue-thread-interactions.ts`) can use the same canonical query as the
+ * `update()` path that gates the `→ in_progress` transition.
+ */
+export async function listUnresolvedBlockerIssueIdsForIssue(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+): Promise<string[]> {
+  const readinessMap = await listIssueDependencyReadinessMap(dbOrTx, companyId, [issueId]);
+  return readinessMap.get(issueId)?.unresolvedBlockerIssueIds ?? [];
+}
+
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
   companyId: string,
