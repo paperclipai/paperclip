@@ -4,6 +4,24 @@ import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
+/**
+ * Find the byte length of valid UTF-8 ending at or before `buf.length`.
+ * Trims any incomplete multi-byte sequence at the tail so that
+ * `buf.subarray(0, n).toString("utf8")` never produces U+FFFD.
+ */
+function findUtf8SafeEnd(buf: Buffer): number {
+  const len = buf.length;
+  if (len === 0) return 0;
+  if (buf[len - 1]! < 0x80) return len;
+  let i = len - 1;
+  while (i >= 0 && (buf[i]! & 0xc0) === 0x80) i--;
+  if (i < 0) return 0;
+  const lead = buf[i]!;
+  const seqLen = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+  if (len - i >= seqLen) return len;
+  return i;
+}
+
 export type WorkspaceOperationLogStoreType = "local_file";
 
 export interface WorkspaceOperationLogHandle {
@@ -77,8 +95,11 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
       stream.on("end", () => resolve());
     });
 
-    const content = Buffer.concat(chunks).toString("utf8");
-    const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
+    const raw = Buffer.concat(chunks);
+    const safeEnd = findUtf8SafeEnd(raw);
+    const content = raw.subarray(0, safeEnd).toString("utf8");
+    const bytesConsumed = start + safeEnd;
+    const nextOffset = bytesConsumed < stat.size ? bytesConsumed : undefined;
     return { content, nextOffset };
   }
 
