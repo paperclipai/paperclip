@@ -179,6 +179,9 @@ describe("plugin-artifacts-handler — PLA-574", () => {
       attachmentCompanyId: "dpr-company",
       attachmentId: "att-1",
       pluginKey: "acme.support",
+      // Six-field audit (PLA-574): toolName comes from the registered
+      // runContext, not from worker-supplied params.
+      toolName: "lookup-screenshot",
     });
   });
 
@@ -196,6 +199,8 @@ describe("plugin-artifacts-handler — PLA-574", () => {
       dispatchingAgentId: "agent-plat-1",
       dispatchingCompanyId: "platform-company",
       attachmentCompanyId: "dpr-company",
+      // Six-field audit (PLA-574): deny paths still carry toolName.
+      toolName: "lookup-screenshot",
     });
   });
 

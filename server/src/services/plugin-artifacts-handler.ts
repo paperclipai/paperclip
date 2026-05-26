@@ -223,6 +223,7 @@ export function createPluginArtifactsHandler(
     attachmentCompanyId: string | null;
     attachmentId: string;
     runId: string;
+    toolName: string;
     byteSize?: number;
   }) {
     try {
@@ -248,6 +249,7 @@ export function createPluginArtifactsHandler(
           dispatchingCompanyId: input.dispatchingCompanyId,
           attachmentCompanyId: input.attachmentCompanyId,
           attachmentId: input.attachmentId,
+          toolName: input.toolName,
           byteSize: input.byteSize ?? null,
         },
       });
@@ -295,6 +297,7 @@ export function createPluginArtifactsHandler(
           attachmentCompanyId: null,
           attachmentId,
           runId,
+          toolName: ctx.toolName,
         });
         throw new ArtifactsError("rate_limited", "global per-agent rate limit exceeded");
       }
@@ -311,6 +314,7 @@ export function createPluginArtifactsHandler(
           attachmentCompanyId: null,
           attachmentId,
           runId,
+          toolName: ctx.toolName,
         });
         throw new ArtifactsError("not_found", "attachment not found");
       }
@@ -329,6 +333,7 @@ export function createPluginArtifactsHandler(
           attachmentCompanyId: attachment.companyId,
           attachmentId,
           runId,
+          toolName: ctx.toolName,
         });
         // Collapse to not_found to prevent existence enumeration by a
         // dispatching agent guessing IDs in other tenants.
@@ -346,6 +351,7 @@ export function createPluginArtifactsHandler(
           attachmentCompanyId: attachment.companyId,
           attachmentId,
           runId,
+          toolName: ctx.toolName,
         });
         throw new ArtifactsError(
           "rate_limited",
@@ -365,6 +371,7 @@ export function createPluginArtifactsHandler(
         attachmentCompanyId: attachment.companyId,
         attachmentId,
         runId,
+        toolName: ctx.toolName,
         byteSize: buf.length,
       });
 
