@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { Router } from "express";
 
-const DEFAULT_HEALTH_FILE = "/Users/drew/mission-control-pilot/openbrain-health/latest.json";
-const SECRET_KEY_PATTERN = /(key|token|secret|password|connection|string|url)/i;
+const HEALTH_CACHE_TTL_MS = 1_000;
+const SECRET_KEY_PATTERN = /(?:^|[_-])(apiKey|accessToken|authToken|bearerToken|connectionString|databaseUrl|dbUrl|key|password|secret|serviceRole|token)(?:$|[_-])/i;
 
 type HealthStatus = "ok" | "degraded" | "down" | "unknown";
 
@@ -63,6 +63,13 @@ function sanitizeMessage(value: unknown): string {
     .replace(/https?:\/\/[^\s"']*(supabase|db)[^\s"']*/gi, "https://[REDACTED]");
 }
 
+function redactOperationalDetails(value: unknown): string {
+  const message = sanitizeMessage(value);
+  return message
+    .replace(/\b(?:ENOENT|EACCES|EPERM):[^,]*(?:,\s*)?/gi, (match) => `${match.split(":")[0]}: [REDACTED], `)
+    .replace(/\/[^\s"']+/g, "/[REDACTED]");
+}
+
 function rejectSecretLikeKeys(value: unknown, path: string[] = []): void {
   if (Array.isArray(value)) {
     value.forEach((item, index) => rejectSecretLikeKeys(item, [...path, String(index)]));
@@ -87,6 +94,12 @@ function normalizeHealth(raw: unknown): OpenBrainHealthResponse {
   const supabase = isRecord(raw.supabase) ? raw.supabase : undefined;
   const embedding = isRecord(raw.embedding) ? raw.embedding : undefined;
   const knowledgeGraph = isRecord(raw.knowledgeGraph) ? raw.knowledgeGraph : undefined;
+  const supabaseLatencyMs = supabase ? toNumber(supabase.latencyMs) : undefined;
+  const memoryCount = toNumber(openbrain.memoryCount);
+  const lastCapturedAt = toString(openbrain.lastCapturedAt);
+  const embeddingProvider = embedding ? toString(embedding.provider) : undefined;
+  const embeddingModel = embedding ? toString(embedding.model) : undefined;
+  const embeddingDims = embedding ? toNumber(embedding.dims) : undefined;
   const errors = Array.isArray(raw.errors)
     ? raw.errors
         .filter(isRecord)
@@ -103,22 +116,22 @@ function normalizeHealth(raw: unknown): OpenBrainHealthResponse {
       ? {
           supabase: {
             reachable: toBoolean(supabase.reachable),
-            ...(toNumber(supabase.latencyMs) !== undefined ? { latencyMs: toNumber(supabase.latencyMs) } : {}),
+            ...(supabaseLatencyMs !== undefined ? { latencyMs: supabaseLatencyMs } : {}),
           },
         }
       : {}),
     openbrain: {
       dbOk: toBoolean(openbrain.dbOk),
-      ...(toNumber(openbrain.memoryCount) !== undefined ? { memoryCount: toNumber(openbrain.memoryCount) } : {}),
-      ...(toString(openbrain.lastCapturedAt) ? { lastCapturedAt: toString(openbrain.lastCapturedAt) } : {}),
+      ...(memoryCount !== undefined ? { memoryCount } : {}),
+      ...(lastCapturedAt ? { lastCapturedAt } : {}),
     },
     ...(embedding
       ? {
           embedding: {
             reachable: toBoolean(embedding.reachable),
-            ...(toString(embedding.provider) ? { provider: toString(embedding.provider) } : {}),
-            ...(toString(embedding.model) ? { model: toString(embedding.model) } : {}),
-            ...(toNumber(embedding.dims) !== undefined ? { dims: toNumber(embedding.dims) } : {}),
+            ...(embeddingProvider ? { provider: embeddingProvider } : {}),
+            ...(embeddingModel ? { model: embeddingModel } : {}),
+            ...(embeddingDims !== undefined ? { dims: embeddingDims } : {}),
           },
         }
       : {}),
@@ -129,12 +142,26 @@ function normalizeHealth(raw: unknown): OpenBrainHealthResponse {
 
 export function openBrainHealthRoutes() {
   const router = Router();
+  let cachedHealth: OpenBrainHealthResponse | undefined;
+  let cachedHealthFile: string | undefined;
+  let cachedAt = 0;
 
   router.get("/openbrain/health", async (_req, res) => {
-    const healthFile = process.env.PAPERCLIP_OPENBRAIN_HEALTH_FILE || DEFAULT_HEALTH_FILE;
+    const healthFile = process.env.PAPERCLIP_OPENBRAIN_HEALTH_FILE;
     try {
+      if (!healthFile) {
+        throw new Error("PAPERCLIP_OPENBRAIN_HEALTH_FILE is required");
+      }
+      const now = Date.now();
+      if (cachedHealth && cachedHealthFile === healthFile && now - cachedAt < HEALTH_CACHE_TTL_MS) {
+        res.json(cachedHealth);
+        return;
+      }
       const raw = JSON.parse(await readFile(healthFile, "utf8"));
-      res.json(normalizeHealth(raw));
+      cachedHealth = normalizeHealth(raw);
+      cachedHealthFile = healthFile;
+      cachedAt = now;
+      res.json(cachedHealth);
     } catch (err) {
       res.status(503).json({
         status: "down",
@@ -145,7 +172,7 @@ export function openBrainHealthRoutes() {
         errors: [
           {
             component: "openbrain-health-file",
-            message: sanitizeMessage(err instanceof Error ? err.message : String(err)),
+            message: redactOperationalDetails(err instanceof Error ? err.message : String(err)),
           },
         ],
       } satisfies OpenBrainHealthResponse);
