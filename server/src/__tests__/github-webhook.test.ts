@@ -124,6 +124,32 @@ describe("github-webhook pure helpers", () => {
     });
   });
 
+  it("resolves pull_request reopened as a reviewer wake signal (BLO-7426)", () => {
+    const ctx = __test_resolveEventContext("pull_request", {
+      action: "reopened",
+      pull_request: {
+        number: 980,
+        title: "Retry review for BLO-7426",
+        body: null,
+        head: { ref: "fix/BLO-7426-reopen-wake" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    });
+    expect(ctx).toMatchObject({
+      identifiers: ["BLO-7426"],
+      wakeReason: "github_pr_reopened",
+      prNumber: 980,
+      repoFullName: "Blockcast/magma",
+    });
+    expect(__test_shouldFirePrReviewerWake(ctx)).toBe(true);
+    if (!ctx || !ctx.prNumber) {
+      throw new Error("expected reopened pull_request context with PR number");
+    }
+    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-reopened")).toBe(
+      "pr_review:Blockcast/magma:980:github_pr_reopened",
+    );
+  });
+
   it("treats @ally in a PR comment as an explicit reviewer wake request", () => {
     expect(__test_hasPrReviewerRequestMention("@ally re-review please")).toBe(true);
     expect(__test_hasPrReviewerRequestMention("cc @Ally after the fix")).toBe(true);
@@ -584,6 +610,83 @@ describeEmbeddedPostgres("github-webhook route", () => {
         reviewKind: "pr_review",
       }),
     }));
+  });
+
+  it("drives a reviewer wake for pull_request.reopened even without a paperclip identifier (BLO-7426)", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Ally" });
+    const app = buildApp({ prReviewerAgentId: agentId });
+    const payload = {
+      action: "reopened",
+      pull_request: {
+        number: 980,
+        title: "Retry reviewer wake",
+        body: null,
+        head: { ref: "retry-review" },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    };
+    const { body, signature } = signedRequest(payload);
+    const res = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "pull_request")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", "delivery-blo-7426")
+      .set("content-type", "application/json")
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      reviewerWakeFired: true,
+    });
+
+    const runs = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "queued",
+      contextSnapshot: expect.objectContaining({
+        taskKey: "pr_review:Blockcast/magma:980",
+        wakeReason: "github_pr_reopened",
+        wakeSource: "automation",
+        wakeTriggerDetail: "system",
+        commentSource: "github",
+        githubEvent: "pull_request",
+        githubDeliveryId: "delivery-blo-7426",
+        githubPrNumber: 980,
+        githubRepoFullName: "Blockcast/magma",
+        reviewKind: "pr_review",
+        prRole: "reviewer",
+      }),
+    });
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "queued",
+      reason: "github_pr_reopened",
+      payload: expect.objectContaining({
+        taskKey: "pr_review:Blockcast/magma:980",
+        source: "github",
+        event: "pull_request",
+        deliveryId: "delivery-blo-7426",
+        prNumber: 980,
+        repoFullName: "Blockcast/magma",
+        reviewKind: "pr_review",
+      }),
+    });
   });
 
   it("drives a wake on check_run.completed when the PR head_branch references a paperclip issue (CI completion)", async () => {

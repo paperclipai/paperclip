@@ -43,8 +43,8 @@ export interface GithubWebhookConfig {
   pluginWorkerManager?: PluginWorkerManager;
   /**
    * Agent ID that receives an additional wake on PR-shaped events
-   * (`pull_request.opened`, `pull_request.ready_for_review`,
-   * `pull_request_review.submitted`). Drives automated PR review. The
+   * (`pull_request.opened`, `pull_request.reopened`,
+   * `pull_request.ready_for_review`, `pull_request_review.submitted`). Drives automated PR review. The
    * reviewer wake fires independently of the issue-assignee wake and
    * does NOT require the PR branch/title/body to reference a paperclip
    * identifier. When null, only the legacy issue-assignee wake fires.
@@ -288,14 +288,21 @@ function resolveEventContext(
     case "pull_request": {
       const action = payload.action as string | undefined;
       // Wake on the events that change reviewer expectations: opened (CI
-      // starts), ready_for_review (draft -> ready), closed (merged or
-      // abandoned). synchronize fires per push -- skipped here to avoid
-      // thrash; check_run/workflow_run paths cover the same need.
-      if (action !== "opened" && action !== "ready_for_review" && action !== "closed") return null;
+      // starts), reopened (manual retry / renewed review signal),
+      // ready_for_review (draft -> ready), closed (merged or abandoned).
+      // synchronize fires per push -- skipped here to avoid thrash;
+      // check_run/workflow_run paths cover the same need.
+      if (
+        action !== "opened" &&
+        action !== "reopened" &&
+        action !== "ready_for_review" &&
+        action !== "closed"
+      ) return null;
       const pr = payload.pull_request as Record<string, unknown> | undefined;
       const collected = collectFromPullRequest(pr);
       const reasonByAction: Record<string, string> = {
         opened: "github_pr_opened",
+        reopened: "github_pr_reopened",
         ready_for_review: "github_pr_ready_for_review",
         closed: "github_pr_closed",
       };
@@ -315,6 +322,7 @@ function shouldFirePrReviewerWake(context: ResolvedEventContext | null): context
   if (!context || !context.wakeReason || !context.prNumber) return false;
   return new Set([
     "github_pr_opened",
+    "github_pr_reopened",
     "github_pr_ready_for_review",
     "github_pr_review_requested",
     "github_pr_review_submitted",
@@ -383,6 +391,7 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     // get reviewed. We fire it once per delivery, only for the events
     // that should drive a review:
     //   - pull_request.opened          — new PR ready for first review
+    //   - pull_request.reopened        — explicit retry / renewed review signal
     //   - pull_request.ready_for_review — draft promoted to ready
     //   - issue_comment.created with @ally — explicit operator re-review request
     //   - pull_request_review.submitted — request a counter-review pass
