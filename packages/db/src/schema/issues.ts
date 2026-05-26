@@ -40,6 +40,7 @@ export const issues = pgTable(
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
+    requestedByUserId: text("requested_by_user_id"),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
@@ -81,6 +82,10 @@ export const issues = pgTable(
       table.status,
     ),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
+    requestedByUserIdx: index("issues_company_requested_by_user_idx").on(
+      table.companyId,
+      table.requestedByUserId,
+    ),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),

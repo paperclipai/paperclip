@@ -8,7 +8,10 @@
  * the `tasks:view_all` permission key acts as an opt-out: when an admin
  * revokes the grant from a member, that member's reads scope to:
  *
- *   - issues where they are `createdByUserId` or `assigneeUserId`, plus
+ *   - issues where they are `createdByUserId`, `assigneeUserId`, or
+ *     `requestedByUserId` (the latter attributes agent-spawned work back to
+ *     the human who requested it — set explicitly by chat-style plugins, or
+ *     auto-populated at create time from the acting board user), plus
  *   - the transitive `parent_id` descendants of those issues.
  *
  * Agents, instance admins, and local-implicit users are never scoped.
@@ -80,6 +83,7 @@ export function issueVisibilityCondition(
           AND (
             ${issues.createdByUserId} = ${vis.userId}
             OR ${issues.assigneeUserId} = ${vis.userId}
+            OR ${issues.requestedByUserId} = ${vis.userId}
           )
         UNION
         SELECT ${issues.id}

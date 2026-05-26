@@ -652,6 +652,13 @@
       "when": 1779882000000,
       "tag": "0092_grant_revocation_tombstones",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1779840000000,
+      "tag": "0093_add_issue_requested_by_user",
+      "breakpoints": true
     }
   ]
 }

@@ -3306,6 +3306,8 @@ export function issueRoutes(
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByUserId:
+        req.body.requestedByUserId ?? (actor.actorType === "user" ? actor.actorId : null),
     });
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3407,6 +3409,10 @@ export function issueRoutes(
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByUserId:
+        req.body.requestedByUserId
+        ?? parent.requestedByUserId
+        ?? (actor.actorType === "user" ? actor.actorId : null),
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
