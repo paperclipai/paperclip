@@ -712,6 +712,28 @@ export interface WorkerToHostMethods {
     params: { projectId: string; companyId: string },
     result: Project | null,
   ];
+  // Projects (write)
+  "projects.create": [
+    params: {
+      companyId: string;
+      name: string;
+      description?: string;
+      status?: string;
+      leadAgentId?: string;
+      targetDate?: string;
+      goalIds?: string[];
+    },
+    result: Project,
+  ];
+  "projects.update": [
+    params: {
+      projectId: string;
+      companyId: string;
+      patch: Record<string, unknown>;
+    },
+    result: Project | null,
+  ];
+
   "projects.listWorkspaces": [
     params: { projectId: string; companyId: string },
     result: PluginWorkspace[],

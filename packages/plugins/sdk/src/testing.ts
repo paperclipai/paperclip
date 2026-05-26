@@ -626,6 +626,44 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const project = projects.get(projectId);
         return isInCompany(project, companyId) ? project : null;
       },
+      async create(input) {
+        requireCapability(manifest, capabilitySet, "projects.create");
+        const id = `project-${Date.now()}`;
+        const project = {
+          id,
+          companyId: input.companyId,
+          urlKey: input.name.toLowerCase().replace(/\s+/g, "-"),
+          goalId: null,
+          goalIds: input.goalIds ?? [],
+          goals: [],
+          name: input.name,
+          description: input.description ?? null,
+          status: (input.status ?? "backlog") as any,
+          leadAgentId: input.leadAgentId ?? null,
+          targetDate: input.targetDate ?? null,
+          color: null,
+          env: null,
+          pauseReason: null,
+          pausedAt: null,
+          executionWorkspacePolicy: null,
+          codebase: { effectiveLocalFolder: "" } as any,
+          workspaces: [],
+          primaryWorkspace: null,
+          archivedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        } as any;
+        projects.set(id, project);
+        return project;
+      },
+      async update(projectId, patch, companyId) {
+        requireCapability(manifest, capabilitySet, "projects.update");
+        const project = projects.get(projectId);
+        if (!isInCompany(project, companyId)) return null;
+        const updated = { ...project, ...patch, updatedAt: new Date() } as any;
+        projects.set(projectId, updated);
+        return updated;
+      },
       async listWorkspaces(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "project.workspaces.read");
         if (!isInCompany(projects.get(projectId), companyId)) return [];

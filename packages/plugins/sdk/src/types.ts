@@ -665,6 +665,20 @@ export interface PluginProjectsClient {
   get(projectId: string, companyId: string): Promise<Project | null>;
 
   /**
+   * Create a new project in a company.
+   *
+   * Requires the `projects.create` capability.
+   */
+  create(input: { companyId: string; name: string; description?: string; status?: string; leadAgentId?: string; targetDate?: string; goalIds?: string[] }): Promise<Project>;
+
+  /**
+   * Update an existing project.
+   *
+   * Requires the `projects.update` capability.
+   */
+  update(projectId: string, patch: Record<string, unknown>, companyId: string): Promise<Project | null>;
+
+  /**
    * List all workspaces attached to a project.
    *
    * @param projectId - UUID of the project

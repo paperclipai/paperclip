@@ -47,6 +47,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.create": ["projects.create"],
+  "projects.update": ["projects.update"],
   "project.workspaces.list": ["project.workspaces.read"],
   "project.workspaces.get": ["project.workspaces.read"],
   "issues.list": ["issues.read"],

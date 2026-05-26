@@ -158,10 +158,12 @@ export interface HostServices {
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
   };
 
-  /** Provides `projects.list`, `projects.get`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
+  /** Provides `projects.list`, `projects.get`, `projects.create`, `projects.update`, `projects.listWorkspaces`, `projects.getPrimaryWorkspace`, `projects.getWorkspaceForIssue`. */
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    create(params: WorkerToHostMethods["projects.create"][0]): Promise<WorkerToHostMethods["projects.create"][1]>;
+    update(params: WorkerToHostMethods["projects.update"][0]): Promise<WorkerToHostMethods["projects.update"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -323,6 +325,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.create": "projects.create",
+  "projects.update": "projects.update",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -520,6 +524,12 @@ export function createHostClientHandlers(
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
+    }),
+    "projects.create": gated("projects.create", async (params) => {
+      return services.projects.create(params);
+    }),
+    "projects.update": gated("projects.update", async (params) => {
+      return services.projects.update(params);
     }),
     "projects.listWorkspaces": gated("projects.listWorkspaces", async (params) => {
       return services.projects.listWorkspaces(params);

@@ -952,6 +952,36 @@ export function buildHostServices(
         const project = await projects.getById(params.projectId);
         return (inCompany(project, companyId) ? project : null) as Project | null;
       },
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const { companyId: _cid, ...projectData } = params;
+        const project = (await projects.create(companyId, projectData as any)) as Project;
+        await logPluginActivity({
+          companyId,
+          action: "project.created",
+          entityType: "project",
+          entityId: project.id,
+          details: { name: project.name },
+        });
+        return project;
+      },
+      async update(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const existing = requireInCompany("Project", await projects.getById(params.projectId), companyId);
+        const updated = (await projects.update(params.projectId, params.patch as any)) as Project | null;
+        if (updated) {
+          await logPluginActivity({
+            companyId,
+            action: "project.updated",
+            entityType: "project",
+            entityId: updated.id,
+            details: { name: updated.name, patch: params.patch },
+          });
+        }
+        return updated;
+      },
       async listWorkspaces(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
