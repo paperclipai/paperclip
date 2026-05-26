@@ -1672,6 +1672,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
   });
 
+  it("reaper deletes live external-lifecycle Jobs whose heartbeat run is already terminal", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      runStatus: "failed",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      runErrorCode: "process_lost",
+      runError: "Historical terminal run still has a live Job",
+    });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(
+      new Map([
+        [runId, { phase: "active", reason: null, message: null }],
+      ]),
+    );
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
   it("cancelRun does not cascade Job deletion for local adapters", async () => {
     const { runId } = await seedRunFixture({
       adapterType: "codex_local",

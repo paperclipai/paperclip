@@ -323,6 +323,82 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it("cancels non-interaction queued runs when the issue execution lock cannot be acquired", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const historicalRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: historicalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      errorCode: "process_lost",
+      error: "Historical failed run",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked by historical run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: historicalRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_execution_lock_not_acquired");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_execution_lock_not_acquired" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("could not acquire the issue execution lock");
+    expect(issue?.executionRunId).toBe(historicalRunId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("cancels queued in_review runs when the current participant changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const otherAgentId = randomUUID();

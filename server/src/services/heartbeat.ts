@@ -6666,8 +6666,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const claimedAgent = await getAgent(claimed.agentId);
+      const issueLockRequired = !allowsIssueInteractionWake(claimedContext);
+      let claimedIssueLock: Pick<typeof issues.$inferSelect, "id" | "executionRunId"> | null = null;
       try {
-        await db
+        claimedIssueLock = await db
           .update(issues)
           .set({
             executionRunId: claimed.id,
@@ -6684,7 +6686,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issues.assigneeAgentId, claimed.agentId),
               or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
             ),
-          );
+          )
+          .returning({ id: issues.id, executionRunId: issues.executionRunId })
+          .then((rows) => rows[0] ?? null);
       } catch (error) {
         if (!isOpenRoutineExecutionUniqueViolation(error)) throw error;
         const racedLockOwner = await findOpenRoutineExecutionLockOwnerForIssue(claimed.companyId, claimedIssueId);
@@ -6702,6 +6706,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ownerExecutionRunId: racedLockOwner.executionRunId,
           },
           "claimQueuedRun: cancelled duplicate routine execution run after lock race",
+        );
+        return null;
+      }
+
+      if (issueLockRequired && !claimedIssueLock) {
+        await cancelClaimedRunForIssueLockNotAcquired(claimed, claimedIssueId);
+        logger.info(
+          {
+            runId: claimed.id,
+            issueId: claimedIssueId,
+            agentId: claimed.agentId,
+          },
+          "claimQueuedRun: cancelled run because issue execution lock was not acquired",
         );
         return null;
       }
@@ -7059,6 +7076,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ownerIssueId: input.lockOwner.id,
         ownerIdentifier: input.lockOwner.identifier,
         ownerExecutionRunId: input.lockOwner.executionRunId,
+      },
+    });
+
+    return cancelled;
+  }
+
+  async function cancelClaimedRunForIssueLockNotAcquired(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const now = new Date();
+    const reason =
+      "Cancelled because the run could not acquire the issue execution lock; a current or historical run owns the lock";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "issue_execution_lock_not_acquired",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "issue_execution_lock_not_acquired",
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "issue_execution_lock_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        issueId,
+        agentId: run.agentId,
       },
     });
 
@@ -7566,6 +7624,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return true;
   }
 
+  async function cleanupTerminalExternalLifecycleJobs(
+    jobRunStatuses: Map<string, AgentJobRunStatus> | null,
+  ): Promise<string[]> {
+    if (!jobRunStatuses) return [];
+    const activeJobRunIds = [...jobRunStatuses.entries()]
+      .filter(([, status]) => status.phase === "active")
+      .map(([runId]) => runId)
+      .filter(Boolean);
+    if (activeJobRunIds.length === 0) return [];
+
+    const terminalRuns = await db
+      .select({
+        run: heartbeatRuns,
+        adapterType: agents.adapterType,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          inArray(heartbeatRuns.id, activeJobRunIds),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      );
+
+    const cleanedRunIds: string[] = [];
+    for (const { run, adapterType } of terminalRuns) {
+      if (!hasExternalLifecycle(adapterType)) continue;
+      try {
+        const deleted = await deleteAgentJobsForRun(run.id);
+        cleanedRunIds.push(run.id);
+        logger.warn(
+          { runId: run.id, status: run.status, adapterType, deletedJobs: deleted },
+          "reapOrphanedRuns: deleted live external-lifecycle Job for terminal heartbeat run",
+        );
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Deleted live external-lifecycle Job because heartbeat run is already terminal",
+          payload: {
+            status: run.status,
+            adapterType,
+          },
+        });
+      } catch (error) {
+        logger.warn(
+          {
+            runId: run.id,
+            status: run.status,
+            adapterType,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "reapOrphanedRuns: failed to delete live external-lifecycle Job for terminal heartbeat run",
+        );
+      }
+    }
+    return cleanedRunIds;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -7583,13 +7700,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const reaped: string[] = [];
 
-    // If any external-lifecycle (k8s Job) runs are in flight, query the
-    // kube API once for the namespace-wide set of live agent Jobs. Returns
-    // null when the API is unavailable (local dev, RBAC missing, transient
-    // failure) — the loop then falls back to the time-based staleness
-    // window for those runs.
+    // Query the kube API once for namespace-wide agent Job state. Active runs
+    // use it for liveness; terminal runs use it to clean up live historical
+    // Jobs that would otherwise keep blocking future dispatches. Returns null
+    // when the API is unavailable (local dev, RBAC missing, transient failure).
     const hasExternalCandidates = activeRuns.some((row) => hasExternalLifecycle(row.adapterType));
-    const jobRunStatuses = hasExternalCandidates ? await listAgentJobRunStatuses() : null;
+    const jobRunStatuses = await listAgentJobRunStatuses();
+    const cleanedTerminalJobRunIds = await cleanupTerminalExternalLifecycleJobs(jobRunStatuses);
+    reaped.push(...cleanedTerminalJobRunIds);
     const liveJobRunIds =
       jobRunStatuses !== null
         ? new Set(
