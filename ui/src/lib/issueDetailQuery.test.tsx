@@ -39,6 +39,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     executionLockedAt: null,
     createdByAgentId: null,
     createdByUserId: null,
+    requestedByUserId: null,
     issueNumber: 1442,
     identifier: "PAP-1442",
     requestDepth: 0,

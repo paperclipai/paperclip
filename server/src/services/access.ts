@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -27,6 +27,54 @@ type MemberArchiveInput = {
 
 export function accessService(db: Db) {
   const authorization = authorizationService(db);
+
+  /**
+   * Audit-preserving revocation: switches matching ACTIVE grants
+   * (`revoked_at IS NULL`) to tombstone rows. Tombstones stay in the table
+   * forever as revoke history. The partial unique index
+   * `principal_permission_grants_active_unique_idx` only covers active rows,
+   * so this never collides with a subsequent fresh INSERT for the same key.
+   *
+   * Used in place of `db.delete(principalPermissionGrants)` so that
+   * default-grant backfill migrations (e.g. `tasks:view_all`) can detect
+   * "this principal once had grant X — admin revoked it intentionally" and
+   * skip re-granting. Hard-deleting a grant erases that signal.
+   */
+  async function tombstoneGrants(
+    tx: { update: Db["update"] },
+    filter: {
+      companyId: string;
+      principalType?: PrincipalType;
+      principalId?: string;
+      principalIds?: string[];
+      companyIds?: string[];
+      permissionKey?: PermissionKey;
+    },
+    revokedByUserId: string | null,
+  ) {
+    const conds = [isNull(principalPermissionGrants.revokedAt)];
+    if (filter.companyIds && filter.companyIds.length > 0) {
+      conds.push(inArray(principalPermissionGrants.companyId, filter.companyIds));
+    } else if (filter.companyId) {
+      conds.push(eq(principalPermissionGrants.companyId, filter.companyId));
+    }
+    if (filter.principalType) {
+      conds.push(eq(principalPermissionGrants.principalType, filter.principalType));
+    }
+    if (filter.principalIds && filter.principalIds.length > 0) {
+      conds.push(inArray(principalPermissionGrants.principalId, filter.principalIds));
+    } else if (filter.principalId) {
+      conds.push(eq(principalPermissionGrants.principalId, filter.principalId));
+    }
+    if (filter.permissionKey) {
+      conds.push(eq(principalPermissionGrants.permissionKey, filter.permissionKey));
+    }
+    const now = new Date();
+    await tx
+      .update(principalPermissionGrants)
+      .set({ revokedAt: now, revokedByUserId, updatedAt: now })
+      .where(and(...conds));
+  }
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
@@ -132,15 +180,15 @@ export function accessService(db: Db) {
     if (!member) return null;
 
     await db.transaction(async (tx) => {
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, member.principalType),
-            eq(principalPermissionGrants.principalId, member.principalId),
-          ),
-        );
+      await tombstoneGrants(
+        tx,
+        {
+          companyId,
+          principalType: member.principalType as PrincipalType,
+          principalId: member.principalId,
+        },
+        grantedByUserId,
+      );
       if (grants.length > 0) {
         await tx.insert(principalPermissionGrants).values(
           grants.map((grant) => ({
@@ -227,15 +275,15 @@ export function accessService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? existing);
 
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, existing.principalType),
-            eq(principalPermissionGrants.principalId, existing.principalId),
-          ),
-        );
+      await tombstoneGrants(
+        tx,
+        {
+          companyId,
+          principalType: existing.principalType as PrincipalType,
+          principalId: existing.principalId,
+        },
+        grantedByUserId,
+      );
       if (data.grants.length > 0) {
         await tx.insert(principalPermissionGrants).values(
           data.grants.map((grant) => ({
@@ -398,15 +446,15 @@ export function accessService(db: Db) {
         .where(and(assignedOpenIssueWhere, ne(issues.status, "in_progress")))
         .returning({ id: issues.id });
 
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, existing.principalType),
-            eq(principalPermissionGrants.principalId, existing.principalId),
-          ),
-        );
+      await tombstoneGrants(
+        tx,
+        {
+          companyId,
+          principalType: existing.principalType as PrincipalType,
+          principalId: existing.principalId,
+        },
+        null,
+      );
 
       const archived = await tx
         .update(companyMemberships)
@@ -507,15 +555,16 @@ export function accessService(db: Db) {
           .update(companyMemberships)
           .set({ status: "archived", updatedAt: new Date() })
           .where(inArray(companyMemberships.id, toArchive.map((row) => row.id)));
-        await tx
-          .delete(principalPermissionGrants)
-          .where(
-            and(
-              eq(principalPermissionGrants.principalType, "user"),
-              eq(principalPermissionGrants.principalId, userId),
-              inArray(principalPermissionGrants.companyId, toArchive.map((row) => row.companyId)),
-            ),
-          );
+        await tombstoneGrants(
+          tx,
+          {
+            companyId: "",
+            companyIds: toArchive.map((row) => row.companyId),
+            principalType: "user",
+            principalId: userId,
+          },
+          null,
+        );
       }
 
       for (const companyId of target) {
@@ -588,15 +637,11 @@ export function accessService(db: Db) {
     grantedByUserId: string | null,
   ) {
     await db.transaction(async (tx) => {
-      await tx
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, principalType),
-            eq(principalPermissionGrants.principalId, principalId),
-          ),
-        );
+      await tombstoneGrants(
+        tx,
+        { companyId, principalType, principalId },
+        grantedByUserId,
+      );
       if (grants.length === 0) return;
       await tx.insert(principalPermissionGrants).values(
         grants.map((grant) => ({
@@ -660,6 +705,7 @@ export function accessService(db: Db) {
           eq(principalPermissionGrants.companyId, companyId),
           eq(principalPermissionGrants.principalType, principalType),
           eq(principalPermissionGrants.principalId, principalId),
+          isNull(principalPermissionGrants.revokedAt),
         ),
       )
       .orderBy(principalPermissionGrants.permissionKey);
@@ -675,16 +721,11 @@ export function accessService(db: Db) {
     scope: Record<string, unknown> | null = null,
   ) {
     if (!enabled) {
-      await db
-        .delete(principalPermissionGrants)
-        .where(
-          and(
-            eq(principalPermissionGrants.companyId, companyId),
-            eq(principalPermissionGrants.principalType, principalType),
-            eq(principalPermissionGrants.principalId, principalId),
-            eq(principalPermissionGrants.permissionKey, permissionKey),
-          ),
-        );
+      await tombstoneGrants(
+        db,
+        { companyId, principalType, principalId, permissionKey },
+        grantedByUserId,
+      );
       return;
     }
 
@@ -699,6 +740,7 @@ export function accessService(db: Db) {
           eq(principalPermissionGrants.principalType, principalType),
           eq(principalPermissionGrants.principalId, principalId),
           eq(principalPermissionGrants.permissionKey, permissionKey),
+          isNull(principalPermissionGrants.revokedAt),
         ),
       )
       .then((rows) => rows[0] ?? null);

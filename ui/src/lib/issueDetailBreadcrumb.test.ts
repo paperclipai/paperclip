@@ -52,6 +52,7 @@ describe("issueDetailBreadcrumb", () => {
       executionLockedAt: null,
       createdByAgentId: null,
       createdByUserId: null,
+  requestedByUserId: null,
       issueNumber: 42,
       identifier: "PAP-42",
       originKind: "manual",

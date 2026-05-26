@@ -6,6 +6,10 @@ import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
 import { heartbeatService, issueService } from "../services/index.js";
+import {
+  resolveIssueVisibility,
+  assertIssueVisible,
+} from "../services/issue-visibility.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -36,12 +40,15 @@ export function activityRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
+    const visibility = await resolveIssueVisibility(db, companyId, req.actor);
+
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      visibility,
     };
     const result = await svc.list(filters);
     res.json(result);
@@ -67,6 +74,12 @@ export function activityRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const result = await svc.forIssue(issue.id);
     res.json(result);
   });
@@ -79,6 +92,12 @@ export function activityRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const result = await svc.runsForIssue(issue.companyId, issue.id);
     res.json(result);
   });

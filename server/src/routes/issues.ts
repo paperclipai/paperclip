@@ -91,6 +91,11 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  resolveIssueVisibility,
+  assertIssueVisible,
+  type IssueVisibility,
+} from "../services/issue-visibility.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -126,7 +131,11 @@ type RecoveryRevalidationTrigger =
   | "work_product"
   | "read_projection";
 type CompanySearchService = {
-  search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
+  search(
+    companyId: string,
+    query: CompanySearchQuery,
+    options?: { visibility?: IssueVisibility },
+  ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
   id: string;
@@ -1772,7 +1781,8 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const searchVisibility = await resolveIssueVisibility(db, companyId, req.actor);
+    const result = await getSearchService().search(companyId, query, { visibility: searchVisibility });
     res.json(result);
   });
 
@@ -1850,6 +1860,8 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const visibility = await resolveIssueVisibility(db, companyId, req.actor);
+
     const result = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
@@ -1859,6 +1871,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
+      visibility,
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
@@ -1921,12 +1934,15 @@ export function issueRoutes(
       return;
     }
 
+    const countVisibility = await resolveIssueVisibility(db, companyId, req.actor);
+
     const count = await svc.count(companyId, {
       attention: "blocked",
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
+      visibility: countVisibility,
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
@@ -2011,6 +2027,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
@@ -2147,6 +2169,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const [
       { project, goal },
       ancestors,
@@ -2224,6 +2252,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2412,6 +2446,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
   });
@@ -2424,6 +2464,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
     });
@@ -2438,6 +2484,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2459,6 +2511,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -2553,6 +2611,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -2601,6 +2665,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -2643,6 +2713,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2664,6 +2740,12 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -2749,6 +2831,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -2824,6 +2912,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
@@ -2945,6 +3039,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -2977,6 +3077,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3009,6 +3115,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3041,6 +3153,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3073,6 +3191,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
   });
@@ -3085,6 +3209,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -3119,6 +3249,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -3170,6 +3306,8 @@ export function issueRoutes(
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByUserId:
+        req.body.requestedByUserId ?? (actor.actorType === "user" ? actor.actorId : null),
     });
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3271,6 +3409,10 @@ export function issueRoutes(
       executionPolicy,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByUserId:
+        req.body.requestedByUserId
+        ?? parent.requestedByUserId
+        ?? (actor.actorType === "user" ? actor.actorId : null),
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -3340,6 +3482,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     assertCanManageIssueMonitor(req, issue.assigneeAgentId, true);
 
     const actor = getActorInfo(req);
@@ -3362,6 +3510,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -4412,6 +4566,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -4579,6 +4739,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -4613,6 +4779,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
@@ -4635,6 +4807,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     } else {
@@ -4685,6 +4863,12 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -4788,6 +4972,12 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -4844,6 +5034,12 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -4896,6 +5092,12 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -4945,6 +5147,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -4962,6 +5170,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     const comment = await svc.getComment(commentId);
@@ -5027,6 +5241,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
       return;
@@ -5044,6 +5264,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback traces" });
       return;
@@ -5107,6 +5333,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -5426,6 +5658,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can vote on AI feedback" });
       return;
@@ -5525,6 +5763,12 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await assertIssueVisible(
+      db,
+      issue.companyId,
+      issue.id,
+      await resolveIssueVisibility(db, issue.companyId, req.actor),
+    );
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });

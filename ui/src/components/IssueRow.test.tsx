@@ -45,6 +45,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     assigneeUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
+  requestedByUserId: null,
     issueNumber: 1,
     requestDepth: 0,
     billingCode: null,
