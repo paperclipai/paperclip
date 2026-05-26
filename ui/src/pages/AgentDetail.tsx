@@ -2979,6 +2979,11 @@ export function AgentSkillsTab({
               <>
                 {optionalSkillRows.length > 0 && (
                   <section className="border-y border-border">
+                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Agent skills ({optionalSkillRows.length})
+                      </span>
+                    </div>
                     {optionalSkillRows.map(renderSkillRow)}
                   </section>
                 )}
@@ -2987,7 +2992,7 @@ export function AgentSkillsTab({
                   <section className="border-y border-border">
                     <div className="border-b border-border bg-muted/40 px-3 py-2">
                       <span className="text-xs font-medium text-muted-foreground">
-                        Required by Paperclip
+                        Required by Paperclip ({requiredSkillRows.length})
                       </span>
                     </div>
                     {requiredSkillRows.map(renderSkillRow)}
