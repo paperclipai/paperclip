@@ -3236,3 +3236,183 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
   });
 });
+
+describeEmbeddedPostgres("issueService project-required assignment rule", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  // Fixtures seeded per test: one company, three agents (engineer / CEO / CFO),
+  // and one project. The rule under test: engineer-role agents cannot be assigned
+  // to issues without a projectId; C-suite (ceo/cto/cmo/cfo) can.
+  let companyId: string;
+  let projectId: string;
+  let engineerAgentId: string;
+  let ceoAgentId: string;
+  let cfoAgentId: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-assignment-rule-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedBaseFixtures() {
+    companyId = randomUUID();
+    projectId = randomUUID();
+    engineerAgentId = randomUUID();
+    ceoAgentId = randomUUID();
+    cfoAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Growth",
+      status: "in_progress",
+    });
+    await db.insert(agents).values([
+      { id: engineerAgentId, companyId, name: "Engi", role: "engineer", adapterType: "process" },
+      { id: ceoAgentId, companyId, name: "Boss", role: "ceo", adapterType: "process" },
+      { id: cfoAgentId, companyId, name: "Money", role: "cfo", adapterType: "process" },
+    ]);
+  }
+
+  it("rejects creating a project-less issue assigned to a non-C-suite agent", async () => {
+    await seedBaseFixtures();
+
+    await expect(
+      svc.create(companyId, {
+        title: "Orphan task",
+        assigneeAgentId: engineerAgentId,
+        projectId: null,
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("project"),
+    });
+  });
+
+  it("allows creating a project-less issue assigned to the CEO", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Org-level task",
+      assigneeAgentId: ceoAgentId,
+      projectId: null,
+    });
+    expect(issue.assigneeAgentId).toBe(ceoAgentId);
+    expect(issue.projectId).toBeNull();
+  });
+
+  it("allows creating a project-less issue assigned to the CFO", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Finance-level task",
+      assigneeAgentId: cfoAgentId,
+      projectId: null,
+    });
+    expect(issue.assigneeAgentId).toBe(cfoAgentId);
+    expect(issue.projectId).toBeNull();
+  });
+
+  it("allows creating a project-scoped issue assigned to an engineer", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Scoped task",
+      assigneeAgentId: engineerAgentId,
+      projectId,
+    });
+    expect(issue.assigneeAgentId).toBe(engineerAgentId);
+    expect(issue.projectId).toBe(projectId);
+  });
+
+  it("rejects assigning an engineer to an existing project-less issue via update", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Unassigned",
+      projectId: null,
+    });
+
+    await expect(
+      svc.update(issue.id, { assigneeAgentId: engineerAgentId }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("project"),
+    });
+  });
+
+  it("rejects un-setting the project on an issue still assigned to an engineer", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Scoped",
+      assigneeAgentId: engineerAgentId,
+      projectId,
+    });
+
+    await expect(
+      svc.update(issue.id, { projectId: null }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("project"),
+    });
+  });
+
+  it("rejects checkout of a project-less issue by a non-C-suite agent", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Unassigned orphan",
+      projectId: null,
+      status: "todo",
+    });
+
+    await expect(
+      svc.checkout(issue.id, engineerAgentId, ["todo"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("project"),
+    });
+  });
+
+  it("allows checkout of a project-less issue by the CEO", async () => {
+    await seedBaseFixtures();
+
+    const issue = await svc.create(companyId, {
+      title: "Org task",
+      projectId: null,
+      status: "todo",
+    });
+
+    const result = await svc.checkout(issue.id, ceoAgentId, ["todo"], null);
+    // checkout returns an object; the CEO may claim the issue.
+    expect(result).not.toBeNull();
+  });
+});

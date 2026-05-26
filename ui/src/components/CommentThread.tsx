@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -264,6 +264,18 @@ async function copyTextWithFallback(text: string) {
   }
 }
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/`{3}[\s\S]*?`{3}/g, "")
+    .replace(/#{1,6}\s+/g, "")
+    .replace(/\*\*(.+?)\*\*/gs, "$1")
+    .replace(/\*(.+?)\*/gs, "$1")
+    .replace(/`(.+?)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\n+/g, " ")
+    .trim();
+}
+
 function CopyMarkdownButton({ text }: { text: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -324,6 +336,8 @@ function CommentCard({
   voting = false,
   highlightCommentId,
   queued = false,
+  isExpanded = true,
+  onToggleExpand,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -339,17 +353,21 @@ function CommentCard({
   voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
   const followUpRequested = comment.followUpRequested === true;
+  const isCollapsible = !!onToggleExpand;
+  const collapsed = isCollapsible && !isExpanded;
 
   return (
     <div
       key={comment.id}
       id={`comment-${comment.id}`}
-      className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
+      className={`border overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
           ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
           : isHighlighted
@@ -357,18 +375,37 @@ function CommentCard({
             : "border-border"
       } ${isPending ? "opacity-80" : ""}`}
     >
-      <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
-          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-            <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
-              size="sm"
-            />
-          </Link>
-        ) : (
-          <Identity name="You" size="sm" />
+      <div
+        className={cn(
+          "flex items-center justify-between gap-2 px-3 py-2.5",
+          isCollapsible && "cursor-pointer select-none hover:bg-accent/20",
         )}
-        <span className="flex items-center gap-1.5">
+        onClick={isCollapsible ? onToggleExpand : undefined}
+        role={isCollapsible ? "button" : undefined}
+        aria-expanded={isCollapsible ? isExpanded : undefined}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {comment.authorAgentId ? (
+            <Link
+              to={`/agents/${comment.authorAgentId}`}
+              className="shrink-0 hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Identity
+                name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+                size="sm"
+              />
+            </Link>
+          ) : (
+            <Identity name="You" size="sm" />
+          )}
+          {collapsed ? (
+            <span className="ml-1 min-w-0 truncate text-xs text-muted-foreground">
+              {stripMarkdown(comment.body).slice(0, 120) || "…"}
+            </span>
+          ) : null}
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5">
           {isQueued ? (
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               Queued
@@ -400,70 +437,82 @@ function CommentCard({
           ) : (
             <a
               href={`#comment-${comment.id}`}
-              className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+              className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              onClick={(e) => e.stopPropagation()}
             >
               {formatDateTime(comment.createdAt)}
             </a>
           )}
-          <CopyMarkdownButton text={comment.body} />
+          {!collapsed ? <CopyMarkdownButton text={comment.body} /> : null}
+          {isCollapsible ? (
+            isExpanded ? (
+              <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            )
+          ) : null}
         </span>
       </div>
-      <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
-      {companyId && !isPending ? (
-        <div className="mt-2 space-y-2">
-          <PluginSlotOutlet
-            slotTypes={["commentAnnotation"]}
-            entityType="comment"
-            context={{
-              companyId,
-              projectId: projectId ?? null,
-              entityId: comment.id,
-              entityType: "comment",
-              parentEntityId: comment.issueId,
-            }}
-            className="space-y-2"
-            itemClassName="rounded-md"
-            missingBehavior="placeholder"
-          />
-        </div>
-      ) : null}
-      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
-        <OutputFeedbackButtons
-          activeVote={feedbackVote}
-          disabled={voting}
-          sharingPreference={feedbackDataSharingPreference}
-          termsUrl={feedbackTermsUrl}
-          onVote={onVote}
-          rightSlot={comment.runId && !isPending ? (
-            comment.runAgentId ? (
-              <Link
-                to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-              >
-                run {comment.runId.slice(0, 8)}
-              </Link>
-            ) : (
-              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
-                run {comment.runId.slice(0, 8)}
-              </span>
-            )
-          ) : undefined}
-        />
-      ) : null}
-      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
-        <div className="mt-3 pt-3 border-t border-border/60">
-          {comment.runAgentId ? (
-            <Link
-              to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-            >
-              run {comment.runId.slice(0, 8)}
-            </Link>
-          ) : (
-            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
-              run {comment.runId.slice(0, 8)}
-            </span>
-          )}
+      {!collapsed ? (
+        <div className="px-3 pb-3">
+          <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
+          {companyId && !isPending ? (
+            <div className="mt-2 space-y-2">
+              <PluginSlotOutlet
+                slotTypes={["commentAnnotation"]}
+                entityType="comment"
+                context={{
+                  companyId,
+                  projectId: projectId ?? null,
+                  entityId: comment.id,
+                  entityType: "comment",
+                  parentEntityId: comment.issueId,
+                }}
+                className="space-y-2"
+                itemClassName="rounded-md"
+                missingBehavior="placeholder"
+              />
+            </div>
+          ) : null}
+          {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+            <OutputFeedbackButtons
+              activeVote={feedbackVote}
+              disabled={voting}
+              sharingPreference={feedbackDataSharingPreference}
+              termsUrl={feedbackTermsUrl}
+              onVote={onVote}
+              rightSlot={comment.runId && !isPending ? (
+                comment.runAgentId ? (
+                  <Link
+                    to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
+                    className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                  >
+                    run {comment.runId.slice(0, 8)}
+                  </Link>
+                ) : (
+                  <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                    run {comment.runId.slice(0, 8)}
+                  </span>
+                )
+              ) : undefined}
+            />
+          ) : null}
+          {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+            <div className="mt-3 pt-3 border-t border-border/60">
+              {comment.runAgentId ? (
+                <Link
+                  to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
+                  className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                >
+                  run {comment.runId.slice(0, 8)}
+                </Link>
+              ) : (
+                <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                  run {comment.runId.slice(0, 8)}
+                </span>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -593,6 +642,32 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const commentIds = useMemo(
+    () => timeline.filter((i) => i.kind === "comment").map((i) => i.id),
+    [timeline],
+  );
+
+  const lastCommentId = commentIds.at(-1) ?? null;
+
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(
+    () => (lastCommentId ? new Set([lastCommentId]) : new Set()),
+  );
+
+  const seenCommentIdsRef = useRef(new Set(commentIds));
+
+  useEffect(() => {
+    const newIds: string[] = [];
+    for (const id of commentIds) {
+      if (!seenCommentIdsRef.current.has(id)) {
+        newIds.push(id);
+        seenCommentIdsRef.current.add(id);
+      }
+    }
+    if (newIds.length > 0) {
+      setExpandedIds((prev) => new Set([...prev, ...newIds]));
+    }
+  }, [commentIds]);
+
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
@@ -713,6 +788,18 @@ const TimelineList = memo(function TimelineList({
             onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
+            isExpanded={expandedIds.has(comment.id)}
+            onToggleExpand={() =>
+              setExpandedIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(comment.id)) {
+                  next.delete(comment.id);
+                } else {
+                  next.add(comment.id);
+                }
+                return next;
+              })
+            }
           />
         );
       })}

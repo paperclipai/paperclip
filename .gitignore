@@ -46,6 +46,9 @@ diagnostics/
 /.idea/
 /.agents/
 
+# Agent instructions synced from source-of-truth elsewhere (not this repo)
+/companies/
+
 # Doc maintenance cursor
 .doc-review-cursor
 

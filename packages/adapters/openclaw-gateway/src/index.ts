@@ -1,7 +1,9 @@
 export const type = "openclaw_gateway";
 export const label = "OpenClaw Gateway";
 
-export const models: { id: string; label: string }[] = [];
+export const models: { id: string; label: string }[] = [
+  { id: "gateway", label: "OpenClaw Gateway" },
+];
 
 export const agentConfigurationDoc = `# openclaw_gateway agent configuration
 

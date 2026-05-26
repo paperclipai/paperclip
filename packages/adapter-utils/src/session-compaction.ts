@@ -87,7 +87,12 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   pi_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
-    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+    defaultSessionCompaction: {
+      enabled: true,
+      maxSessionRuns: 8,
+      maxRawInputTokens: 500_000,
+      maxSessionAgeHours: 24,
+    },
   },
   hermes_local: {
     supportsSessionResume: true,

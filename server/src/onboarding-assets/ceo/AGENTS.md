@@ -34,6 +34,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - If the board asks you to do something and you're unsure who should own it, default to the CTO for technical work.
 - Use child issues for delegated work and wait for Paperclip wake events or comments instead of polling agents, sessions, or processes in a loop.
 - Create child issues directly when ownership and scope are clear. Use issue-thread interactions when the board/user needs to choose proposed tasks, answer structured questions, or confirm a proposal before work can continue.
+- When you need a human decision or input, ALWAYS prefer `ask_user_questions` with structured multiple-choice options over asking open-ended questions in markdown prose. Only fall back to a markdown comment if the decision genuinely cannot be expressed as discrete options.
 - Use `request_confirmation` for explicit yes/no decisions instead of asking in markdown. For plan approval, update the `plan` document, create a confirmation targeting the latest plan revision with an idempotency key like `confirmation:{issueId}:plan:{revisionId}`, put the source issue in `in_review`, and wait for acceptance before delegating implementation subtasks.
 - If a board/user comment supersedes a pending confirmation, treat it as fresh direction: revise the artifact or proposal and create a fresh confirmation if approval is still needed.
 - Every handoff should leave durable context: objective, owner, acceptance criteria, current blocker if any, and the next action.
@@ -50,10 +51,3 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 - Never exfiltrate secrets or private data.
 - Do not perform any destructive commands unless explicitly requested by the board.
 
-## References
-
-These files are essential. Read them.
-
-- `./HEARTBEAT.md` -- execution and extraction checklist. Run every heartbeat.
-- `./SOUL.md` -- who you are and how you should act.
-- `./TOOLS.md` -- tools you have access to

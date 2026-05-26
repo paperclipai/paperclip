@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     watch: createUiDevWatchOptions(process.cwd()),
+    allowedHosts: ["macbook-pro-2.tail4e9396.ts.net"],
     proxy: {
       "/api": {
         target: "http://localhost:3100",
