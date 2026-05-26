@@ -6,7 +6,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
-  activityLog,
   companies,
   createDb,
   heartbeatRuns,
@@ -768,18 +767,6 @@ describe("heartbeat comment wake batching", () => {
           updatedAt: terminalAt,
         })
         .where(eq(issues.id, issueId));
-      await db.insert(activityLog).values({
-        companyId,
-        actorType: "system",
-        actorId: "heartbeat",
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: issueId,
-        agentId,
-        runId: firstRun?.id ?? null,
-        details: { status: "done" },
-        createdAt: terminalAt,
-      });
 
       gateway.releaseFirstWait();
 
@@ -919,18 +906,6 @@ describe("heartbeat comment wake batching", () => {
           updatedAt: terminalAt,
         })
         .where(eq(issues.id, issueId));
-      await db.insert(activityLog).values({
-        companyId,
-        actorType: "system",
-        actorId: "heartbeat",
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: issueId,
-        agentId,
-        runId: firstRun!.id,
-        details: { status: "done" },
-        createdAt: terminalAt,
-      });
 
       const comment = await db
         .insert(issueComments)

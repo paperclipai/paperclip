@@ -8381,24 +8381,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             )
             .then((rows) => rows[0]?.createdAt ?? null);
-          const latestTerminalCompletion = await tx
-            .select({ createdAt: activityLog.createdAt })
-            .from(activityLog)
-            .where(
-              and(
-                eq(activityLog.companyId, issue.companyId),
-                eq(activityLog.entityType, "issue"),
-                eq(activityLog.entityId, issue.id),
-                eq(activityLog.action, "issue.updated"),
-                or(
-                  sql`${activityLog.details} ->> 'status' = 'done'`,
-                  sql`${activityLog.details} ->> 'status' = 'cancelled'`,
-                ),
-              ),
-            )
-            .orderBy(desc(activityLog.createdAt))
-            .limit(1)
-            .then((rows) => rows[0]?.createdAt ?? null);
+          const latestTerminalCompletion = issue.completedAt ?? null;
           if (latestDeferredComment && latestTerminalCompletion) {
             deferredCommentAfterTerminalCompletion =
               new Date(latestDeferredComment).getTime() > new Date(latestTerminalCompletion).getTime();
