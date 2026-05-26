@@ -2564,7 +2564,13 @@ export function evaluatePrReviewCompletionEvidence(
   if (/\bposted\s+(?:the\s+)?consolidated\s+Ally\s+review\b/i.test(text)) {
     return { status: "posted_review" as const };
   }
+  if (/\bposted\s+(?:the\s+)?Ally(?:['\u2019]s)?\s+consolidated\s+(?:(?:comment|PR)\s+)?review\b/i.test(text)) {
+    return { status: "posted_review" as const };
+  }
   if (/\bverif(?:y|ies|ied)\s+posted\s+Ally\s+review\b/i.test(text)) {
+    return { status: "posted_review" as const };
+  }
+  if (/\bverif(?:y|ies|ied)\s+(?:that\s+)?(?:the\s+)?review\s+was\s+posted\b/i.test(text)) {
     return { status: "posted_review" as const };
   }
   if (/\bgh\s+pr\s+review\b[\s\S]{0,400}\bexit["']?\s*:\s*0\b/i.test(text)) {

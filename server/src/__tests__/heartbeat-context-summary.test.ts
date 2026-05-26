@@ -321,6 +321,27 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     ).toEqual({ status: "posted_review" });
   });
 
+  it("accepts the live Ally consolidated comment review marker", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        summary:
+          "Posted Ally's consolidated comment review on `Blockcast/pim-multicast-gateway#548` for head a563570063ed679e325da8da3f5376a019e7b615.",
+      }),
+    ).toEqual({ status: "posted_review" });
+  });
+
+  it("accepts the live posted-review verifier marker", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(reviewerContext, {
+        resultJson: {
+          title: "Verifies review was posted",
+          output:
+            '{"latest_ally":{"author":"blockcast-ci-packages","submittedAt":"2026-05-26T06:56:29Z"}}',
+        },
+      }),
+    ).toEqual({ status: "posted_review" });
+  });
+
   it("accepts idempotent already-reviewed skips", () => {
     expect(
       evaluatePrReviewCompletionEvidence(reviewerContext, {
