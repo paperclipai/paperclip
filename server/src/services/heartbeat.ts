@@ -8381,7 +8381,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
             )
             .then((rows) => rows[0]?.createdAt ?? null);
-          const latestTerminalCompletion = issue.completedAt ?? null;
+          const latestTerminalCompletion = issue.status === "cancelled"
+            ? issue.cancelledAt ?? issue.completedAt ?? null
+            : issue.completedAt ?? issue.cancelledAt ?? null;
           if (latestDeferredComment && latestTerminalCompletion) {
             const latestDeferredCommentTime =
               latestDeferredComment instanceof Date

@@ -759,8 +759,8 @@ describe("heartbeat comment wake batching", () => {
       await db
         .update(issues)
         .set({
-          status: "done",
-          completedAt: terminalAt,
+          status: "cancelled",
+          cancelledAt: terminalAt,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
@@ -789,15 +789,16 @@ describe("heartbeat comment wake batching", () => {
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
+          cancelledAt: issues.cancelledAt,
         })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       expect(reopenedIssue).toMatchObject({
-        status: "done",
+        status: "cancelled",
       });
-      expect(reopenedIssue?.completedAt).not.toBeNull();
+      expect(reopenedIssue?.cancelledAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -809,7 +810,7 @@ describe("heartbeat comment wake batching", () => {
             id: issueId,
             identifier: `${issuePrefix}-1`,
             title: "Reopen after deferred comment",
-            status: "done",
+            status: "cancelled",
             priority: "medium",
           },
         },
