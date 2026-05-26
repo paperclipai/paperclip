@@ -101,6 +101,7 @@ function buildConfigSnapshot(
     adapterConfig,
     runtimeConfig,
     defaultEnvironmentId: row.defaultEnvironmentId,
+    costScaleFactor: row.costScaleFactor,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
   };
