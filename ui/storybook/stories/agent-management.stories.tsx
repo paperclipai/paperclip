@@ -428,15 +428,15 @@ function StorybookQueryFixtures({ children }: { children: ReactNode }) {
   queryClient.setQueryData([...queryKeys.liveRuns(COMPANY_ID), "dashboard"], liveRuns);
   queryClient.setQueryData(queryKeys.instance.generalSettings, { censorUsernameInLogs: false });
   queryClient.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "codex_local"), [
-    { id: "gpt-5.4", label: "GPT-5.4" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-    { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { id: "gpt-5", label: "GPT-5" },
+    { id: "gpt-5-mini", label: "GPT-5 Mini" },
+    { id: "codex-mini-latest", label: "Codex Mini" },
   ]);
   queryClient.setQueryData(queryKeys.agents.detectModel(COMPANY_ID, "codex_local"), {
-    model: "gpt-5.4",
+    model: "gpt-5",
     provider: "openai",
     source: "config",
-    candidates: ["gpt-5.4", "gpt-5.4-mini"],
+    candidates: ["gpt-5", "gpt-5-mini"],
   });
   queryClient.setQueryData(queryKeys.agents.adapterModels(COMPANY_ID, "claude_local"), [
     { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
