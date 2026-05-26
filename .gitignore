@@ -11,6 +11,8 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
+server/work/
+.playwright-mcp/
 .paperclip/
 .pnpm-store/
 tmp-*

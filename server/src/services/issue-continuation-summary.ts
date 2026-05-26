@@ -122,6 +122,28 @@ function extractPreviousNextAction(previousBody: string | null | undefined) {
     .find(Boolean) ?? null;
 }
 
+function readNestedString(error: unknown, key: "code" | "constraint_name") {
+  if (!error || typeof error !== "object") return null;
+  const direct = key in error && typeof (error as Record<string, unknown>)[key] === "string"
+    ? (error as Record<string, string>)[key]
+    : null;
+  const cause = "cause" in error ? (error as { cause?: unknown }).cause : null;
+  const causeValue = cause &&
+    typeof cause === "object" &&
+    key in cause &&
+    typeof (cause as Record<string, unknown>)[key] === "string"
+    ? (cause as Record<string, string>)[key]
+    : null;
+  return direct ?? causeValue;
+}
+
+function isCreateRaceConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  if ("status" in error && (error as { status?: unknown }).status === 409) return true;
+  return readNestedString(error, "code") === "23505" &&
+    readNestedString(error, "constraint_name") === "issue_documents_company_issue_key_uq";
+}
+
 export function extractContinuationSummaryNextAction(body: string | null | undefined) {
   return extractPreviousNextAction(body);
 }
@@ -266,7 +288,8 @@ export async function refreshIssueContinuationSummary(input: {
     agent,
     previousSummaryBody: existing?.body ?? null,
   });
-  const result = await documentService(db).upsertIssueDocument({
+  const documentsService = documentService(db);
+  const upsertInput = {
     issueId,
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     title: ISSUE_CONTINUATION_SUMMARY_TITLE,
@@ -276,6 +299,25 @@ export async function refreshIssueContinuationSummary(input: {
     changeSummary: `Refresh continuation summary after run ${run.id}`,
     createdByAgentId: agent.id,
     createdByRunId: run.id,
-  });
+  };
+  let result: Awaited<ReturnType<ReturnType<typeof documentService>["upsertIssueDocument"]>>;
+  try {
+    result = await documentsService.upsertIssueDocument(upsertInput);
+  } catch (error) {
+    if (existing || !isCreateRaceConflict(error)) throw error;
+    const current = await getIssueContinuationSummaryDocument(db, issueId);
+    if (!current?.latestRevisionId) throw error;
+    const retryBody = buildContinuationSummaryMarkdown({
+      issue,
+      run,
+      agent,
+      previousSummaryBody: current.body,
+    });
+    result = await documentsService.upsertIssueDocument({
+      ...upsertInput,
+      body: retryBody,
+      baseRevisionId: current.latestRevisionId,
+    });
+  }
   return result.document;
 }

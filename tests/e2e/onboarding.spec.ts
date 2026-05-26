@@ -1,181 +1,223 @@
-import { test, expect } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { expect, test, type Page } from "@playwright/test";
 
-/**
- * E2E: Onboarding wizard flow (skip_llm mode).
- *
- * Walks through the 4-step OnboardingWizard:
- *   Step 1 — Name your company
- *   Step 2 — Create your first agent (adapter selection + config)
- *   Step 3 — Give it something to do (task creation)
- *   Step 4 — Ready to launch (summary + open issue)
- *
- * By default this runs in skip_llm mode: we do NOT assert that an LLM
- * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
- * assertions (requires a valid ANTHROPIC_API_KEY).
- */
+function makeTempDir(prefix: string) {
+  const allowedTmpRoot = "/private/tmp";
+  return fs.mkdtempSync(path.join(fs.existsSync(allowedTmpRoot) ? allowedTmpRoot : os.tmpdir(), prefix));
+}
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
+function createBrownfieldRepo() {
+  const dir = makeTempDir("paperclip-e2e-brownfield-");
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify({
+      name: "paperclip-e2e-brownfield",
+      dependencies: { react: "latest", express: "latest" },
+      devDependencies: { typescript: "latest", vite: "latest" },
+    }),
+  );
+  fs.writeFileSync(path.join(dir, "tsconfig.json"), "{}");
+  fs.writeFileSync(path.join(dir, "vite.config.ts"), "export default {};\n");
+  fs.writeFileSync(path.join(dir, "src", "App.tsx"), "export function App() { return null; }\n");
+  return dir;
+}
 
-const COMPANY_NAME = `E2E-Test-${Date.now()}`;
-const AGENT_NAME = "CEO";
-const TASK_TITLE = "E2E test task";
+function createGreenfieldRepo() {
+  const dir = makeTempDir("paperclip-e2e-greenfield-");
+  fs.writeFileSync(path.join(dir, "README.md"), "# Empty product idea\n");
+  return dir;
+}
 
-test.describe("Onboarding wizard", () => {
-  test("completes full wizard flow", async ({ page }) => {
-    await page.goto("/onboarding");
+function createLargeRepo() {
+  const dir = makeTempDir("paperclip-e2e-large-");
+  for (let i = 0; i < 5_050; i += 1) {
+    fs.mkdirSync(path.join(dir, `pkg-${String(i).padStart(4, "0")}`));
+  }
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "paperclip-e2e-large" }));
+  return dir;
+}
 
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
+async function scanFolder(page: Page, folderPath: string, setupFocus?: string) {
+  await page.goto("/onboarding");
+  await expect(page.getByRole("heading", { name: "Choose a project folder" })).toBeVisible();
+  await page.getByLabel("Absolute folder path").fill(folderPath);
+  if (setupFocus) {
+    await page
+      .getByLabel("Setup focus (optional)")
+      .fill(setupFocus);
+  }
+  await page.getByRole("button", { name: "Scan folder" }).click();
+}
 
-    await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
+async function expectReviewStep(page: Page) {
+  await expect(page.getByRole("heading", { name: "Review recommended setup" })).toBeVisible({ timeout: 30_000 });
+}
 
-    const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
-    await companyNameInput.fill(COMPANY_NAME);
+async function findCompanyByName(page: Page, companyName: string) {
+  const companiesRes = await page.request.get("/api/companies");
+  expect(companiesRes.ok()).toBe(true);
+  const companies = await companiesRes.json();
+  const company = companies.find((entry: { name: string }) => entry.name === companyName);
+  expect(company).toBeTruthy();
+  return company as { id: string; issuePrefix: string; name: string };
+}
 
-    const nextButton = page.getByRole("button", { name: "Next" });
-    await nextButton.click();
+test.describe("First-run onboarding", () => {
+  test("scans a brownfield repo, allows squad/model review edits, and applies setup", async ({ page }) => {
+    const repoPath = createBrownfieldRepo();
+    const companyName = `E2E Brownfield ${Date.now()}`;
 
-    await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 30_000 });
+    await scanFolder(page, repoPath, "Stabilize the UI and API for a demo-ready MVP.");
+    await expectReviewStep(page);
 
-    const agentNameInput = page.locator('input[placeholder="CEO"]');
-    await expect(agentNameInput).toHaveValue(AGENT_NAME);
+    await expect(page.getByLabel("Company name")).toHaveValue(/Paperclip E2e Brownfield/);
+    await expect(page.getByLabel("Operating focus")).toHaveValue("Stabilize the UI and API for a demo-ready MVP.");
+    await expect(page.getByLabel("Starter issue title")).toHaveValue("Run Codebase Health Audit and Diagnostics");
+    await expect(page.getByLabel("Starter issue description")).toHaveValue(/Build a repo-grounded diagnostics packet/);
+    await expect(page.getByText("Optional secrets can be configured after setup")).toBeVisible();
+    await expect(page.getByText("GitHub token")).toBeVisible();
+    await expect(page.getByText("PROJECT_RUNTIME_ENV")).toBeVisible();
+    await expect(page.getByText("WEBHOOK_SIGNING_SECRET")).toBeVisible();
+    await expect(page.getByText("Use existing Codex login")).toBeVisible();
+    await expect(page.getByText("Use existing Google/Antigravity login")).toBeVisible();
 
-    await expect(
-      page.locator("button", { hasText: "Claude Code" }).locator("..")
-    ).toBeVisible();
+    await expect(page.getByLabel("Research & Insights Lead model")).toHaveValue("gemini-3.5-flash");
+    await expect(page.getByLabel("Research & Insights Lead model")).toBeDisabled();
 
-    await page.getByRole("button", { name: "More Agent Adapter Types" }).click();
-    await expect(page.getByRole("button", { name: "Process" })).toHaveCount(0);
+    await page.getByLabel("Research & Insights Lead provider").selectOption("codex_local");
+    await expect(page.getByLabel("Research & Insights Lead provider")).toHaveValue("codex_local");
 
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 30_000 });
-
-    const baseUrl = page.url().split("/").slice(0, 3).join("/");
-    if (SKIP_LLM) {
-      const companiesAfterAgentRes = await page.request.get(`${baseUrl}/api/companies`);
-      expect(companiesAfterAgentRes.ok()).toBe(true);
-      const companiesAfterAgent = await companiesAfterAgentRes.json();
-      const companyAfterAgent = companiesAfterAgent.find(
-        (c: { name: string }) => c.name === COMPANY_NAME
-      );
-      expect(companyAfterAgent).toBeTruthy();
-
-      const agentsAfterCreateRes = await page.request.get(
-        `${baseUrl}/api/companies/${companyAfterAgent.id}/agents`
-      );
-      expect(agentsAfterCreateRes.ok()).toBe(true);
-      const agentsAfterCreate = await agentsAfterCreateRes.json();
-      const ceoAgentAfterCreate = agentsAfterCreate.find(
-        (a: { name: string }) => a.name === AGENT_NAME
-      );
-      expect(ceoAgentAfterCreate).toBeTruthy();
-
-      const disableWakeRes = await page.request.patch(
-        `${baseUrl}/api/agents/${ceoAgentAfterCreate.id}?companyId=${encodeURIComponent(companyAfterAgent.id)}`,
-        {
-          data: {
-            runtimeConfig: {
-              heartbeat: {
-                enabled: false,
-                intervalSec: 300,
-                wakeOnDemand: false,
-                cooldownSec: 10,
-                maxConcurrentRuns: 5,
-              },
-            },
-          },
-        }
-      );
-      expect(disableWakeRes.ok()).toBe(true);
-    }
-
-    const taskTitleInput = page.locator(
-      'input[placeholder="e.g. Research competitor pricing"]'
-    );
-    await taskTitleInput.clear();
-    await taskTitleInput.fill(TASK_TITLE);
-
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 30_000 });
-
-    await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
-
-    await page.getByRole("button", { name: "Create & Open Issue" }).click();
-
+    await page.getByLabel("Company name").fill(companyName);
+    await page.getByRole("button", { name: "Create setup" }).click();
     await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
+    await expect(page.getByText("Finish deferred setup")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start first audit" })).toBeVisible();
+    await expect(page.getByText("The starter issue is parked until you intentionally launch it.")).toBeVisible();
+    await expect(page.getByText("Local OAuth/session setup is not confirmed yet")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Configure secrets" })).toHaveAttribute("href", /\/company\/settings\/secrets/);
+    await expect(page.getByRole("link", { name: "Configure MCPs" })).toHaveAttribute("href", /\/instance\/settings\/adapters/);
+    const starterIssuePath = new URL(page.url()).pathname;
 
-    const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
-    expect(companiesRes.ok()).toBe(true);
-    const companies = await companiesRes.json();
-    const company = companies.find(
-      (c: { name: string }) => c.name === COMPANY_NAME
-    );
-    expect(company).toBeTruthy();
+    const company = await findCompanyByName(page, companyName);
 
-    const agentsRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/agents`
-    );
+    const agentsRes = await page.request.get(`/api/companies/${company.id}/agents`);
     expect(agentsRes.ok()).toBe(true);
     const agents = await agentsRes.json();
-    const ceoAgent = agents.find(
-      (a: { name: string }) => a.name === AGENT_NAME
+    expect(agents.map((agent: { adapterType: string }) => agent.adapterType)).toEqual(
+      expect.arrayContaining(["claude_local", "codex_local"]),
     );
-    expect(ceoAgent).toBeTruthy();
-    expect(ceoAgent.role).toBe("ceo");
-    expect(ceoAgent.adapterType).not.toBe("process");
+    expect(agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "researcher", adapterType: "codex_local" }),
+      ]),
+    );
 
-    const instructionsBundleRes = await page.request.get(
-      `${baseUrl}/api/agents/${ceoAgent.id}/instructions-bundle?companyId=${company.id}`
-    );
-    expect(instructionsBundleRes.ok()).toBe(true);
-    const instructionsBundle = await instructionsBundleRes.json();
-    expect(
-      instructionsBundle.files.map((file: { path: string }) => file.path).sort()
-    ).toEqual(["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"]);
+    const issuesBeforeStartRes = await page.request.get(`/api/companies/${company.id}/issues`);
+    expect(issuesBeforeStartRes.ok()).toBe(true);
+    const issuesBeforeStart = await issuesBeforeStartRes.json();
+    const starterIssueBeforeStart = issuesBeforeStart.find((issue: { title: string }) =>
+      issue.title === "Run Codebase Health Audit and Diagnostics"
+    ) as { id: string; title: string; status: string; originKind: string; assigneeAgentId: string | null } | undefined;
+    expect(starterIssueBeforeStart).toEqual(expect.objectContaining({
+      title: "Run Codebase Health Audit and Diagnostics",
+      status: "backlog",
+      originKind: "onboarding",
+    }));
+    expect(starterIssueBeforeStart?.assigneeAgentId).toBeTruthy();
 
-    const issuesRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/issues`
+    const assigneeRuntimeRes = await page.request.patch(
+      `/api/agents/${starterIssueBeforeStart!.assigneeAgentId}?companyId=${company.id}`,
+      {
+        data: {
+          runtimeConfig: {
+            heartbeat: {
+              enabled: false,
+              intervalSec: 300,
+              wakeOnDemand: false,
+              cooldownSec: 10,
+              maxConcurrentRuns: 1,
+            },
+          },
+        },
+      },
     );
+    expect(assigneeRuntimeRes.ok()).toBe(true);
+
+    await page.getByRole("button", { name: "Start first audit" }).click();
+    await expect.poll(async () => {
+      const res = await page.request.get(`/api/issues/${starterIssueBeforeStart!.id}`);
+      expect(res.ok()).toBe(true);
+      const updated = await res.json();
+      return updated.status;
+    }).toBe("todo");
+
+    await page.goto(starterIssuePath);
+    await expect(page.getByText("Finish deferred setup")).toBeVisible();
+    await expect(page.getByText("Confirm or reuse Codex, Claude, and Antigravity OAuth sessions")).toBeVisible();
+    await page.getByRole("button", { name: "Refresh setup checks" }).click();
+    await expect(page.getByTestId("onboarding-setup-item-local_auth")).toContainText("Pending");
+    await page.getByRole("button", { name: "Mark local auth complete" }).click();
+    await expect(page.getByTestId("onboarding-setup-item-local_auth")).toContainText("Completed");
+    await page.getByRole("button", { name: "Dismiss setup reminder" }).click();
+    await expect(page.getByText("Finish deferred setup")).toBeHidden();
+    await page.goto(starterIssuePath);
+    await expect(page.getByText("Finish deferred setup")).toBeHidden();
+
+    const projectsRes = await page.request.get(`/api/companies/${company.id}/projects`);
+    expect(projectsRes.ok()).toBe(true);
+    const [project] = await projectsRes.json();
+    expect(project).toBeTruthy();
+
+    const workspacesRes = await page.request.get(`/api/projects/${project.id}/workspaces?companyId=${company.id}`);
+    expect(workspacesRes.ok()).toBe(true);
+    const workspaces = await workspacesRes.json();
+    expect(workspaces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ cwd: repoPath, sourceType: "local_path", isPrimary: true }),
+      ]),
+    );
+
+    const issuesRes = await page.request.get(`/api/companies/${company.id}/issues`);
     expect(issuesRes.ok()).toBe(true);
     const issues = await issuesRes.json();
-    const task = issues.find(
-      (i: { title: string }) => i.title === TASK_TITLE
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Run Codebase Health Audit and Diagnostics",
+          status: "todo",
+          originKind: "onboarding",
+        }),
+      ]),
     );
-    expect(task).toBeTruthy();
-    expect(task.assigneeAgentId).toBe(ceoAgent.id);
-    expect(task.description).toContain(
-      "You are the CEO. You set the direction for the company."
-    );
-    expect(task.description).not.toContain("github.com/paperclipai/companies");
+  });
 
-    if (!SKIP_LLM) {
-      await expect(async () => {
-        const res = await page.request.get(
-          `${baseUrl}/api/issues/${task.id}`
-        );
-        const issue = await res.json();
-        expect(["in_progress", "done"]).toContain(issue.status);
-      }).toPass({ timeout: 120_000, intervals: [5_000] });
-    } else {
-      await expect
-        .poll(async () => {
-          const runsRes = await page.request.get(
-            `${baseUrl}/api/companies/${company.id}/heartbeat-runs?agentId=${ceoAgent.id}`
-          );
-          expect(runsRes.ok()).toBe(true);
-          const runs = await runsRes.json();
-          return Array.isArray(runs) ? runs.length : -1;
-        }, { timeout: 10_000, intervals: [500, 1_000, 2_000] })
-        .toBe(0);
-    }
+  test("turns an empty folder into a scaffold planning review without file-write instructions", async ({ page }) => {
+    await scanFolder(page, createGreenfieldRepo(), "Build a focused SaaS MVP.");
+    await expectReviewStep(page);
+
+    await expect(page.getByLabel("Starter issue title")).toHaveValue("Design the First Approved Product Scaffold");
+    await expect(page.getByLabel("Starter issue description")).toHaveValue(/Do not write scaffold files until the plan is approved\./);
+  });
+
+  test("keeps restricted directories on scan with a clear error", async ({ page }) => {
+    // Use "/etc" rather than the macOS-only "/private/etc" alias so the
+    // sensitive-root rejection fires on both macOS (where /etc → /private/etc)
+    // and the Linux CI runner.
+    await scanFolder(page, "/etc");
+
+    await expect(page.getByRole("heading", { name: "Choose a project folder" })).toBeVisible();
+    await expect(page.getByText("Path targets a sensitive system or credential directory")).toBeVisible();
+  });
+
+  test("continues large-repo safety-limit scans into the recommended review", async ({ page }) => {
+    await scanFolder(page, createLargeRepo(), "Audit a large existing codebase without blocking setup.");
+    await expectReviewStep(page);
+
+    await expect(page.getByText("Large project scan reached the bounded sampling limit")).toBeVisible();
+    await expect(page.getByLabel("Starter issue title")).toHaveValue("Run Codebase Health Audit and Diagnostics");
+    await expect(page.getByText("Optional secrets can be configured after setup")).toBeVisible();
   });
 });

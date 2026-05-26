@@ -1,4 +1,5 @@
 export { companies } from "./companies.js";
+export { companyOnboardingSetups } from "./company_onboarding_setups.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
@@ -79,3 +80,13 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export {
+  weeklyReviews,
+  weeklyReviewVersions,
+  weeklyReviewFindings,
+  weeklyReviewCitations,
+  weeklyReviewRecommendations,
+  weeklyReviewActions,
+  weeklyReviewEvents,
+  adapterReadinessProbes,
+} from "./weekly_reviews.js";

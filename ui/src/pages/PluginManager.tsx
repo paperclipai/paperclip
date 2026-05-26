@@ -119,6 +119,9 @@ export function PluginManager() {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.examples });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
+    if (selectedCompany?.id) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.onboardingSetup(selectedCompany.id) });
+    }
   };
 
   const installMutation = useMutation({

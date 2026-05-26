@@ -35,6 +35,12 @@ vi.mock("../services/index.js", () => ({
     getFeedbackTraceById: vi.fn(),
     saveIssueVote: vi.fn(),
   }),
+  onboardingSetupStateService: () => ({
+    getByCompanyId: vi.fn(),
+    updateStatus: vi.fn(),
+    updateItemStatus: vi.fn(),
+    refreshFromEvidence: vi.fn(),
+  }),
   logActivity: vi.fn(),
 }));
 

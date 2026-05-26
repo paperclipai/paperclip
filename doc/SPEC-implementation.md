@@ -39,6 +39,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
+| Local provider auth | `claude_local`, `codex_local`, and `agy_local` are OAuth/session-backed local adapters for V1 onboarding. First-run setup must not ask for `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` for these local lanes. |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
@@ -137,6 +138,21 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 
 Invariant: every business record belongs to exactly one company.
 
+## 7.1.1 `company_onboarding_setups`
+
+Persists first-run onboarding follow-up state after `POST /api/onboarding/apply`.
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null unique
+- `starter_issue_id` uuid fk `issues.id` null
+- `status` enum-like text: `pending | completed | dismissed`
+- `source` text not null, default `first_run`
+- `items` jsonb not null; checklist entries for local OAuth/session confirmation, optional secrets, and MCP/external tool setup
+- `completed_at` timestamptz null
+
+The setup row is company-scoped and board-managed. It is intentionally separate from the starter issue so the operator can dismiss or complete setup reminders without mutating issue content.
+The setup checklist can also be refreshed from system evidence: local OAuth/session setup is complete when active local agents have fresh basic adapter readiness evidence, optional secrets are complete when the company has at least one non-deleted secret, and MCP/external tool setup is complete when at least one ready, company-enabled plugin contributes agent tools. Adapter readiness probes and secret creation/import/update routes invoke this refresh after their primary mutation succeeds.
+
 ## 7.2 `agents`
 
 - `id` uuid pk
@@ -148,7 +164,7 @@ Invariant: every business record belongs to exactly one company.
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `agy_local`, legacy `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
@@ -432,7 +448,7 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
-- Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
+- Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, company logos, and `company_onboarding_setups`.
 
 ## 8. State Machines
 
@@ -581,6 +597,9 @@ All endpoints are under `/api` and return JSON.
 - `GET /companies/:companyId`
 - `PATCH /companies/:companyId`
 - `PATCH /companies/:companyId/branding`
+- `GET /companies/:companyId/onboarding-setup`
+- `PATCH /companies/:companyId/onboarding-setup` updates the whole setup status (`completed` or `dismissed`) or a single checklist item status.
+- `POST /companies/:companyId/onboarding-setup/refresh` refreshes checklist item statuses from adapter readiness and secret evidence.
 - `POST /companies/:companyId/archive`
 
 ## 10.2 Goals

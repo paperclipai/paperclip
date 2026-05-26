@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  LOCAL_ADAPTER_ASSURANCE_TYPES,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -169,6 +170,7 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import { adapterReadinessService, assertCanStartAgentWithReadiness } from "./adapter-readiness/index.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -317,6 +319,7 @@ function mergeAdapterRecoveryMetadata(input: {
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
+  "agy_local",
   "claude_local",
   "codex_local",
   "cursor",
@@ -325,6 +328,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+const EXECUTION_READINESS_GATED_ADAPTERS = new Set<string>(LOCAL_ADAPTER_ASSURANCE_TYPES);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2412,6 +2416,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const adapterReadiness = adapterReadinessService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -5911,6 +5916,97 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  function normalizeAdapterReadinessReasonCodes(value: unknown): string[] {
+    return Array.isArray(value)
+      ? value.filter((reasonCode): reasonCode is string => typeof reasonCode === "string" && reasonCode.length > 0)
+      : [];
+  }
+
+  async function cancelQueuedRunForAdapterReadiness(
+    run: typeof heartbeatRuns.$inferSelect,
+    message: string,
+    reasonCodes: string[],
+  ) {
+    const now = new Date();
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: message,
+      errorCode: "adapter_readiness_blocked",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "adapter_readiness_blocked",
+        adapterReadinessReasonCodes: reasonCodes,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "adapter_readiness_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: message,
+    });
+
+    if (issueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, run.companyId),
+            eq(issues.id, issueId),
+            eq(issues.executionRunId, run.id),
+          ),
+        );
+    }
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message,
+      payload: {
+        issueId,
+        reasonCodes,
+      },
+    });
+
+    return cancelled;
+  }
+
+  async function assertLatestAdapterReadinessAllowsQueuedRun(
+    agent: typeof agents.$inferSelect,
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    if (!EXECUTION_READINESS_GATED_ADAPTERS.has(agent.adapterType)) return true;
+
+    const readiness = await adapterReadiness.getLatestForAgent(agent.companyId, agent.id);
+    if (!readiness) return true;
+
+    const reasonCodes = normalizeAdapterReadinessReasonCodes(readiness.reasonCodesJson);
+    try {
+      assertCanStartAgentWithReadiness({
+        basicReady: readiness.basicReady === true,
+        operationalReady: readiness.operationalReady === true,
+        strictMode: readiness.strictMode === true,
+        reasonCodes,
+      });
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Adapter readiness blocks execution: unknown";
+      await cancelQueuedRunForAdapterReadiness(run, message, reasonCodes);
+      return false;
+    }
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -5920,6 +6016,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
       await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+      return null;
+    }
+    if (!(await assertLatestAdapterReadinessAllowsQueuedRun(agent, run))) {
       return null;
     }
 

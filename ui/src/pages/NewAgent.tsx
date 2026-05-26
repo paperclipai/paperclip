@@ -36,6 +36,8 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 
+const DEFAULT_AGY_LOCAL_MODEL = "gemini-3.5-flash";
+
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
 ): CreateConfigValues {
@@ -45,6 +47,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
     nextValues.dangerouslyBypassSandbox =
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+  } else if (adapterType === "agy_local") {
+    nextValues.model = DEFAULT_AGY_LOCAL_MODEL;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
   } else if (adapterType === "cursor") {

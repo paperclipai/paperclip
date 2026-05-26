@@ -102,6 +102,7 @@ import { recoveryService } from "../services/recovery/service.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const DEFAULT_AGY_LOCAL_MODEL = "gemini-3.5-flash";
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -124,6 +125,7 @@ export function agentRoutes(
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     acpx_local: "instructionsFilePath",
+    agy_local: "instructionsFilePath",
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
@@ -1017,6 +1019,10 @@ export function agentRoutes(
       if (!hasBypassFlag) {
         next.dangerouslyBypassApprovalsAndSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
       }
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
+    if (adapterType === "agy_local") {
+      next.model = DEFAULT_AGY_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
     if (adapterType === "gemini_local" && !asNonEmptyString(next.model)) {

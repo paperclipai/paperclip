@@ -78,6 +78,7 @@ import {
   models as geminiModels,
   modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
+import { agyLocalAdapter } from "./agy-local.js";
 import {
   execute as grokExecute,
   listGrokSkills,
@@ -513,6 +514,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    agyLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,

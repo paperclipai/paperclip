@@ -117,6 +117,14 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+For PR-ready Vitest verification, use:
+
+```sh
+pnpm test:run
+```
+
+`pnpm test:run` uses `scripts/run-vitest-stable.mjs`. The stable runner executes non-server packages first, then runs the general server suite with route/runtime-heavy suites excluded, and finally runs those heavier server suites serially with isolated `PAPERCLIP_HOME` and `TMPDIR` values. This keeps embedded database, route, heartbeat, workspace-runtime, local CLI execution, and large-directory onboarding scan tests from contending with each other during broad local verification.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -151,7 +159,7 @@ Or use Compose:
 docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
-See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) and persistence details.
+See `doc/DOCKER.md` for container persistence and optional API-key wiring for non-local deployments. First-run local onboarding for Claude, Codex, and Antigravity uses each CLI's local OAuth/session state instead of provider API keys.
 
 ## Docker For Untrusted PR Review
 

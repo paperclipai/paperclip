@@ -41,12 +41,18 @@ describe("fetchAllQuotaWindows", () => {
     expect(results).toEqual([
       {
         provider: "openai",
+        adapterType: "codex_local",
         source: "codex-rpc",
+        authState: "ready",
+        quotaState: "ok",
         ok: true,
         windows: [{ label: "5h limit", usedPercent: 2, resetsAt: null, valueLabel: null, detail: null }],
       },
       {
         provider: "anthropic",
+        adapterType: "claude_local",
+        authState: "unknown",
+        quotaState: "error",
         ok: false,
         error: "quota polling timed out after 20s",
         windows: [],

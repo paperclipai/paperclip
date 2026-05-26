@@ -24,6 +24,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
+import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
@@ -276,9 +277,16 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentBaseDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentPluginDetailView = `plugin:${string}`;
+type AgentDetailView = AgentBaseDetailView | AgentPluginDetailView;
+
+function isAgentPluginDetailView(value: string | null | undefined): value is AgentPluginDetailView {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
+  if (isAgentPluginDetailView(value)) return value;
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
@@ -717,6 +725,24 @@ export function AgentDetail() {
   const agentMembershipState = resolvedAgentId
     ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
     : "joined";
+  const {
+    slots: agentPluginDetailSlots,
+    isLoading: agentPluginDetailSlotsLoading,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: resolvedCompanyId,
+    enabled: !!resolvedCompanyId,
+  });
+  const agentPluginTabItems = useMemo(
+    () => agentPluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as AgentPluginDetailView,
+      label: slot.displayName,
+      slot,
+    })),
+    [agentPluginDetailSlots],
+  );
+  const activePluginTab = agentPluginTabItems.find((item) => item.value === activeView) ?? null;
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
@@ -799,7 +825,9 @@ export function AgentDetail() {
       return;
     }
     const canonicalTab =
-      activeView === "instructions"
+      isAgentPluginDetailView(activeView)
+        ? activeView
+        : activeView === "instructions"
         ? "instructions"
         : activeView === "configuration"
           ? "configuration"
@@ -984,12 +1012,14 @@ export function AgentDetail() {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
         crumbs.push({ label: "Budget" });
+      } else if (activePluginTab) {
+        crumbs.push({ label: activePluginTab.label });
       } else {
         crumbs.push({ label: "Dashboard" });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, activePluginTab]);
 
   useEffect(() => {
     closePanel();
@@ -1017,6 +1047,9 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
+  if (isAgentPluginDetailView(activeView) && !agentPluginDetailSlotsLoading && !activePluginTab) {
+    return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
+  }
   if (!urlRunId && !urlTab) {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
@@ -1185,6 +1218,10 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
+              ...agentPluginTabItems.map((item) => ({
+                value: item.value,
+                label: item.label,
+              })),
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1322,6 +1359,19 @@ export function AgentDetail() {
           />
         </div>
       ) : null}
+
+      {activePluginTab && (
+        <PluginSlotMount
+          slot={activePluginTab.slot}
+          context={{
+            companyId: resolvedCompanyId ?? null,
+            companyPrefix: companyPrefix ?? null,
+            entityId: agent.id,
+            entityType: "agent",
+          }}
+          missingBehavior="placeholder"
+        />
+      )}
     </div>
   );
 }

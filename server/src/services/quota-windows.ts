@@ -9,6 +9,8 @@ function providerSlugForAdapterType(type: string): string {
       return "anthropic";
     case "codex_local":
       return "openai";
+    case "agy_local":
+      return "google";
     default:
       return type;
   }
@@ -28,10 +30,21 @@ export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
   );
 
   return settled.map((result, i) => {
-    if (result.status === "fulfilled") return result.value;
     const adapterType = adapters[i]!.type;
+    if (result.status === "fulfilled") {
+      const value = result.value;
+      return {
+        ...value,
+        adapterType: value.adapterType ?? adapterType,
+        authState: value.authState ?? (value.ok ? "ready" : "unknown"),
+        quotaState: value.quotaState ?? (value.ok ? "ok" : "error"),
+      };
+    }
     return {
       provider: providerSlugForAdapterType(adapterType),
+      adapterType,
+      authState: "error",
+      quotaState: "error",
       ok: false,
       error: String(result.reason),
       windows: [],

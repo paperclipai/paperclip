@@ -38,6 +38,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "acpx_local",
+  "agy_local",
   "claude_local",
   "codex_local",
   "cursor_cloud",
@@ -52,6 +53,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   acpx_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
+  agy_local: {
+    supportsSessionResume: false,
+    nativeContextManagement: "unknown",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
   },
   claude_local: {

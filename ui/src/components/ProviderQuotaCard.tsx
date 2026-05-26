@@ -125,7 +125,7 @@ export function ProviderQuotaCard({
   );
   const isClaudeQuotaPanel = provider === "anthropic";
   const isCodexQuotaPanel = provider === "openai" && quotaSource?.startsWith("codex-");
-  const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai";
+  const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai" || provider === "google";
   const showSubscriptionQuotaSection =
     supportsSubscriptionQuota && (quotaLoading || quotaWindows.length > 0 || quotaError != null);
 
@@ -311,7 +311,7 @@ export function ProviderQuotaCard({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Subscription quota
+                  Local session quota
                 </p>
                 {quotaSource && !isClaudeQuotaPanel && !isCodexQuotaPanel ? (
                   <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">

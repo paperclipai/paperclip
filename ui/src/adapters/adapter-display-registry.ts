@@ -61,6 +61,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     experimental: true,
     hideFromVisualSelection: true,
   },
+  agy_local: {
+    label: "Antigravity",
+    description: "Local Google Antigravity agent",
+    icon: Gem,
+    recommended: true,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",
@@ -74,9 +80,10 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     recommended: true,
   },
   gemini_local: {
-    label: "Gemini CLI",
-    description: "Local Gemini agent",
+    label: "Gemini CLI (legacy)",
+    description: "Legacy local Gemini agent; use Antigravity for new Google-backed work",
     icon: Gem,
+    hideFromVisualSelection: true,
   },
   grok_local: {
     label: "Grok Build",

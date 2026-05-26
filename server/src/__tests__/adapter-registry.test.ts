@@ -194,6 +194,21 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
+  it("built-in agy_local adapter is canonical Google local lane", () => {
+    const adapter = findActiveServerAdapter("agy_local");
+    expect(adapter).not.toBeNull();
+    expect(adapter!.supportsInstructionsBundle).toBe(true);
+    expect(adapter!.instructionsPathKey).toBe("instructionsFilePath");
+    expect(adapter!.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(adapter!.supportsLocalAgentJwt).toBe(true);
+    expect(adapter!.models).toEqual([{ id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" }]);
+    expect(adapter!.getRuntimeCommandSpec?.({})).toEqual({
+      command: "agy",
+      detectCommand: "agy",
+      installCommand: null,
+    });
+  });
+
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
     await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
       expect.objectContaining({
@@ -231,6 +246,7 @@ describe("server adapter registry", () => {
       }),
     ]);
     await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+    await expect(listAdapterModelProfiles("agy_local")).resolves.toEqual([]);
   });
 
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {

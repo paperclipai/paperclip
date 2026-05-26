@@ -638,6 +638,13 @@
       "when": 1779573019125,
       "tag": "0090_resource_memberships",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1779573019126,
+      "tag": "0091_first_run_onboarding_and_weekly_review",
+      "breakpoints": true
     }
   ]
 }

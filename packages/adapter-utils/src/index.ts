@@ -29,6 +29,8 @@ export type {
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
+  LocalProviderAuthState,
+  LocalProviderQuotaState,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

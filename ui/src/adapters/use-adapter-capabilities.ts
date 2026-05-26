@@ -17,6 +17,7 @@ const ALL_FALSE: AdapterCapabilities = {
  */
 const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
   acpx_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
+  agy_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: false },
   claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
   codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
   cursor: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true },

@@ -21,13 +21,13 @@ export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
-}): { initialStep: 1 | 2; companyId?: string } | null {
+}): { initialStep: 0 | 1 | 2; companyId?: string } | null {
   const { pathname, companyPrefix, companies } = params;
 
   if (!isOnboardingPath(pathname)) return null;
 
   if (!companyPrefix) {
-    return { initialStep: 1 };
+    return { initialStep: 0 };
   }
 
   const matchedCompany =

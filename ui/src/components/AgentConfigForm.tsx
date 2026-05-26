@@ -59,6 +59,8 @@ import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-con
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
 
+const LOCAL_ADAPTER_READINESS_TYPES = new Set(["claude_local", "codex_local", "agy_local"]);
+
 /* ---- Create mode values ---- */
 
 // Canonical type lives in @paperclipai/adapter-utils; re-exported here
@@ -128,6 +130,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
 /* ---- Shared input class ---- */
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+const DEFAULT_AGY_LOCAL_MODEL = "gemini-3.5-flash";
 
 function parseCommaArgs(value: string): string[] {
   return value
@@ -235,6 +238,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.onboardingSetup(selectedCompanyId) });
     },
   });
 
@@ -316,6 +320,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const readinessAgentId = !isCreate ? props.agent.id : null;
+  const adapterReadinessQueryKey = selectedCompanyId && readinessAgentId
+    ? queryKeys.agents.adapterReadiness(selectedCompanyId, readinessAgentId)
+    : ["agents", "none", "adapter-readiness"];
+  const { data: adapterReadiness } = useQuery({
+    queryKey: adapterReadinessQueryKey,
+    queryFn: () => agentsApi.getAdapterReadiness(selectedCompanyId!, readinessAgentId!),
+    enabled: Boolean(
+      selectedCompanyId &&
+      readinessAgentId &&
+      LOCAL_ADAPTER_READINESS_TYPES.has(adapterType),
+    ),
+  });
   
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
@@ -462,6 +479,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return next;
   }
 
+  const recordAdapterReadiness = useMutation({
+    mutationFn: async () => {
+      if (isCreate) throw new Error("Create the agent before recording adapter readiness");
+      if (!selectedCompanyId) throw new Error("Select a company to record adapter readiness");
+      return agentsApi.probeAdapterReadiness(selectedCompanyId, props.agent.id, {
+        adapterType,
+        strictMode: false,
+      });
+    },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: adapterReadinessQueryKey });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.onboardingSetup(selectedCompanyId) });
+    },
+  });
+
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -471,6 +504,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         adapterConfig: buildAdapterConfigForTest(),
         environmentId: currentDefaultEnvironmentId || null,
       });
+    },
+    onSuccess: (result) => {
+      if (
+        result.status === "fail" ||
+        isCreate ||
+        isDirty ||
+        !selectedCompanyId ||
+        !LOCAL_ADAPTER_READINESS_TYPES.has(adapterType)
+      ) {
+        return;
+      }
+      recordAdapterReadiness.mutate();
     },
   });
   const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId;
@@ -851,6 +896,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                    } else if (t === "agy_local") {
+                      nextValues.model = DEFAULT_AGY_LOCAL_MODEL;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "cursor") {
@@ -870,6 +917,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         model:
                           t === "codex_local"
                             ? DEFAULT_CODEX_LOCAL_MODEL
+                            : t === "agy_local"
+                              ? DEFAULT_AGY_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
                             : t === "opencode_local"
@@ -893,6 +942,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
+          )}
+
+          {!isCreate && LOCAL_ADAPTER_READINESS_TYPES.has(adapterType) && (
+            <div
+              data-testid="adapter-readiness-status"
+              className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">Persisted readiness</span>
+                <span className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase",
+                  adapterReadiness?.status === "ready"
+                    ? "bg-green-500/15 text-green-700 dark:text-green-300"
+                    : adapterReadiness?.status === "blocked"
+                      ? "bg-destructive/15 text-destructive"
+                      : "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+                )}>
+                  {adapterReadiness
+                    ? adapterReadiness.status.charAt(0).toUpperCase() + adapterReadiness.status.slice(1)
+                    : "Not checked"}
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                {adapterReadiness ? (
+                  <>
+                    <span>{adapterReadiness.basicReady ? "Basic ready" : "Basic blocked"}</span>
+                    <span>{adapterReadiness.operationalReady ? "Operational ready" : "Operational warning"}</span>
+                    {adapterReadiness.model ? <span>Model {adapterReadiness.model}</span> : null}
+                  </>
+                ) : (
+                  <span>Run a saved agent readiness check to record onboarding evidence.</span>
+                )}
+              </div>
+            </div>
           )}
 
           {showInlineAdapterTestEnvironmentFeedback && testEnvironment.error && (
@@ -971,6 +1054,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ({
                       claude_local: "claude",
                       codex_local: "codex",
+                      agy_local: "agy",
                       gemini_local: "gemini",
                       pi_local: "pi",
                       cursor: "agent",

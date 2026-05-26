@@ -7,6 +7,8 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  OnboardingSetupState,
+  UpdateOnboardingSetupState,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -16,6 +18,12 @@ export type CompanyStats = Record<string, { agentCount: number; issueCount: numb
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
+  getOnboardingSetup: (companyId: string) =>
+    api.get<OnboardingSetupState | null>(`/companies/${companyId}/onboarding-setup`),
+  updateOnboardingSetup: (companyId: string, data: UpdateOnboardingSetupState) =>
+    api.patch<OnboardingSetupState>(`/companies/${companyId}/onboarding-setup`, data),
+  refreshOnboardingSetup: (companyId: string) =>
+    api.post<OnboardingSetupState>(`/companies/${companyId}/onboarding-setup/refresh`, {}),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
     name: string;

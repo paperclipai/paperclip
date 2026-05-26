@@ -11,6 +11,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { companiesApi } from "../api/companies";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -124,6 +125,7 @@ import {
   EyeOff,
   Flag,
   Hexagon,
+  KeyRound,
   ListTree,
   MessageSquare,
   MoreHorizontal,
@@ -132,6 +134,8 @@ import {
   Paperclip,
   PlayCircle,
   Plus,
+  Puzzle,
+  RefreshCw,
   Repeat,
   SlidersHorizontal,
   Trash2,
@@ -619,7 +623,10 @@ type IssueDetailChatTabProps = {
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
-  onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
+  onResolveRecoveryAction?: (
+    outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome,
+    resolutionNote?: string | null,
+  ) => void;
   canFalsePositiveRecoveryAction?: boolean;
   legacyRecoverySourceIssue?: {
     identifier: string | null;
@@ -1265,6 +1272,10 @@ export function IssueDetail() {
     () => readIssueDetailLocationState(issueId, location.state, location.search),
     [issueId, location.state, location.search],
   );
+  const showOnboardingDeferredSetupFromQuery = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get("onboarding") === "applied" && params.get("deferredSetup") === "1";
+  }, [location.search]);
   const issueHeaderSeed = useMemo(
     () => readIssueDetailHeaderSeed(location.state) ?? readIssueDetailHeaderSeed(resolvedIssueDetailState),
     [location.state, resolvedIssueDetailState],
@@ -1280,6 +1291,62 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const { data: onboardingSetupState } = useQuery({
+    queryKey: resolvedCompanyId
+      ? queryKeys.companies.onboardingSetup(resolvedCompanyId)
+      : ["companies", "onboarding-setup", "none"],
+    queryFn: () => companiesApi.getOnboardingSetup(resolvedCompanyId!),
+    enabled: Boolean(resolvedCompanyId && issue?.originKind === "onboarding"),
+  });
+  const dismissOnboardingSetupMutation = useMutation({
+    mutationFn: (companyId: string) =>
+      companiesApi.updateOnboardingSetup(companyId, { status: "dismissed" }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.companies.onboardingSetup(updated.companyId), updated);
+    },
+    onError: (err) => {
+      pushToast({
+        tone: "error",
+        title: "Could not dismiss setup reminder",
+        body: err instanceof Error ? err.message : "Try again.",
+      });
+    },
+  });
+  const completeOnboardingSetupItemMutation = useMutation({
+    mutationFn: (input: { companyId: string; itemKey: string }) =>
+      companiesApi.updateOnboardingSetup(input.companyId, {
+        itemKey: input.itemKey,
+        itemStatus: "completed",
+      }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.companies.onboardingSetup(updated.companyId), updated);
+    },
+    onError: (err) => {
+      pushToast({
+        tone: "error",
+        title: "Could not update setup item",
+        body: err instanceof Error ? err.message : "Try again.",
+      });
+    },
+  });
+  const refreshOnboardingSetupMutation = useMutation({
+    mutationFn: (companyId: string) => companiesApi.refreshOnboardingSetup(companyId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.companies.onboardingSetup(updated.companyId), updated);
+    },
+    onError: (err) => {
+      pushToast({
+        tone: "error",
+        title: "Could not refresh setup checks",
+        body: err instanceof Error ? err.message : "Try again.",
+      });
+    },
+  });
+  const showOnboardingDeferredSetup = issue?.originKind === "onboarding"
+    && (
+      onboardingSetupState?.status === "pending"
+      || (showOnboardingDeferredSetupFromQuery && onboardingSetupState?.status !== "completed" && onboardingSetupState?.status !== "dismissed")
+    );
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
       return null;
@@ -2998,9 +3065,15 @@ export function IssueDetail() {
   const handleResumeFromBacklog = useCallback(async () => {
     await updateIssue.mutateAsync({ status: "todo" });
   }, [updateIssue.mutateAsync]);
+  const showOnboardingFirstAuditLaunch = issue?.originKind === "onboarding"
+    && issue.status === "backlog"
+    && Boolean(issue.assigneeAgentId);
+  const onboardingLocalAuthUnconfirmed = Boolean(
+    onboardingSetupState?.items?.some((item) => item.key === "local_auth" && item.status !== "completed"),
+  );
   const activeRecoveryActionId = issue?.activeRecoveryAction?.id;
   const handleResolveRecoveryAction = useCallback(
-    (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => {
+    (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome, resolutionNote?: string | null) => {
       const actionId = activeRecoveryActionId;
       if (!actionId) return;
       switch (outcome) {
@@ -3008,16 +3081,16 @@ export function IssueDetail() {
           void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "todo" });
           return;
         case "done":
-          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "done" });
+          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "done", resolutionNote });
           return;
         case "in_review":
-          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "in_review" });
+          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "in_review", resolutionNote });
           return;
         case "false_positive_done":
-          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "false_positive", sourceIssueStatus: "done" });
+          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "false_positive", sourceIssueStatus: "done", resolutionNote });
           return;
         case "false_positive_in_review":
-          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "false_positive", sourceIssueStatus: "in_review" });
+          void resolveRecoveryAction.mutateAsync({ actionId, outcome: "false_positive", sourceIssueStatus: "in_review", resolutionNote });
           return;
       }
     },
@@ -3253,6 +3326,129 @@ export function IssueDetail() {
           This issue is hidden
         </div>
       )}
+      {showOnboardingDeferredSetup && issue.originKind === "onboarding" ? (
+        <div
+          data-testid="onboarding-deferred-setup"
+          className="rounded-md border border-border bg-muted/30 p-3 text-sm"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-medium">Finish deferred setup</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                The starter issue is ready. Configure optional project secrets and external tool connections when the audit needs them.
+              </p>
+              {onboardingSetupState?.items?.length ? (
+                <div className="mt-3 space-y-2">
+                  {onboardingSetupState.items.map((item) => {
+                    const label = item.key.replace(/_/g, " ");
+                    const statusLabel = item.status === "completed"
+                      ? "Completed"
+                      : item.status === "deferred"
+                        ? "Deferred"
+                        : "Pending";
+                    return (
+                      <div
+                        key={item.key}
+                        data-testid={`onboarding-setup-item-${item.key}`}
+                        className="flex flex-col gap-2 rounded-md border border-border/70 bg-background/70 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div>
+                          <p className="text-xs font-medium">{item.label}</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">{statusLabel}</p>
+                        </div>
+                        {item.status !== "completed" ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Mark ${label} complete`}
+                            disabled={!resolvedCompanyId || completeOnboardingSetupItemMutation.isPending}
+                            onClick={() => {
+                              if (!resolvedCompanyId) return;
+                              completeOnboardingSetupItemMutation.mutate({
+                                companyId: resolvedCompanyId,
+                                itemKey: item.key,
+                              });
+                            }}
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                            Mark complete
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {showOnboardingFirstAuditLaunch ? (
+                <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                  <p className="text-xs font-medium">Start first audit</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    The starter issue is parked until you intentionally launch it.
+                  </p>
+                  {onboardingLocalAuthUnconfirmed ? (
+                    <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                      Local OAuth/session setup is not confirmed yet. You can still start, but the run may stop during adapter readiness.
+                    </p>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    className="mt-3"
+                    disabled={updateIssue.isPending}
+                    onClick={() => void handleResumeFromBacklog()}
+                  >
+                    <PlayCircle className="h-3.5 w-3.5" />
+                    Start first audit
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!resolvedCompanyId || refreshOnboardingSetupMutation.isPending}
+                onClick={() => {
+                  if (!resolvedCompanyId) return;
+                  refreshOnboardingSetupMutation.mutate(resolvedCompanyId);
+                }}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Refresh setup checks
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/company/settings/secrets">
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Configure secrets
+                </Link>
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/instance/settings/adapters">
+                  <Puzzle className="h-3.5 w-3.5" />
+                  Configure MCPs
+                </Link>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Dismiss setup reminder"
+                disabled={!resolvedCompanyId || dismissOnboardingSetupMutation.isPending}
+                onClick={() => {
+                  if (!resolvedCompanyId) return;
+                  dismissOnboardingSetupMutation.mutate(resolvedCompanyId);
+                }}
+              >
+                <XCircle className="h-3.5 w-3.5" />
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {activePauseHold && (
         <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
           {activePauseHold.isRoot ? (
