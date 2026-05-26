@@ -15978,15 +15978,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
-      const scrubbedMessage = message && secretScrubber
-        ? secretScrubber.scrubText(message)
-        : message;
-      const scrubbedStdoutExcerpt = stdoutExcerpt && secretScrubber
-        ? secretScrubber.scrubText(stdoutExcerpt)
-        : stdoutExcerpt;
-      const scrubbedStderrExcerpt = stderrExcerpt && secretScrubber
-        ? secretScrubber.scrubText(stderrExcerpt)
-        : stderrExcerpt;
+      const scrubbedMessage = message ? secretScrubber.scrubText(message) : message;
+      const scrubbedStdoutExcerpt = stdoutExcerpt ? secretScrubber.scrubText(stdoutExcerpt) : stdoutExcerpt;
+      const scrubbedStderrExcerpt = stderrExcerpt ? secretScrubber.scrubText(stderrExcerpt) : stderrExcerpt;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -16071,7 +16065,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           exitCode: null,
           signal: null,
           timedOut: false,
-          errorMessage: message,
+          errorMessage: scrubbedMessage,
         }, {
           legacySessionId: runtimeForAdapter.sessionId,
         });
@@ -16089,7 +16083,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
-            lastError: message,
+            lastError: scrubbedMessage,
           });
         }
       }
