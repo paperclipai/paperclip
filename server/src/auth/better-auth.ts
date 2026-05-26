@@ -72,6 +72,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
 
   const authConfig = {
     baseURL: baseUrl,
+    advanced: config.authBaseUrlMode === "auto"
+      ? {
+          trustedProxyHeaders: true,
+        }
+      : undefined,
     secret,
     trustedOrigins: effectiveTrustedOrigins,
     database: drizzleAdapter(db, {
@@ -91,6 +96,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
+  }
+  if (!authConfig.advanced) {
+    delete (authConfig as { advanced?: { trustedProxyHeaders: boolean } }).advanced;
   }
 
   return betterAuth(authConfig);
