@@ -921,7 +921,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const contextBoundIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -945,6 +945,7 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (contextBoundIssue) return contextBoundIssue;
 
     // Third fallback: find any open execution issue regardless of run state.
     // Covers in_review and blocked issues whose heartbeat run has already ended
