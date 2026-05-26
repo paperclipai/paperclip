@@ -3,7 +3,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
-import { listAdapterModels, refreshAdapterModels } from "../adapters/index.js";
+import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
@@ -28,6 +28,13 @@ describe("adapter model listing", () => {
   it("returns an empty list for unknown adapters", async () => {
     const models = await listAdapterModels("unknown_adapter");
     expect(models).toEqual([]);
+  });
+
+  it("uses provider-prefixed ACPX fallback model labels", () => {
+    const adapter = listServerAdapters().find((candidate) => candidate.type === "acpx_local");
+
+    expect(adapter?.models?.some((model) => model.label.startsWith("Claude: "))).toBe(true);
+    expect(adapter?.models?.some((model) => model.label.startsWith("Codex: "))).toBe(true);
   });
 
   it("returns codex fallback models when no OpenAI key is available", async () => {

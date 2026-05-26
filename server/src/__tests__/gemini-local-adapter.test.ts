@@ -8,26 +8,24 @@ import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 
 describe("gemini_local parser", () => {
-  it("extracts session, summary, usage, cost, and terminal error message", () => {
+  it("extracts session, summary, usage, cost, and terminal error message from v0.38 stream-json output", () => {
     const stdout = [
       JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-1", model: "gemini-2.5-pro" }),
       JSON.stringify({
-        type: "assistant",
-        message: {
-          content: [{ type: "output_text", text: "hello" }],
-        },
+        type: "message",
+        role: "assistant",
+        content: "hello",
       }),
       JSON.stringify({
         type: "result",
-        subtype: "success",
+        status: "success",
         session_id: "gemini-session-1",
-        usage: {
-          promptTokenCount: 12,
-          cachedContentTokenCount: 3,
-          candidatesTokenCount: 7,
+        stats: {
+          input_tokens: 12,
+          cached_input_tokens: 3,
+          output_tokens: 7,
         },
         total_cost_usd: 0.00123,
-        result: "done",
       }),
       JSON.stringify({ type: "error", message: "model access denied" }),
     ].join("\n");
@@ -105,44 +103,34 @@ describe("gemini_local turn-limit detection", () => {
 });
 
 describe("gemini_local ui stdout parser", () => {
-  it("parses assistant, thinking, and result events", () => {
+  it("parses v0.38 assistant message and result events", () => {
     const ts = "2026-03-08T00:00:00.000Z";
 
     expect(
       parseGeminiStdoutLine(
         JSON.stringify({
-          type: "assistant",
-          message: {
-            content: [
-              { type: "output_text", text: "I checked the repo." },
-              { type: "thinking", text: "Reviewing adapter registry" },
-              { type: "tool_call", name: "shell", input: { command: "ls -1" } },
-              { type: "tool_result", tool_use_id: "tool_1", output: "AGENTS.md\n", status: "ok" },
-            ],
-          },
+          type: "message",
+          role: "assistant",
+          content: "I checked the repo.",
         }),
         ts,
       ),
     ).toEqual([
       { kind: "assistant", ts, text: "I checked the repo." },
-      { kind: "thinking", ts, text: "Reviewing adapter registry" },
-      { kind: "tool_call", ts, name: "shell", input: { command: "ls -1" } },
-      { kind: "tool_result", ts, toolUseId: "tool_1", content: "AGENTS.md\n", isError: false },
     ]);
 
     expect(
       parseGeminiStdoutLine(
         JSON.stringify({
           type: "result",
-          subtype: "success",
-          result: "Done",
-          usage: {
-            promptTokenCount: 10,
-            candidatesTokenCount: 5,
-            cachedContentTokenCount: 2,
+          status: "success",
+          text: "Done",
+          stats: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_input_tokens: 2,
           },
           total_cost_usd: 0.00042,
-          is_error: false,
         }),
         ts,
       ),
@@ -168,7 +156,7 @@ function stripAnsi(value: string): string {
 }
 
 describe("gemini_local cli formatter", () => {
-  it("prints init, assistant, result, and error events", () => {
+  it("prints init, v0.38 assistant, result, and error events", () => {
     const spy = vi.spyOn(console, "log").mockImplementation(() => {});
     let joined = "";
 
@@ -179,19 +167,20 @@ describe("gemini_local cli formatter", () => {
       );
       printGeminiStreamEvent(
         JSON.stringify({
-          type: "assistant",
-          message: { content: [{ type: "output_text", text: "hello" }] },
+          type: "message",
+          role: "assistant",
+          content: "hello",
         }),
         false,
       );
       printGeminiStreamEvent(
         JSON.stringify({
           type: "result",
-          subtype: "success",
-          usage: {
-            promptTokenCount: 10,
-            candidatesTokenCount: 5,
-            cachedContentTokenCount: 2,
+          status: "success",
+          stats: {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_input_tokens: 2,
           },
           total_cost_usd: 0.00042,
         }),

@@ -77,6 +77,7 @@ describe("run liveness continuations", () => {
       maxContinuationAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
       instruction: "Take the first concrete action now.",
     });
+    expect(decision.payload).not.toHaveProperty("modelProfile");
     expect(decision.contextSnapshot).toMatchObject({
       issueId,
       wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
@@ -87,6 +88,7 @@ describe("run liveness continuations", () => {
       livenessContinuationReason: "Planned without acting",
       livenessContinuationInstruction: "Take the first concrete action now.",
     });
+    expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
   });
 
   it("enqueues the second empty_response continuation", () => {

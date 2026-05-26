@@ -88,6 +88,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/documents.js", () => ({
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
   }));
 
@@ -113,6 +114,7 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
@@ -133,6 +135,10 @@ function registerModuleMocks() {
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
     }),
+    issueRecoveryActionService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
@@ -142,7 +148,34 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+function createRunContextDb(contextSnapshot: Record<string, unknown>) {
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          then: async (resolve: (rows: unknown[]) => unknown) =>
+            resolve([{
+              id: "run-1",
+              companyId,
+              agentId: "agent-1",
+              contextSnapshot,
+            }]),
+        })),
+      })),
+    })),
+  };
+}
+
+async function createApp(
+  actor: Express.Request["actor"] = {
+    type: "board",
+    userId: "board-user",
+    companyIds: [companyId],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+  db: unknown = {},
+) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -150,16 +183,10 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "board-user",
-      companyIds: [companyId],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -309,6 +336,40 @@ describe("issue document revision routes", () => {
       title: "Plan v1",
       latestRevisionNumber: 3,
     }));
+  });
+
+  it("blocks cheap status-only recovery runs from restoring issue documents", async () => {
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueId,
+      companyId,
+      identifier: "PAP-881",
+      title: "Document revisions",
+      status: "todo",
+      assigneeAgentId: "agent-1",
+    });
+
+    const res = await request(await createApp(
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId,
+        runId: "run-1",
+        source: "agent_jwt",
+      },
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    ))
+      .post(`/api/issues/${issueId}/documents/plan/revisions/revision-1/restore`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
+    expect(mockDocumentsService.restoreIssueDocumentRevision).not.toHaveBeenCalled();
   });
 
   it("rejects invalid document keys before attempting restore", async () => {

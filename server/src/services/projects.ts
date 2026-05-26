@@ -1,6 +1,14 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  projects,
+  projectGoals,
+  goals,
+  pluginManagedResources,
+  plugins,
+  projectWorkspaces,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -10,9 +18,12 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
+  type PluginManagedProjectDeclaration,
+  type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
@@ -50,6 +61,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
+  managedByPlugin: ProjectManagedByPlugin | null;
 }
 
 interface ProjectShortnameRow {
@@ -245,6 +257,40 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     arr.push(row);
   }
 
+  const managedRows = await db
+    .select({
+      id: pluginManagedResources.id,
+      pluginId: pluginManagedResources.pluginId,
+      pluginKey: pluginManagedResources.pluginKey,
+      manifestJson: plugins.manifestJson,
+      resourceKind: pluginManagedResources.resourceKind,
+      resourceKey: pluginManagedResources.resourceKey,
+      resourceId: pluginManagedResources.resourceId,
+      defaultsJson: pluginManagedResources.defaultsJson,
+      createdAt: pluginManagedResources.createdAt,
+      updatedAt: pluginManagedResources.updatedAt,
+    })
+    .from(pluginManagedResources)
+    .innerJoin(plugins, eq(pluginManagedResources.pluginId, plugins.id))
+    .where(and(
+      eq(pluginManagedResources.resourceKind, "project"),
+      inArray(pluginManagedResources.resourceId, projectIds),
+    ));
+  const managedByProjectId = new Map<string, ProjectManagedByPlugin>();
+  for (const row of managedRows) {
+    managedByProjectId.set(row.resourceId, {
+      id: row.id,
+      pluginId: row.pluginId,
+      pluginKey: row.pluginKey,
+      pluginDisplayName: row.manifestJson.displayName ?? row.pluginKey,
+      resourceKind: "project",
+      resourceKey: row.resourceKey,
+      defaultsJson: row.defaultsJson,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }
+
   return rows.map((row) => {
     const projectWorkspaceRows = map.get(row.id) ?? [];
     const workspaces = projectWorkspaceRows.map((workspace) =>
@@ -264,6 +310,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       }),
       workspaces,
       primaryWorkspace,
+      managedByPlugin: managedByProjectId.get(row.id) ?? null,
     };
   });
 }
@@ -337,6 +384,17 @@ function deriveWorkspaceName(input: {
   return "Workspace";
 }
 
+function buildManagedProjectDefaults(declaration: PluginManagedProjectDeclaration) {
+  return {
+    projectKey: declaration.projectKey,
+    displayName: declaration.displayName,
+    description: declaration.description ?? null,
+    status: declaration.status ?? "in_progress",
+    color: declaration.color ?? null,
+    settings: declaration.settings ?? {},
+  };
+}
+
 export function resolveProjectNameForUniqueShortname(
   requestedName: string,
   existingProjects: ProjectShortnameRow[],
@@ -398,6 +456,58 @@ async function ensureSinglePrimaryWorkspace(
 }
 
 export function projectService(db: Db) {
+  const createProject = async (
+    companyId: string,
+    data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
+  ): Promise<ProjectWithGoals> => {
+    const { goalIds: inputGoalIds, ...projectData } = data;
+    const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+
+    // Auto-assign a color from the palette if none provided
+    if (!projectData.color) {
+      const existing = await db.select({ color: projects.color }).from(projects).where(eq(projects.companyId, companyId));
+      const usedColors = new Set(existing.map((r) => r.color).filter(Boolean));
+      const nextColor = PROJECT_COLORS.find((c) => !usedColors.has(c)) ?? PROJECT_COLORS[existing.length % PROJECT_COLORS.length];
+      projectData.color = nextColor;
+    }
+
+    const existingProjects = await db
+      .select({ id: projects.id, name: projects.name })
+      .from(projects)
+      .where(eq(projects.companyId, companyId));
+    projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+
+    // Also write goalId to the legacy column (first goal or null)
+    const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+
+    const row = await db
+      .insert(projects)
+      .values({ ...projectData, goalId: legacyGoalId, companyId })
+      .returning()
+      .then((rows) => rows[0]);
+
+    if (ids && ids.length > 0) {
+      await syncGoalLinks(db, row.id, companyId, ids);
+    }
+
+    const [withGoals] = await attachGoals(db, [row]);
+    const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
+    return enriched!;
+  };
+
+  const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    const row = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [withGoals] = await attachGoals(db, [row]);
+    if (!withGoals) return null;
+    const [enriched] = await attachWorkspaces(db, [withGoals]);
+    return enriched ?? null;
+  };
+
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
@@ -418,57 +528,169 @@ export function projectService(db: Db) {
       return dedupedIds.map((id) => byId.get(id)).filter((project): project is ProjectWithGoals => Boolean(project));
     },
 
-    getById: async (id: string): Promise<ProjectWithGoals | null> => {
-      const row = await db
-        .select()
-        .from(projects)
-        .where(eq(projects.id, id))
+    getById: getProjectById,
+
+    resolveManagedProject: async (input: {
+      companyId: string;
+      pluginId: string;
+      pluginKey: string;
+      projectKey: string;
+      reset?: boolean;
+      createIfMissing?: boolean;
+    }): Promise<PluginManagedProjectResolution> => {
+      const plugin = await db
+        .select({ id: plugins.id, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson })
+        .from(plugins)
+        .where(eq(plugins.id, input.pluginId))
         .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [withGoals] = await attachGoals(db, [row]);
-      if (!withGoals) return null;
-      const [enriched] = await attachWorkspaces(db, [withGoals]);
-      return enriched ?? null;
-    },
-
-    create: async (
-      companyId: string,
-      data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
-    ): Promise<ProjectWithGoals> => {
-      const { goalIds: inputGoalIds, ...projectData } = data;
-      const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
-
-      // Auto-assign a color from the palette if none provided
-      if (!projectData.color) {
-        const existing = await db.select({ color: projects.color }).from(projects).where(eq(projects.companyId, companyId));
-        const usedColors = new Set(existing.map((r) => r.color).filter(Boolean));
-        const nextColor = PROJECT_COLORS.find((c) => !usedColors.has(c)) ?? PROJECT_COLORS[existing.length % PROJECT_COLORS.length];
-        projectData.color = nextColor;
+      if (!plugin || plugin.pluginKey !== input.pluginKey) {
+        return {
+          pluginKey: input.pluginKey,
+          resourceKind: "project",
+          resourceKey: input.projectKey,
+          companyId: input.companyId,
+          projectId: null,
+          project: null,
+          status: "missing",
+        };
       }
 
-      const existingProjects = await db
-        .select({ id: projects.id, name: projects.name })
-        .from(projects)
-        .where(eq(projects.companyId, companyId));
-      projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
-
-      // Also write goalId to the legacy column (first goal or null)
-      const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
-
-      const row = await db
-        .insert(projects)
-        .values({ ...projectData, goalId: legacyGoalId, companyId })
-        .returning()
-        .then((rows) => rows[0]);
-
-      if (ids && ids.length > 0) {
-        await syncGoalLinks(db, row.id, companyId, ids);
+      const declaration = plugin.manifestJson.projects?.find((project) => project.projectKey === input.projectKey);
+      if (!declaration) {
+        return {
+          pluginKey: input.pluginKey,
+          resourceKind: "project",
+          resourceKey: input.projectKey,
+          companyId: input.companyId,
+          projectId: null,
+          project: null,
+          status: "missing",
+        };
       }
 
-      const [withGoals] = await attachGoals(db, [row]);
-      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-      return enriched!;
+      const defaults = buildManagedProjectDefaults(declaration);
+      const existingBinding = await db
+        .select()
+        .from(pluginManagedResources)
+        .where(and(
+          eq(pluginManagedResources.companyId, input.companyId),
+          eq(pluginManagedResources.pluginId, input.pluginId),
+          eq(pluginManagedResources.resourceKind, "project"),
+          eq(pluginManagedResources.resourceKey, input.projectKey),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (existingBinding) {
+        const existingProject = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(eq(projects.companyId, input.companyId), eq(projects.id, existingBinding.resourceId)))
+          .then((rows) => rows[0] ?? null);
+        if (existingProject) {
+          if (input.reset) {
+            await db
+              .update(projects)
+              .set({
+                name: declaration.displayName,
+                description: declaration.description ?? null,
+                status: declaration.status ?? "in_progress",
+                color: declaration.color ?? null,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(projects.companyId, input.companyId), eq(projects.id, existingBinding.resourceId)));
+          }
+          if (input.createIfMissing !== false) {
+            await db
+              .update(pluginManagedResources)
+              .set({ defaultsJson: defaults, updatedAt: new Date() })
+              .where(eq(pluginManagedResources.id, existingBinding.id));
+          }
+          const project = await getProjectById(existingBinding.resourceId);
+          return {
+            pluginKey: input.pluginKey,
+            resourceKind: "project",
+            resourceKey: input.projectKey,
+            companyId: input.companyId,
+            projectId: project?.id ?? existingBinding.resourceId,
+            project: project as import("@paperclipai/shared").Project | null,
+            status: input.reset ? "reset" : "resolved",
+          };
+        }
+
+        if (input.createIfMissing === false) {
+          return {
+            pluginKey: input.pluginKey,
+            resourceKind: "project",
+            resourceKey: input.projectKey,
+            companyId: input.companyId,
+            projectId: null,
+            project: null,
+            status: "missing",
+          };
+        }
+
+        const project = await createProject(input.companyId, {
+          name: declaration.displayName,
+          description: declaration.description ?? null,
+          status: declaration.status ?? "in_progress",
+          color: declaration.color ?? undefined,
+        });
+        await db
+          .update(pluginManagedResources)
+          .set({ resourceId: project.id, defaultsJson: defaults, updatedAt: new Date() })
+          .where(eq(pluginManagedResources.id, existingBinding.id));
+        const hydrated = await getProjectById(project.id);
+        return {
+          pluginKey: input.pluginKey,
+          resourceKind: "project",
+          resourceKey: input.projectKey,
+          companyId: input.companyId,
+          projectId: hydrated?.id ?? project.id,
+          project: hydrated as import("@paperclipai/shared").Project | null,
+          status: "relinked",
+        };
+      }
+
+      if (input.createIfMissing === false) {
+        return {
+          pluginKey: input.pluginKey,
+          resourceKind: "project",
+          resourceKey: input.projectKey,
+          companyId: input.companyId,
+          projectId: null,
+          project: null,
+          status: "missing",
+        };
+      }
+
+      const project = await createProject(input.companyId, {
+        name: declaration.displayName,
+        description: declaration.description ?? null,
+        status: declaration.status ?? "in_progress",
+        color: declaration.color ?? undefined,
+      });
+      await db.insert(pluginManagedResources).values({
+        companyId: input.companyId,
+        pluginId: input.pluginId,
+        pluginKey: input.pluginKey,
+        resourceKind: "project",
+        resourceKey: input.projectKey,
+        resourceId: project.id,
+        defaultsJson: defaults,
+      });
+      const hydrated = await getProjectById(project.id);
+      return {
+        pluginKey: input.pluginKey,
+        resourceKind: "project",
+        resourceKey: input.projectKey,
+        companyId: input.companyId,
+        projectId: hydrated?.id ?? project.id,
+        project: hydrated as import("@paperclipai/shared").Project | null,
+        status: "created",
+      };
     },
+
+    create: createProject,
 
     update: async (
       id: string,
