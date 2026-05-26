@@ -204,6 +204,12 @@ export async function startServer(): Promise<StartedServer> {
       return;
     }
     if (!config.databaseUrl) {
+      if (process.env.PAPERCLIP_ALLOW_EMBEDDED_PUBLIC_DB === "true") {
+        logger.warn(
+          "authenticated public deployment is using embedded PostgreSQL because PAPERCLIP_ALLOW_EMBEDDED_PUBLIC_DB=true",
+        );
+        return;
+      }
       throw new Error(
         "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
       );
