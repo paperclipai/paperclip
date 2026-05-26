@@ -5317,6 +5317,22 @@ export function issueRoutes(
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
 
+    if (currentIssue.originKind === "stale_active_run_evaluation") {
+      await heartbeat
+        .handleStaleRunEvaluationComment({
+          issueId: currentIssue.id,
+          actor: {
+            type: actor.actorType === "agent" ? "agent" : "user",
+            id: actor.actorId,
+          },
+          body: req.body.body ?? "",
+          runId: actor.runId ?? null,
+        })
+        .catch((err) =>
+          logger.warn({ err, issueId: currentIssue.id }, "failed to evaluate stale-run operator-override comment"),
+        );
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();

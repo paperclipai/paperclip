@@ -14,6 +14,7 @@ import {
   activityLog,
   companies,
   heartbeatRunEvents,
+  heartbeatRunSilenceState,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueComments,
@@ -66,6 +67,19 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// Coalesce window for recently-closed stale-run evaluation issues. Keeps the
+// silence detector from creating a new review issue every check interval after
+// a CTO closes a prior review false-positive.
+export const STALE_RUN_EVALUATION_CLOSED_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Backoff multiplier upper bound. The effective scan interval is capped at
+// CRITICAL/2 separately, so the multiplier can grow past the interval cap
+// while still being bounded to a sane value.
+export const STALE_RUN_EVALUATION_BACKOFF_MULTIPLIER_CAP = 16;
+// Operator override grammar — board/user comment that cancels the silent run.
+export const STALE_RUN_OPERATOR_OVERRIDE_PATTERN = /(^|\b)(cancel|kill|abort)\s+(this\s+)?run\b/i;
+// Cancellation reasons stored on the run after each terminal path.
+export const STALE_RUN_SILENCE_AUTO_CANCEL_REASON = "silence_auto_cancel";
+export const STALE_RUN_OPERATOR_OVERRIDE_CANCEL_REASON = "operator_override";
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -720,7 +734,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
-  async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
+  async function findRecentStaleRunEvaluation(
+    companyId: string,
+    runId: string,
+    now: Date = new Date(),
+  ) {
+    const closedWindowStart = new Date(now.getTime() - STALE_RUN_EVALUATION_CLOSED_WINDOW_MS);
     const [row] = await db
       .select({
         id: issues.id,
@@ -729,6 +748,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         updatedAt: issues.updatedAt,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
       })
       .from(issues)
       .where(
@@ -737,11 +758,167 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
           eq(issues.originId, runId),
           isNull(issues.hiddenAt),
-          notInArray(issues.status, ["done", "cancelled"]),
+          sql`(
+            ${issues.status} not in ('done', 'cancelled')
+            or ${issues.updatedAt} >= ${closedWindowStart.toISOString()}::timestamptz
+          )`,
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  // Backwards-compatible alias retained for callers that only need the open
+  // (non-terminal) hit — used by buildRunOutputSilence which reports the
+  // active evaluation issue back to the heartbeat-context API surface.
+  async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
+    const recent = await findRecentStaleRunEvaluation(companyId, runId, new Date());
+    if (!recent) return null;
+    if (recent.status === "done" || recent.status === "cancelled") return null;
+    return recent;
+  }
+
+  function staleRunBackoffIntervalMs(multiplier: number) {
+    const sanitized = Math.max(1, Math.min(STALE_RUN_EVALUATION_BACKOFF_MULTIPLIER_CAP, Math.floor(multiplier)));
+    const raw = ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS * sanitized;
+    // Cap effective interval at CRITICAL/2 so we still escalate before the
+    // auto-cancel deadline even if backoff multiplier has grown past it.
+    return Math.min(raw, Math.floor(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS / 2));
+  }
+
+  async function getStaleRunSilenceState(companyId: string, runId: string) {
+    const [row] = await db
+      .select()
+      .from(heartbeatRunSilenceState)
+      .where(
+        and(
+          eq(heartbeatRunSilenceState.companyId, companyId),
+          eq(heartbeatRunSilenceState.runId, runId),
         ),
       )
       .limit(1);
     return row ?? null;
+  }
+
+  async function ensureStaleRunSilenceState(input: {
+    companyId: string;
+    runId: string;
+    lastEvaluationIssueId?: string | null;
+    now: Date;
+  }) {
+    const existing = await getStaleRunSilenceState(input.companyId, input.runId);
+    if (existing) {
+      if (
+        input.lastEvaluationIssueId &&
+        existing.lastEvaluationIssueId !== input.lastEvaluationIssueId
+      ) {
+        const [updated] = await db
+          .update(heartbeatRunSilenceState)
+          .set({
+            lastEvaluationIssueId: input.lastEvaluationIssueId,
+            updatedAt: input.now,
+          })
+          .where(eq(heartbeatRunSilenceState.id, existing.id))
+          .returning();
+        return updated ?? existing;
+      }
+      return existing;
+    }
+    const [created] = await db
+      .insert(heartbeatRunSilenceState)
+      .values({
+        companyId: input.companyId,
+        runId: input.runId,
+        consecutiveFalsePositives: 0,
+        backoffMultiplier: 1,
+        lastEvaluationIssueId: input.lastEvaluationIssueId ?? null,
+        createdAt: input.now,
+        updatedAt: input.now,
+      })
+      .returning();
+    return created;
+  }
+
+  async function hasRecoveryActionSinceEvaluation(input: {
+    companyId: string;
+    runId: string;
+    sinceCreatedAt: Date | null;
+  }) {
+    const sinceClause = input.sinceCreatedAt
+      ? gte(heartbeatRunWatchdogDecisions.createdAt, input.sinceCreatedAt)
+      : undefined;
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, input.companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, input.runId),
+          inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
+          sinceClause,
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
+  // Lazy close-handler: when we find a recently-closed evaluation we have not
+  // already processed (lastClosedAt < closed.updatedAt), bump the backoff
+  // multiplier and stamp the next-eligible-scan timestamp. Idempotent across
+  // scans because `lastClosedAt` advances monotonically.
+  async function recordStaleRunEvaluationClose(input: {
+    state: typeof heartbeatRunSilenceState.$inferSelect;
+    evaluationIssue: { id: string; updatedAt: Date | null; completedAt: Date | null; cancelledAt: Date | null };
+    now: Date;
+  }) {
+    const closedAt =
+      input.evaluationIssue.completedAt ??
+      input.evaluationIssue.cancelledAt ??
+      input.evaluationIssue.updatedAt ??
+      input.now;
+    if (input.state.lastClosedAt && input.state.lastClosedAt.getTime() >= closedAt.getTime()) {
+      return input.state;
+    }
+    const recoveryActionRecorded = await hasRecoveryActionSinceEvaluation({
+      companyId: input.state.companyId,
+      runId: input.state.runId,
+      sinceCreatedAt: input.state.createdAt ?? null,
+    });
+    const nextConsecutive = recoveryActionRecorded ? 0 : input.state.consecutiveFalsePositives + 1;
+    const nextMultiplier = recoveryActionRecorded
+      ? 1
+      : Math.min(STALE_RUN_EVALUATION_BACKOFF_MULTIPLIER_CAP, Math.max(2, input.state.backoffMultiplier * 2));
+    const nextEligibleScanAt = new Date(closedAt.getTime() + staleRunBackoffIntervalMs(nextMultiplier));
+    const [updated] = await db
+      .update(heartbeatRunSilenceState)
+      .set({
+        consecutiveFalsePositives: nextConsecutive,
+        backoffMultiplier: nextMultiplier,
+        lastClosedAt: closedAt,
+        lastEvaluationIssueId: input.evaluationIssue.id,
+        nextEligibleScanAt,
+        updatedAt: input.now,
+      })
+      .where(eq(heartbeatRunSilenceState.id, input.state.id))
+      .returning();
+    return updated ?? input.state;
+  }
+
+  async function resetStaleRunSilenceBackoff(companyId: string, runId: string, now = new Date()) {
+    const existing = await getStaleRunSilenceState(companyId, runId);
+    if (!existing) return null;
+    const [updated] = await db
+      .update(heartbeatRunSilenceState)
+      .set({
+        consecutiveFalsePositives: 0,
+        backoffMultiplier: 1,
+        nextEligibleScanAt: null,
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRunSilenceState.id, existing.id))
+      .returning();
+    return updated ?? existing;
   }
 
   async function buildRunOutputSilence(
@@ -1347,6 +1524,395 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  async function cancelSiblingStaleRunEvaluations(input: {
+    companyId: string;
+    runId: string;
+    excludeIssueId?: string | null;
+    reason: string;
+    triggeringIssueIdentifier?: string | null;
+    now: Date;
+  }) {
+    const siblings = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, input.runId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+    const cancelledIds: string[] = [];
+    for (const sibling of siblings) {
+      if (input.excludeIssueId && sibling.id === input.excludeIssueId) continue;
+      await issuesSvc.update(sibling.id, { status: "cancelled" });
+      await issuesSvc.addComment(
+        sibling.id,
+        [
+          `Cancelled by ${input.reason}${input.triggeringIssueIdentifier ? ` on ${input.triggeringIssueIdentifier}` : ""}.`,
+          "",
+          `- Stale run: \`${input.runId}\``,
+          input.triggeringIssueIdentifier
+            ? `- Triggering review issue: ${input.triggeringIssueIdentifier}`
+            : "- No triggering review issue.",
+          "- This sibling review is no longer needed.",
+        ].join("\n"),
+        { runId: input.runId },
+      );
+      cancelledIds.push(sibling.id);
+    }
+    return cancelledIds;
+  }
+
+  async function terminateRunProcessIfAlive(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+  }) {
+    const running = runningProcesses.get(input.run.id);
+    const pid = running?.child.pid ?? input.run.processPid ?? null;
+    const processGroupId = running?.processGroupId ?? input.run.processGroupId ?? null;
+    if (typeof pid !== "number" && typeof processGroupId !== "number") {
+      return { attempted: false, outcome: "no_process_metadata" as const, pid, processGroupId };
+    }
+    const alive =
+      (typeof pid === "number" && isPidAlive(pid)) ||
+      (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+    if (!alive) {
+      runningProcesses.delete(input.run.id);
+      return { attempted: false, outcome: "not_running" as const, pid, processGroupId };
+    }
+    try {
+      await terminateLocalService(
+        {
+          pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0
+            ? pid
+            : (processGroupId ?? 0),
+          processGroupId: typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+            ? processGroupId
+            : null,
+        },
+        running ? { forceAfterMs: Math.max(1, running.graceSec) * 1000 } : undefined,
+      );
+      runningProcesses.delete(input.run.id);
+      const stillAlive =
+        (typeof pid === "number" && isPidAlive(pid)) ||
+        (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+      return {
+        attempted: true,
+        outcome: stillAlive ? ("termination_sent_still_running" as const) : ("terminated" as const),
+        pid,
+        processGroupId,
+      };
+    } catch (error) {
+      return {
+        attempted: true,
+        outcome: "failed" as const,
+        pid,
+        processGroupId,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // Cancel a run that has crossed the critical silence threshold AND whose
+  // process is verifiably dead (no in-memory handle, pid probe returns
+  // ESRCH). Posts a single summary comment, releases the execution lock on
+  // the source issue, and cancels open sibling review issues. We never
+  // create another evaluation issue from this path.
+  async function attemptAutoCancelStrandedRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    const handle = runningProcesses.get(input.run.id);
+    if (handle) {
+      // In-memory handle exists; the process is at least tracked. Defer to
+      // the normal evaluation path so a human can decide.
+      return { kind: "skipped" as const, reason: "in_memory_handle_present" as const };
+    }
+    const pid = input.run.processPid ?? null;
+    if (typeof pid !== "number" || pid <= 0) {
+      return { kind: "skipped" as const, reason: "no_pid" as const };
+    }
+    if (isPidAlive(pid)) {
+      return { kind: "skipped" as const, reason: "pid_alive" as const };
+    }
+
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: input.now,
+          error: null,
+          errorCode: STALE_RUN_SILENCE_AUTO_CANCEL_REASON,
+          resultJson: {
+            ...parseObject(input.run.resultJson),
+            silenceAutoCancel: {
+              silenceAgeMs: input.silenceAgeMs,
+              pid,
+              sourceIssueId: input.sourceIssue?.id ?? null,
+            },
+          },
+          updatedAt: input.now,
+        })
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.status, "running")))
+        .returning();
+      if (!updated) return null;
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "cancelled",
+            finishedAt: input.now,
+            error: null,
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(agentWakeupRequests.id, input.run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, input.run.companyId),
+            ),
+          );
+      }
+      if (input.sourceIssue) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(issues.id, input.sourceIssue.id),
+              eq(issues.companyId, input.run.companyId),
+              eq(issues.executionRunId, input.run.id),
+            ),
+          );
+      }
+      return updated;
+    });
+
+    if (!finalizedRun) {
+      return { kind: "skipped" as const, reason: "race_lost" as const };
+    }
+
+    const cancelledSiblings = await cancelSiblingStaleRunEvaluations({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+      reason: "silence auto-cancel",
+      now: input.now,
+    });
+
+    if (input.sourceIssue) {
+      await issuesSvc.addComment(
+        input.sourceIssue.id,
+        [
+          "## Stale run auto-cancelled after critical silence",
+          "",
+          `- Run: \`${input.run.id}\``,
+          `- Silent for: ${formatDuration(input.silenceAgeMs)}`,
+          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+          `- Pid: \`${pid}\``,
+          "- The in-memory process handle was missing and `kill 0` probe failed (process not running).",
+          "- Execution lock released; no further review issues will be created for this run.",
+        ].join("\n"),
+        { runId: input.run.id },
+      );
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_auto_cancelled",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        silenceAgeMs: input.silenceAgeMs,
+        pid,
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        cancelledSiblingIssueIds: cancelledSiblings,
+      },
+    });
+
+    return { kind: "auto_cancelled" as const, pid, cancelledSiblings };
+  }
+
+  // Operator-override comment handler. Called from the issue-comment route
+  // when a board/user posts on a stale_active_run_evaluation issue. If the
+  // comment body matches the cancel-this-run grammar we kill the pid, cancel
+  // the run, release the execution lock, cancel sibling reviews, and post a
+  // confirmation comment back on the triggering issue.
+  async function handleStaleRunEvaluationComment(input: {
+    issueId: string;
+    actor: { type: "user" | "board" | "agent"; id?: string | null };
+    body: string;
+    runId?: string | null;
+    now?: Date;
+  }) {
+    if (input.actor.type !== "user" && input.actor.type !== "board") {
+      return { kind: "skipped" as const, reason: "actor_not_board" as const };
+    }
+    if (!STALE_RUN_OPERATOR_OVERRIDE_PATTERN.test(input.body)) {
+      return { kind: "skipped" as const, reason: "grammar_mismatch" as const };
+    }
+    const now = input.now ?? new Date();
+    const [issue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .limit(1);
+    if (!issue) return { kind: "skipped" as const, reason: "issue_missing" as const };
+    if (issue.originKind !== STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND) {
+      return { kind: "skipped" as const, reason: "wrong_origin" as const };
+    }
+    const runId = issue.originId;
+    if (!runId) return { kind: "skipped" as const, reason: "no_run_id" as const };
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId)))
+      .limit(1);
+    if (!run) return { kind: "skipped" as const, reason: "run_missing" as const };
+    const runIsTerminal = !["queued", "running", "scheduled_retry"].includes(run.status);
+    const termination = runIsTerminal ? { attempted: false, outcome: "not_running" as const } : await terminateRunProcessIfAlive({ run });
+
+    const sourceIssueId = issueIdFromRunContext(run.contextSnapshot);
+    const sourceIssue = sourceIssueId
+      ? await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, run.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    let cancelledRun = run;
+    if (!runIsTerminal) {
+      const result = await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            errorCode: STALE_RUN_OPERATOR_OVERRIDE_CANCEL_REASON,
+            resultJson: {
+              ...parseObject(run.resultJson),
+              operatorOverride: {
+                triggeringIssueId: issue.id,
+                triggeringIssueIdentifier: issue.identifier,
+                actor: input.actor,
+              },
+            },
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])))
+          .returning();
+        if (!updated) return null;
+        if (run.wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.id, run.wakeupRequestId),
+                eq(agentWakeupRequests.companyId, run.companyId),
+              ),
+            );
+        }
+        if (sourceIssue) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, sourceIssue.id),
+                eq(issues.companyId, run.companyId),
+                eq(issues.executionRunId, run.id),
+              ),
+            );
+        }
+        return updated;
+      });
+      if (result) cancelledRun = result;
+    }
+
+    const cancelledSiblings = await cancelSiblingStaleRunEvaluations({
+      companyId: run.companyId,
+      runId: run.id,
+      excludeIssueId: issue.id,
+      reason: "operator",
+      triggeringIssueIdentifier: issue.identifier,
+      now,
+    });
+
+    await issuesSvc.addComment(
+      issue.id,
+      [
+        `## Operator override accepted`,
+        "",
+        `- Run: \`${run.id}\``,
+        `- Termination: \`${termination.outcome}\``,
+        `- Run status: \`${cancelledRun.status}\``,
+        `- Cancelled sibling review issues: ${cancelledSiblings.length}`,
+        sourceIssue
+          ? `- Source issue execution lock released: \`${sourceIssue.identifier ?? sourceIssue.id}\``
+          : "- No source issue execution lock to release.",
+      ].join("\n"),
+      { runId: run.id },
+    );
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "user",
+      actorId: input.actor.id ?? input.actor.type,
+      agentId: null,
+      runId: input.runId ?? null,
+      action: "heartbeat.output_stale_operator_override",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        source: "recovery.operator_override",
+        triggeringIssueId: issue.id,
+        triggeringIssueIdentifier: issue.identifier,
+        termination,
+        cancelledSiblingIssueIds: cancelledSiblings,
+        sourceIssueId: sourceIssue?.id ?? null,
+      },
+    });
+
+    return {
+      kind: "operator_cancelled" as const,
+      runId: run.id,
+      termination,
+      cancelledSiblingIssueIds: cancelledSiblings,
+      sourceIssueId: sourceIssue?.id ?? null,
+    };
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1354,7 +1920,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
-    const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+    const recent = await findRecentStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
+    const existing = recent && recent.status !== "done" && recent.status !== "cancelled" ? recent : null;
+    const recentlyClosed = recent && (recent.status === "done" || recent.status === "cancelled") ? recent : null;
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
         companyId: input.run.companyId,
@@ -1404,6 +1972,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+
+    // Critical + dead pid + no in-memory handle → cancel the run instead of
+    // creating yet another review issue. The triple-condition guard makes this
+    // safe: we only ever kill a process that's already gone.
+    if (level === "critical" && !existing) {
+      const autoCancel = await attemptAutoCancelStrandedRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        silenceAgeMs: evidence.silenceAgeMs,
+        now: input.now,
+      });
+      if (autoCancel.kind === "auto_cancelled") {
+        return { kind: "auto_cancelled" as const, evaluationIssueId: null };
+      }
+    }
+
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
@@ -1431,6 +2016,79 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    // Recently-closed evaluation in the 24h coalesce window. We treat the
+    // first scan after each close as the "close event" — that bumps the
+    // backoff multiplier and stamps nextEligibleScanAt for false positives.
+    // If a recovery action (snooze/continue) was recorded for this run since
+    // the eval was created, we treat the close as a legitimate disposition,
+    // reset state, and fall through to create a fresh eval.
+    if (recentlyClosed) {
+      const state = await ensureStaleRunSilenceState({
+        companyId: input.run.companyId,
+        runId: input.run.id,
+        lastEvaluationIssueId: recentlyClosed.id,
+        now: input.now,
+      });
+      const closedAt =
+        recentlyClosed.completedAt ??
+        recentlyClosed.cancelledAt ??
+        recentlyClosed.updatedAt ??
+        input.now;
+      const isFreshClose =
+        !state.lastClosedAt || state.lastClosedAt.getTime() < closedAt.getTime();
+      if (isFreshClose) {
+        const recoveryRecorded = await hasRecoveryActionSinceEvaluation({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          sinceCreatedAt: state.createdAt ?? null,
+        });
+        if (recoveryRecorded) {
+          // Recovery action present — reset state and fall through to the
+          // create path so a fresh eval is generated.
+          await db
+            .update(heartbeatRunSilenceState)
+            .set({
+              consecutiveFalsePositives: 0,
+              backoffMultiplier: 1,
+              lastClosedAt: closedAt,
+              lastEvaluationIssueId: recentlyClosed.id,
+              nextEligibleScanAt: null,
+              updatedAt: input.now,
+            })
+            .where(eq(heartbeatRunSilenceState.id, state.id));
+        } else {
+          const updated = await recordStaleRunEvaluationClose({
+            state,
+            evaluationIssue: recentlyClosed,
+            now: input.now,
+          });
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: input.run.agentId,
+            runId: input.run.id,
+            action: "heartbeat.output_stale_dedup_suppressed",
+            entityType: "issue",
+            entityId: recentlyClosed.id,
+            details: {
+              source: "recovery.scan_silent_active_runs",
+              evaluationIssueId: recentlyClosed.id,
+              evaluationIssueStatus: recentlyClosed.status,
+              consecutiveFalsePositives: updated.consecutiveFalsePositives,
+              backoffMultiplier: updated.backoffMultiplier,
+              nextEligibleScanAt: updated.nextEligibleScanAt?.toISOString() ?? null,
+            },
+          });
+          return { kind: "suppressed" as const, evaluationIssueId: recentlyClosed.id };
+        }
+      }
+      // Already observed this close. If backoff is still active, the scan
+      // gate above would have skipped us; we only reach here when the
+      // backoff has elapsed and the source run is still silent — fall
+      // through and create a fresh evaluation issue.
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
@@ -1463,10 +2121,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     } catch (error) {
       if (!isUniqueStaleRunEvaluationConflict(error)) throw error;
-      const raced = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
+      const raced = await findRecentStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
       if (!raced) throw error;
       return { kind: "existing" as const, evaluationIssueId: raced.id };
     }
+    await ensureStaleRunSilenceState({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+      lastEvaluationIssueId: evaluation.id,
+      now: input.now,
+    });
 
     await logActivity(db, {
       companyId: input.run.companyId,
@@ -1540,6 +2204,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       escalated: 0,
       folded: 0,
       snoozed: 0,
+      suppressed: 0,
+      backoff_skipped: 0,
+      auto_cancelled: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
     };
@@ -1549,11 +2216,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.snoozed += 1;
         continue;
       }
+      const silenceState = await getStaleRunSilenceState(run.companyId, run.id);
+      if (silenceState?.nextEligibleScanAt && silenceState.nextEligibleScanAt > now) {
+        result.backoff_skipped += 1;
+        continue;
+      }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "suppressed") result.suppressed += 1;
+      else if (outcome.kind === "auto_cancelled") result.auto_cancelled += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
@@ -1694,6 +2368,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         reason: input.reason ?? null,
       },
     });
+
+    // Recovery actions (snooze, continue) reset the silence-detector backoff
+    // so the next legitimate signal is evaluated promptly. dismissed_false_positive
+    // is the explicit "operator agrees this was noise" path and we leave the
+    // backoff state to advance via the close-detection branch instead.
+    if (input.decision === "snooze" || input.decision === "continue") {
+      await resetStaleRunSilenceBackoff(run.companyId, run.id, decisionNow);
+    }
 
     return row;
   }
@@ -3453,5 +4135,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    handleStaleRunEvaluationComment,
+    resetStaleRunSilenceBackoff,
+    getStaleRunSilenceState,
   };
 }
