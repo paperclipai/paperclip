@@ -208,6 +208,15 @@ const AgentRunCard = memo(function AgentRunCard({
 
         {run.issueId && (
           <div className="mt-3 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-xs">
+            {issue?.project?.name ? (
+              <Link
+                to={`/projects/${issue.projectId ?? issue.project.id}`}
+                className="mb-1 block truncate text-[10px] uppercase tracking-wide text-muted-foreground/80 hover:text-foreground hover:underline"
+                title={issue.project.name}
+              >
+                {issue.project.name}
+              </Link>
+            ) : null}
             <Link
               to={`/issues/${issue?.identifier ?? run.issueId}`}
               className={cn(
