@@ -496,6 +496,42 @@ describe("buildExplicitResumeSessionOverride", () => {
       },
     });
   });
+
+  it("uses full adapter result session id instead of truncated run display id", () => {
+    const fullSessionId = "20260521_175530_4115b3";
+    const truncatedSessionId = "20260521_175530_";
+    const sessionCodec = {
+      deserialize(raw: unknown) {
+        if (!raw || typeof raw !== "object") return null;
+        const sessionId = (raw as { sessionId?: unknown }).sessionId;
+        return typeof sessionId === "string" && /^\d{8}_\d{6}_[A-Za-z0-9_-]{6,}$/.test(sessionId)
+          ? { sessionId }
+          : null;
+      },
+      serialize(params: Record<string, unknown> | null | undefined) {
+        return this.deserialize(params);
+      },
+      getDisplayId(params: Record<string, unknown> | null | undefined) {
+        return typeof params?.sessionId === "string" ? params.sessionId : null;
+      },
+    };
+
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: truncatedSessionId,
+      resumeRunSessionIdAfter: truncatedSessionId,
+      resumeRunResultJson: { session_id: fullSessionId },
+      taskSession: null,
+      sessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: fullSessionId,
+      sessionParams: {
+        sessionId: fullSessionId,
+      },
+    });
+  });
 });
 
 describe("formatRuntimeWorkspaceWarningLog", () => {

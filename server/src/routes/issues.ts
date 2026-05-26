@@ -4898,6 +4898,8 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: reopened ? "issue.comment.reopen" : "issue.comment",
               wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              forceFreshSession: true,
+              commentWakeFreshnessGuard: true,
               ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -4928,6 +4930,8 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
+              forceFreshSession: true,
+              commentWakeFreshnessGuard: true,
             },
           });
         }
@@ -5987,6 +5991,8 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
+              forceFreshSession: true,
+              commentWakeFreshnessGuard: true,
               reopenedFrom: reopenFromStatus,
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -6013,6 +6019,8 @@ export function issueRoutes(
               wakeCommentId: comment.id,
               source: "issue.comment",
               wakeReason: "issue_commented",
+              forceFreshSession: true,
+              commentWakeFreshnessGuard: true,
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
@@ -6044,6 +6052,8 @@ export function issueRoutes(
             wakeCommentId: comment.id,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",
+            forceFreshSession: true,
+            commentWakeFreshnessGuard: true,
           },
         });
       }

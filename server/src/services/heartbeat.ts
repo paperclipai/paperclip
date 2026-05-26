@@ -1418,16 +1418,28 @@ type ResumeSessionRow = {
   lastRunId: string | null;
 };
 
+function readAdapterSessionIdFromRunResult(resultJson: unknown, sessionCodec: AdapterSessionCodec): string | null {
+  const parsed = parseObject(resultJson);
+  const rawParams = {
+    sessionId: readNonEmptyString(parsed.session_id) ?? readNonEmptyString(parsed.sessionId),
+  };
+  const normalized = normalizeSessionParams(sessionCodec.deserialize(rawParams));
+  return readNonEmptyString(normalized?.sessionId);
+}
+
 export function buildExplicitResumeSessionOverride(input: {
   resumeFromRunId: string;
   resumeRunSessionIdBefore: string | null;
   resumeRunSessionIdAfter: string | null;
+  resumeRunResultJson?: unknown;
   taskSession: ResumeSessionRow | null;
   sessionCodec: AdapterSessionCodec;
 }) {
-  const desiredDisplayId = truncateDisplayId(
-    input.resumeRunSessionIdAfter ?? input.resumeRunSessionIdBefore,
-  );
+  const desiredSessionId =
+    readAdapterSessionIdFromRunResult(input.resumeRunResultJson, input.sessionCodec) ??
+    readNonEmptyString(input.resumeRunSessionIdAfter) ??
+    readNonEmptyString(input.resumeRunSessionIdBefore);
+  const desiredDisplayId = truncateDisplayId(desiredSessionId);
   const taskSessionParams = normalizeSessionParams(
     input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
   );
@@ -1436,17 +1448,19 @@ export function buildExplicitResumeSessionOverride(input: {
       (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
       readNonEmptyString(taskSessionParams?.sessionId),
   );
+  const taskSessionId = readNonEmptyString(taskSessionParams?.sessionId);
   const canReuseTaskSessionParams =
     input.taskSession != null &&
     (
       input.taskSession.lastRunId === input.resumeFromRunId ||
+      (!!desiredSessionId && taskSessionId === desiredSessionId) ||
       (!!desiredDisplayId && taskSessionDisplayId === desiredDisplayId)
     );
   const sessionParams =
     canReuseTaskSessionParams
       ? taskSessionParams
-      : desiredDisplayId
-        ? { sessionId: desiredDisplayId }
+      : desiredSessionId
+        ? { sessionId: desiredSessionId }
         : null;
   const sessionDisplayId = desiredDisplayId ?? (canReuseTaskSessionParams ? taskSessionDisplayId : null);
 
@@ -3625,6 +3639,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: heartbeatRuns.contextSnapshot,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
       .where(
@@ -3647,6 +3662,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       resumeFromRunId,
       resumeRunSessionIdBefore: resumeRun.sessionIdBefore,
       resumeRunSessionIdAfter: resumeRun.sessionIdAfter,
+      resumeRunResultJson: resumeRun.resultJson,
       taskSession: resumeTaskSession,
       sessionCodec,
     });
