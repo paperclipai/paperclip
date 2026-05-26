@@ -56,6 +56,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
+import { resolveAgentVisibility, assertAgentVisible } from "../services/agent-visibility.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -1601,7 +1602,8 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await svc.list(companyId);
+    const visibility = await resolveAgentVisibility(db, companyId, req.actor);
+    const result = await svc.list(companyId, { visibility });
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result);
@@ -1791,6 +1793,12 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, agent.companyId);
+    await assertAgentVisible(
+      db,
+      agent.companyId,
+      agent.id,
+      await resolveAgentVisibility(db, agent.companyId, req.actor),
+    );
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     const canReadSensitiveDetail = isSelf
       ? true
