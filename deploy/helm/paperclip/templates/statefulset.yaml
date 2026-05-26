@@ -518,6 +518,11 @@ spec:
                 "bankId": "agent-memories",
                 "bankMission": "",
                 "enableKnowledgeTools": true,
+                "retainMode": "chunked",
+                "retainEveryNTurns": 5,
+                "retainOverlapTurns": 1,
+                "retainMaxChars": 30000,
+                "retainToolCalls": false,
                 "requestTimeoutSeconds": 30
               }
               EOF
