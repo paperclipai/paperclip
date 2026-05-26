@@ -129,6 +129,8 @@ export type {
 // JSON-RPC protocol types
 export type {
   JsonRpcId,
+  JsonRpcInvocationScope,
+  JsonRpcInvocationContext,
   JsonRpcRequest,
   JsonRpcSuccessResponse,
   JsonRpcError,

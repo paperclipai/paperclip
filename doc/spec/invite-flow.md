@@ -32,7 +32,7 @@ flowchart TD
   Accepted[Invite state: accepted]
   BootstrapDone[Bootstrap accepted<br/>no join request]
   HumanReuse{Matching human join request<br/>already exists for same user/email?}
-  HumanPending[Join request<br/>pending_approval]
+  HumanPending[Legacy human join request<br/>pending_approval]
   HumanApproved[Join request<br/>approved]
   HumanRejected[Join request<br/>rejected]
   AgentPending[Agent join request<br/>pending_approval<br/>+ optional claim secret]
@@ -52,12 +52,10 @@ flowchart TD
   BootstrapDone --> Accepted
 
   Active --> HumanReuse: human accept
-  HumanReuse --> HumanPending: reuse existing pending request
-  HumanReuse --> HumanApproved: reuse existing approved request
-  HumanReuse --> HumanPending: no reusable request<br/>create new request
-  HumanPending --> HumanApproved: board approves
+  HumanReuse --> HumanApproved: reuse existing pending/approved request<br/>ensure active membership
+  HumanReuse --> HumanApproved: no reusable request<br/>create and approve request
+  HumanPending --> HumanApproved: same invitee replays accepted invite<br/>or board approves legacy request
   HumanPending --> HumanRejected: board rejects
-  HumanPending --> Accepted
   HumanApproved --> Accepted
 
   Active --> AgentPending: agent accept
@@ -150,7 +148,8 @@ stateDiagram-v2
 
   state AcceptedInviteSummary {
     [*] --> SummaryBranch
-    SummaryBranch --> PendingApprovalReload: joinRequestStatus=pending_approval
+    SummaryBranch --> AcceptPending: human joinRequestStatus=pending_approval/approved<br/>and membership missing
+    SummaryBranch --> PendingApprovalReload: agent joinRequestStatus=pending_approval
     SummaryBranch --> OpeningCompany: joinRequestStatus=approved<br/>and human invite user is now a member
     SummaryBranch --> RejectedReload: joinRequestStatus=rejected
     SummaryBranch --> ConsumedReload: approved agent invite or other consumed state
@@ -177,6 +176,7 @@ sequenceDiagram
   participant Landing as Invite landing UI
   participant Auth as Auth session
   participant Join as join_requests table
+  participant Membership as company_memberships + grants
 
   Board->>Settings: Choose role and click Create invite
   Settings->>API: POST /api/companies/:companyId/invites
@@ -197,15 +197,19 @@ sequenceDiagram
   API->>Join: Look for reusable human join request
   alt Reusable pending or approved request exists
     API->>Invites: Mark invite accepted
-    API-->>Landing: Existing join request status
+    API->>Membership: Ensure active membership and role grants
+    API->>Join: Mark join request approved if needed
+    API-->>Landing: approved join request
   else No reusable request exists
     API->>Invites: Mark invite accepted
     API->>Join: Insert pending_approval join request
-    API-->>Landing: New pending_approval join request
+    API->>Membership: Ensure active membership and role grants
+    API->>Join: Mark join request approved
+    API-->>Landing: approved join request
   end
 ```
 
-### Human Approval And Reload Path
+### Legacy Human Reload And Repair Path
 
 ```mermaid
 sequenceDiagram
@@ -214,8 +218,6 @@ sequenceDiagram
   participant Landing as Invite landing UI
   participant API as Access routes
   participant Join as join_requests table
-  actor Approver as Company admin
-  participant Queue as Access queue UI
   participant Membership as company_memberships + grants
 
   Invitee->>Landing: Reload consumed invite URL
@@ -223,20 +225,15 @@ sequenceDiagram
   API->>Join: Load join request by inviteId
   API-->>Landing: joinRequestStatus + joinRequestType
 
-  alt joinRequestStatus = pending_approval
-    Landing-->>Invitee: Show waiting-for-approval panel
-    Approver->>Queue: Review request in Company Settings -> Access
-    Queue->>API: POST /companies/:companyId/join-requests/:requestId/approve
-    API->>Membership: Ensure membership and grants
-    API->>Join: Mark join request approved
-    Invitee->>Landing: Refresh after approval
-    Landing->>API: GET /api/invites/:token
-    API->>Join: Reload approved join request
+  alt human joinRequestStatus = pending_approval or approved but membership missing
+    Landing->>API: POST /api/invites/:token/accept (requestType=human)
+    API->>Membership: Ensure active membership and role grants
+    API->>Join: Mark join request approved if needed
     API-->>Landing: approved status
     Landing-->>Invitee: Opening company and redirect
   else joinRequestStatus = rejected
     Landing-->>Invitee: Show rejected error panel
-  else joinRequestStatus = approved but membership missing
+  else agent invite or unavailable consumed state
     Landing-->>Invitee: Fall through to consumed/unavailable state
   end
 ```
@@ -286,14 +283,15 @@ sequenceDiagram
 ## Notes
 
 - `GET /api/invites/:token` treats `revoked` and `expired` invites as unavailable. Accepted invites remain resolvable when they already have a linked join request, and the summary now includes `joinRequestStatus` plus `joinRequestType`.
-- Human acceptance consumes the invite immediately and then either creates a new join request or reuses an existing `pending_approval` or `approved` human join request for the same user/email.
+- Human acceptance consumes the invite, creates or reuses the matching human join request, immediately marks it `approved`, and ensures an active company membership with the invite's selected role/grants.
 - The landing page has two layers of post-accept UI:
   - immediate mutation-result UI from `POST /api/invites/:token/accept`
   - reload-time summary UI from `GET /api/invites/:token` once the invite has already been consumed
 - Reload behavior for accepted company invites is now status-sensitive:
-  - `pending_approval` re-renders the waiting-for-approval panel
+  - human `pending_approval` or `approved` states replay acceptance for the same signed-in user/email so legacy consumed invites can repair missing membership
+  - agent `pending_approval` re-renders the waiting-for-approval panel
   - `rejected` renders the "This join request was not approved." error panel
-  - `approved` only becomes a success path for human invites after membership is visible to the current session; otherwise the page falls through to the generic consumed/unavailable state
+  - `approved` becomes a success path for human invites after membership is visible to the current session
 - `GET /api/invites/:token/logo` still rejects accepted invites, so accepted-invite reload states may fall back to the generated company icon even though the summary payload still carries `companyLogoUrl`.
-- The only accepted-invite replay path in the current implementation is `POST /api/invites/:token/accept` for `agent` requests with `adapterType=openclaw_gateway`, and only when the existing join request is still `pending_approval` or already `approved`.
+- Accepted-invite replay is supported for matching human invitees to repair/complete membership, and for `agent` requests with `adapterType=openclaw_gateway` when the existing join request is still `pending_approval` or already `approved`.
 - `bootstrap_ceo` invites are one-time and do not create join requests.

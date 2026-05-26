@@ -203,7 +203,11 @@ describe("CompanyInvites", () => {
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
     expect(container.textContent).toContain("Latest invite link");
     expect(container.textContent).toContain("This URL includes the current Paperclip domain returned by the server.");
-    expect(container.textContent).toContain("https://paperclip.local/invite/new-token");
+    expect(container.querySelector('input[aria-label="Latest invite URL"]')).toHaveProperty(
+      "value",
+      "https://paperclip.local/invite/new-token",
+    );
+    expect(container.textContent).toContain("Copy link");
     expect(container.textContent).toContain("Open invite");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
@@ -211,12 +215,12 @@ describe("CompanyInvites", () => {
       tone: "success",
     });
 
-    const inviteFieldButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("https://paperclip.local/invite/new-token"),
+    const copyLinkButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Copy link",
     );
 
     await act(async () => {
-      inviteFieldButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      copyLinkButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -229,6 +233,61 @@ describe("CompanyInvites", () => {
     await flushReact();
 
     expect(revokeInviteMock).toHaveBeenCalledWith("invite-25");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to selectable text when browser clipboard access is unavailable", async () => {
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(document, "queryCommandSupported", {
+      configurable: true,
+      value: vi.fn((command: string) => command === "copy"),
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => true),
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <CompanyInvites />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Create invite",
+    );
+
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    const inviteInput = container.querySelector('input[aria-label="Latest invite URL"]') as HTMLInputElement | null;
+    expect(inviteInput?.value).toBe("https://paperclip.local/invite/new-token");
+    expect(document.execCommand).toHaveBeenCalledWith("copy");
+    expect(pushToastMock).toHaveBeenCalledWith({
+      title: "Invite created",
+      body: "Invite ready below and copied to clipboard.",
+      tone: "success",
+    });
 
     await act(async () => {
       root.unmount();

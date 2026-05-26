@@ -2721,6 +2721,83 @@ export function accessRoutes(
     return { token, created, normalizedAgentMessage };
   }
 
+  async function approveHumanJoinRequestFromInvite(input: {
+    req: Request;
+    invite: typeof invites.$inferSelect;
+    joinRequest: typeof joinRequests.$inferSelect;
+    companyId: string;
+  }) {
+    if (input.joinRequest.requestType !== "human") {
+      throw badRequest("Only human join requests can be approved through a human invite");
+    }
+    if (!input.joinRequest.requestingUserId) {
+      throw conflict("Join request missing user identity");
+    }
+
+    const membershipRole = resolveHumanInviteRole(
+      input.invite.defaultsPayload as Record<string, unknown> | null,
+    );
+    await access.ensureMembership(
+      input.companyId,
+      "user",
+      input.joinRequest.requestingUserId,
+      membershipRole,
+      "active",
+    );
+    const grants = humanJoinGrantsFromDefaults(
+      input.invite.defaultsPayload as Record<string, unknown> | null,
+      membershipRole,
+    );
+    await access.setPrincipalGrants(
+      input.companyId,
+      "user",
+      input.joinRequest.requestingUserId,
+      grants,
+      input.invite.invitedByUserId ?? null,
+    );
+
+    if (input.joinRequest.status === "approved") {
+      return input.joinRequest;
+    }
+
+    const approvedAt = new Date();
+    const approvedByUserId =
+      input.invite.invitedByUserId ?? (isLocalImplicit(input.req) ? "local-board" : null);
+    const approved = await db
+      .update(joinRequests)
+      .set({
+        status: "approved",
+        approvedByUserId,
+        approvedAt,
+        updatedAt: approvedAt,
+      })
+      .where(eq(joinRequests.id, input.joinRequest.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: approvedByUserId ?? "board",
+      action: "join.approved",
+      entityType: "join_request",
+      entityId: input.joinRequest.id,
+      details: {
+        requestType: "human",
+        inviteId: input.invite.id,
+        source: "human_invite_accept",
+      },
+    });
+
+    return approved ?? {
+      ...input.joinRequest,
+      status: "approved",
+      approvedByUserId,
+      approvedAt,
+      updatedAt: approvedAt,
+    };
+  }
+
   async function getInviteCompanyBranding(
     companyId: string | null,
     inviteToken: string | null = null,
@@ -3255,9 +3332,26 @@ export function accessRoutes(
         }
       }
 
+      const actorEmail =
+        requestType === "human" ? await resolveActorEmail(db, req) : null;
+      const actorRequestingUserId =
+        requestType === "human"
+          ? req.actor.userId ?? "local-board"
+          : null;
+      const canReplayHumanInviteAccept =
+        inviteAlreadyAccepted &&
+        requestType === "human" &&
+        existingJoinRequestForInvite?.requestType === "human" &&
+        Boolean(
+          findReusableHumanJoinRequest([existingJoinRequestForInvite], {
+            requestingUserId: actorRequestingUserId,
+            requestEmailSnapshot: actorEmail,
+          })
+        );
       const adapterType = req.body.adapterType ?? null;
       if (
         inviteAlreadyAccepted &&
+        !canReplayHumanInviteAccept &&
         !canReplayOpenClawGatewayInviteAccept({
           requestType,
           adapterType,
@@ -3336,8 +3430,6 @@ export function accessRoutes(
         ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
         : null;
 
-      const actorEmail =
-        requestType === "human" ? await resolveActorEmail(db, req) : null;
       const existingHumanJoinRequest =
         requestType === "human"
           ? findReusableHumanJoinRequest(
@@ -3352,12 +3444,12 @@ export function accessRoutes(
                 )
                 .orderBy(desc(joinRequests.createdAt)),
               {
-                requestingUserId: req.actor.userId ?? "local-board",
+                requestingUserId: actorRequestingUserId,
                 requestEmailSnapshot: actorEmail
               }
             )
           : null;
-      const created = !inviteAlreadyAccepted
+      let created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
               await tx
@@ -3565,6 +3657,15 @@ export function accessRoutes(
             Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
         }
       });
+
+      if (requestType === "human") {
+        created = await approveHumanJoinRequestFromInvite({
+          req,
+          invite,
+          joinRequest: created,
+          companyId,
+        });
+      }
 
       const response = toJoinRequestResponse(created);
       if (claimSecret) {

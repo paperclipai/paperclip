@@ -659,6 +659,18 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+export {
+  resourceMembershipStateSchema,
+  updateResourceMembershipSchema,
+  type UpdateResourceMembership,
+} from "./validators/resource-memberships.js";
+export {
+  RESOURCE_MEMBERSHIP_STATES,
+  type ResourceMembershipResourceType,
+  type ResourceMembershipState,
+  type ResourceMemberships,
+  type ResourceMembershipUpdateResult,
+} from "./types/resource-memberships.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
 export {

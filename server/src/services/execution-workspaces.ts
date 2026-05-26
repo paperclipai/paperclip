@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
@@ -344,12 +344,18 @@ function toExecutionWorkspace(
   };
 }
 
-function toExecutionWorkspaceSummary(row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "projectWorkspaceId">): ExecutionWorkspaceSummary {
+function toExecutionWorkspaceSummary(
+  row: Pick<ExecutionWorkspaceRow, "id" | "name" | "mode" | "status" | "cwd" | "branchName" | "projectWorkspaceId" | "lastUsedAt">,
+): ExecutionWorkspaceSummary {
   return {
     id: row.id,
     name: row.name,
     mode: row.mode as ExecutionWorkspaceSummary["mode"],
+    status: row.status as ExecutionWorkspaceSummary["status"],
+    cwd: row.cwd ?? null,
+    branchName: row.branchName ?? null,
     projectWorkspaceId: row.projectWorkspaceId ?? null,
+    lastUsedAt: row.lastUsedAt,
   };
 }
 
@@ -412,6 +418,8 @@ export function executionWorkspaceService(db: Db) {
     }
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
+      conditions.push(isNull(executionWorkspaces.closedAt));
+      conditions.push(inArray(executionWorkspaces.mode, ["isolated_workspace", "operator_branch", "adapter_managed", "cloud_sandbox"]));
     }
     return conditions;
   }
@@ -452,7 +460,11 @@ export function executionWorkspaceService(db: Db) {
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
           mode: executionWorkspaces.mode,
+          status: executionWorkspaces.status,
+          cwd: executionWorkspaces.cwd,
+          branchName: executionWorkspaces.branchName,
           projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+          lastUsedAt: executionWorkspaces.lastUsedAt,
         })
         .from(executionWorkspaces)
         .where(and(...conditions))
