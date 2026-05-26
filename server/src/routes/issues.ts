@@ -4176,33 +4176,36 @@ export function issueRoutes(
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
-        addWakeup(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
+      }
+      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+        const assigneeWakePayloadExtras: Record<string, unknown> = {
+          ...(comment ? { commentId: comment.id } : {}),
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        };
+        const assigneeWakeContextExtras: Record<string, unknown> = {
+          ...(comment
+            ? {
+                taskId: issue.id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+              }
+            : {}),
+          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        };
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
           reason: "issue_assigned",
-          payload: {
-            issueId: issue.id,
-            ...(comment ? { commentId: comment.id } : {}),
-            mutation: "update",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          mutation: comment ? "update" : "patch",
+          contextSource: comment ? "issue.update" : "issue.patch",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            ...(comment
-              ? {
-                  taskId: issue.id,
-                  commentId: comment.id,
-                  wakeCommentId: comment.id,
-                }
-              : {}),
-            source: "issue.update",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          payloadExtras:
+            Object.keys(assigneeWakePayloadExtras).length > 0 ? assigneeWakePayloadExtras : undefined,
+          contextSnapshotExtras:
+            Object.keys(assigneeWakeContextExtras).length > 0 ? assigneeWakeContextExtras : undefined,
         });
       }
 

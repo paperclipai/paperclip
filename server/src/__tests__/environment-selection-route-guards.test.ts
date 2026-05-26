@@ -66,6 +66,10 @@ vi.mock("../services/index.js", () => ({
   }),
   agentService: () => ({
     getById: vi.fn(),
+    resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
+      agent: { id: raw.trim(), companyId: "company-1" },
+      ambiguous: false,
+    })),
   }),
   executionWorkspaceService: () => ({}),
   goalService: () => ({
@@ -75,6 +79,8 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     getRun: vi.fn(),
     getActiveRunForAgent: vi.fn(),
+    reportRunActivity: vi.fn(async () => undefined),
+    cancelRun: vi.fn(async () => null),
   }),
   issueApprovalService: () => ({
     listApprovalsForIssue: vi.fn(),
@@ -90,7 +96,9 @@ vi.mock("../services/index.js", () => ({
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   }),
   documentService: () => ({}),
-  routineService: () => ({}),
+  routineService: () => ({
+    syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
   workProductService: () => ({}),
 }));
 
@@ -102,8 +110,10 @@ vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
 }));
 
+const mockQueueIssueAssignmentWakeup = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
-  queueIssueAssignmentWakeup: vi.fn(),
+  queueIssueAssignmentWakeup: mockQueueIssueAssignmentWakeup,
 }));
 
 function buildApp(routerFactory: (app: express.Express) => void) {
@@ -391,5 +401,88 @@ describe.sequential("execution environment route guards", () => {
 
     expect(res.status).not.toBe(422);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  describe("PATCH assignment wakeup (MON-485)", () => {
+    const agentA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const agentB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    const patchWakeIssue = {
+      id: "issue-patch-wakeup",
+      companyId: "company-1",
+      status: "todo" as const,
+      assigneeAgentId: agentA,
+      assigneeUserId: null,
+      createdByUserId: null,
+      identifier: "PAP-WAKE",
+      title: "Wakeup PATCH",
+      description: "desc",
+      workMode: "planning" as const,
+      priority: "medium" as const,
+      executionPolicy: null,
+      executionState: null,
+      parentId: null,
+      goalId: null,
+      projectId: null,
+      labels: [] as unknown[],
+      labelIds: [] as unknown[],
+      executionWorkspaceId: null,
+      updatedAt: new Date(),
+    };
+
+    async function settleAfterPatch() {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    beforeEach(() => {
+      mockQueueIssueAssignmentWakeup.mockClear();
+      mockIssueService.getById.mockResolvedValue({ ...patchWakeIssue });
+      mockIssueService.update.mockImplementation(async (_id: string, fields: Record<string, unknown>) =>
+        ({
+          ...patchWakeIssue,
+          ...fields,
+          assigneeAgentId:
+            fields.assigneeAgentId === undefined ? patchWakeIssue.assigneeAgentId : fields.assigneeAgentId,
+          assigneeUserId:
+            fields.assigneeUserId === undefined ? patchWakeIssue.assigneeUserId : fields.assigneeUserId,
+        }));
+    });
+
+    it("queues exactly one assignment wakeup when assigneeAgentId changes to another agent", async () => {
+      const app = createIssueApp();
+      const res = await request(app).patch(`/api/issues/${patchWakeIssue.id}`).send({ assigneeAgentId: agentB });
+      await settleAfterPatch();
+
+      expect(res.status).toBe(200);
+      expect(mockQueueIssueAssignmentWakeup).toHaveBeenCalledTimes(1);
+      expect(mockQueueIssueAssignmentWakeup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issue: expect.objectContaining({ id: patchWakeIssue.id, assigneeAgentId: agentB }),
+          mutation: "patch",
+          contextSource: "issue.patch",
+          reason: "issue_assigned",
+        }),
+      );
+    });
+
+    it("queues no assignment wakeup when only description changes", async () => {
+      const app = createIssueApp();
+      const res = await request(app).patch(`/api/issues/${patchWakeIssue.id}`).send({
+        description: "updated body",
+      });
+      await settleAfterPatch();
+
+      expect(res.status).toBe(200);
+      expect(mockQueueIssueAssignmentWakeup).not.toHaveBeenCalled();
+    });
+
+    it("routes unassign PATCH through wakeup helper without heartbeat (null assignee short-circuit)", async () => {
+      const app = createIssueApp();
+      const res = await request(app).patch(`/api/issues/${patchWakeIssue.id}`).send({ assigneeAgentId: null });
+      await settleAfterPatch();
+
+      expect(res.status).toBe(200);
+      expect(mockQueueIssueAssignmentWakeup).not.toHaveBeenCalled();
+    });
   });
 });
