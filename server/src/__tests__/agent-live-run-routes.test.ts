@@ -12,6 +12,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
   readLog: vi.fn(),
+  list: vi.fn(),
   wakeup: vi.fn(),
 }));
 
@@ -222,6 +223,7 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+    mockHeartbeatService.list.mockResolvedValue([]);
     mockHeartbeatService.wakeup.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -327,6 +329,67 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
+  });
+
+  it("passes company heartbeat run filters through to the heartbeat service", async () => {
+    mockHeartbeatService.list.mockResolvedValue([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "succeeded",
+        usageJson: { inputTokens: 100 },
+      },
+    ]);
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .get("/api/companies/company-1/heartbeat-runs")
+        .query({
+          agentId: "agent-1",
+          issueId: "issue-1",
+          status: "succeeded,failed",
+          createdAfter: "2026-05-26T00:00:00.000Z",
+          finishedAfter: "2026-05-26T01:00:00.000Z",
+          sortBy: "createdAt",
+          sortOrder: "desc",
+          limit: "500",
+          offset: "25",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", {
+      agentId: "agent-1",
+      issueId: "issue-1",
+      statuses: ["succeeded", "failed"],
+      createdAfter: new Date("2026-05-26T00:00:00.000Z"),
+      finishedAfter: new Date("2026-05-26T01:00:00.000Z"),
+      sortBy: "createdAt",
+      sortOrder: "desc",
+      limit: 500,
+      offset: 25,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        status: "succeeded",
+        usageJson: { inputTokens: 100 },
+      },
+    ]);
+  });
+
+  it("rejects zero company heartbeat run limits", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/companies/company-1/heartbeat-runs?limit=0"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
   });
 
   it("caps company live run polling by default", async () => {
