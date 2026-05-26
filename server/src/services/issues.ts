@@ -471,6 +471,7 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
   "cancelled",
   "timed_out",
 ]);
+const STALE_ISSUE_CONTEXT_RUN_STATUSES = ["queued", "scheduled_retry"] as const;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 
 function escapeLikePattern(value: string): string {
@@ -3612,12 +3613,23 @@ export function issueService(db: Db) {
       )
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted) {
+      await cancelStaleIssueContextRuns({
+        companyId: adopted.companyId,
+        issueId: adopted.id,
+        keepRunId: input.actorRunId,
+        reason: "Cancelled because the issue checkout was adopted by the current execution run",
+        errorCode: "issue_checkout_adopted",
+      });
+    }
 
     return adopted;
   }
@@ -3647,12 +3659,23 @@ export function issueService(db: Db) {
       )
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted) {
+      await cancelStaleIssueContextRuns({
+        companyId: adopted.companyId,
+        issueId: adopted.id,
+        keepRunId: input.actorRunId,
+        reason: "Cancelled because the issue checkout was adopted by the current execution run",
+        errorCode: "issue_checkout_adopted",
+      });
+    }
 
     return adopted;
   }
@@ -3722,6 +3745,56 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     return cleared != null;
+  }
+
+  async function cancelStaleIssueContextRuns(input: {
+    companyId: string;
+    issueId: string;
+    keepRunId?: string | null;
+    reason: string;
+    errorCode: string;
+  }) {
+    const now = new Date();
+    const conditions: SQL[] = [
+      eq(heartbeatRuns.companyId, input.companyId),
+      inArray(heartbeatRuns.status, STALE_ISSUE_CONTEXT_RUN_STATUSES),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+    ];
+    if (input.keepRunId) {
+      conditions.push(ne(heartbeatRuns.id, input.keepRunId));
+    }
+
+    const cancelled = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: input.reason,
+        errorCode: input.errorCode,
+        updatedAt: now,
+      })
+      .where(and(...conditions))
+      .returning({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      });
+
+    const wakeupRequestIds = cancelled
+      .map((run) => run.wakeupRequestId)
+      .filter((id): id is string => Boolean(id));
+    if (wakeupRequestIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "skipped",
+          finishedAt: now,
+          error: input.reason,
+          updatedAt: now,
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+
+    return cancelled.length;
   }
 
   return {
@@ -5530,6 +5603,13 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (retried) {
+            await cancelStaleIssueContextRuns({
+              companyId: retried.companyId,
+              issueId: retried.id,
+              keepRunId: checkoutRunId,
+              reason: "Cancelled because the stale issue execution lock was adopted by the current run",
+              errorCode: "issue_execution_lock_adopted",
+            });
             const [enriched] = await withIssueLabels(db, [retried]);
             return enriched;
           }
@@ -5640,12 +5720,20 @@ export function issueService(db: Db) {
             )
             .returning({
               id: issues.id,
+              companyId: issues.companyId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               checkoutRunId: issues.checkoutRunId,
             })
             .then((rows) => rows[0] ?? null);
           if (refreshed) {
+            await cancelStaleIssueContextRuns({
+              companyId: refreshed.companyId,
+              issueId: refreshed.id,
+              keepRunId: actorRunId,
+              reason: "Cancelled because the stale issue execution lock was adopted by the current run",
+              errorCode: "issue_execution_lock_adopted",
+            });
             return { ...refreshed, adoptedFromRunId: current.executionRunId };
           }
         }
@@ -5707,12 +5795,18 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      await cancelStaleIssueContextRuns({
+        companyId: updated.companyId,
+        issueId: updated.id,
+        reason: "Cancelled because the issue was released",
+        errorCode: "issue_released",
+      });
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },
 
-    adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
-      db.transaction(async (tx) => {
+    adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) => {
+      const result = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );
@@ -5754,7 +5848,17 @@ export function issueService(db: Db) {
             executionRunId: existing.executionRunId,
           },
         };
-      }),
+      });
+      if (result) {
+        await cancelStaleIssueContextRuns({
+          companyId: result.issue.companyId,
+          issueId: result.issue.id,
+          reason: "Cancelled because the issue was force-released",
+          errorCode: "issue_force_released",
+        });
+      }
+      return result;
+    },
     forceRelease: async (id: string) => {
       const existing = await db
         .select()
@@ -5782,6 +5886,12 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      await cancelStaleIssueContextRuns({
+        companyId: updated.companyId,
+        issueId: updated.id,
+        reason: "Cancelled because the issue was force-released",
+        errorCode: "issue_force_released",
+      });
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },

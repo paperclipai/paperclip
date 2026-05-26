@@ -294,6 +294,81 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("does not expose live runs for terminal issues", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValueOnce({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: null,
+      assigneeAgentId: "agent-1",
+      status: "done",
+    });
+    const db = { select: vi.fn() };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.buildRunOutputSilence).not.toHaveBeenCalled();
+  });
+
+  it("uses the issue execution run as the issue live-runs authority", async () => {
+    const liveRows = [{
+      id: "run-current",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      contextCommentId: "comment-1",
+      contextWakeCommentId: "comment-1",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      logBytes: 0,
+      livenessState: "healthy",
+      livenessReason: null,
+      continuationAttempt: 0,
+      lastUsefulActionAt: null,
+      nextAction: null,
+      lastOutputAt: null,
+      lastOutputSeq: null,
+      lastOutputStream: null,
+      lastOutputBytes: 0,
+      processStartedAt: null,
+    }];
+    mockIssueService.getByIdentifier.mockResolvedValueOnce({
+      id: "issue-1",
+      companyId: "company-1",
+      executionRunId: "run-current",
+      assigneeAgentId: "agent-1",
+      status: "in_progress",
+    });
+    const { db } = createLiveRunsDbStub(liveRows);
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/live-runs"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      id: "run-current",
+      status: "running",
+      agentId: "agent-1",
+      agentName: "Builder",
+      adapterType: "codex_local",
+      outputSilence: null,
+    });
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(1);
+  });
+
   it("uses narrow run log metadata lookups for log polling", async () => {
     const res = await requestApp(
       await createApp(),
