@@ -3,7 +3,8 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
-  findWorkspaceCommandDefinition,
+  listWorkspaceCommandDefinitions,
+  matchWorkspaceCommandToRuntimeService,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -19,6 +20,7 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  materializeWorkspaceRuntimeDefinition,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -40,7 +42,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const filters = {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
@@ -61,7 +63,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     res.json(workspace);
   });
 
@@ -72,7 +74,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -88,7 +90,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
   });
@@ -106,7 +108,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
@@ -157,12 +159,19 @@ export function executionWorkspaceRoutes(db: Db) {
           .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
       : null;
     const effectiveRuntimeConfig = existing.config?.workspaceRuntime ?? projectWorkspaceRuntime ?? null;
+    const materializedRuntimeConfig = effectiveRuntimeConfig
+      ? materializeWorkspaceRuntimeDefinition({
+          workspaceRuntime: effectiveRuntimeConfig,
+          workspaceCwd,
+          defaultReuseScope: existing.mode === "shared_workspace" ? "project_workspace" : "execution_workspace",
+        }) ?? effectiveRuntimeConfig
+      : null;
     const target = req.body as { workspaceCommandId?: string | null; runtimeServiceId?: string | null; serviceIndex?: number | null };
-    const configuredServices = effectiveRuntimeConfig
-      ? listConfiguredRuntimeServiceEntries({ workspaceRuntime: effectiveRuntimeConfig })
+    const configuredServices = materializedRuntimeConfig
+      ? listConfiguredRuntimeServiceEntries({ workspaceRuntime: materializedRuntimeConfig }, workspaceCwd)
       : [];
-    const workspaceCommand = effectiveRuntimeConfig
-      ? findWorkspaceCommandDefinition(effectiveRuntimeConfig, target.workspaceCommandId ?? null)
+    const workspaceCommand = materializedRuntimeConfig
+      ? listWorkspaceCommandDefinitions(materializedRuntimeConfig).find((command) => command.id === (target.workspaceCommandId ?? null)) ?? null
       : null;
     if (target.workspaceCommandId && !workspaceCommand) {
       res.status(404).json({ error: "Workspace command not found for this execution workspace" });
@@ -177,9 +186,20 @@ export function executionWorkspaceRoutes(db: Db) {
         ? matchWorkspaceRuntimeServiceToCommand(workspaceCommand, existing.runtimeServices ?? [])
         : null;
     const selectedRuntimeServiceId = target.runtimeServiceId ?? matchedRuntimeService?.id ?? null;
+    const selectedRuntimeService = selectedRuntimeServiceId
+      ? (existing.runtimeServices ?? []).find((service) => service.id === selectedRuntimeServiceId) ?? null
+      : null;
+    const matchedWorkspaceCommand =
+      !workspaceCommand && selectedRuntimeService
+        ? matchWorkspaceCommandToRuntimeService(
+            selectedRuntimeService,
+            listWorkspaceCommandDefinitions(materializedRuntimeConfig).filter((command) => command.kind === "service"),
+          )
+        : null;
+    const resolvedWorkspaceCommand = workspaceCommand ?? matchedWorkspaceCommand;
     const selectedServiceIndex =
-      workspaceCommand?.kind === "service"
-        ? workspaceCommand.serviceIndex
+      resolvedWorkspaceCommand?.kind === "service"
+        ? resolvedWorkspaceCommand.serviceIndex
         : target.serviceIndex ?? null;
     if (
       selectedServiceIndex !== undefined
@@ -218,14 +238,14 @@ export function executionWorkspaceRoutes(db: Db) {
 
     const operation = await recorder.recordOperation({
       phase: action === "stop" ? "workspace_teardown" : "workspace_provision",
-      command: workspaceCommand?.command ?? `workspace command ${action}`,
+      command: resolvedWorkspaceCommand?.command ?? `workspace command ${action}`,
       cwd: existing.cwd,
       metadata: {
         action,
         executionWorkspaceId: existing.id,
-        workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
-        workspaceCommandKind: workspaceCommand?.kind ?? null,
-        workspaceCommandName: workspaceCommand?.name ?? null,
+        workspaceCommandId: resolvedWorkspaceCommand?.id ?? target.workspaceCommandId ?? null,
+        workspaceCommandKind: resolvedWorkspaceCommand?.kind ?? null,
+        workspaceCommandName: resolvedWorkspaceCommand?.name ?? null,
         runtimeServiceId: selectedRuntimeServiceId,
         serviceIndex: selectedServiceIndex,
       },
@@ -348,12 +368,14 @@ export function executionWorkspaceRoutes(db: Db) {
               : null,
             workspace: availableWorkspace,
             executionWorkspaceId: existing.id,
-            config: { workspaceRuntime: effectiveRuntimeConfig },
+            config: { workspaceRuntime: materializedRuntimeConfig },
             adapterEnv: {},
             onLog,
             serviceIndex: selectedServiceIndex,
           });
-          runtimeServiceCount = startedServices.length;
+          runtimeServiceCount = selectedRuntimeServiceId
+            ? (existing.runtimeServices?.length ?? startedServices.length)
+            : startedServices.length;
         } else {
           runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
         }
@@ -372,7 +394,8 @@ export function executionWorkspaceRoutes(db: Db) {
               serviceStates: existing.config?.serviceStates ?? null,
             }
           : buildWorkspaceRuntimeDesiredStatePatch({
-              config: { workspaceRuntime: effectiveRuntimeConfig },
+              config: { workspaceRuntime: materializedRuntimeConfig },
+              workspaceCwd,
               currentDesiredState,
               currentServiceStates: existing.config?.serviceStates ?? null,
               action,
@@ -396,7 +419,7 @@ export function executionWorkspaceRoutes(db: Db) {
                 : "Started execution workspace runtime services.\n",
           metadata: {
             runtimeServiceCount,
-            workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
+            workspaceCommandId: resolvedWorkspaceCommand?.id ?? target.workspaceCommandId ?? null,
             runtimeServiceId: selectedRuntimeServiceId,
             serviceIndex: selectedServiceIndex,
           },
@@ -409,6 +432,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
+    runtimeServiceCount = workspace.runtimeServices?.length ?? 0;
 
     await logActivity(db, {
       companyId: existing.companyId,
@@ -421,9 +445,9 @@ export function executionWorkspaceRoutes(db: Db) {
       entityId: existing.id,
       details: {
         runtimeServiceCount,
-        workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
-        workspaceCommandKind: workspaceCommand?.kind ?? null,
-        workspaceCommandName: workspaceCommand?.name ?? null,
+        workspaceCommandId: resolvedWorkspaceCommand?.id ?? target.workspaceCommandId ?? null,
+        workspaceCommandKind: resolvedWorkspaceCommand?.kind ?? null,
+        workspaceCommandName: resolvedWorkspaceCommand?.name ?? null,
         runtimeServiceId: selectedRuntimeServiceId,
         serviceIndex: selectedServiceIndex,
       },
@@ -445,7 +469,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({

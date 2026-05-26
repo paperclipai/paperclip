@@ -303,7 +303,7 @@ export function userProfileRoutes(db: Db) {
   router.get("/companies/:companyId/users/:userSlug/profile", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userSlug = req.params.userSlug as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const row = await resolveCompanyUser(db, companyId, userSlug);
     if (!row) throw notFound("User not found");

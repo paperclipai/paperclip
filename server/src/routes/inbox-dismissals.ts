@@ -15,7 +15,7 @@ export function inboxDismissalRoutes(db: Db) {
 
   router.get("/companies/:companyId/inbox-dismissals", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -33,7 +33,7 @@ export function inboxDismissalRoutes(db: Db) {
     validate(inboxDismissalSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Board authentication required" });
         return;

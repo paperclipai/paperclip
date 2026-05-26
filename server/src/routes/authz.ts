@@ -1,4 +1,7 @@
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 import type { Request } from "express";
+import type { Db } from "@paperclipai/db";
+import { agentDelegateGrants } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertAuthenticated(req: Request) {
@@ -39,11 +42,51 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function assertCompanyAccess(req: Request, companyId: string) {
+export async function assertCompanyAccess(
+  req: Request,
+  companyId: string,
+  db: Db,
+  opts?: { requiredScope?: string },
+) {
   assertAuthenticated(req);
+
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
-    throw forbidden("Agent key cannot access another company");
+    const agentId = req.actor.agentId;
+    if (!agentId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    const now = new Date();
+    const [grant] = await db
+      .select({ id: agentDelegateGrants.id, scopes: agentDelegateGrants.scopes })
+      .from(agentDelegateGrants)
+      .where(
+        and(
+          eq(agentDelegateGrants.delegateAgentId, agentId),
+          eq(agentDelegateGrants.hostCompanyId, companyId),
+          isNull(agentDelegateGrants.revokedAt),
+          or(
+            isNull(agentDelegateGrants.expiresAt),
+            gt(agentDelegateGrants.expiresAt, now),
+          ),
+        ),
+      )
+      .limit(1);
+
+    if (!grant) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    if (opts?.requiredScope) {
+      if (!grant.scopes || !grant.scopes.includes(opts.requiredScope)) {
+        throw forbidden(`Delegate grant does not include required scope: ${opts.requiredScope}`);
+      }
+    }
+
+    req.delegateGrant = { grantId: grant.id, hostCompanyId: companyId };
+    return;
   }
+
   if (req.actor.type === "board" && req.actor.source !== "local_implicit") {
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
@@ -71,6 +114,7 @@ export function getActorInfo(req: Request) {
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
       runId: req.actor.runId ?? null,
+      delegateGrantId: req.delegateGrant?.grantId ?? null,
     };
   }
 
@@ -79,5 +123,6 @@ export function getActorInfo(req: Request) {
     actorId: req.actor.userId ?? "board",
     agentId: null,
     runId: req.actor.runId ?? null,
+    delegateGrantId: null,
   };
 }

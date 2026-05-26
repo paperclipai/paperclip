@@ -58,7 +58,7 @@ export function environmentRoutes(
   }
 
   async function assertCanMutateEnvironments(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -87,7 +87,7 @@ export function environmentRoutes(
   }
 
   async function actorCanReadEnvironmentConfigurations(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
@@ -150,7 +150,7 @@ export function environmentRoutes(
 
   router.get("/companies/:companyId/environments", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const rows = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       driver: req.query.driver as string | undefined,
@@ -165,7 +165,7 @@ export function environmentRoutes(
 
   router.get("/companies/:companyId/environments/capabilities", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const pluginDrivers = await listReadyPluginEnvironmentDrivers({
       db,
       workerManager: options.pluginWorkerManager,
@@ -243,7 +243,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCompanyAccess(req, environment.companyId);
+    await assertCompanyAccess(req, environment.companyId, db);
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, environment.companyId);
     if (canReadConfigs) {
       res.json(environment);
@@ -258,7 +258,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCompanyAccess(req, environment.companyId);
+    await assertCompanyAccess(req, environment.companyId, db);
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, environment.companyId);
     if (!canReadConfigs) {
       throw forbidden("Missing permission: environments:manage");
@@ -275,7 +275,7 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment lease not found" });
       return;
     }
-    assertCompanyAccess(req, lease.companyId);
+    await assertCompanyAccess(req, lease.companyId, db);
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, lease.companyId);
     if (!canReadConfigs) {
       throw forbidden("Missing permission: environments:manage");

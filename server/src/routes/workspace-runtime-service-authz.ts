@@ -118,7 +118,7 @@ export async function assertCanManageProjectWorkspaceRuntimeServices(
     projectWorkspaceId: string;
   },
 ) {
-  assertCompanyAccess(req, input.companyId);
+  await assertCompanyAccess(req, input.companyId, db);
   if (req.actor.type === "board") return;
   await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);
 }
@@ -132,7 +132,7 @@ export async function assertCanManageExecutionWorkspaceRuntimeServices(
     sourceIssueId?: string | null;
   },
 ) {
-  assertCompanyAccess(req, input.companyId);
+  await assertCompanyAccess(req, input.companyId, db);
   if (req.actor.type === "board") return;
   await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);
 }

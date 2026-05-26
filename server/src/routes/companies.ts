@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
+import { and, eq, isNull } from "drizzle-orm";
+import { agentDelegateGrants } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
@@ -7,6 +9,7 @@ import {
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  createDelegateGrantSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -60,11 +63,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       assertInstanceAdmin(req);
       return;
     }
-    assertCompanyAccess(req, target.companyId);
+    await assertCompanyAccess(req, target.companyId, db);
   }
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
@@ -78,7 +81,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   }
 
   async function assertCanManagePortability(req: Request, companyId: string, capability: "imports" | "exports") {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "board") return;
     if (!req.actor.agentId) throw forbidden("Agent authentication required");
 
@@ -125,7 +128,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.get("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     // Allow agents (CEO) to read their own company; board always allowed
     if (req.actor.type !== "agent") {
       assertBoard(req);
@@ -140,7 +143,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.get("/:companyId/feedback-traces", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     assertBoard(req);
 
     const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
@@ -328,7 +331,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.patch("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const actor = getActorInfo(req);
     const existingCompany = await svc.getById(companyId);
@@ -411,7 +414,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.post("/:companyId/archive", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const company = await svc.archive(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -431,13 +434,119 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   router.delete("/:companyId", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
     res.json({ ok: true });
+  });
+
+  // --- Delegate grant routes (GC §4: PRO-5939) ---
+  // Agents are explicitly prohibited from creating grants (governance requirement).
+
+  router.post("/:companyId/delegate-grants", async (req, res) => {
+    // GC §4 hard requirement: agents cannot create delegate grants.
+    if (req.actor.type === "agent") {
+      throw forbidden("Agents cannot create delegate grants");
+    }
+    const companyId = req.params.companyId as string;
+    await assertCompanyAccess(req, companyId, db);
+    const body = createDelegateGrantSchema.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: body.error.message });
+      return;
+    }
+    const { delegateAgentId, scopes, expiresAt } = body.data;
+
+    // Resolve the delegate agent to get its company.
+    const delegateAgent = await agents.getById(delegateAgentId);
+    if (!delegateAgent) {
+      res.status(404).json({ error: "Delegate agent not found" });
+      return;
+    }
+    if (delegateAgent.companyId === companyId) {
+      res.status(400).json({ error: "Delegate agent must belong to a different company" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const [grant] = await db
+      .insert(agentDelegateGrants)
+      .values({
+        hostCompanyId: companyId,
+        delegateAgentId,
+        delegateCompanyId: delegateAgent.companyId,
+        scopes,
+        grantedByUserId: actor.actorId,
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+      })
+      .returning();
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.delegate_grant_created",
+      entityType: "agent_delegate_grant",
+      entityId: grant.id,
+      details: { delegateAgentId, delegateCompanyId: delegateAgent.companyId, scopes },
+    });
+
+    res.status(201).json(grant);
+  });
+
+  router.get("/:companyId/delegate-grants", async (req, res) => {
+    if (req.actor.type === "agent") {
+      throw forbidden("Agents cannot list delegate grants");
+    }
+    const companyId = req.params.companyId as string;
+    await assertCompanyAccess(req, companyId, db);
+    const grants = await db
+      .select()
+      .from(agentDelegateGrants)
+      .where(and(eq(agentDelegateGrants.hostCompanyId, companyId), isNull(agentDelegateGrants.revokedAt)));
+    res.json(grants);
+  });
+
+  router.delete("/:companyId/delegate-grants/:grantId", async (req, res) => {
+    if (req.actor.type === "agent") {
+      throw forbidden("Agents cannot revoke delegate grants");
+    }
+    const { companyId, grantId } = req.params as { companyId: string; grantId: string };
+    await assertCompanyAccess(req, companyId, db);
+    const actor = getActorInfo(req);
+    const now = new Date();
+    const [revoked] = await db
+      .update(agentDelegateGrants)
+      .set({ revokedAt: now, revokedByUserId: actor.actorId, updatedAt: now })
+      .where(
+        and(
+          eq(agentDelegateGrants.id, grantId),
+          eq(agentDelegateGrants.hostCompanyId, companyId),
+          isNull(agentDelegateGrants.revokedAt),
+        ),
+      )
+      .returning();
+    if (!revoked) {
+      res.status(404).json({ error: "Active grant not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.delegate_grant_revoked",
+      entityType: "agent_delegate_grant",
+      entityId: grantId,
+      details: { delegateAgentId: revoked.delegateAgentId },
+    });
+    res.json(revoked);
   });
 
   return router;

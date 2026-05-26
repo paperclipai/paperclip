@@ -49,7 +49,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await assertCompanyAccess(req, root.companyId, db);
 
     const preview = await treeControlSvc.preview(root.companyId, root.id, req.body);
     const actor = getActorInfo(req);
@@ -79,7 +79,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await assertCompanyAccess(req, root.companyId, db);
 
     const actor = getActorInfo(req);
     const actorInput = {
@@ -304,7 +304,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
     res.json({ activePauseHold });
   });
@@ -316,7 +316,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await assertCompanyAccess(req, root.companyId, db);
     const statusParam = typeof req.query.status === "string" ? req.query.status : null;
     const modeParam = typeof req.query.mode === "string" ? req.query.mode : null;
     const includeMembers = req.query.includeMembers === "true";
@@ -338,7 +338,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await assertCompanyAccess(req, root.companyId, db);
 
     const hold = await treeControlSvc.getHold(root.companyId, req.params.holdId as string);
     if (!hold || hold.rootIssueId !== root.id) {
@@ -358,7 +358,7 @@ export function issueTreeControlRoutes(db: Db) {
         res.status(404).json({ error: "Root issue not found" });
         return;
       }
-      assertCompanyAccess(req, root.companyId);
+      await assertCompanyAccess(req, root.companyId, db);
 
       const actor = getActorInfo(req);
       const hold = await treeControlSvc.releaseHold(root.companyId, root.id, req.params.holdId as string, {

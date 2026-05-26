@@ -568,7 +568,7 @@ export function pluginRoutes(
     if (typeof companyId !== "string" || companyId.trim().length === 0) {
       throw badRequest('"companyId" must be a non-empty string when provided');
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     return companyId;
   }
 
@@ -836,7 +836,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, runContext.companyId);
+    await assertCompanyAccess(req, runContext.companyId, db);
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });
@@ -1511,7 +1511,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     // Set SSE headers
     res.writeHead(200, {
@@ -1600,7 +1600,7 @@ export function pluginRoutes(
         res.status(400).json({ error: "Unable to resolve company for plugin API route" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
@@ -2521,7 +2521,7 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/companies/:companyId/local-folders", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId, companyId } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2552,7 +2552,7 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId, companyId, folderKey } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2575,7 +2575,7 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/validate", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId, companyId, folderKey } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2608,7 +2608,7 @@ export function pluginRoutes(
   router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId, companyId, folderKey } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
