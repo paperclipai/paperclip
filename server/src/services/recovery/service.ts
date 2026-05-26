@@ -1450,9 +1450,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
-    if (sourceIssue && ["done", "cancelled"].includes(sourceIssue.status)) {
-      return { kind: "skipped" as const };
-    }
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
       await logActivity(db, {
@@ -1493,6 +1490,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           now: input.now,
         });
       }
+      return { kind: "skipped" as const };
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
