@@ -2,6 +2,7 @@ const FAVICON_BLOCK_START = "<!-- PAPERCLIP_FAVICON_START -->";
 const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
 const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
 const RUNTIME_BRANDING_BLOCK_END = "<!-- PAPERCLIP_RUNTIME_BRANDING_END -->";
+const DEFAULT_PUBLIC_APP_NAME = "Brabrix Agent";
 
 const DEFAULT_FAVICON_LINKS = [
   '<link rel="icon" href="/favicon.ico" sizes="48x48" />',
@@ -140,6 +141,10 @@ function createFaviconDataUrl(background: string, foreground: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+function resolvePublicAppName(env: NodeJS.ProcessEnv = process.env): string {
+  return nonEmpty(env.PAPERCLIP_PUBLIC_APP_NAME) ?? nonEmpty(env.VITE_PUBLIC_APP_NAME) ?? DEFAULT_PUBLIC_APP_NAME;
+}
+
 export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
 }
@@ -178,15 +183,26 @@ export function renderFaviconLinks(branding: WorktreeUiBranding): string {
   ].join("\n");
 }
 
-export function renderRuntimeBrandingMeta(branding: WorktreeUiBranding): string {
-  if (!branding.enabled || !branding.name || !branding.color || !branding.textColor) return "";
+export function renderRuntimeBrandingMeta(
+  branding: WorktreeUiBranding,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const meta = [
+    `<meta name="paperclip-app-name" content="${escapeHtmlAttribute(resolvePublicAppName(env))}" />`,
+  ];
 
-  return [
+  if (!branding.enabled || !branding.name || !branding.color || !branding.textColor) {
+    return meta.join("\n");
+  }
+
+  meta.push(
     '<meta name="paperclip-worktree-enabled" content="true" />',
     `<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
     `<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
     `<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
-  ].join("\n");
+  );
+
+  return meta.join("\n");
 }
 
 function replaceMarkedBlock(html: string, startMarker: string, endMarker: string, content: string): string {
@@ -212,6 +228,6 @@ export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.e
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,
     RUNTIME_BRANDING_BLOCK_END,
-    renderRuntimeBrandingMeta(branding),
+    renderRuntimeBrandingMeta(branding, env),
   );
 }
