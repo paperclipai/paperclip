@@ -724,6 +724,40 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("persists a user reply before moving an awaiting-user blocked issue to todo via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (mockIssueService.addComment.mock.calls.length === 0) {
+        const err = new Error("Blocked issue is awaiting user input") as Error & { status?: number };
+        err.status = 409;
+        throw err;
+      }
+      return {
+        ...makeIssue("blocked"),
+        ...patch,
+      };
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Omar replied: use preview.blockcast.example" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Omar replied: use preview.blockcast.example",
+      { agentId: undefined, userId: "local-board", runId: null },
+      expect.objectContaining({ authorType: "user" }),
+    );
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    expect(mockIssueService.addComment.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIssueService.update.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

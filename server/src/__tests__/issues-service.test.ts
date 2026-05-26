@@ -3100,6 +3100,150 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects blocked to todo promotion when the latest unanswered agent comment awaits user input", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const commentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorAgentId: assigneeAgentId,
+      body: "Blocked awaiting Omar: @omar, can you pick a hostname for the preview deploy?",
+      createdAt: new Date("2026-05-16T10:08:00.000Z"),
+    });
+
+    await expect(
+      svc.update(issueId, { status: "todo" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        event: "sweep_blocked_promotion_skipped_awaiting_user",
+        counter: "sweep.blocked_promotion_skipped_awaiting_user",
+        commentId,
+      }),
+    });
+  });
+
+  it("allows blocked to todo promotion when the latest agent comment is not awaiting user input", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: assigneeAgentId,
+      body: "Push permissions blocker is resolved; ready to resume.",
+      createdAt: new Date("2026-05-16T10:08:00.000Z"),
+    });
+
+    const updated = await svc.update(issueId, { status: "todo" });
+
+    expect(updated).toMatchObject({ id: issueId, status: "todo" });
+  });
+
+  it("allows blocked to todo promotion after a user replies to the agent question", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: assigneeAgentId,
+        body: "@omar, can you pick a hostname for the preview deploy?",
+        createdAt: new Date("2026-05-16T10:08:00.000Z"),
+      },
+      {
+        companyId,
+        issueId,
+        authorUserId: "omar",
+        body: "Use ocm-preview.blockcast.network.",
+        createdAt: new Date("2026-05-16T10:20:00.000Z"),
+      },
+    ]);
+
+    const updated = await svc.update(issueId, { status: "todo" });
+
+    expect(updated).toMatchObject({ id: issueId, status: "todo" });
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

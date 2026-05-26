@@ -71,6 +71,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { getTelemetryClient } from "../telemetry.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { allocateIdentifier, deleteLinearIssueForCompany } from "./identifier-allocator.js";
 import {
@@ -90,6 +91,8 @@ const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress",
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+const BLOCKED_PROMOTION_AWAITING_USER_EVENT = "sweep_blocked_promotion_skipped_awaiting_user";
+const BLOCKED_PROMOTION_AWAITING_USER_COUNTER = "sweep.blocked_promotion_skipped_awaiting_user";
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -98,6 +101,79 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+
+function awaitingUserInputReason(body: string): string | null {
+  const normalized = body.toLowerCase();
+  const hasExplicitPhrase = [
+    "pick a",
+    "confirm",
+    "let me know",
+    "blocked on clarification",
+    "blocked awaiting",
+    "awaiting user",
+    "awaiting your",
+  ].some((phrase) => normalized.includes(phrase));
+  if (hasExplicitPhrase) return "explicit_phrase";
+
+  const hasQuestion = body.includes("?");
+  const hasUserMention = /(^|\s)@[^\s]+|user:\/\//.test(body);
+  if (hasQuestion && hasUserMention) return "question_with_user_mention";
+
+  return null;
+}
+
+async function findBlockedPromotionAwaitingUserInput(
+  dbOrTx: any,
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
+) {
+  const latestAgentComment = await dbOrTx
+    .select({
+      id: issueComments.id,
+      body: issueComments.body,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        or(
+          sql<boolean>`${issueComments.authorAgentId} IS NOT NULL`,
+          sql<boolean>`${issueComments.createdByRunId} IS NOT NULL`,
+          eq(issueComments.authorType, "agent"),
+        )!,
+      ),
+    )
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+    .limit(1)
+    .then((rows: Array<{ id: string; body: string; createdAt: Date }>) => rows[0] ?? null);
+
+  if (!latestAgentComment) return null;
+  const reason = awaitingUserInputReason(latestAgentComment.body);
+  if (!reason) return null;
+
+  const userReplyAfterAgentQuestion = await dbOrTx
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        sql<boolean>`${issueComments.authorUserId} IS NOT NULL`,
+        gt(issueComments.createdAt, latestAgentComment.createdAt),
+      ),
+    )
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+  if (userReplyAfterAgentQuestion) return null;
+  return {
+    commentId: latestAgentComment.id,
+    commentCreatedAt: latestAgentComment.createdAt,
+    reason,
+  };
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -4868,6 +4944,25 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
+      }
+
+      if (existing.status === "blocked" && issueData.status === "todo") {
+        const awaitingUserInput = await findBlockedPromotionAwaitingUserInput(dbOrTx, existing);
+        if (awaitingUserInput) {
+          const details = {
+            event: BLOCKED_PROMOTION_AWAITING_USER_EVENT,
+            counter: BLOCKED_PROMOTION_AWAITING_USER_COUNTER,
+            issueId: existing.id,
+            commentId: awaitingUserInput.commentId,
+            commentCreatedAt: awaitingUserInput.commentCreatedAt.toISOString(),
+            reason: awaitingUserInput.reason,
+          };
+          logger.warn(details, "blocked to todo promotion skipped because latest agent comment awaits user input");
+          getTelemetryClient()?.track(BLOCKED_PROMOTION_AWAITING_USER_COUNTER, {
+            reason: awaitingUserInput.reason,
+          });
+          throw conflict("Blocked issue is awaiting user input", details);
+        }
       }
 
       if (issueData.status) {

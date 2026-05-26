@@ -5180,6 +5180,31 @@ export function issueRoutes(
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+    let comment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    let commentReferenceDiff: ReturnType<typeof issueReferencesSvc.diffIssueReferenceSummary> | null = null;
+    const persistUserReplyBeforeBlockedReopen =
+      actor.actorType === "user" &&
+      effectiveMoveToTodoRequested &&
+      isBlocked &&
+      !hasUnresolvedFirstClassBlockers;
+
+    if (persistUserReplyBeforeBlockedReopen) {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorId,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? "user",
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+      await issueReferencesSvc.syncComment(comment.id);
+      const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
+      commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+        commentReferenceSummaryBefore,
+        commentReferenceSummaryAfter,
+      );
+    }
 
     let scheduledRetrySupersededByComment = false;
     let cancelledScheduledRetryRunId: string | null = null;
@@ -5283,21 +5308,23 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
-    await issueReferencesSvc.syncComment(comment.id);
-    const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
-    const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
-      commentReferenceSummaryBefore,
-      commentReferenceSummaryAfter,
-    );
+    if (!comment) {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+      });
+      await issueReferencesSvc.syncComment(comment.id);
+      const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
+      commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
+        commentReferenceSummaryBefore,
+        commentReferenceSummaryAfter,
+      );
+    }
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
@@ -5329,9 +5356,9 @@ export function issueRoutes(
           : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...summarizeIssueReferenceActivityDetails({
-          addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
-          removedReferencedIssues: commentReferenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
-          currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          addedReferencedIssues: (commentReferenceDiff?.addedReferencedIssues ?? []).map(summarizeIssueRelationForActivity),
+          removedReferencedIssues: (commentReferenceDiff?.removedReferencedIssues ?? []).map(summarizeIssueRelationForActivity),
+          currentReferencedIssues: (commentReferenceDiff?.currentReferencedIssues ?? []).map(summarizeIssueRelationForActivity),
         }),
       },
     });
