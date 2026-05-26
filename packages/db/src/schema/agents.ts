@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   jsonb,
+  real,
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -27,6 +28,7 @@ export const agents = pgTable(
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
+    costScaleFactor: real("cost_scale_factor").notNull().default(1.0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     pauseReason: text("pause_reason"),

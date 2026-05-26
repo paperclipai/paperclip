@@ -638,6 +638,13 @@
       "when": 1779573019125,
       "tag": "0090_resource_memberships",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1779674400000,
+      "tag": "0091_cost_scale_factor",
+      "breakpoints": true
     }
   ]
 }

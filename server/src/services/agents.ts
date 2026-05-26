@@ -39,6 +39,7 @@ const CONFIG_REVISION_FIELDS = [
   "adapterConfig",
   "runtimeConfig",
   "defaultEnvironmentId",
+  "costScaleFactor",
   "budgetMonthlyCents",
   "metadata",
 ] as const;
