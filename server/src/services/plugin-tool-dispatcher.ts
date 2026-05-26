@@ -30,6 +30,7 @@ import type {
 import type { ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import type { PluginRunContextRegistry } from "./plugin-run-context-registry.js";
 import {
   createPluginToolRegistry,
   type PluginToolRegistry,
@@ -74,6 +75,13 @@ export interface PluginToolDispatcherOptions {
   lifecycleManager?: PluginLifecycleManager;
   /** Database connection for looking up plugin records. */
   db?: Db;
+  /**
+   * PLA-574 — registry where the dispatching agent's runContext is recorded
+   * for the duration of each `executeTool` call so the worker's later
+   * `artifacts.fetch` callbacks can be authorized against the dispatching
+   * agent (not the worker JWT).
+   */
+  runContextRegistry?: PluginRunContextRegistry;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,11 +234,13 @@ export interface PluginToolDispatcher {
 export function createPluginToolDispatcher(
   options: PluginToolDispatcherOptions = {},
 ): PluginToolDispatcher {
-  const { workerManager, lifecycleManager, db } = options;
+  const { workerManager, lifecycleManager, db, runContextRegistry } = options;
   const log = logger.child({ service: "plugin-tool-dispatcher" });
 
-  // Create the underlying tool registry, backed by the worker manager
-  const registry = createPluginToolRegistry(workerManager);
+  // Create the underlying tool registry, backed by the worker manager.
+  // The run-context registry is threaded through so each `executeTool` call
+  // records the dispatching agent's identity for the duration of the call.
+  const registry = createPluginToolRegistry(workerManager, runContextRegistry);
 
   // Track lifecycle event listeners so we can remove them on teardown
   let enabledListener: ((payload: { pluginId: string; pluginKey: string }) => void) | null = null;

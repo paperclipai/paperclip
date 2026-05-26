@@ -48,6 +48,7 @@ import { createPluginWorkerManager, type PluginWorkerManager } from "./services/
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createPluginRunContextRegistry } from "./services/plugin-run-context-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -224,10 +225,15 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  // PLA-574: shared run-context registry tying the dispatching agent's
+  // identity to (pluginDbId, runId) for the duration of each tool call,
+  // so the worker's `artifacts.fetch` callback can be authorized server-side.
+  const pluginRunContextRegistry = createPluginRunContextRegistry();
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
     db,
+    runContextRegistry: pluginRunContextRegistry,
   });
   const jobCoordinator = createPluginJobCoordinator({
     db,
@@ -261,6 +267,8 @@ export async function createApp(
         };
         const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
           pluginWorkerManager: workerManager,
+          storageService: opts.storageService,
+          runContextRegistry: pluginRunContextRegistry,
         });
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({
@@ -439,6 +447,7 @@ export async function createApp(
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    pluginRunContextRegistry.dispose();
   });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();

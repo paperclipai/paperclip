@@ -25,6 +25,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginRunContextRegistry } from "./plugin-run-context-registry.js";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -226,6 +227,7 @@ export interface PluginToolRegistry {
  */
 export function createPluginToolRegistry(
   workerManager?: PluginWorkerManager,
+  runContextRegistry?: PluginRunContextRegistry,
 ): PluginToolRegistry {
   const log = logger.child({ service: "plugin-tool-registry" });
 
@@ -422,7 +424,26 @@ export function createPluginToolRegistry(
         runContext,
       };
 
-      const result = await workerManager.call(dbId, "executeTool", rpcParams);
+      // PLA-574: register the dispatching agent's runContext under
+      // (pluginDbId, runId) so the host's `artifacts.fetch` handler can
+      // authorize on the dispatching agent — not the worker JWT — when the
+      // worker calls back via the SDK helper. Always deregister to keep the
+      // in-memory registry bounded; the registry also has a TTL sweep as a
+      // belt-and-braces guard against orphans from a crashed worker.
+      runContextRegistry?.register(dbId, {
+        agentId: runContext.agentId,
+        companyId: runContext.companyId,
+        runId: runContext.runId,
+        projectId: runContext.projectId,
+        toolName,
+        registeredAt: Date.now(),
+      });
+      let result: ToolResult;
+      try {
+        result = await workerManager.call(dbId, "executeTool", rpcParams);
+      } finally {
+        runContextRegistry?.deregister(dbId, runContext.runId);
+      }
 
       log.debug(
         {
