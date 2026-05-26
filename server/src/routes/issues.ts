@@ -43,6 +43,7 @@ import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
+  awaitingHumanBridgeRuntime,
   clampIssueListLimit,
   documentService,
   executionWorkspaceService,
@@ -353,6 +354,7 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const routinesSvc = routineService(db);
+  const awaitingHumanBridge = awaitingHumanBridgeRuntime(db);
   const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -2821,6 +2823,12 @@ export function issueRoutes(
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction resolved via UI.",
+      });
       await finalizeAcceptedInteractionResolution({
         db,
         heartbeat,
@@ -2861,6 +2869,12 @@ export function issueRoutes(
         actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction resolved via UI.",
       });
 
       await logActivity(db, {
@@ -2918,6 +2932,12 @@ export function issueRoutes(
         actorType: actor.actorType,
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await awaitingHumanBridge.closeOpenBridgesForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        outcome: "superseded",
+        reason: "Issue thread interaction answered via UI.",
       });
 
       await logActivity(db, {

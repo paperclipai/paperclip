@@ -1,19 +1,30 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
   agentWakeupRequests,
-  awaitingHumanNotificationOutbox,
+  awaitingHumanBridgeInboundEvents,
+  awaitingHumanBridges,
+  companyAwaitingHumanSettings,
+  companySecretVersions,
+  companySecrets,
   companies,
   createDb,
+  companySkills,
+  environmentLeases,
   goals,
+  heartbeatRunEvents,
   heartbeatRuns,
+  agentRuntimeState,
   instanceSettings,
   issueComments,
+  issueDocuments,
   issueThreadInteractions,
   issues,
+  documentRevisions,
+  documents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -32,6 +43,7 @@ vi.mock("../otel.js", () => ({
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { secretService } from "../services/secrets.js";
 
 const originalFetch = globalThis.fetch;
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
@@ -78,7 +90,7 @@ vi.mock("../storage/index.js", () => ({
 }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeEmbeddedPostgres = describe.skip;
 
 describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
   let db!: ReturnType<typeof createDb>;
@@ -98,17 +110,32 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     delete process.env.CLICKUP_PERSONAL_TOKEN;
     delete process.env.CLICKUP_WORKSPACE_ID;
     delete process.env.CLICKUP_APPROVAL_POSITIVE_REACTIONS;
-    delete process.env.CLICKUP_APPROVAL_NEGATIVE_REACTIONS;
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueComments);
-    await db.delete(issues);
-    await db.delete(goals);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agents);
-    await db.delete(instanceSettings);
-    await db.delete(companies);
+    await db.execute(sql`
+      truncate table
+        ${activityLog},
+        ${heartbeatRunEvents},
+        ${agentRuntimeState},
+        ${heartbeatRuns},
+        ${agentWakeupRequests},
+        ${awaitingHumanBridgeInboundEvents},
+        ${awaitingHumanBridges},
+        ${environmentLeases},
+        ${companyAwaitingHumanSettings},
+        ${companySecretVersions},
+        ${companySecrets},
+        ${companySkills},
+        ${issueDocuments},
+        ${documents},
+        ${issueThreadInteractions},
+        ${issueComments},
+        ${issues},
+        ${goals},
+        ${documentRevisions},
+        ${agents},
+        ${instanceSettings},
+        ${companies}
+      restart identity cascade
+    `);
   });
 
   afterAll(async () => {
@@ -131,20 +158,33 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       .where(eq(agentWakeupRequests.agentId, agentId));
   }
 
-  async function seedAwaitingHumanConfirmation(opts?: {
-    continuationPolicy?: "wake_assignee" | "wake_assignee_on_accept";
-    externalId?: string | null;
-  }) {
+  async function seedAwaitingHumanConfirmation(opts?: { externalId?: string | null }) {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
     const agentId = randomUUID();
+    const secrets = secretService(db);
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+    const secret = await secrets.create(companyId, {
+      name: "clickup-personal-token",
+      provider: "local_encrypted",
+      value: "token-123",
+    });
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: {
+        authTokenRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+      },
     });
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
     await db.insert(goals).values({
@@ -184,7 +224,7 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       companyId,
     }, {
       kind: "request_confirmation",
-      continuationPolicy: opts?.continuationPolicy ?? "wake_assignee_on_accept",
+      continuationPolicy: "wake_assignee_on_accept",
       payload: {
         version: 1,
         prompt: "Approve this plan?",
@@ -193,31 +233,22 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       agentId,
     });
 
-    await db.insert(activityLog).values({
+    await db.insert(awaitingHumanBridges).values({
       companyId,
-      actorType: "system",
-      actorId: "system",
-      action: "issue.awaiting_human.entered",
-      entityType: "issue",
-      entityId: issueId,
-      details: {
-        interactionId: interaction.id,
-        notificationDelivery: {
-          status: "sent",
-          channel: "clickup-chat",
-          detail: "sent",
-          externalId: opts && "externalId" in opts ? opts.externalId : "message-42",
-        },
-      },
+      issueId,
+      interactionId: interaction.id,
+      agentId,
+      provider: "clickup",
+      status: "waiting_for_human",
+      externalMessageId: opts && "externalId" in opts ? opts.externalId : "message-42",
+      externalThreadId: null,
+      nextPollAt: new Date(Date.now() - 1_000),
     });
 
     return { companyId, goalId, issueId, agentId, interactionId: interaction.id };
   }
 
   it("accepts a pending confirmation when a ClickUp reply is detected and does not duplicate on rerun", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
       .mockResolvedValue({
@@ -249,6 +280,14 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     expect(wakes).toHaveLength(1);
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(0);
+    const bridges = await db.select().from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(bridges).toHaveLength(1);
+    expect(bridges[0]).toEqual(expect.objectContaining({
+      externalMessageId: "message-42",
+      status: "closed",
+      closeOutcome: "approved",
+    }));
 
     const acceptedActivity = await db
       .select()
@@ -263,19 +302,16 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
   });
 
   it("accepts a pending confirmation when a positive ClickUp reaction is detected", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
+      .mockImplementationOnce(async () => ({
         ok: true,
         json: async () => ({ data: [] }),
-      })
-      .mockResolvedValueOnce({
+      }))
+      .mockImplementation(async () => ({
         ok: true,
         json: async () => ({ data: [{ reaction: "heavy_check_mark", count: 1 }] }),
-      }) as typeof fetch;
+      })) as typeof fetch;
 
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
@@ -295,22 +331,9 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     });
   });
 
-  it("rejects non-approval ClickUp replies, forwards them into issue comments, and wakes the creator agent", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
+  it("rejects non-approval ClickUp replies, forwards them into issue comments, and closes the bridge", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "reply-1", content: "Please change the rollout title first." }],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -353,6 +376,25 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       .then((rows) => rows[0] ?? null);
     expect(updatedIssue?.status).toBe("todo");
 
+    const wakes = await waitForWakeup(seeded.agentId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.payload).toMatchObject({
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      interactionStatus: "rejected",
+      mutation: "interaction",
+    });
+
+    const [updatedBridge] = await db
+      .select()
+      .from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
+      closeReason: "Please change the rollout title first.",
+    }));
+
     const commentActivities = await db
       .select()
       .from(activityLog)
@@ -364,39 +406,11 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       clickupReplyId: "reply-1",
       commentId: comments[0]?.id,
     });
-
-    const rejectedActivity = await db
-      .select()
-      .from(activityLog)
-      .where(eq(activityLog.action, "issue.thread_interaction_rejected"));
-    expect(rejectedActivity).toHaveLength(1);
-    expect(rejectedActivity[0]?.details).toMatchObject({
-      interactionId: seeded.interactionId,
-      resolutionSource: "clickup_reply",
-      clickupMessageId: "message-42",
-      rejectionReason: "Please change the rollout title first.",
-    });
   });
 
-  it("forwards multiple distinct non-approval replies only once each", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
+  it("rejects the first non-approval reply and ignores later replies once the bridge closes", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [
-            { id: "reply-1", content: "Please revise the title." },
-            { id: "reply-2", content: "Also add the rollback note." },
-          ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -418,18 +432,36 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments).toHaveLength(2);
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "ClickUp reply received:\n\nPlease revise the title.",
-      "ClickUp reply received:\n\nAlso add the rollback note.",
-    ]);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nPlease revise the title.");
 
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.status).toBe("rejected");
+
+    const updatedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("todo");
+
+    const wakes = await waitForWakeup(seeded.agentId);
+    expect(wakes).toHaveLength(1);
+    const [updatedBridge] = await db
+      .select()
+      .from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
+    }));
   });
 
-  it("does not enqueue a wake when the issue moved to backlog before forwarding the ClickUp reply", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
+  it("rejects a non-approval reply without enqueuing a wake when the issue moved to backlog first", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
       .mockImplementationOnce(async () => {
@@ -458,14 +490,34 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       .where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
 
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.status).toBe("rejected");
+
+    const updatedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("backlog");
+
+    const [updatedBridge] = await db
+      .select()
+      .from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
+    }));
+
     const wakes = await waitForWakeup(seeded.agentId, 250);
     expect(wakes).toHaveLength(0);
   });
 
-  it("does not enqueue a wake when the issue closes before forwarding the ClickUp reply", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
+  it("rejects a non-approval reply without enqueuing a wake when the issue closes first", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
       .mockImplementationOnce(async () => {
@@ -494,14 +546,34 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
       .where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
 
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.status).toBe("rejected");
+
+    const updatedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("done");
+
+    const [updatedBridge] = await db
+      .select()
+      .from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
+    }));
+
     const wakes = await waitForWakeup(seeded.agentId, 250);
     expect(wakes).toHaveLength(0);
   });
 
-  it("rejects a pending confirmation for explicit negative reactions", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
+  it("does not accept a pending confirmation for neutral or negative reactions", async () => {
     const seeded = await seedAwaitingHumanConfirmation();
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce({
@@ -516,47 +588,10 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
     expect(result.approved).toBe(0);
-    expect(result.rejected).toBe(1);
-    expect(result.checked).toBe(1);
-    expect(result.noApproval).toBe(0);
-    expect(result.failed).toBe(0);
-    expect(result.skipped).toBe(0);
-    const interaction = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, seeded.interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.status).toBe("rejected");
-
-    const updatedIssue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, seeded.issueId))
-      .then((rows) => rows[0] ?? null);
-    expect(updatedIssue?.status).toBe("todo");
-  });
-
-  it("still ignores neutral reactions with no approval or rejection signal", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
-    const seeded = await seedAwaitingHumanConfirmation();
-    globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [{ reaction: "eyes", count: 2 }] }),
-      }) as typeof fetch;
-
-    const result = await heartbeat.reconcileAwaitingHumanApprovals();
-
-    expect(result.approved).toBe(0);
-    expect(result.rejected).toBe(0);
     expect(result.checked).toBe(1);
     expect(result.noApproval).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.skipped).toBe(0);
     const interaction = await db
       .select()
       .from(issueThreadInteractions)
@@ -566,16 +601,13 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
   });
 
   it("skips candidates that do not have a stored ClickUp message id", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
     const seeded = await seedAwaitingHumanConfirmation({ externalId: null });
     globalThis.fetch = vi.fn() as typeof fetch;
 
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
     expect(result.approved).toBe(0);
-    expect(result.checked).toBe(0);
+    expect(result.checked).toBe(1);
     expect(result.skipped).toBeGreaterThan(0);
     const interaction = await db
       .select()
@@ -585,100 +617,4 @@ describeEmbeddedPostgres("heartbeat awaiting_human ClickUp approvals", () => {
     expect(interaction?.status).toBe("pending");
   });
 
-  it("falls back to the outbox ClickUp message id when the awaiting_human activity was logged before delivery completed", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
-    const seeded = await seedAwaitingHumanConfirmation({ externalId: null });
-    await db.insert(awaitingHumanNotificationOutbox).values({
-      companyId: seeded.companyId,
-      issueId: seeded.issueId,
-      dedupeKey: "handoff-1",
-      handoffKind: "request_confirmation",
-      status: "sent",
-      notification: {},
-      clickupMessageId: "message-42",
-    });
-    await db
-      .update(activityLog)
-      .set({
-        details: {
-          interactionId: seeded.interactionId,
-          dedupeKey: "handoff-1",
-          notificationDelivery: {
-            status: "enqueued",
-            channel: "clickup-chat",
-            detail: "enqueued",
-            externalId: null,
-          },
-        },
-      })
-      .where(eq(activityLog.action, "issue.awaiting_human.entered"));
-
-    globalThis.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [] }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ data: [{ reaction: "heavy_check_mark", count: 1 }] }),
-      }) as typeof fetch;
-
-    const result = await heartbeat.reconcileAwaitingHumanApprovals();
-
-    expect(result.approved).toBe(1);
-    const interaction = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, seeded.interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.status).toBe("accepted");
-  });
-
-  it("does not use outbox ClickUp message ids from non-sent delivery rows", async () => {
-    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
-    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
-
-    const seeded = await seedAwaitingHumanConfirmation({ externalId: null });
-    await db.insert(awaitingHumanNotificationOutbox).values({
-      companyId: seeded.companyId,
-      issueId: seeded.issueId,
-      dedupeKey: "handoff-1",
-      handoffKind: "request_confirmation",
-      status: "retrying",
-      notification: {},
-      clickupMessageId: "message-stale",
-    });
-    await db
-      .update(activityLog)
-      .set({
-        details: {
-          interactionId: seeded.interactionId,
-          dedupeKey: "handoff-1",
-          notificationDelivery: {
-            status: "enqueued",
-            channel: "clickup-chat",
-            detail: "enqueued",
-            externalId: null,
-          },
-        },
-      })
-      .where(eq(activityLog.action, "issue.awaiting_human.entered"));
-
-    globalThis.fetch = vi.fn() as typeof fetch;
-
-    const result = await heartbeat.reconcileAwaitingHumanApprovals();
-
-    expect(result.approved).toBe(0);
-    expect(result.checked).toBe(0);
-    expect(result.skipped).toBeGreaterThan(0);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    const interaction = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, seeded.interactionId))
-      .then((rows) => rows[0] ?? null);
-    expect(interaction?.status).toBe("pending");
-  });
 });

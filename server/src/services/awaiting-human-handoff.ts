@@ -51,6 +51,7 @@ type AwaitingHumanHandoffInput = {
   interaction?: AwaitingHumanInteraction | null;
   blockers?: AwaitingHumanBlocker[] | null;
   emitIssueUpdatedActivity?: boolean;
+  delivery?: "enqueue" | "none";
 };
 
 function truncateText(value: string, maxLength: number) {
@@ -254,15 +255,26 @@ export async function maybeLogAwaitingHumanHandoff(
     });
   }
 
-  const delivery = await enqueueAwaitingHumanNotification(db, {
-    companyId: input.updatedIssue.companyId,
-    issueId: input.updatedIssue.id,
-    dedupeKey,
-    handoffKind: input.handoffKind,
-    notification,
-  });
+  const delivery = input.delivery === "none"
+    ? {
+      status: "skipped",
+      channel: "audit-only",
+      detail: "audit-only",
+      externalId: null,
+    }
+    : await enqueueAwaitingHumanNotification(db, {
+      companyId: input.updatedIssue.companyId,
+      issueId: input.updatedIssue.id,
+      dedupeKey,
+      handoffKind: input.handoffKind,
+      notification,
+    });
 
-  if (delivery.status !== "sent" && delivery.status !== "enqueued") {
+  if (
+    input.delivery !== "none"
+    && delivery.status !== "sent"
+    && delivery.status !== "enqueued"
+  ) {
     logger.warn(
       {
         companyId: input.updatedIssue.companyId,
@@ -302,7 +314,7 @@ export async function maybeLogAwaitingHumanHandoff(
       interactionKind: input.interaction?.kind ?? null,
       blockerIssueId: firstBlocker?.id ?? null,
       blockerIdentifier: firstBlocker?.identifier ?? null,
-      dedupeKey: delivery.status === "sent" || delivery.status === "enqueued" ? dedupeKey : null,
+      dedupeKey,
       notification,
       notificationDelivery: {
         status: delivery.status,
@@ -313,5 +325,5 @@ export async function maybeLogAwaitingHumanHandoff(
     },
   });
 
-  return delivery.status === "sent" || delivery.status === "enqueued";
+  return delivery.status === "sent" || delivery.status === "enqueued" || input.delivery === "none";
 }
