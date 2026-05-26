@@ -1,14 +1,26 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { Router, type Request, type Response } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authSessions, authUsers } from "@paperclipai/db";
+import { authSessions, authUsers, companies, companyMemberships } from "@paperclipai/db";
 import { deriveAuthCookiePrefix } from "../auth/better-auth.js";
 import { verifyPortalJwt, type PortalJwtClaims } from "../auth/portal-jwt.js";
 import { logger } from "../middleware/logger.js";
 
 const REQUIRED_APP_ACCESS = "CORTEX";
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+// Stable UUID for the fallback company assigned to portal-provisioned users
+// when the Portal JWT does not yet carry an org_id claim. Picked deterministically
+// so re-deploys converge on the same row.
+const DEFAULT_PORTAL_COMPANY_ID = "00000000-0000-4000-a000-00000000c0de";
+const DEFAULT_PORTAL_COMPANY_NAME = "WBIT Portal Users";
+const PORTAL_MEMBERSHIP_ROLE = "operator";
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
 
 function sessionCookieName(): string {
   return `${deriveAuthCookiePrefix()}.session_token`;
@@ -84,6 +96,63 @@ async function findOrCreateCortexUser(
   return { id, created: true };
 }
 
+async function findOrCreateCompany(
+  db: Db,
+  claims: PortalJwtClaims,
+  now: Date,
+): Promise<{ id: string; created: boolean; fallback: boolean }> {
+  const fallback = !claims.org_id || !isUuid(claims.org_id);
+  const companyId = fallback ? DEFAULT_PORTAL_COMPANY_ID : (claims.org_id as string);
+  const name = fallback
+    ? DEFAULT_PORTAL_COMPANY_NAME
+    : claims.org_name && claims.org_name.trim().length > 0
+      ? claims.org_name.trim()
+      : `Portal Org ${companyId.slice(0, 8)}`;
+
+  const existing = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows: { id: string }[]) => rows[0] ?? null);
+  if (existing) return { id: existing.id, created: false, fallback };
+
+  await db.insert(companies).values({
+    id: companyId,
+    name,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { id: companyId, created: true, fallback };
+}
+
+async function findOrCreateCompanyMembership(
+  db: Db,
+  companyId: string,
+  userId: string,
+): Promise<{ created: boolean }> {
+  const existing = await db
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      ),
+    )
+    .then((rows: { id: string }[]) => rows[0] ?? null);
+  if (existing) return { created: false };
+
+  await db.insert(companyMemberships).values({
+    companyId,
+    principalType: "user",
+    principalId: userId,
+    status: "active",
+    membershipRole: PORTAL_MEMBERSHIP_ROLE,
+  });
+  return { created: true };
+}
+
 async function insertSession(
   db: Db,
   userId: string,
@@ -142,12 +211,31 @@ export function portalCallbackRoutes(db: Db) {
 
     const now = new Date();
     const { id: userId, created } = await findOrCreateCortexUser(db, claims, now);
+    const {
+      id: companyId,
+      created: companyCreated,
+      fallback: companyFallback,
+    } = await findOrCreateCompany(db, claims, now);
+    const { created: membershipCreated } = await findOrCreateCompanyMembership(
+      db,
+      companyId,
+      userId,
+    );
     const { token } = await insertSession(db, userId, now, req);
 
     setSessionCookie(res, token, cookieSecret, detectHttps(req));
 
     logger.info(
-      { sub: claims.sub, userId, created, app_access: claims.app_access },
+      {
+        sub: claims.sub,
+        userId,
+        created,
+        companyId,
+        companyCreated,
+        companyFallback,
+        membershipCreated,
+        app_access: claims.app_access,
+      },
       "Portal JWT exchanged for Cortex session",
     );
 
