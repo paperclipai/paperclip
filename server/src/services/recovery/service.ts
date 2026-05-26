@@ -31,6 +31,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
+import { isAutoRecoveryIssuesEnabled } from "../auto-recovery-flag.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -1857,8 +1858,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    autoRecoveryEnabled?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+
+    const autoRecoveryEnabled = input.autoRecoveryEnabled ?? (await isAutoRecoveryIssuesEnabled(db));
+    if (!autoRecoveryEnabled) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.issue.assigneeAgentId,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.stranded_recovery_suppressed",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          source: "recovery.ensure_stranded_issue_recovery_issue",
+          identifier: input.issue.identifier,
+          previousStatus: input.previousStatus,
+          recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        },
+      });
+      return null;
+    }
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
@@ -2182,6 +2208,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     comment?: string;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    autoRecoveryEnabled?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -2198,6 +2225,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      autoRecoveryEnabled: input.autoRecoveryEnabled,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
@@ -2339,6 +2367,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const autoRecoveryEnabled = await isAutoRecoveryIssuesEnabled(db);
     const candidates = await db
       .select()
       .from(issues)
@@ -2439,6 +2468,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
+            autoRecoveryEnabled,
           });
           if (updated) {
             result.escalated += 1;
@@ -2488,6 +2518,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
+          autoRecoveryEnabled,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
@@ -2514,6 +2545,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             comment:
               "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
               "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+            autoRecoveryEnabled,
           });
           if (updated) {
             result.escalated += 1;
@@ -2555,6 +2587,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
+          autoRecoveryEnabled,
         });
         if (updated) {
           result.escalated += 1;

@@ -36,8 +36,11 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("productivity review service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let priorAutoRecoveryFlag: string | undefined;
 
   beforeAll(async () => {
+    priorAutoRecoveryFlag = process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+    process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = "on";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-productivity-review-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
@@ -47,6 +50,11 @@ describeEmbeddedPostgres("productivity review service", () => {
   });
 
   afterAll(async () => {
+    if (priorAutoRecoveryFlag === undefined) {
+      delete process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+    } else {
+      process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = priorAutoRecoveryFlag;
+    }
     await tempDb?.cleanup();
   });
 
@@ -562,5 +570,40 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("suppresses productivity review creation and emits an activity entry when PAPERCLIP_AUTO_RECOVERY_ISSUES=off", async () => {
+    const previous = process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+    process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = "off";
+    try {
+      const now = new Date("2026-04-28T12:00:00.000Z");
+      const seeded = await seedAssignedIssue();
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+        now,
+      });
+
+      const result = await productivityReviewService(db).reconcileProductivityReviews({
+        now,
+        companyId: seeded.companyId,
+      });
+
+      expect(result.created).toBe(0);
+      expect(result.suppressed).toBe(1);
+      expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+      const suppressed = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "issue.productivity_review_suppressed"));
+      expect(suppressed).toHaveLength(1);
+      expect(suppressed[0]?.entityId).toBe(seeded.issueId);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES;
+      else process.env.PAPERCLIP_AUTO_RECOVERY_ISSUES = previous;
+    }
   });
 });
