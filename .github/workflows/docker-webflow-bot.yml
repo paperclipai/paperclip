@@ -10,16 +10,24 @@ name: Docker (webflow-bot)
 # That dependency means this workflow must succeed before downstream
 # Docker builds can pick up changes.
 #
-# Trigger: any change under packages/services/webflow-bot/. Master and
-# tags only; no PR builds (HARBOR_PASSWORD org secret isn't available to
-# forks anyway, so a PR build would just 401 on push). Pre-build gate
-# runs pytest + ruff against the Python source so an invalid extract
-# fails CI before the 5-minute Camoufox image build wastes runner time.
+# Trigger: any change under packages/services/webflow-bot/.
+#
+# - pull_request: runs ONLY the `test` job (ruff + pytest) so PRs get
+#   gated before merge. Mirrors PR #180's fix for docker-figma-bot.yml
+#   (closes the gate gap that bit PR #173 — green PR-level CI then 1m3s
+#   post-merge ruff failure that blocked the image rebuild).
+#   build-and-push is gated on `github.event_name != pull_request`
+#   so fork PRs (which lack HARBOR_PASSWORD) cannot 401 attempting to push.
+# - push to master or webflow-bot-v* tags: runs both jobs.
+# - workflow_dispatch: manually fires both jobs from any ref.
 #
 # Security: this workflow does NOT interpolate any untrusted event input
-# (github.event.*, github.head_ref, etc.) into run: commands — only
-# repository secrets via env. Mirrored from docker-mcp-gateway.yml which
-# follows the same pattern.
+# (github.event.*, github.head_ref, etc.) into run: commands. The only
+# secrets used are HARBOR_USERNAME/HARBOR_PASSWORD via env (build-and-push
+# job only). Adding pull_request does NOT expose secrets to fork PRs
+# because the if-gate on build-and-push prevents that job from running
+# on pull_request events. Mirrored from docker-mcp-gateway.yml +
+# docker-figma-bot.yml.
 
 on:
   push:
@@ -30,6 +38,10 @@ on:
       - ".github/workflows/docker-webflow-bot.yml"
     tags:
       - "webflow-bot-v*"
+  pull_request:
+    paths:
+      - "packages/services/webflow-bot/**"
+      - ".github/workflows/docker-webflow-bot.yml"
   workflow_dispatch:
 
 permissions:
@@ -66,6 +78,10 @@ jobs:
         run: pytest tests/ -v
 
   build-and-push:
+    # Skip on pull_request events: forks don't have HARBOR_PASSWORD, and
+    # same-repo PRs shouldn't push transient sha tags pre-merge.
+    # Mirrors docker-figma-bot.yml.
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: self-hosted
     timeout-minutes: 30
