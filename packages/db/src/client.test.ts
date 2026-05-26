@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
@@ -6,6 +5,7 @@ import {
   applyPendingMigrations,
   inspectMigrations,
 } from "./client.js";
+import { computeMigrationHash } from "./migration-utils.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -26,7 +26,8 @@ async function migrationHash(migrationFile: string): Promise<string> {
     new URL(`./migrations/${migrationFile}`, import.meta.url),
     "utf8",
   );
-  return createHash("sha256").update(content).digest("hex");
+  // Normalize CRLF → LF to match the hash stored by the migration engine.
+  return computeMigrationHash(content);
 }
 
 afterEach(async () => {
