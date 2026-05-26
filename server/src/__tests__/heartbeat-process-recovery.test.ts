@@ -897,6 +897,111 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.errorCode).toBe("process_lost");
   });
 
+  it("auto-cancels open stale_active_run_evaluation review when reaper finalizes the run to failed (PCL-2571)", async () => {
+    // PCL-2571: the silent-run detector files a CTO review issue when an
+    // active run has been silent past the suspicion threshold. There's a
+    // race window where the detector flags a run that's about to be
+    // process_lost-reaped: detector creates review, reaper then flips run
+    // to `failed` with errorCode=process_lost. Historically the review
+    // stayed `todo` on CTO's plate indefinitely — 11 such issues accreted
+    // in CTO's inbox over 5 days as of 2026-05-25. The reaper now closes
+    // any open stale_active_run_evaluation review for the run with an
+    // explanatory comment, because the silence is fully explained by the
+    // process loss and doesn't require operator review.
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+
+    // Seed a pre-existing review issue for this run — what the detector
+    // would have created in the suspicion-threshold sweep moments before
+    // the reaper sweep.
+    const reviewId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: reviewId,
+      companyId,
+      title: "Review silent active run for CodexCoder",
+      description: "Paperclip detected suspicious output silence on an active heartbeat run.",
+      status: "todo",
+      priority: "medium",
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      issueNumber: 999,
+      identifier: `${issuePrefix}-999`,
+    });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+
+    const [review] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, reviewId));
+    expect(review?.status).toBe("cancelled");
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, reviewId));
+    expect(comments.length).toBeGreaterThanOrEqual(1);
+    const body = comments.map((c) => c.body).join("\n");
+    expect(body).toContain("Auto-cancelled");
+    expect(body).toContain("process_lost");
+  });
+
+  it("leaves stale_active_run_evaluation review alone when reaper does not finalize the run", async () => {
+    // Counter-test for the PCL-2571 fix: if the reaper skips (fresh output,
+    // live process, etc.), the existing review issue must NOT be touched.
+    const fresh = new Date(Date.now() - 30 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: fresh,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+
+    const reviewId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: reviewId,
+      companyId,
+      title: "Review silent active run for CodexCoder",
+      description: "Paperclip detected suspicious output silence on an active heartbeat run.",
+      status: "todo",
+      priority: "medium",
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      issueNumber: 998,
+      identifier: `${issuePrefix}-998`,
+    });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const [review] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, reviewId));
+    expect(review?.status).toBe("todo");
+  });
+
   it("does NOT reap external-lifecycle runs whose Job is missing from the kube snapshot when output is still fresh (BLO-6843 false-positive guard)", async () => {
     // RCA 2026-05-23: the kube-API list snapshot can transiently omit
     // healthy Jobs (list timeout returning partial results, eventual

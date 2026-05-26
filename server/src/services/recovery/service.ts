@@ -976,6 +976,59 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // PCL-2571 (2026-05-25 RCA): when an active run is silent past the
+  // suspicion threshold and the detector files a `stale_active_run_evaluation`
+  // review, but moments later the heartbeat reaper finalizes the run to
+  // `failed`/`cancelled` (process_lost is the dominant case), the silence
+  // is fully explained by the termination and no operator review is needed.
+  // Without this cleanup hook the review stayed `todo` on the CTO inbox
+  // indefinitely — 11 stuck reviews accumulated in 5 days at the time of
+  // this writing. Callers in the heartbeat reaper / cancellation paths
+  // invoke this AFTER setRunStatus has flipped the run to its terminal
+  // state, so a fresh detector sweep on the same run would no longer
+  // create a new review either.
+  async function dismissStaleEvaluationOnRunTerminated(input: {
+    companyId: string;
+    runId: string;
+    agentId: string | null;
+    terminalStatus: "failed" | "cancelled" | "timed_out";
+    errorCode: string | null;
+    errorMessage: string | null;
+  }) {
+    const evaluation = await findOpenStaleRunEvaluation(input.companyId, input.runId);
+    if (!evaluation) return { kind: "none" as const };
+    if (isTerminalIssueStatus(evaluation.status)) return { kind: "none" as const };
+    await issuesSvc.update(evaluation.id, { status: "cancelled" });
+    const bodyLines = [
+      `Auto-cancelled: source run finalized to \`${input.terminalStatus}\`${
+        input.errorCode ? ` (errorCode: \`${input.errorCode}\`)` : ""
+      }.`,
+      "",
+      "The output silence that prompted this review was explained by the heartbeat reaper rather than requiring operator intervention.",
+    ];
+    if (input.errorMessage) {
+      bodyLines.push("", `> ${input.errorMessage}`);
+    }
+    await issuesSvc.addComment(evaluation.id, bodyLines.join("\n"), { runId: input.runId });
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.agentId,
+      runId: input.runId,
+      action: "heartbeat.output_stale_auto_dismissed_on_termination",
+      entityType: "issue",
+      entityId: evaluation.id,
+      details: {
+        source: "recovery.dismiss_on_run_terminated",
+        terminalStatus: input.terminalStatus,
+        errorCode: input.errorCode,
+        evaluationIssueIdentifier: evaluation.identifier,
+      },
+    });
+    return { kind: "dismissed" as const, evaluationIssueId: evaluation.id };
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -3996,6 +4049,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    dismissStaleEvaluationOnRunTerminated,
     reconcileStrandedAssignedIssues,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
