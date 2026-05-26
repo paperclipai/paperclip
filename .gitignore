@@ -58,3 +58,5 @@ tests/release-smoke/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+.claude/knowledge/_sessions/
