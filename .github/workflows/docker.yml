@@ -156,7 +156,7 @@ jobs:
 
       - name: Write kubeconfig
         env:
-          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_KKROO }}
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_PAPERCLIP_CI_DEPLOY }}
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/.kube"
@@ -171,6 +171,7 @@ jobs:
           set -e
           which helm kubectl
           helm version --short
+          kubectl auth whoami -o yaml
           kubectl -n "$NS" get statefulset paperclip -o jsonpath='{.spec.replicas}{"\n"}'
 
       # Use --set image.tag so the deployed tag tracks the just-built image
