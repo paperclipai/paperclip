@@ -8370,7 +8370,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (deferredCommentIds.length > 0 && (issue.status === "done" || issue.status === "cancelled")) {
           const latestDeferredComment = await tx
             .select({
-              createdAt: sql<Date | null>`max(${issueComments.createdAt})`,
+              createdAt: sql<Date | string | null>`max(${issueComments.createdAt})`,
             })
             .from(issueComments)
             .where(
@@ -8383,8 +8383,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .then((rows) => rows[0]?.createdAt ?? null);
           const latestTerminalCompletion = issue.completedAt ?? null;
           if (latestDeferredComment && latestTerminalCompletion) {
+            const latestDeferredCommentTime =
+              latestDeferredComment instanceof Date
+                ? latestDeferredComment.getTime()
+                : new Date(latestDeferredComment).getTime();
             deferredCommentAfterTerminalCompletion =
-              new Date(latestDeferredComment).getTime() > new Date(latestTerminalCompletion).getTime();
+              latestDeferredCommentTime > latestTerminalCompletion.getTime();
           }
         }
         // Only human/comment-reopen interactions should revive completed issues;
