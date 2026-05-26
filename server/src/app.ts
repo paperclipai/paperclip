@@ -46,6 +46,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { createRecurringCostsService } from "./services/recurring-costs.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
@@ -314,6 +315,8 @@ export async function createApp(
       logger.error({ err }, "Failed to flush pending feedback exports");
     });
   }
+  const recurringCostsService = createRecurringCostsService({ db, logger });
+  const stopRecurringCostsTick = recurringCostsService.start();
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
@@ -335,6 +338,7 @@ export async function createApp(
   });
   process.once("exit", () => {
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    stopRecurringCostsTick();
     devWatcher?.close();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
