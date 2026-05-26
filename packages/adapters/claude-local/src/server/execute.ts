@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +68,8 @@ const require = createRequire(import.meta.url);
 function resolvePluginMcpStdioPath(): string | null {
   try {
     const pkgJsonPath = require.resolve("@paperclipai/mcp-server/package.json");
-    return path.join(path.dirname(pkgJsonPath), "dist", "plugin-stdio.js");
+    const resolvedPath = path.join(path.dirname(pkgJsonPath), "dist", "plugin-stdio.js");
+    return existsSync(resolvedPath) ? resolvedPath : null;
   } catch {
     return null;
   }
@@ -683,7 +685,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       },
     };
-    await fs.writeFile(pluginMcpConfigPath, JSON.stringify(mcpConfig, null, 2), "utf-8");
+    await fs.writeFile(pluginMcpConfigPath, JSON.stringify(mcpConfig, null, 2), { encoding: "utf-8", mode: 0o600 });
     await onLog(
       "stdout",
       `[paperclip] Plugin tool MCP config written to ${pluginMcpConfigPath}\n`,
