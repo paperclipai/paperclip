@@ -46,6 +46,13 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  awaitingHumanSettingsService: () => ({
+    get: vi.fn(),
+    update: vi.fn(),
+    resolveProvider: vi.fn(),
+    resolveClickUpRuntimeConfig: vi.fn(),
+    getStored: vi.fn(),
+  }),
   logActivity: mockLogActivity,
 }));
 
