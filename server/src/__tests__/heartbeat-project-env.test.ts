@@ -112,6 +112,15 @@ describe("extractMentionedSkillIdsFromSources", () => {
       ]),
     ).toEqual(["skill-1", "skill-2"]);
   });
+
+  it("lets non-UUID skill mention ids be filtered before the UUID query", () => {
+    const slugMentionIds = extractMentionedSkillIdsFromSources([
+      "Please use [plane-pc](skill://plane-pc) for task tracking.",
+    ]);
+
+    expect(slugMentionIds).toEqual(["plane-pc"]);
+    expect(slugMentionIds.filter((id) => isUuidLike(id))).toEqual([]);
+  });
 });
 
 describe("applyRunScopedMentionedSkillKeys", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildHeartbeatRunStopMetadata,
+  isAutocompactThrashError,
   mergeHeartbeatRunStopMetadata,
   resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
@@ -96,6 +97,49 @@ describe("heartbeat stop metadata", () => {
         errorCode: "max_turns_exhausted",
       }).stopReason,
     ).toBe("completed");
+  });
+
+  it("classifies autocompact-thrash error strings as autocompact_thrash", () => {
+    for (const message of ["Autocompact is thrashing", "Autocompact is thrashing after 3 attempts"]) {
+      expect(isAutocompactThrashError(message)).toBe(true);
+      expect(
+        buildHeartbeatRunStopMetadata({
+          adapterType: "claude_local",
+          adapterConfig: {},
+          outcome: "failed",
+          errorCode: "adapter_failed",
+          errorMessage: message,
+        }).stopReason,
+      ).toBe("autocompact_thrash");
+    }
+
+    for (const message of ["context refilled to the limit", "ERROR: context refilled to the limit after compaction"]) {
+      expect(isAutocompactThrashError(message)).toBe(true);
+      expect(
+        buildHeartbeatRunStopMetadata({
+          adapterType: "claude_local",
+          adapterConfig: {},
+          outcome: "failed",
+          errorCode: "adapter_failed",
+          errorMessage: message,
+        }).stopReason,
+      ).toBe("autocompact_thrash");
+    }
+  });
+
+  it("does not classify non-thrash failures as autocompact_thrash", () => {
+    for (const message of [null, undefined, "", "process exited with code 1", "Unknown error from adapter"]) {
+      expect(isAutocompactThrashError(message)).toBe(false);
+      expect(
+        buildHeartbeatRunStopMetadata({
+          adapterType: "claude_local",
+          adapterConfig: {},
+          outcome: "failed",
+          errorCode: "adapter_failed",
+          errorMessage: message,
+        }).stopReason,
+      ).toBe("adapter_failed");
+    }
   });
 
   it("preserves existing result fields when merging stop metadata", () => {
