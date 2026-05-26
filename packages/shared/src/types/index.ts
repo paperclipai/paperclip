@@ -1,4 +1,11 @@
 export type { Company } from "./company.js";
+export type {
+  AwaitingHumanProvider,
+  ClickUpAwaitingHumanProviderConfig,
+  AwaitingHumanProviderConfig,
+  CompanyAwaitingHumanSettings,
+  UpdateCompanyAwaitingHumanSettingsRequest,
+} from "./awaiting-human-settings.js";
 export type { Environment, EnvironmentLease, LocalEnvironmentConfig } from "./environment.js";
 export type {
   FeedbackVote,

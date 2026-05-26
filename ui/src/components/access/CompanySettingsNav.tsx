@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "@/lib/router";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
+  { value: "awaiting-human", label: "Awaiting Human", href: "/company/settings/awaiting-human" },
   { value: "builder", label: "AI Builder", href: "/company/settings/builder" },
   { value: "access", label: "Access", href: "/company/settings/access" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
@@ -12,6 +13,10 @@ const items = [
 type CompanySettingsTab = (typeof items)[number]["value"];
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
+  if (pathname.includes("/company/settings/awaiting-human")) {
+    return "awaiting-human";
+  }
+
   if (pathname.includes("/company/settings/builder")) {
     return "builder";
   }

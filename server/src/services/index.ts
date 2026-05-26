@@ -33,6 +33,7 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService } from "./heartbeat.js";
+export { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 export { clickupBridgeService } from "./clickup-bridge.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./issue-liveness.js";
 export { dashboardService } from "./dashboard.js";
