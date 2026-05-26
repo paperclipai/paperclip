@@ -3451,7 +3451,12 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
 
-    const liveRuns = await db
+    if (issue.status === "done" || issue.status === "cancelled") {
+      res.json([]);
+      return;
+    }
+
+    const selectLiveRuns = () => db
       .select({
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
@@ -3478,15 +3483,27 @@ export function agentRoutes(
         processStartedAt: heartbeatRuns.processStartedAt,
       })
       .from(heartbeatRuns)
-      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, issue.companyId),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id));
+
+    const liveRuns = issue.executionRunId
+      ? await selectLiveRuns()
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.id, issue.executionRunId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+      : await selectLiveRuns()
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt));
 
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...run,
