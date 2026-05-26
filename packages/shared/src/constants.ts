@@ -281,22 +281,6 @@ export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumen
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 
-export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
-export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
-
-export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
-export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
-
-export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
-  "exact",
-  "duplicate",
-  "fuzzy",
-  "ambiguous",
-  "missing",
-] as const;
-export type DocumentAnnotationAnchorConfidence =
-  (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
-
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
@@ -494,8 +478,15 @@ export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[numbe
 export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
-export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
+export const STORAGE_PROVIDERS = ["local_disk", "s3", "vercel_blob", "supabase_storage"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
+export type StorageBackend = StorageProvider;
+
+export const ASSET_STATUSES = ["pending", "ready", "failed"] as const;
+export type AssetStatus = (typeof ASSET_STATUSES)[number];
+
+export const SCAN_STATUSES = ["pending", "clean", "infected", "waived"] as const;
+export type ScanStatus = (typeof SCAN_STATUSES)[number];
 
 export const BILLING_TYPES = [
   "metered_api",

@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, integer, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -15,6 +16,8 @@ export const assets = pgTable(
     originalFilename: text("original_filename"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
+    status: text("status").notNull().default("ready"),
+    scanStatus: text("scan_status"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -22,5 +25,6 @@ export const assets = pgTable(
     companyCreatedIdx: index("assets_company_created_idx").on(table.companyId, table.createdAt),
     companyProviderIdx: index("assets_company_provider_idx").on(table.companyId, table.provider),
     companyObjectKeyUq: uniqueIndex("assets_company_object_key_uq").on(table.companyId, table.objectKey),
+    assetsStatusPendingIdx: index("assets_pending_created_idx").on(table.createdAt).where(sql`status = 'pending'`),
   }),
 );
