@@ -95,6 +95,7 @@ import {
   syncKimiSkills,
   testEnvironment as kimiTestEnvironment,
   sessionCodec as kimiSessionCodec,
+  detectModel as kimiDetectModel,
 } from "@paperclipai/adapter-kimi-local/server";
 import {
   agentConfigurationDoc as kimiAgentConfigurationDoc,
@@ -401,6 +402,7 @@ const kimiLocalAdapter: ServerAdapterModule = {
   sessionCodec: kimiSessionCodec,
   sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
   models: kimiModels,
+  detectModel: () => kimiDetectModel(),
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
