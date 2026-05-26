@@ -875,6 +875,15 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const permissionBlockEscalationFactory = Object.prototype.hasOwnProperty.call(
+    serviceIndex,
+    "permissionBlockEscalationService",
+  )
+    ? serviceIndex.permissionBlockEscalationService
+    : undefined;
+  const permissionBlockEscalationSvc = permissionBlockEscalationFactory?.(db) ?? {
+    evaluate: async () => null,
+  };
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -4714,6 +4723,49 @@ export function issueRoutes(
         }
       }
 
+      if (comment && issue.status === "blocked" && actor.actorType === "agent" && actor.agentId) {
+        try {
+          const escalation = await permissionBlockEscalationSvc.evaluate({
+            companyId: issue.companyId,
+            issueStatus: issue.status,
+            actorAgentId: actor.agentId,
+            commentBody: comment.body,
+          });
+          if (escalation) {
+            addWakeup(escalation.targetAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "direct_report_blocked_on_ceo_permission",
+              payload: {
+                issueId: issue.id,
+                commentId: comment.id,
+                blockedAgentId: actor.agentId,
+                blockedComment: comment.body.slice(0, 240),
+                permissionKey: escalation.match.permissionKey,
+                unblockOwnerRole: escalation.match.unblockOwnerRole,
+                trigger: escalation.match.trigger,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: issue.id,
+                taskId: issue.id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                source: "issue.update.permission_block_escalation",
+                wakeReason: "direct_report_blocked_on_ceo_permission",
+                blockedAgentId: actor.agentId,
+                permissionKey: escalation.match.permissionKey,
+                unblockOwnerRole: escalation.match.unblockOwnerRole,
+                trigger: escalation.match.trigger,
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "permission-block escalation evaluation failed on issue update");
+        }
+      }
+
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
@@ -5766,6 +5818,49 @@ export function issueRoutes(
             source: "comment.mention",
           },
         });
+      }
+
+      if (currentIssue.status === "blocked" && actorIsAgent && actor.agentId) {
+        try {
+          const escalation = await permissionBlockEscalationSvc.evaluate({
+            companyId: currentIssue.companyId,
+            issueStatus: currentIssue.status,
+            actorAgentId: actor.agentId,
+            commentBody: comment.body,
+          });
+          if (escalation && !wakeups.has(escalation.targetAgentId)) {
+            wakeups.set(escalation.targetAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "direct_report_blocked_on_ceo_permission",
+              payload: {
+                issueId: currentIssue.id,
+                commentId: comment.id,
+                blockedAgentId: actor.agentId,
+                blockedComment: comment.body.slice(0, 240),
+                permissionKey: escalation.match.permissionKey,
+                unblockOwnerRole: escalation.match.unblockOwnerRole,
+                trigger: escalation.match.trigger,
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: currentIssue.id,
+                taskId: currentIssue.id,
+                commentId: comment.id,
+                wakeCommentId: comment.id,
+                source: "issue.comment.permission_block_escalation",
+                wakeReason: "direct_report_blocked_on_ceo_permission",
+                blockedAgentId: actor.agentId,
+                permissionKey: escalation.match.permissionKey,
+                unblockOwnerRole: escalation.match.unblockOwnerRole,
+                trigger: escalation.match.trigger,
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: currentIssue.id }, "permission-block escalation evaluation failed on issue comment");
+        }
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {

@@ -47,6 +47,12 @@ export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
 export {
+  detectPermissionBlockMarker,
+  permissionBlockEscalationService,
+  type PermissionBlockMatch,
+  type PermissionBlockEscalationService,
+} from "./permission-block-escalation.js";
+export {
   backfillPrincipalAccessCompatibility,
   ensureHumanRoleDefaultGrants,
   insertMissingPrincipalGrants,
