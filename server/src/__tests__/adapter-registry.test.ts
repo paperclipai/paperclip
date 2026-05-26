@@ -205,7 +205,7 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.3-codex-spark" }),
+        adapterConfig: expect.objectContaining({ model: "gpt-5-mini" }),
         source: "adapter_default",
       }),
     ]);
@@ -231,6 +231,17 @@ describe("server adapter registry", () => {
       }),
     ]);
     await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  });
+
+  it("does not advertise the phantom gpt-5.3-codex-spark model in codex_local (IGG-369)", async () => {
+    const models = await listAdapterModels("codex_local");
+    const ids = models.map((entry) => entry.id);
+    expect(ids).not.toContain("gpt-5.3-codex-spark");
+
+    const profiles = await listAdapterModelProfiles("codex_local");
+    const cheap = profiles.find((profile) => profile.key === "cheap");
+    expect(cheap?.adapterConfig.model).not.toBe("gpt-5.3-codex-spark");
+    expect(ids).toContain(cheap?.adapterConfig.model);
   });
 
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
