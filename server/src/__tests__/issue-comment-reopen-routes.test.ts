@@ -524,6 +524,27 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  // FUL-3574: PATCH from in_progress → done with a comment must NOT fire issue_commented
+  // wake for the assignee. isClosed is based on the pre-update status (in_progress = false),
+  // so the fix adds a check against the post-update status (done = true → skip wake).
+  it("PATCH that sets in_progress issue to done with a comment does not fire issue_commented wake (FUL-3574)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    // Simulate the PATCH succeeding and returning a done issue.
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("in_progress"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done", comment: "Disposition sync: acknowledged. Stop condition met. Restoring terminal status to done." });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("done");
+    // No wake should be queued — the issue is now terminal.
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   // FUL-3307: explicit reopen: true must still work for done issues.
   it("still reopens done issues via POST comment with explicit reopen: true", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));

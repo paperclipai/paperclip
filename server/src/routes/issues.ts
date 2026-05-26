@@ -4253,7 +4253,11 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // Also suppress wake if the PATCH itself set the issue to a terminal state (e.g.,
+        // in_progress → done). isClosed is based on the pre-update status, so it would be
+        // false in that transition, incorrectly allowing the comment wake to fire.
+        const isNowClosed = isClosedIssueStatus(issue.status);
+        const skipAssigneeCommentWake = selfComment || isClosed || isNowClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
