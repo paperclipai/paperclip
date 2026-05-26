@@ -9,6 +9,8 @@ export interface PortalJwtClaims {
   exp: number;
   iss?: string;
   aud?: string;
+  org_id?: string;
+  org_name?: string;
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -95,6 +97,8 @@ export function verifyPortalJwt(token: string): PortalJwtVerifyResult {
       ...(typeof claims.name === "string" ? { name: claims.name } : {}),
       ...(typeof claims.iss === "string" ? { iss: claims.iss } : {}),
       ...(typeof claims.aud === "string" ? { aud: claims.aud } : {}),
+      ...(typeof claims.org_id === "string" ? { org_id: claims.org_id } : {}),
+      ...(typeof claims.org_name === "string" ? { org_name: claims.org_name } : {}),
     },
   };
 }
