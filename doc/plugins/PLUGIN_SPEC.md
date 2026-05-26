@@ -1123,11 +1123,13 @@ Recommended route pattern:
 
 ## 19.3.1 Issue Property Slots
 
-Plugins may add compact read-only fields to the issue properties panel (right
-sidebar). These render inline alongside built-in properties like Status,
-Priority, and Assignee.
+Plugins may add compact fields to the issue properties panel (right sidebar).
+These render inline alongside built-in properties like Status, Priority, and
+Assignee.
 
 Capability: `ui.issueProperty.register`
+
+### Manifest Declaration
 
 ```json
 {
@@ -1139,9 +1141,83 @@ Capability: `ui.issueProperty.register`
 }
 ```
 
+### Component Contract
+
 The component receives `{ context: { entityId, entityType, companyId } }` and
-should render a compact view suitable for the properties panel (badges, links,
-short lists). Avoid large or scrollable content — use a `detailTab` for that.
+should render a compact view suitable for the 320px-wide properties panel.
+
+**Guidelines:**
+
+- Match the host's `PropertyRow` layout: label on the left, value on the right
+- Keep content compact — avoid scrollable or expandable sections
+- Use `detailTab` for rich content that needs more space
+- The `displayName` from the manifest is shown as the field label
+- Use `usePluginData()` to fetch data from the worker
+
+### Recommended Field Patterns
+
+| Pattern | Use case | Example |
+|---------|----------|---------|
+| **Badge list** | Status tags, labels | `Open` `Merged` `Draft` |
+| **Link list** | Cross-system references | `#42 fix: balance` → GitHub |
+| **Text value** | Single scalar | `3 open PRs` |
+| **User/avatar** | Assignee from external system | `@octocat` with avatar |
+| **Status indicator** | CI/CD, sync state | `CI: Passing` with green dot |
+| **Count** | Summary metric | `5 linked PRs` |
+| **Empty state** | No data available | `No linked PRs` (muted text) |
+
+### Example Component
+
+```tsx
+import { usePluginData } from "@paperclipai/plugin-sdk/ui";
+
+export function LinkedPRsProperty({ context }) {
+  const { data } = usePluginData("card-prs", {
+    companyId: context.companyId,
+    issueId: context.entityId,
+  });
+
+  const prs = data?.pullRequests ?? [];
+
+  if (prs.length === 0) {
+    return (
+      <div style={{ padding: "4px 0", fontSize: "13px", opacity: 0.5 }}>
+        No linked PRs
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+      {prs.map((pr) => (
+        <a
+          key={pr.id}
+          href={pr.htmlUrl}
+          target="_blank"
+          rel="noopener"
+          style={{ fontSize: "13px", color: "#3b82f6", textDecoration: "none" }}
+        >
+          #{pr.number} {pr.title}
+        </a>
+      ))}
+    </div>
+  );
+}
+```
+
+### Styling Tokens
+
+To match the host's visual language, use these patterns:
+
+| Element | Style |
+|---------|-------|
+| Label | `font-size: 13px; opacity: 0.5; font-weight: 500` |
+| Value text | `font-size: 13px` |
+| Badge | `padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600` |
+| Link | `color: #3b82f6; text-decoration: none` |
+| Empty state | `font-size: 13px; opacity: 0.5` |
+| Hint/description | `font-size: 11px; opacity: 0.4; margin-top: 2px` |
+| Container | `padding: 4px 0; max-width: 100%` |
 
 ## 19.4 Dashboard Widgets
 
