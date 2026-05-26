@@ -961,6 +961,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(body).toContain("process_lost");
   });
 
+  it("detaches auto-cancelled stale_active_run_evaluation reviews from source issue blockers (PCL-2571)", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: true,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+
+    const reviewId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: reviewId,
+      companyId,
+      title: "Review silent active run for CodexCoder",
+      description: "Paperclip detected critical output silence on an active heartbeat run.",
+      status: "todo",
+      priority: "critical",
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      issueNumber: 997,
+      identifier: `${issuePrefix}-997`,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: reviewId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const [review] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, reviewId));
+    expect(review?.status).toBe("cancelled");
+
+    const [sourceIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(sourceIssue?.status).toBe("todo");
+
+    const remainingBlockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      ));
+    expect(remainingBlockers).toEqual([]);
+  });
+
   it("leaves stale_active_run_evaluation review alone when reaper does not finalize the run", async () => {
     // Counter-test for the PCL-2571 fix: if the reaper skips (fresh output,
     // live process, etc.), the existing review issue must NOT be touched.

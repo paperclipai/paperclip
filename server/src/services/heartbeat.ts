@@ -7892,14 +7892,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // detector and the reaper race on the suspicion threshold (~1h);
       // without this cleanup, reviews accreted indefinitely on the CTO
       // inbox (11 stuck reviews in 5 days observed 2026-05-25).
-      await recovery.dismissStaleEvaluationOnRunTerminated({
-        companyId: finalizedRun.companyId,
-        runId: finalizedRun.id,
-        agentId: finalizedRun.agentId,
-        terminalStatus: "failed",
-        errorCode: "process_lost",
-        errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-      });
+      try {
+        await recovery.dismissStaleEvaluationOnRunTerminated({
+          companyId: finalizedRun.companyId,
+          runId: finalizedRun.id,
+          agentId: finalizedRun.agentId,
+          terminalStatus: "failed",
+          errorCode: "process_lost",
+          errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, runId: finalizedRun.id, companyId: finalizedRun.companyId },
+          "failed to dismiss stale active run evaluation during process_lost cleanup",
+        );
+      }
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,

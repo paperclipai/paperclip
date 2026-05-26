@@ -998,7 +998,104 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const evaluation = await findOpenStaleRunEvaluation(input.companyId, input.runId);
     if (!evaluation) return { kind: "none" as const };
     if (isTerminalIssueStatus(evaluation.status)) return { kind: "none" as const };
-    await issuesSvc.update(evaluation.id, { status: "cancelled" });
+    const now = new Date();
+    const [cancelledEvaluation] = await db
+      .update(issues)
+      .set({
+        status: "cancelled",
+        cancelledAt: now,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.id, evaluation.id),
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, input.runId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .returning({
+        id: issues.id,
+        identifier: issues.identifier,
+      });
+    if (!cancelledEvaluation) return { kind: "none" as const };
+
+    const blockedSources = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.issueId, cancelledEvaluation.id),
+          eq(issueRelations.type, "blocks"),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+
+    let detachedBlockedSources = 0;
+    for (const source of blockedSources) {
+      const nextBlockerIds = (await existingBlockerIssueIds(source.companyId, source.id))
+        .filter((blockerId) => blockerId !== cancelledEvaluation.id);
+      await db
+        .delete(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, source.companyId),
+            eq(issueRelations.issueId, cancelledEvaluation.id),
+            eq(issueRelations.relatedIssueId, source.id),
+            eq(issueRelations.type, "blocks"),
+          ),
+        );
+      const unresolvedAfterDetach = await existingUnresolvedBlockerIssueIds(source.companyId, source.id);
+      let restoredSourceStatus = false;
+      let restoreSkippedReason: string | null = null;
+      if (source.status === "blocked" && unresolvedAfterDetach.length === 0) {
+        try {
+          const restored = await issuesSvc.update(source.id, { status: "todo" });
+          restoredSourceStatus = restored?.status === "todo";
+        } catch (err) {
+          restoreSkippedReason = err instanceof Error ? err.message : String(err);
+          logger.warn(
+            { err, issueId: source.id, companyId: source.companyId, evaluationIssueId: cancelledEvaluation.id },
+            "detached stale active run evaluation blocker but could not restore source issue status",
+          );
+        }
+      }
+      detachedBlockedSources += 1;
+      await logActivity(db, {
+        companyId: source.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.agentId,
+        runId: input.runId,
+        action: "heartbeat.output_stale_blocker_detached_on_termination",
+        entityType: "issue",
+        entityId: source.id,
+        details: {
+          source: "recovery.dismiss_on_run_terminated",
+          evaluationIssueId: cancelledEvaluation.id,
+          evaluationIssueIdentifier: cancelledEvaluation.identifier,
+          remainingBlockerCount: nextBlockerIds.length,
+          remainingUnresolvedBlockerCount: unresolvedAfterDetach.length,
+          restoredSourceStatus,
+          restoreSkippedReason,
+        },
+      });
+    }
+
     const bodyLines = [
       `Auto-cancelled: source run finalized to \`${input.terminalStatus}\`${
         input.errorCode ? ` (errorCode: \`${input.errorCode}\`)` : ""
@@ -1023,10 +1120,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         source: "recovery.dismiss_on_run_terminated",
         terminalStatus: input.terminalStatus,
         errorCode: input.errorCode,
-        evaluationIssueIdentifier: evaluation.identifier,
+        evaluationIssueIdentifier: cancelledEvaluation.identifier,
+        detachedBlockedSources,
       },
     });
-    return { kind: "dismissed" as const, evaluationIssueId: evaluation.id };
+    return { kind: "dismissed" as const, evaluationIssueId: cancelledEvaluation.id };
   }
 
   async function buildRunOutputSilence(
