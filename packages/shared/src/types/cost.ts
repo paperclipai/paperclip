@@ -102,6 +102,24 @@ export interface CostWindowSpendRow {
   outputTokens: number;
 }
 
+/** one entry in companies.recurringCosts — a fixed monthly cost line (e.g. Claude Pro subscription, hosting) */
+export interface RecurringCostLine {
+  /** stable identifier of the biller, e.g. "anthropic-claude-pro-max", "cloudflare". written to cost_events.biller */
+  biller: string;
+  /** vendor namespace, written to cost_events.provider. usually the same as biller */
+  provider: string;
+  /** free-text model/plan label, written to cost_events.model (which is NOT NULL). e.g. "subscription", "pages-pro" */
+  model: string;
+  /** monthly cost in cents */
+  monthlyCents: number;
+  /** ISO date "YYYY-MM-DD", inclusive — line is active from this month onward */
+  startedOn: string;
+  /** ISO date "YYYY-MM-DD" or null — null means still active */
+  endedOn: string | null;
+  /** optional human note for the dashboard */
+  note?: string;
+}
+
 /** cost attributed to a project via heartbeat run → activity log → issue → project chain */
 export interface CostByProject {
   projectId: string | null;

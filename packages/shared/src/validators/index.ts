@@ -230,8 +230,11 @@ export {
 export {
   createCostEventSchema,
   updateBudgetSchema,
+  recurringCostLineSchema,
+  recurringCostsSchema,
   type CreateCostEvent,
   type UpdateBudget,
+  type RecurringCostLineInput,
 } from "./cost.js";
 
 export {

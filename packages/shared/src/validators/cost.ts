@@ -29,3 +29,26 @@ export const updateBudgetSchema = z.object({
 });
 
 export type UpdateBudget = z.infer<typeof updateBudgetSchema>;
+
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be ISO date YYYY-MM-DD");
+
+export const recurringCostLineSchema = z
+  .object({
+    biller: z.string().min(1),
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    monthlyCents: z.number().int().nonnegative(),
+    startedOn: isoDate,
+    endedOn: isoDate.nullable(),
+    note: z.string().optional(),
+  })
+  .refine(
+    (line) => line.endedOn === null || line.endedOn >= line.startedOn,
+    { message: "endedOn must be on or after startedOn", path: ["endedOn"] },
+  );
+
+export const recurringCostsSchema = z.array(recurringCostLineSchema);
+
+export type RecurringCostLineInput = z.infer<typeof recurringCostLineSchema>;

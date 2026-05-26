@@ -1,4 +1,6 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
+import type { RecurringCostLine } from "@paperclipai/shared";
+import { agents } from "./agents.js";
 
 export const companies = pgTable(
   "companies",
@@ -23,6 +25,11 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    recurringCosts: jsonb("recurring_costs")
+      .$type<RecurringCostLine[]>()
+      .notNull()
+      .default([]),
+    costAttributionAgentId: uuid("cost_attribution_agent_id").references((): AnyPgColumn => agents.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

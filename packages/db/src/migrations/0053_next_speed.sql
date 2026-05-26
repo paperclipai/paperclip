@@ -1,0 +1,3 @@
+ALTER TABLE "companies" ADD COLUMN "recurring_costs" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "companies" ADD COLUMN "cost_attribution_agent_id" uuid;--> statement-breakpoint
+ALTER TABLE "companies" ADD CONSTRAINT "companies_cost_attribution_agent_id_agents_id_fk" FOREIGN KEY ("cost_attribution_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
