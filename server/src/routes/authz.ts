@@ -71,6 +71,7 @@ export function getActorInfo(req: Request) {
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
       runId: req.actor.runId ?? null,
+      actingOnBehalfOfUserId: req.actor.actingOnBehalfOfUserId ?? null,
     };
   }
 
@@ -79,5 +80,6 @@ export function getActorInfo(req: Request) {
     actorId: req.actor.userId ?? "board",
     agentId: null,
     runId: req.actor.runId ?? null,
+    actingOnBehalfOfUserId: null,
   };
 }

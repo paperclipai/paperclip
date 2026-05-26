@@ -3307,7 +3307,9 @@ export function issueRoutes(
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       requestedByUserId:
-        req.body.requestedByUserId ?? (actor.actorType === "user" ? actor.actorId : null),
+        req.body.requestedByUserId
+        ?? (actor.actorType === "user" ? actor.actorId : null)
+        ?? actor.actingOnBehalfOfUserId,
     });
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3412,7 +3414,8 @@ export function issueRoutes(
       requestedByUserId:
         req.body.requestedByUserId
         ?? parent.requestedByUserId
-        ?? (actor.actorType === "user" ? actor.actorId : null),
+        ?? (actor.actorType === "user" ? actor.actorId : null)
+        ?? actor.actingOnBehalfOfUserId,
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });

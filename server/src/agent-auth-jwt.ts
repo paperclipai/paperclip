@@ -15,6 +15,16 @@ export interface LocalAgentJwtClaims {
   iss?: string;
   aud?: string;
   jti?: string;
+  /**
+   * Optional user identifier the agent is acting on behalf of. Set by
+   * chat-style plugins (e.g. paperclip-chat) when a human asks the agent
+   * to do work; used by `tasks:view_all` opt-out scoping so the human's
+   * scoped reads still see issues that the agent created in response to
+   * their request. Server validates only structure here — the actual
+   * cross-check against the company membership happens in the actor
+   * resolution layer that reads `requested_by_user_id` off the claim.
+   */
+  requested_by_user_id?: string;
 }
 
 const JWT_ALGORITHM = "HS256";
@@ -65,7 +75,13 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  options: { requestedByUserId?: string | null } = {},
+) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -79,6 +95,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     exp: now + config.ttlSeconds,
     iss: config.issuer,
     aud: config.audience,
+    ...(options.requestedByUserId ? { requested_by_user_id: options.requestedByUserId } : {}),
   };
 
   const header = {
@@ -127,6 +144,11 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (issuer && issuer !== config.issuer) return null;
   if (audience && audience !== config.audience) return null;
 
+  const requestedByUserId =
+    typeof claims.requested_by_user_id === "string" && claims.requested_by_user_id.trim().length > 0
+      ? claims.requested_by_user_id
+      : undefined;
+
   return {
     sub,
     company_id: companyId,
@@ -136,6 +158,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     exp,
     ...(issuer ? { iss: issuer } : {}),
     ...(audience ? { aud: audience } : {}),
+    ...(requestedByUserId ? { requested_by_user_id: requestedByUserId } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
   };
 }

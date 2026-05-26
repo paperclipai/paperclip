@@ -97,4 +97,35 @@ describe("agent local JWT", () => {
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
+
+  it("embeds and round-trips the requested_by_user_id claim", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "chat_plugin", "run-1", {
+      requestedByUserId: "user-anastasiya",
+    });
+    expect(typeof token).toBe("string");
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      adapter_type: "chat_plugin",
+      requested_by_user_id: "user-anastasiya",
+    });
+  });
+
+  it("omits requested_by_user_id when not provided", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toHaveProperty("requested_by_user_id");
+  });
+
+  it("drops blank-string requested_by_user_id (treats as absent)", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "chat_plugin", "run-1", {
+      requestedByUserId: "   ",
+    });
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toHaveProperty("requested_by_user_id");
+  });
 });

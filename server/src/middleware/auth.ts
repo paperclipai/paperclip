@@ -158,6 +158,29 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      // If the JWT carries a `requested_by_user_id` claim (chat-style plugins
+      // minting tokens on behalf of a session user), verify that user is an
+      // active member of the same company before trusting it. Otherwise drop
+      // the claim — never leak unverified attribution into the actor.
+      let actingOnBehalfOfUserId: string | undefined;
+      if (claims.requested_by_user_id) {
+        const membership = await db
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.companyId, claims.company_id),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, claims.requested_by_user_id),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (membership) {
+          actingOnBehalfOfUserId = claims.requested_by_user_id;
+        }
+      }
+
       req.actor = {
         type: "agent",
         agentId: claims.sub,
@@ -165,6 +188,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyId: undefined,
         runId: runIdHeader || claims.run_id || undefined,
         source: "agent_jwt",
+        ...(actingOnBehalfOfUserId ? { actingOnBehalfOfUserId } : {}),
       };
       next();
       return;
