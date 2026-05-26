@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InviteLandingPage } from "./InviteLanding";
+import { queryKeys } from "../lib/queryKeys";
 
 const getInviteMock = vi.hoisted(() => vi.fn());
 const acceptInviteMock = vi.hoisted(() => vi.fn());
@@ -216,6 +217,11 @@ describe("InviteLandingPage", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
 
     await act(async () => {
       root.render(
@@ -302,6 +308,11 @@ describe("InviteLandingPage", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
 
     await act(async () => {
       root.render(
@@ -354,6 +365,11 @@ describe("InviteLandingPage", () => {
     });
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(queryClient.getQueryState(queryKeys.access.currentBoardAccess)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryData(queryKeys.companies.all)).toMatchObject({
+      companies: [],
+      unauthorized: false,
+    });
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
 
     await act(async () => {
@@ -403,16 +419,16 @@ describe("InviteLandingPage", () => {
     expect(container.textContent).toContain("Request to join Acme Robotics");
     expect(container.textContent).toContain("A company admin must approve your request to join.");
     expect(container.textContent).toContain(
-      "Ask them to visit Company Settings → Access to approve your request.",
+      "Ask them to visit Company Settings → Members to approve your request.",
     );
     expect(container.querySelector('img[alt="Acme Robotics logo"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("http://localhost/company/settings/access");
+    expect(container.textContent).not.toContain("http://localhost/company/settings/members");
 
     const approvalLinks = Array.from(container.querySelectorAll("a")).filter(
-      (link) => link.textContent === "Company Settings → Access",
+      (link) => link.textContent === "Company Settings → Members",
     );
     expect(approvalLinks).toHaveLength(2);
-    const expectedApprovalUrl = `${window.location.origin}/company/settings/access`;
+    const expectedApprovalUrl = `${window.location.origin}/company/settings/members`;
     for (const link of approvalLinks) {
       expect(link.getAttribute("href")).toBe(expectedApprovalUrl);
     }
@@ -422,7 +438,7 @@ describe("InviteLandingPage", () => {
     });
   });
 
-  it("keeps the waiting-for-approval state on refresh for an accepted invite", async () => {
+  it("auto-completes a previously accepted human invite after sign-in", async () => {
     getInviteMock.mockResolvedValue({
       id: "invite-1",
       companyId: "company-1",
@@ -437,6 +453,12 @@ describe("InviteLandingPage", () => {
       joinRequestStatus: "pending_approval",
       joinRequestType: "human",
     });
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
     getSessionMock.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: {
@@ -445,6 +467,58 @@ describe("InviteLandingPage", () => {
         email: "jane@example.com",
         image: null,
       },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.access.currentBoardAccess, {
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(queryClient.getQueryState(queryKeys.access.currentBoardAccess)?.isInvalidated).toBe(true);
+    expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("asks unauthenticated users to sign in before completing an accepted human invite", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: "/api/invites/pcp_invite_test/logo",
+      companyBrandColor: "#114488",
+      inviteType: "company_join",
+      allowedJoinTypes: "human",
+      humanRole: "operator",
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: "Welcome aboard.",
+      joinRequestStatus: "pending_approval",
+      joinRequestType: "human",
     });
 
     const root = createRoot(container);
@@ -465,14 +539,11 @@ describe("InviteLandingPage", () => {
     });
     await flushReact();
     await flushReact();
-    await flushReact();
 
     expect(acceptInviteMock).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="invite-pending-approval"]')).not.toBeNull();
-    expect(container.textContent).toContain("Your request is still awaiting approval.");
-    expect(container.textContent).toContain(
-      "Ask them to visit Company Settings → Access to approve your request.",
-    );
+    expect(container.querySelector('[data-testid="invite-inline-auth"]')).not.toBeNull();
+    expect(container.textContent).toContain("Create your account");
+    expect(container.querySelector('[data-testid="invite-pending-approval"]')).toBeNull();
 
     await act(async () => {
       root.unmount();
@@ -551,7 +622,64 @@ describe("InviteLandingPage", () => {
     });
     expect(acceptInviteMock).not.toHaveBeenCalled();
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(queryClient.getQueryData(queryKeys.companies.all)).toMatchObject({
+      companies: [{ id: "company-1", name: "Acme Robotics" }],
+      unauthorized: false,
+    });
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows invite details instead of auto-redirecting for signed-in existing members", async () => {
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    listCompaniesMock.mockResolvedValue([{ id: "company-1", name: "Acme Robotics" }]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Join Acme Robotics");
+    expect(container.textContent).toContain("Already in this company");
+    expect(container.textContent).toContain("This account already belongs to Acme Robotics.");
+    expect(acceptInviteMock).not.toHaveBeenCalled();
+
+    const openButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Open company",
+    );
+    expect(openButton).not.toBeNull();
+
+    await act(async () => {
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
 
     await act(async () => {
       root.unmount();
@@ -588,6 +716,55 @@ describe("InviteLandingPage", () => {
 
     expect(container.querySelector('img[alt="Acme Robotics logo"]')).toBeNull();
     expect(container.querySelector('img[aria-hidden="true"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("normalizes the shared company cache envelope before checking membership", async () => {
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "pending_approval",
+    });
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.companies.all, {
+      companies: [],
+      unauthorized: false,
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(container.textContent).toContain("Request to join Acme Robotics");
 
     await act(async () => {
       root.unmount();

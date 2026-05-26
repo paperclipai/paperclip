@@ -258,6 +258,10 @@ export type {
   SecretProviderConfigPayload,
   SecretProviderConfigHealthDetails,
   SecretProviderConfigHealthResponse,
+  SecretProviderConfigDiscoveryCandidate,
+  SecretProviderConfigDiscoveryPreviewResult,
+  SecretProviderConfigDiscoverySample,
+  SecretProviderConfigDiscoverySignal,
   CompanySecretBinding,
   CompanySecretBindingTarget,
   CompanySecretUsageBinding,
@@ -323,6 +327,14 @@ export type {
 } from "./user-profile.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type { SidebarOrderPreference } from "./sidebar-preferences.js";
+export type {
+  ResourceMembershipResourceType,
+  ResourceMembershipState,
+  ResourceMemberships,
+  ResourceMembershipUpdateResult,
+  UpdateResourceMembership,
+} from "./resource-memberships.js";
+export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
 export type { InboxDismissal } from "./inbox-dismissal.js";
 export type {
   AccessUserProfile,

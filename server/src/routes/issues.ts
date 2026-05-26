@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   executionWorkspaces,
+  heartbeatRuns,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
@@ -626,6 +627,18 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+function shouldHumanCommentResumeInProgressScheduledRetry(input: {
+  hasComment: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+}) {
+  if (!input.hasComment) return false;
+  if (input.actorType !== "user") return false;
+  if (input.issueStatus !== "in_progress") return false;
+  return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
+}
+
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
 }
@@ -871,6 +884,41 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+
+  async function cancelScheduledRetrySupersededByComment(input: {
+    scheduledRetryRunId: string | null | undefined;
+    issue: { id: string; companyId: string };
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const scheduledRetryRunId = readNonEmptyString(input.scheduledRetryRunId);
+    if (!scheduledRetryRunId) return null;
+
+    try {
+      const cancelled = await heartbeat.cancelRun(scheduledRetryRunId);
+      const cancelledRunId = cancelled?.id ?? scheduledRetryRunId;
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: cancelledRunId,
+        details: {
+          source: "issue_comment_scheduled_retry_superseded",
+          issueId: input.issue.id,
+        },
+      });
+      return cancelledRunId;
+    } catch (err) {
+      logger.error(
+        { err, issueId: input.issue.id, runId: scheduledRetryRunId },
+        "failed to cancel scheduled retry superseded by issue comment",
+      );
+      throw err;
+    }
+  }
 
   async function classifySourceRecoveryRevalidation(input: {
     issue: IssueRouteSnapshot;
@@ -1198,29 +1246,48 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  type TaskAssignmentAuthorizationScope = {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
+
+  async function resolveAssignmentProjectId(input: {
+    companyId: string;
+    projectId: string | null | undefined;
+    parentIssueId?: string | null;
+  }) {
+    if (input.projectId !== undefined) return input.projectId;
+    if (!input.parentIssueId) return null;
+    const parent = await svc.getById(input.parentIssueId);
+    if (!parent || parent.companyId !== input.companyId) return null;
+    return parent.projectId ?? null;
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(
+    req: Request,
+    companyId: string,
+    assignmentScope?: TaskAssignmentAuthorizationScope,
+  ) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
-    }
-    throw unauthorized();
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
+      scope: assignmentScope ?? null,
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1236,31 +1303,12 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgentId,
-      "tasks:manage_active_checkouts",
-    );
-    if (allowedByGrant) return true;
-
-    const companyAgents = await agentsSvc.list(companyId);
-    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
-    const actorAgent = agentsById.get(actorAgentId);
-    if (!actorAgent) return false;
-    if (canCreateAgentsLegacy(actorAgent)) return true;
-
-    // Reporting-chain managers may intervene in an agent's active checkout
-    // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId, assigneeAgentId },
+    });
+    return decision.allowed;
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -1329,6 +1377,87 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
+    const context = contextSnapshot as Record<string, unknown>;
+    return context.modelProfile === "cheap" &&
+      context.recoveryIntent === "status_only" &&
+      context.allowDeliverableWork === false &&
+      context.allowDocumentUpdates === false &&
+      context.resumeRequiresNormalModel === true;
+  }
+
+  function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
+    const overrides = input.assigneeAdapterOverrides;
+    return !!overrides &&
+      typeof overrides === "object" &&
+      !Array.isArray(overrides) &&
+      (overrides as Record<string, unknown>).modelProfile === "cheap";
+  }
+
+  async function loadActorRunContext(req: Request, companyId: string) {
+    if (req.actor.type !== "agent") return null;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return null;
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
+    return run;
+  }
+
+  async function assertCheapRecoveryIssueAssigneeProfileAllowed(
+    req: Request,
+    res: Response,
+    issue: { id?: string; companyId: string },
+    input: { assigneeAdapterOverrides?: unknown },
+  ) {
+    if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot assign downstream issue work to the cheap model profile",
+      details: {
+        issueId: issue.id ?? null,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
+  async function assertDeliverableMutationAllowedByRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
+      details: {
+        issueId: issue.id,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
   }
 
   function assertStructuredCommentFieldsAllowed(
@@ -1680,6 +1809,8 @@ export function issueRoutes(
       ? Number.parseInt(rawOffset, 10)
       : null;
     const attention = req.query.attention as string | undefined;
+    const sortField = req.query.sortField as string | undefined;
+    const sortDir = req.query.sortDir as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -1707,6 +1838,14 @@ export function issueRoutes(
     }
     if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
       res.status(400).json({ error: "offset must be a non-negative integer" });
+      return;
+    }
+    if (sortField !== undefined && sortField !== "updated") {
+      res.status(400).json({ error: "sortField must be 'updated' when provided" });
+      return;
+    }
+    if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
+      res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
       return;
     }
     const offset = parsedOffset ?? 0;
@@ -1741,6 +1880,8 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
+      sortField: sortField === "updated" ? "updated" : undefined,
+      sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
     });
     const issueIds = result.map((issue) => issue.id);
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -2319,6 +2460,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2523,6 +2665,7 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
         res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2682,6 +2825,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -2725,6 +2869,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
@@ -2765,6 +2910,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const removed = await workProductsSvc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
@@ -2998,8 +3144,18 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+      await assertCanAssignTasks(req, companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId,
+          projectId: req.body.projectId,
+          parentIssueId: req.body.parentId,
+        }),
+        parentIssueId: req.body.parentId ?? null,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3093,8 +3249,14 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, parent.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, req.body))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId);
+      await assertCanAssignTasks(req, parent.companyId, {
+        projectId: req.body.projectId ?? parent.projectId ?? null,
+        parentIssueId: parent.id,
+        assigneeAgentId: req.body.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
     }
     await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
 
@@ -3239,6 +3401,7 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -3297,6 +3460,18 @@ export function issueRoutes(
     ) {
       return;
     }
+    const scheduledRetryForHumanComment =
+      shouldHumanCommentResumeInProgressScheduledRetry({
+        hasComment: !!commentBody,
+        issueStatus: existing.status,
+        assigneeAgentId: requestedAssigneeAgentId,
+        actorType: actor.actorType,
+      })
+        ? await svc.getCurrentScheduledRetry(existing.id)
+        : null;
+    const shouldResumeInProgressScheduledRetry =
+      !!scheduledRetryForHumanComment &&
+      scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
       (!!commentBody &&
@@ -3305,7 +3480,8 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
-        }));
+        })) ||
+      shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -3367,10 +3543,22 @@ export function issueRoutes(
     if (
       commentBody &&
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry) &&
       updateFields.status === undefined
     ) {
       updateFields.status = "todo";
+    }
+    let cancelledScheduledRetryRunId: string | null = null;
+    if (
+      commentBody &&
+      shouldResumeInProgressScheduledRetry &&
+      updateFields.status === "todo"
+    ) {
+      cancelledScheduledRetryRunId = await cancelScheduledRetrySupersededByComment({
+        scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+        issue: existing,
+        actor,
+      });
     }
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = applyActorMonitorScheduledBy(
@@ -3457,7 +3645,23 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, {
+          issueId: existing.id,
+          projectId: await resolveAssignmentProjectId({
+            companyId: existing.companyId,
+            projectId: updateFields.projectId === undefined
+              ? existing.projectId
+              : updateFields.projectId as string | null | undefined,
+            parentIssueId: (updateFields.parentId === undefined
+              ? existing.parentId
+              : updateFields.parentId) as string | null | undefined,
+          }),
+          parentIssueId: (updateFields.parentId === undefined
+            ? existing.parentId
+            : updateFields.parentId) as string | null | undefined,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        });
       }
     }
 
@@ -3625,6 +3829,11 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+    const scheduledRetrySupersededByComment =
+      shouldResumeInProgressScheduledRetry &&
+      previous.status !== undefined &&
+      existing.status === "in_progress" &&
+      issue.status === "todo";
     const statusChangedFromBlockedToTodo =
       existing.status === "blocked" &&
       issue.status === "todo" &&
@@ -3666,6 +3875,13 @@ export function issueRoutes(
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(scheduledRetrySupersededByComment
+          ? {
+              scheduledRetrySupersededByComment: true,
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+              ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+            }
+          : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
@@ -3883,6 +4099,13 @@ export function issueRoutes(
           issueTitle: issue.title,
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(scheduledRetrySupersededByComment
+            ? {
+                scheduledRetrySupersededByComment: true,
+                scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+              }
+            : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
           ...summarizeIssueReferenceActivityDetails({
@@ -4208,6 +4431,16 @@ export function issueRoutes(
       return;
     }
 
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: req.body.agentId,
+        assigneeUserId: null,
+      });
+    }
+
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -4380,7 +4613,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const interactions = await issueThreadInteractionService(db).listForIssue(id);
+    const actor = getActorInfo(req);
+    const interactionSvc = issueThreadInteractionService(db);
+    const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
+    await logExpiredRequestConfirmations({
+      issue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.interactions.catchup_superseded_by_comment",
+    });
+
+    const interactions = await interactionSvc.listForIssue(id);
     res.json(interactions);
   });
 
@@ -4886,6 +5129,18 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
+    const scheduledRetryForHumanComment =
+      shouldHumanCommentResumeInProgressScheduledRetry({
+        hasComment: true,
+        issueStatus: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        actorType: actor.actorType,
+      })
+        ? await svc.getCurrentScheduledRetry(issue.id)
+        : null;
+    const shouldResumeInProgressScheduledRetry =
+      !!scheduledRetryForHumanComment &&
+      scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
     const effectiveMoveToTodoRequested =
       explicitMoveToTodoRequested ||
       shouldImplicitlyMoveCommentedIssueToTodo({
@@ -4893,7 +5148,8 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
-      });
+      }) ||
+      shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -4908,14 +5164,27 @@ export function issueRoutes(
     let currentIssue = issue;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
-    if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
+    let scheduledRetrySupersededByComment = false;
+    let cancelledScheduledRetryRunId: string | null = null;
+    if (
+      effectiveMoveToTodoRequested &&
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
+    ) {
+      scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
+      cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
+        ? await cancelScheduledRetrySupersededByComment({
+            scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+            issue,
+            actor,
+          })
+        : null;
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      reopened = true;
-      reopenFromStatus = issue.status;
+      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+      reopenFromStatus = reopened ? issue.status : null;
       currentIssue = reopenedIssue;
 
       await logActivity(db, {
@@ -4929,8 +5198,14 @@ export function issueRoutes(
         entityId: currentIssue.id,
         details: {
           status: "todo",
-          reopened: true,
-          reopenedFrom: reopenFromStatus,
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+          ...(scheduledRetrySupersededByComment
+            ? {
+                scheduledRetrySupersededByComment: true,
+                scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+              }
+            : {}),
           source: "comment",
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           identifier: currentIssue.identifier,
@@ -5001,6 +5276,13 @@ export function issueRoutes(
         issueTitle: currentIssue.title,
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+        ...(scheduledRetrySupersededByComment
+          ? {
+              scheduledRetrySupersededByComment: true,
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+              ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+            }
+          : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -5029,7 +5311,7 @@ export function issueRoutes(
       issue: currentIssue,
       trigger: "comment",
       actor,
-      statusChanged: reopened,
+      statusChanged: reopened || scheduledRetrySupersededByComment,
       resumeRequested: resumeRequested === true,
       reopened,
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
@@ -5261,6 +5543,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     const company = await companiesSvc.getById(companyId);
     const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
@@ -5380,6 +5663,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);

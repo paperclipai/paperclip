@@ -380,6 +380,46 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
   });
 
+  it("can page issues by most recently updated before priority", async () => {
+    const companyId = randomUUID();
+    const oldCriticalIssueId = randomUUID();
+    const recentMediumIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: oldCriticalIssueId,
+        companyId,
+        title: "Old critical issue",
+        status: "todo",
+        priority: "critical",
+        updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        id: recentMediumIssueId,
+        companyId,
+        title: "Recent medium issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.993Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      limit: 1,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
+  });
+
   it("ranks comment matches ahead of description-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();
@@ -733,6 +773,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const normalIssueId = randomUUID();
     const pluginVisibleIssueId = randomUUID();
     const operationIssueId = randomUUID();
+    const typedOperationIssueId = randomUUID();
+    const legacyContentMachineOperationIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -786,12 +828,36 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         originKind: "plugin:paperclip.missions:operation",
         originId: "mission-alpha:operation-1",
       },
+      {
+        id: typedOperationIssueId,
+        companyId,
+        projectId,
+        title: "Typed plugin operation issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclip.missions:operation:evaluation",
+        originId: "mission-alpha:operation-2",
+      },
+      {
+        id: legacyContentMachineOperationIssueId,
+        companyId,
+        projectId,
+        title: "Legacy Content Machine operation issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "plugin:paperclipai.content-machine:evaluation",
+        originId: "content-machine-operation-1",
+      },
     ]);
 
     const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
     expect(defaultIssueIds).toContain(normalIssueId);
     expect(defaultIssueIds).toContain(pluginVisibleIssueId);
     expect(defaultIssueIds).not.toContain(operationIssueId);
+    expect(defaultIssueIds).not.toContain(typedOperationIssueId);
+    expect(defaultIssueIds).not.toContain(legacyContentMachineOperationIssueId);
 
     const inboxIssueIds = (await svc.list(companyId, {
       assigneeAgentId: agentId,
@@ -800,17 +866,28 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     })).map((issue) => issue.id);
     expect(inboxIssueIds).toContain(normalIssueId);
     expect(inboxIssueIds).not.toContain(operationIssueId);
+    expect(inboxIssueIds).not.toContain(typedOperationIssueId);
+    expect(inboxIssueIds).not.toContain(legacyContentMachineOperationIssueId);
 
     await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
       .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
     await expect(svc.list(companyId, { originId: "mission-alpha:operation-1" }))
       .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
+    await expect(svc.list(companyId, { originKindPrefix: "plugin:paperclip.missions:operation" }))
+      .resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: operationIssueId }),
+        expect.objectContaining({ id: typedOperationIssueId }),
+      ]));
 
     const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
     expect(projectIssueIds).toContain(operationIssueId);
+    expect(projectIssueIds).toContain(typedOperationIssueId);
+    expect(projectIssueIds).toContain(legacyContentMachineOperationIssueId);
 
     const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
     expect(advancedIssueIds).toContain(operationIssueId);
+    expect(advancedIssueIds).toContain(typedOperationIssueId);
+    expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {
