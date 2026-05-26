@@ -1087,6 +1087,7 @@ async function getProtectedMemberReason(
   opts?: {
     actorRole?: HumanCompanyMembershipRole | null;
     instanceAdminUserIds?: ReadonlySet<string>;
+    activeOwnerCount?: number;
     operation?: "archive" | "update";
   },
 ): Promise<string | null> {
@@ -1103,13 +1104,23 @@ async function getProtectedMemberReason(
   const targetRole = member.membershipRole
     ? normalizeHumanRole(member.membershipRole, "operator")
     : "operator";
-  if (opts?.operation === "archive") {
-    if (targetRole === "owner") return "Board owners cannot be removed from company access.";
-    if (targetRole === "admin") return "Company admins cannot be removed from company access.";
-  }
 
   const actorRole = opts?.actorRole ?? await resolveActorHumanRole(req, access, companyId);
   if (!actorRole) return "Only active company members can remove users.";
+
+  if (opts?.operation === "archive" && targetRole === "owner") {
+    // Allow archiving an Owner only when another active Owner remains in the
+    // company. Mirrors the demotion safety check on PATCH /members/:id below.
+    // activeOwnerCount is the total number of active Owners in the company,
+    // including the target. Callers in archive paths pre-compute it.
+    if (opts.activeOwnerCount !== undefined && opts.activeOwnerCount <= 1) {
+      return "Cannot remove the last active owner from the company.";
+    }
+    // An Owner archiving a peer Owner has equal rank — bypass the rank check
+    // below once we've confirmed another Owner remains.
+    if (actorRole === "owner") return null;
+  }
+
   if (humanRoleRank[targetRole] >= humanRoleRank[actorRole]) {
     return "You can only remove users below your company role.";
   }
@@ -1117,14 +1128,36 @@ async function getProtectedMemberReason(
   return null;
 }
 
+async function countActiveOwners(db: Db, companyId: string): Promise<number> {
+  const rows = await db
+    .select({ id: companyMemberships.id })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+        eq(companyMemberships.membershipRole, "owner"),
+      ),
+    );
+  return rows.length;
+}
+
 async function assertCanManageCompanyMember(
   req: Request,
+  db: Db,
   access: ReturnType<typeof accessService>,
   companyId: string,
   member: { principalId: string; principalType: string; membershipRole: string | null },
   operation: "archive" | "update" = "update",
 ) {
-  const reason = await getProtectedMemberReason(req, access, companyId, member, { operation });
+  const activeOwnerCount = operation === "archive"
+    ? await countActiveOwners(db, companyId)
+    : undefined;
+  const reason = await getProtectedMemberReason(req, access, companyId, member, {
+    operation,
+    activeOwnerCount,
+  });
   if (reason) throw forbidden(reason);
 }
 
@@ -1148,11 +1181,13 @@ async function addCompanyMemberRemovalAccess(
         .then((rows) => rows.map((row) => row.userId)),
     )
     : new Set<string>();
+  const activeOwnerCount = await countActiveOwners(db, companyId);
   return Promise.all(
     members.map(async (member) => {
       const reason = await getProtectedMemberReason(req, access, companyId, member, {
         actorRole,
         instanceAdminUserIds,
+        activeOwnerCount,
         operation: "archive",
       });
       return {
@@ -4012,7 +4047,7 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      await assertCanManageCompanyMember(req, db, access, companyId, memberToUpdate);
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`
@@ -4109,7 +4144,7 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      await assertCanManageCompanyMember(req, db, access, companyId, memberToUpdate);
 
       const updated = await db.transaction(async (tx) => {
         await tx.execute(sql`
@@ -4236,7 +4271,7 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToArchive = await access.getMemberById(companyId, memberId);
       if (!memberToArchive) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToArchive, "archive");
+      await assertCanManageCompanyMember(req, db, access, companyId, memberToArchive, "archive");
 
       const result = await access.archiveMember(companyId, memberId, {
         reassignment: req.body.reassignment ?? null,
@@ -4277,7 +4312,7 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      await assertCanManageCompanyMember(req, db, access, companyId, memberToUpdate);
       const updated = await access.setMemberPermissions(
         companyId,
         memberId,
