@@ -1873,6 +1873,51 @@ function parseIssueAssigneeAdapterOverrides(
  */
 const HEARTBEAT_TASK_KEY = "__heartbeat__";
 
+function readPrNumberFromWakeContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  const rawPrNumber =
+    contextSnapshot?.githubPrNumber ??
+    contextSnapshot?.prNumber ??
+    payload?.githubPrNumber ??
+    payload?.prNumber;
+  if (typeof rawPrNumber === "number" && Number.isFinite(rawPrNumber)) return rawPrNumber;
+  if (typeof rawPrNumber === "string" && rawPrNumber.trim().length > 0 && Number.isFinite(Number(rawPrNumber))) {
+    return Number(rawPrNumber);
+  }
+  return null;
+}
+
+function readPrRepoFullNameFromWakeContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  return (
+    readNonEmptyString(contextSnapshot?.githubRepoFullName) ??
+    readNonEmptyString(contextSnapshot?.repoFullName) ??
+    readNonEmptyString(payload?.githubRepoFullName) ??
+    readNonEmptyString(payload?.repoFullName)
+  );
+}
+
+function derivePaperclipPrTaskKey(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const reviewKind = readNonEmptyString(contextSnapshot?.reviewKind) ?? readNonEmptyString(payload?.reviewKind);
+  const isPrWake = (wakeReason !== null && wakeReason.startsWith("github_pr_")) || reviewKind === "pr_review";
+  if (!isPrWake) return null;
+
+  const prNumber = readPrNumberFromWakeContext(contextSnapshot, payload);
+  if (prNumber === null) return null;
+
+  const repoFullName = readPrRepoFullNameFromWakeContext(contextSnapshot, payload) ?? "unknown";
+
+  return `pr_review:${repoFullName}:${prNumber}`;
+}
+
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -1884,6 +1929,7 @@ function deriveTaskKey(
     readNonEmptyString(payload?.taskKey) ??
     readNonEmptyString(payload?.taskId) ??
     readNonEmptyString(payload?.issueId) ??
+    derivePaperclipPrTaskKey(contextSnapshot, payload) ??
     null
   );
 }
@@ -2108,12 +2154,27 @@ function enrichWakeContextSnapshot(input: {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
-  const taskKey = deriveTaskKey(contextSnapshot, payload);
+  const taskKeyContext = readNonEmptyString(contextSnapshot["wakeReason"]) || !reason
+    ? contextSnapshot
+    : { ...contextSnapshot, wakeReason: reason };
+  const taskKey = deriveTaskKey(taskKeyContext, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
     contextSnapshot.wakeReason = reason;
+  }
+  const prNumber = readPrNumberFromWakeContext(contextSnapshot, payload);
+  if (!readNonEmptyString(contextSnapshot["githubPrNumber"]) && prNumber !== null) {
+    contextSnapshot.githubPrNumber = prNumber;
+  }
+  const prRepoFullName = readPrRepoFullNameFromWakeContext(contextSnapshot, payload);
+  if (!readNonEmptyString(contextSnapshot["githubRepoFullName"]) && prRepoFullName) {
+    contextSnapshot.githubRepoFullName = prRepoFullName;
+  }
+  const reviewKindFromPayload = readNonEmptyString(payload?.reviewKind);
+  if (!readNonEmptyString(contextSnapshot["reviewKind"]) && reviewKindFromPayload) {
+    contextSnapshot.reviewKind = reviewKindFromPayload;
   }
   if (!readNonEmptyString(contextSnapshot["issueId"]) && issueIdFromPayload) {
     contextSnapshot.issueId = issueIdFromPayload;
