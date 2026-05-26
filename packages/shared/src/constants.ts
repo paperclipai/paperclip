@@ -581,8 +581,6 @@ export const PLUGIN_CAPABILITIES = [
   // Data Read
   "companies.read",
   "projects.read",
-  "projects.create",
-  "projects.update",
   "project.workspaces.read",
   "issues.read",
   "issue.relations.read",
@@ -598,6 +596,8 @@ export const PLUGIN_CAPABILITIES = [
   "issues.orchestration.read",
   "database.namespace.read",
   // Data Write
+  "projects.create",
+  "projects.update",
   "issues.create",
   "issues.update",
   "issue.relations.write",

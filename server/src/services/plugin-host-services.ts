@@ -970,14 +970,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Project", await projects.getById(params.projectId), companyId);
-        const updated = (await projects.update(params.projectId, params.patch as any)) as Project | null;
+        // Sanitize the patch — strip protected fields that plugins must not overwrite
+        const patch = { ...(params.patch as Record<string, unknown>) };
+        delete patch.id;
+        delete patch.companyId;
+        delete patch.createdAt;
+        delete patch.updatedAt;
+        delete patch.archivedAt;
+        const updated = (await projects.update(params.projectId, patch as any)) as Project | null;
         if (updated) {
           await logPluginActivity({
             companyId,
             action: "project.updated",
             entityType: "project",
             entityId: updated.id,
-            details: { name: updated.name, patch: params.patch },
+            details: { name: updated.name, patch },
           });
         }
         return updated;
