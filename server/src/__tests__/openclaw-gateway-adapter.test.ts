@@ -410,6 +410,7 @@ describe("openclaw gateway adapter execute", () => {
             },
             payloadTemplate: {
               message: "wake now",
+              extraSystemPrompt: "Operator-provided system prompt prefix.",
             },
             waitTimeoutMs: 2000,
           },
@@ -502,12 +503,28 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(String(payload?.message ?? "")).toContain("First comment");
       expect(String(payload?.message ?? "")).toContain("\"commentIds\":[\"comment-1\",\"comment-2\"]");
-      expect(payload?.paperclip).toMatchObject({
-        wake: {
-          latestCommentId: "comment-2",
-          commentIds: ["comment-1", "comment-2"],
-        },
-      });
+
+      // OpenClaw gateway's AgentParamsSchema is strict (additionalProperties: false)
+      // and rejects unknown root fields like `paperclip`. The structured paperclip
+      // context must travel via `extraSystemPrompt` instead. See issue #5704.
+      expect(payload?.paperclip).toBeUndefined();
+      const extraSystemPrompt = String(payload?.extraSystemPrompt ?? "");
+      // Operator-supplied payloadTemplate.extraSystemPrompt is preserved and
+      // appears before the appended Paperclip context block.
+      expect(extraSystemPrompt).toMatch(
+        /^Operator-provided system prompt prefix\.[\s\S]*Paperclip context/,
+      );
+      expect(extraSystemPrompt).toContain("Paperclip context");
+      expect(extraSystemPrompt).toContain("\"runId\":\"run-123\"");
+      expect(extraSystemPrompt).toContain("\"agentId\":\"agent-123\"");
+      expect(extraSystemPrompt).toContain("\"companyId\":\"company-123\"");
+      expect(extraSystemPrompt).toContain("\"taskId\":\"task-123\"");
+      expect(extraSystemPrompt).toContain("\"issueId\":\"issue-123\"");
+      expect(extraSystemPrompt).toContain("\"latestCommentId\":\"comment-2\"");
+      expect(extraSystemPrompt).toContain("\"cwd\":\"/tmp/worktrees/pap-123\"");
+      expect(extraSystemPrompt).toContain("\"strategy\":\"git_worktree\"");
+      expect(extraSystemPrompt).toContain("\"id\":\"workspace-1\"");
+      expect(extraSystemPrompt).toContain("\"services\"");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {
