@@ -156,6 +156,24 @@ export async function evaluatePreCommentHooks(
   const auditBlock = buildAuditBlock(matches, ctx);
 
   for (const m of matches) {
+    // When the overall evaluation blocks AND this individual match is warn/escalate
+    // (co-fired alongside a block), the conventional "warned"/"escalated" log key would
+    // mislead operators into thinking the comment was allowed. Re-route to a disposition-
+    // aware key so the activity log reflects the actual outcome.
+    let activityKey: string;
+    if (m.action === "block" && blocked) {
+      activityKey = "issue.pre_comment_hook_blocked";
+    } else if (blocked) {
+      // Block co-fired with this non-blocking match → log as suppressed/matched-only,
+      // not warned/escalated (the comment was actually blocked).
+      activityKey = "issue.pre_comment_hook_matched";
+    } else if (m.action === "warn") {
+      activityKey = "issue.pre_comment_hook_warned";
+    } else if (m.action === "escalate") {
+      activityKey = "issue.pre_comment_hook_escalated";
+    } else {
+      activityKey = "issue.pre_comment_hook_matched";
+    }
     try {
       await logActivity(db, {
         companyId: ctx.companyId,
@@ -163,13 +181,7 @@ export async function evaluatePreCommentHooks(
         actorId: "pre_comment_hook",
         agentId: ctx.agentId ?? null,
         runId: null,
-        action: blocked && m.action === "block"
-          ? "issue.pre_comment_hook_blocked"
-          : m.action === "warn"
-          ? "issue.pre_comment_hook_warned"
-          : m.action === "escalate"
-          ? "issue.pre_comment_hook_escalated"
-          : "issue.pre_comment_hook_matched",
+        action: activityKey,
         entityType: "issue",
         entityId: ctx.issueId,
         details: {
