@@ -31,6 +31,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
+import { isAgentDailyActivityDiary } from "../agent-daily-activity-diary.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -282,20 +283,6 @@ function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) 
 
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
-}
-
-// Agent daily-activity diaries (FIG-527) are intentionally idle between Discord
-// ingresses and are closed at 00:00 Europe/Rome by close_stale_discord_diaries.py
-// (FIG-543). The stranded-issue watchdog must not treat them as stranded.
-// Title contract from vault-endpoint/app/wake_service.py::daily_activity_title:
-// "<agentName>-<d|dd><Mon><yyyy> - Discord activity" (Europe/Rome).
-const AGENT_DAILY_ACTIVITY_DIARY_TITLE_REGEX =
-  /^.+-\d{1,2}[A-Z][a-z]{2}\d{4} - Discord activity$/;
-
-function isAgentDailyActivityDiary(issue: typeof issues.$inferSelect): boolean {
-  const title = readNonEmptyString(issue.title);
-  if (!title) return false;
-  return AGENT_DAILY_ACTIVITY_DIARY_TITLE_REGEX.test(title);
 }
 
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
