@@ -861,6 +861,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `ui.dashboardWidget.register`
 - `ui.commentAnnotation.register`
 - `ui.action.register`
+- `ui.issueProperty.register`
 
 ## 15.2 Forbidden Capabilities
 
@@ -1119,6 +1120,28 @@ Plugins may add tabs to:
 Recommended route pattern:
 
 - `/:companyPrefix/<entity>/:id?tab=<plugin-tab-id>`
+
+## 19.3.1 Issue Property Slots
+
+Plugins may add compact read-only fields to the issue properties panel (right
+sidebar). These render inline alongside built-in properties like Status,
+Priority, and Assignee.
+
+Capability: `ui.issueProperty.register`
+
+```json
+{
+  "type": "issueProperty",
+  "id": "my-linked-items",
+  "displayName": "Linked Items",
+  "exportName": "MyLinkedItemsProperty",
+  "entityTypes": ["issue"]
+}
+```
+
+The component receives `{ context: { entityId, entityType, companyId } }` and
+should render a compact view suitable for the properties panel (badges, links,
+short lists). Avoid large or scrollable content — use a `detailTab` for that.
 
 ## 19.4 Dashboard Widgets
 

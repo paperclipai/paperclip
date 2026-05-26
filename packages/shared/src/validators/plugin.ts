@@ -288,7 +288,7 @@ export const pluginUiSlotDeclarationSchema = z.object({
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
   // context-sensitive slots require explicit entity targeting.
-  const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
+  const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem", "issueProperty"];
   if (
     entityScopedTypes.includes(value.type)
     && (!value.entityTypes || value.entityTypes.length === 0)

@@ -148,6 +148,29 @@ describe("plugin UI slot validators", () => {
     expect(parsed.entityTypes).toEqual(["execution_workspace", "project_workspace"]);
   });
 
+  it("accepts issueProperty slots with issue entityType", () => {
+    const parsed = pluginUiSlotDeclarationSchema.parse({
+      type: "issueProperty",
+      id: "linked-prs",
+      displayName: "Pull Requests",
+      exportName: "LinkedPRsProperty",
+      entityTypes: ["issue"],
+    });
+
+    expect(parsed.entityTypes).toEqual(["issue"]);
+  });
+
+  it("rejects issueProperty slots without entityTypes", () => {
+    const parsed = pluginUiSlotDeclarationSchema.safeParse({
+      type: "issueProperty",
+      id: "linked-prs",
+      displayName: "Pull Requests",
+      exportName: "LinkedPRsProperty",
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("accepts execution_workspace as a toolbarButton entityType", () => {
     const parsed = pluginUiSlotDeclarationSchema.parse({
       type: "toolbarButton",
