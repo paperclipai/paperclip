@@ -1,5 +1,7 @@
 # syntax=harbor.blockcast.net/dockerfile/dockerfile:1.20
-FROM node:lts-trixie-slim AS base
+# Mirrored from docker.io/library/node:lts-trixie-slim to avoid Docker Hub
+# anonymous rate limits on self-hosted BuildKit runners.
+FROM harbor.blockcast.net/paperclip/node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 # Disable Debian's auto-clean of apt cache so the BuildKit cache mount
