@@ -147,11 +147,23 @@ describe("successful run handoff decision", () => {
       "Source-scoped recovery action closeout: no actionable Projects Chat input yet; keeping live monitor path active.",
     )).toBe(true);
     expect(isExplicitLiveMonitorContinuationComment(
+      "Conversation monitor closeout: no new chat requests received; keeping issue in_progress.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Active monitor: waiting for the next message from the user.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
       "Implemented the backend detector, but did not choose a final issue state.",
     )).toBe(false);
     expect(isExplicitLiveMonitorContinuationComment(
       "No pending review input; continue implementation tomorrow.",
     )).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Deployed the live monitor service.",
+    )).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(null)).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(undefined)).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment("")).toBe(false);
   });
 
   it("does not queue when a successful run has no progress signal", () => {
