@@ -91,10 +91,12 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
 
 // Subset of FREE_TEXT_PATTERNS safe for run-log chunks.
 // Excludes patterns already covered by redactSensitiveText (github_token,
-// provider_api_key, bearer_token in Authorization context, secret_assignment,
-// jwt) and patterns with high false-positive rates in raw agent stdout
-// (jwt, email, phone). secret_assignment is excluded to avoid re-processing
-// ***REDACTED*** markers already placed by redactSensitiveText.
+// provider_api_key, secret_assignment — the last avoids re-processing
+// ***REDACTED*** markers already placed by redactSensitiveText) and patterns
+// with high false-positive rates in raw agent stdout (jwt, email, phone).
+// bearer_token is intentionally retained: redactSensitiveText handles
+// `Authorization: Bearer xxx` via field-name match, while sanitizeRunLogText
+// catches `Bearer xxx` appearing as a bare value in raw stdout.
 const RUN_LOG_PATTERNS: RedactionPattern[] = FREE_TEXT_PATTERNS.filter((p) =>
   ["pem_block", "bearer_token", "github_pat", "cloudflare_token", "webhook_secret", "sentry_token", "dsn"].includes(p.kind),
 );
