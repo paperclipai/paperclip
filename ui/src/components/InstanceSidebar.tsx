@@ -68,7 +68,6 @@ export function InstanceSidebar() {
               ))}
             </div>
           ) : null}
-          <SidebarNavItem to="/instance/settings/adapters" label="Adapters" icon={Cpu} />
         </div>
       </nav>
     </aside>

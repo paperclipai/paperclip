@@ -96,22 +96,6 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-          {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
-          ) : null}
-          <PluginSlotOutlet
-            slotTypes={["sidebar"]}
-            context={pluginContext}
-            className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
-            missingBehavior="placeholder"
-          />
-        </div>
-
         <SidebarSection label={t("nav.sidebar.work")}>
           <SidebarNavItem to="/issues" label={t("nav.sidebar.issues")} icon={CircleDot} />
           <SidebarNavItem to="/routines" label={t("nav.sidebar.routines")} icon={Repeat} />

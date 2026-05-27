@@ -49,7 +49,6 @@ const implicitRoleGrantMap: Record<NonNullable<CompanyMember["membershipRole"]>,
   operator: ["tasks:assign"],
   viewer: [],
 };
->>>>>>> 978bbcc8 (i18n: Full frontend internationalization (Chinese + English))
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -68,15 +67,7 @@ export function CompanyAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-<<<<<<< HEAD
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Members" },
-=======
-      { label: selectedCompany?.name ?? t("page.companyAccess.defaultCompanyName"), href: "/dashboard" },
-      { label: t("nav.settings"), href: "/company/settings" },
-      { label: t("page.companyAccess.title") },
->>>>>>> 978bbcc8 (i18n: Full frontend internationalization (Chinese + English))
+      { label: selectedCompany?.name ?? t("page.company.members.defaultName"), href: "/dashboard" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, t]);
 
@@ -270,7 +261,6 @@ export function CompanyAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-<<<<<<< HEAD
           <h1 className="text-lg font-semibold">{t("page.companyAccess.title")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">

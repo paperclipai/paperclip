@@ -246,7 +246,6 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-<<<<<<< HEAD
           <h2 className="text-base font-semibold">{t("page.pluginManager.availablePlugins")}</h2>
           <Badge variant="outline">{t("page.pluginManager.examples")}</Badge>
         </div>
@@ -258,19 +257,6 @@ export function PluginManager() {
         ) : examples.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
             {t("page.pluginManager.noExamplesFound")}
-=======
-          <h2 className="text-base font-semibold">{t("page.pluginManager.availablePlugins")}</h2>
-          <Badge variant="outline">{t("page.pluginManager.examples")}</Badge>
-        </div>
-
-        {examplesQuery.isLoading ? (
-          <div className="text-sm text-muted-foreground">{t("page.pluginManager.loadingExamples")}</div>
-        ) : examplesQuery.error ? (
-          <div className="text-sm text-destructive">{t("page.pluginManager.error.loadExamplesFailed")}</div>
-        ) : examples.length === 0 ? (
-          <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
-            {t("page.pluginManager.noExamplesFound")}
->>>>>>> 978bbcc8 (i18n: Full frontend internationalization (Chinese + English))
           </div>
         ) : (
           <ul className="divide-y rounded-md border bg-card">
