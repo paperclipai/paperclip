@@ -111,6 +111,19 @@ export const HERMES_PAPERCLIP_CROSSLINK_FIELDS = [
   { key: "codex_run_or_pr", label: "Codex 증거", example: "PR #2 / 명령 로그" },
 ];
 
+export const HERMES_CROSSLINK_TEMPLATE_LINES = [
+  "Paperclip ↔ Hermes 연결 필드:",
+  "- paperclip_issue_id: generated_after_issue_creation",
+  "- paperclip_issue_identifier: generated_after_issue_creation",
+  "- paperclip_approval_id: approval_id: none",
+  `- hermes_board: ${YOONCOMPANY_HERMES_BOARD}`,
+  "- hermes_task_id: pending",
+  "- hermes_profile: yoonorchestrator",
+  "- codex_agent_id: pending_if_code_change_required",
+  "- risk_level: L0-L1 until approval states otherwise",
+  "- dangerous_actions_executed: none",
+];
+
 function agentSearchText(agent: Agent) {
   return `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();
 }

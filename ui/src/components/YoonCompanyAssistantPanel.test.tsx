@@ -191,6 +191,10 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("명령: C:\\yooncompany\\bin\\hermes.exe");
     expect(defaults.description).toContain("보드: yooncompany");
     expect(defaults.description).toContain("PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행");
+    expect(defaults.description).toContain("Paperclip ↔ Hermes 연결 필드");
+    expect(defaults.description).toContain("hermes_task_id: pending");
+    expect(defaults.description).toContain("hermes_profile: yoonorchestrator");
+    expect(defaults.description).toContain("dangerous_actions_executed: none");
     expect(defaults.description).toContain("회사: YoonCompany (YOO)");
     expect(defaults.description).toContain("현재 직원: hermes-research-worker");
     expect(defaults.description).toContain("화면 제목: 직원 상세");
@@ -308,6 +312,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.assigneeAgentId).toBeUndefined();
     expect(defaults.description).toContain("직접 실행 아님");
     expect(defaults.description).toContain("명령: C:\\yooncompany\\bin\\hermes.exe");
+    expect(defaults.description).toContain("Paperclip ↔ Hermes 연결 필드");
+    expect(defaults.description).toContain("paperclip_approval_id: approval_id: none");
     expect(defaults.description).toContain("yoonorchestrator");
     expect(defaults.description).toContain("yoonresearch");
     expect(defaults.description).toContain("yoondocs");

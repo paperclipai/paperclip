@@ -103,6 +103,10 @@ describe("YoonCompany command worker", () => {
     expect(issue?.description).toContain("Hermes 명령: C:\\yooncompany\\bin\\hermes.exe");
     expect(issue?.description).toContain("Hermes 보드: yooncompany");
     expect(issue?.description).toContain("PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행");
+    expect(issue?.description).toContain("Paperclip ↔ Hermes 연결 필드");
+    expect(issue?.description).toContain("hermes_task_id: pending");
+    expect(issue?.description).toContain("hermes_profile: yoonorchestrator");
+    expect(issue?.description).toContain("dangerous_actions_executed: none");
     expect(issue?.description).toContain("repo 파일 수정, 배포, 병합, push, 삭제, DB 쓰기");
   });
 });

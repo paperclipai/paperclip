@@ -8,6 +8,7 @@
 - Actual phase 1 approval: `YOO-50`, approval `66898bbb-0301-44b7-b914-78b24902fdf3`.
 - Profile rule reinforcement approval: `655db324-ee53-4d0b-9540-64a210847356`.
 - Paperclip Orchestrator agent approval: `29a1d242-417f-4fec-9a14-1db1bb17fb9c`; hire approval `9c6adaa5-10c8-440c-baa8-5f4177fa4e78`.
+- Cross-link template approval: `86cbdc5c-3fbb-4721-b5c9-862e83898b92`.
 - Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
 - Git commit/push/PR/merge evidence: tracked by the scoped follow-up PR for each repo documentation update.
@@ -144,6 +145,24 @@ Do not add DB schema yet. Start with structured markdown blocks in:
 - Hermes Kanban completion summaries
 
 Schema/indexing can come after the format proves useful.
+
+### Applied cross-link template fields
+
+Applied on 2026-05-27 with approval `86cbdc5c-3fbb-4721-b5c9-862e83898b92`.
+
+The YoonCompany assistant Hermes issue drafts, Hermes approval drafts, and command plugin Hermes quick-action templates now include this structured markdown block before execution details:
+
+```yaml
+paperclip_issue_id: generated_after_issue_creation
+paperclip_issue_identifier: generated_after_issue_creation
+paperclip_approval_id: approval_id: none
+hermes_board: yooncompany
+hermes_task_id: pending
+hermes_profile: yoonorchestrator
+codex_agent_id: pending_if_code_change_required
+risk_level: L0-L1 until approval states otherwise
+dangerous_actions_executed: none
+```
 
 ### Mapping examples
 
