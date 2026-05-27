@@ -60,7 +60,12 @@ class TokenGapEscalationMonitor:
     def _has_github_token_error(self, issue_id: str) -> bool:
         """Check if issue has comments indicating GitHub API token gap error."""
         comments = self._api_request("GET", f"/api/issues/{issue_id}/comments")
-        if not comments or "items" not in comments:
+        if not comments:
+            return False
+
+        # Handle both array and object responses
+        items = comments if isinstance(comments, list) else comments.get("items", [])
+        if not items:
             return False
 
         token_error_patterns = [
@@ -75,7 +80,7 @@ class TokenGapEscalationMonitor:
             r"permission denied.*github"
         ]
 
-        for comment in comments.get("items", []):
+        for comment in items:
             body = comment.get("body", "").lower()
             for pattern in token_error_patterns:
                 if re.search(pattern, body):
@@ -85,11 +90,16 @@ class TokenGapEscalationMonitor:
     def _has_ceo_escalation_comment(self, issue_id: str) -> bool:
         """Check if issue already has CEO escalation comment (idempotency check)."""
         comments = self._api_request("GET", f"/api/issues/{issue_id}/comments")
-        if not comments or "items" not in comments:
+        if not comments:
+            return False
+
+        # Handle both array and object responses
+        items = comments if isinstance(comments, list) else comments.get("items", [])
+        if not items:
             return False
 
         escalation_marker = "🚨 Token-Gap Escalation"
-        for comment in comments.get("items", []):
+        for comment in items:
             if escalation_marker in comment.get("body", ""):
                 return True
         return False
@@ -150,13 +160,18 @@ _Auto-escalated by Token-Gap Escalation Routine_
             f"/api/companies/{self.company_id}/issues?status=blocked&limit=100"
         )
 
-        if not issues_response or "items" not in issues_response:
+        if not issues_response:
+            return result
+
+        # Handle both array and object responses
+        items = issues_response if isinstance(issues_response, list) else issues_response.get("items", [])
+        if not items:
             return result
 
         now = datetime.now(timezone.utc)
         threshold_hours = 4
 
-        for issue in issues_response.get("items", []):
+        for issue in items:
             result["scanned"] += 1
             issue_id = issue.get("id")
             issue_identifier = issue.get("identifier")
