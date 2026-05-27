@@ -1,0 +1,40 @@
+name: Relay SSL Multicert Guard
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gateway-only-shape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.BLOCKCAST_KUBE_CONFIG_B64 }}
+        run: |
+          if [ -z "$KUBE_CONFIG_B64" ]; then
+            echo "BLOCKCAST_KUBE_CONFIG_B64 is required for the live relay ssl_multicert guard."
+            exit 1
+          fi
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Assert relay pods keep gateway-only ssl_multicert.config
+        env:
+          RELAY_SSL_MULTICERT_NAMESPACES: ${{ vars.RELAY_SSL_MULTICERT_NAMESPACES || 'staging-traffic-control,production-traffic-control' }}
+          RELAY_SSL_MULTICERT_SELECTOR: ${{ vars.RELAY_SSL_MULTICERT_SELECTOR || 'app=relay-ats' }}
+          RELAY_SSL_MULTICERT_CONTAINER: ${{ vars.RELAY_SSL_MULTICERT_CONTAINER || '' }}
+          RELAY_SSL_MULTICERT_EXPECTED_LINE: ${{ vars.RELAY_SSL_MULTICERT_EXPECTED_LINE || '' }}
+        run: node scripts/check-relay-ssl-multicert.mjs

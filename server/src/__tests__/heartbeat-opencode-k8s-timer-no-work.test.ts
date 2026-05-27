@@ -95,13 +95,15 @@ describeEmbeddedPostgres("opencode_k8s timer no-work suppression", () => {
     agentId: string;
     now: Date;
   }) {
+    const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id: runId,
       companyId: input.companyId,
       agentId: input.agentId,
       invocationSource: "assignment",
       triggerDetail: "system",
       status: "running",
+      lastOutputAt: new Date(),
       contextSnapshot: {
         taskKey: `issue:${randomUUID()}`,
         wakeReason: "test_busy_slot",
@@ -109,6 +111,17 @@ describeEmbeddedPostgres("opencode_k8s timer no-work suppression", () => {
       startedAt: input.now,
       updatedAt: input.now,
       createdAt: input.now,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId,
+      seq: 1,
+      eventType: "adapter.invoke",
+      stream: "system",
+      level: "info",
+      message: "adapter invocation",
+      payload: {},
     });
   }
 

@@ -689,7 +689,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(relations).toHaveLength(1);
   });
 
-  it("does not escalate below the repeat-review threshold", async () => {
+  it("backs off rather than escalating below the repeat-review threshold", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
       status: "in_progress",
@@ -710,7 +710,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
 
     expect(result.escalated).toBe(0);
-    expect(result.created).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
     expect(await listProductivityReviewEscalations(seeded.companyId)).toHaveLength(0);
   });
 

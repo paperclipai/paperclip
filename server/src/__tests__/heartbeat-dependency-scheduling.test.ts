@@ -6,6 +6,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRelations,
@@ -736,6 +737,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         invocationSource: "automation",
         triggerDetail: "system",
         status: "running",
+        startedAt: new Date(),
+        lastOutputAt: new Date(),
         contextSnapshot: {
           wakeReason: "github_pr_opened",
           prReview: "Blockcast/magma#976",
@@ -756,6 +759,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         },
       },
     ]);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      agentId,
+      runId: activeRunId,
+      seq: 1,
+      eventType: "adapter.invoke",
+      stream: "system",
+      level: "info",
+      message: "adapter invocation",
+      payload: {},
+    });
     await db
       .update(agentWakeupRequests)
       .set({ runId: scopedRunId })
