@@ -622,12 +622,15 @@ function invalidateHeartbeatQueries(
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Mark global queries stale without forcing an immediate refetch on every WS
+  // event — they will refresh on the next poll cycle or window-focus event.
+  // Issue-specific queries in invalidateVisibleIssueRunQueries remain immediate.
+  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
@@ -643,9 +646,11 @@ function invalidateActivityQueries(
   currentActor: { userId: string | null; agentId: string | null },
   options?: { pathname?: string; isForegrounded?: boolean },
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  // Mark global/list queries stale without forcing an immediate refetch — they
+  // will refresh on the next poll cycle. Issue-specific queries below remain immediate.
+  queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId), refetchType: "none" });
+  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId), refetchType: "none" });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -654,10 +659,10 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId), refetchType: "none" });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId), refetchType: "none" });
     if (entityId) {
       const details = readRecord(payload.details);
       const selfCommentActivity =
