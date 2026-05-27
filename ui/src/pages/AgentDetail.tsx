@@ -1450,7 +1450,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
 
         {summary && (
           <div className="overflow-hidden max-h-16">
-            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{summary}</MarkdownBody>
+            <p className="line-clamp-3 text-sm leading-6 text-muted-foreground">{summary}</p>
           </div>
         )}
       </Link>
