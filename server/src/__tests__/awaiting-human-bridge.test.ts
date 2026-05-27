@@ -1568,23 +1568,18 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(comments[0]?.body).toContain("Awaiting human bridge timed out");
   });
 
-  it("retries a failed bridge delivery instead of expiring it", async () => {
+  it("expires a stale failed bridge delivery and skips retry once the issue closes", async () => {
     const seeded = await seedAwaitingHumanInteraction();
-    const send = vi.fn()
-      .mockImplementationOnce(async () => {
-        throw new Error("clickup send failed");
-      })
-      .mockImplementationOnce(async () => ({
-        externalThreadId: "thread-1",
-        externalMessageId: "message-1",
-        nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
-      }));
+    const send = vi.fn(async () => {
+      throw new Error("clickup send failed");
+    });
+    const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
       resolveAdapter: () => ({
         send,
         poll: vi.fn(async () => ({ status: "ok", detail: "ok", events: [] })),
-        close: vi.fn(async () => {}),
+        close,
       }),
     });
 
@@ -1611,9 +1606,22 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, failedBridge!.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
-      status: "failed",
+      status: "closed",
+      closeOutcome: "expired",
+      closeReason: "Awaiting human bridge failed to deliver before a human response was received.",
       lastError: "clickup send failed",
     }));
+
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interaction?.status).toBe("rejected");
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue?.status).toBe("todo");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Awaiting human bridge failed to deliver");
 
     const events = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
     expect(events.some((event) => event.action === "issue.awaiting_human.bridge_open_failed")).toBe(true);
@@ -1621,19 +1629,20 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const retry = await service.retryFailedBridgeOpenings();
     expect(retry).toEqual({
       checked: 1,
-      reopened: 1,
+      reopened: 0,
       failed: 0,
-      skipped: 0,
-      issueIds: [seeded.issueId],
-      interactionIds: [seeded.interactionId],
+      skipped: 1,
+      issueIds: [],
+      interactionIds: [],
     });
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
 
-    const [reopenedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, failedBridge!.id));
-    expect(reopenedBridge).toEqual(expect.objectContaining({
-      status: "waiting_for_human",
-      externalMessageId: "message-1",
-      lastError: null,
+    const [closedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, failedBridge!.id));
+    expect(closedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "expired",
+      lastError: "clickup send failed",
     }));
   });
 

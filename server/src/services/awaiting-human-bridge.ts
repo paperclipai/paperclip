@@ -1624,7 +1624,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     async expireWaitingBridges(now = new Date(), maxAgeMs = 24 * 60 * 60 * 1000) {
       const deadline = new Date(now.getTime() - maxAgeMs);
       const rows = await db.select().from(awaitingHumanBridges).where(and(
-        inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
+        inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human", "failed"]),
         lte(awaitingHumanBridges.createdAt, deadline),
       )).orderBy(asc(awaitingHumanBridges.createdAt)).limit(200);
 
