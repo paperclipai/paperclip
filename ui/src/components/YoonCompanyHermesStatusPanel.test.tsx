@@ -99,6 +99,12 @@ describe("YoonCompanyHermesStatusPanel", () => {
     expect(container.textContent).toContain("승인 전 금지");
     expect(container.textContent).toContain("autonomous heartbeat");
     expect(container.textContent).toContain("Hermes repo write");
+    expect(container.textContent).toContain("Hermes profile roster 미리보기");
+    expect(container.textContent).toContain("읽기 전용 · profile 생성 안 됨");
+    expect(container.textContent).toContain("yoon-orchestrator");
+    expect(container.textContent).toContain("yoon-business");
+    expect(container.textContent).toContain("yoon-tincolive");
+    expect(container.textContent).toContain("yoon-codex-bridge");
     expect(container.querySelector('a[href="/agents"]')?.textContent).toContain("직원 보기");
     expect(container.querySelector('a[href="/approvals"]')?.textContent).toContain("승인 보기");
 

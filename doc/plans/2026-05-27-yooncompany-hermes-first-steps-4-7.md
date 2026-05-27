@@ -255,6 +255,7 @@ Additional follow-up applied:
 - added explicit read-only warnings for adapter-managed `--yolo`, duplicate `--yolo` risk, and `--max-turns` still living in raw `extraArgs`
 - added a dashboard approval package preview for phase 1 profile/toolset/Kanban enablement, including target profiles and actions blocked until approval
 - added a global question panel action that opens the phase 1 Hermes approval package as a Paperclip issue draft, with no assignee and no execution
+- added a dashboard profile roster preview for the planned Hermes profiles across phase 1 and later business/startup/academy/media/TincoLive divisions
 - upgraded `hermes-paperclip-adapter` to `0.3.0` in server/ui package files and lockfile
 - did not create Hermes profiles, enable Hermes Kanban, enable heartbeat, or write Paperclip DB state
 

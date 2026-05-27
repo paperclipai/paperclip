@@ -548,7 +548,7 @@ Do not continue the old Next Improvement Plan as-is. Replace it with:
 | --- | --- | --- |
 | 1. Architecture acceptance | In progress | PM confirmed the core is Hermes-first. This document is the working baseline. |
 | 2. Adapter diff | Complete | See `2026-05-27-hermes-paperclip-adapter-0-3-diff.md`; package upgrade to `0.3.0` applied after diff review. |
-| 3. Read-only Hermes status console | Fourth slice complete | Global YoonCompany panel and dashboard now expose current Hermes role/toolset/session/safety mismatch, the phase 1 approval package preview, blocked dangerous actions, and a no-execution issue draft action. |
+| 3. Read-only Hermes status console | Fifth slice complete | Global YoonCompany panel and dashboard now expose current Hermes role/toolset/session/safety mismatch, the phase 1 approval package preview, blocked dangerous actions, a no-execution issue draft action, and the planned Hermes profile roster. |
 | 4. Hermes profile design | Proposal complete | See `2026-05-27-yooncompany-hermes-first-steps-4-7.md`; no profile creation executed. |
 | 5. Paperclip-Hermes mapping | Proposal complete | Textual cross-link format defined; no DB schema change. |
 | 6. Hermes capability enablement | Approval draft complete | Actual agent/profile/config mutation remains blocked pending Paperclip approval. |
