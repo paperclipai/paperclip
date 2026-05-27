@@ -54,6 +54,8 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    processLossCauseClass: text("process_loss_cause_class"),
+    processLossClassifyConfidence: text("process_loss_classify_confidence"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
