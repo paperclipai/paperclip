@@ -102,6 +102,8 @@ import { recoveryService } from "../services/recovery/service.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const HEARTBEAT_CANCEL_REASON_DEFAULT = "Cancelled by board operator";
+const HEARTBEAT_CANCEL_REASON_MAX_LENGTH = 512;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -114,6 +116,15 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function readHeartbeatCancelReason(body: unknown) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return HEARTBEAT_CANCEL_REASON_DEFAULT;
+  const reason = (body as { reason?: unknown }).reason;
+  if (typeof reason !== "string") return HEARTBEAT_CANCEL_REASON_DEFAULT;
+  const trimmed = reason.trim();
+  if (!trimmed) return HEARTBEAT_CANCEL_REASON_DEFAULT;
+  return trimmed.slice(0, HEARTBEAT_CANCEL_REASON_MAX_LENGTH);
 }
 
 export function agentRoutes(
@@ -3201,7 +3212,8 @@ export function agentRoutes(
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
-    const run = await heartbeat.cancelRun(runId);
+    const reason = readHeartbeatCancelReason(req.body);
+    const run = await heartbeat.cancelRun(runId, reason);
 
     if (run) {
       await logActivity(db, {
@@ -3211,7 +3223,7 @@ export function agentRoutes(
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
-        details: { agentId: run.agentId },
+        details: { agentId: run.agentId, reason },
       });
     }
 
