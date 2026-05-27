@@ -150,7 +150,7 @@ async function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "local_implicit",
   isInstanceAdmin: false,
-}) {
+}, opts: { deploymentMode?: "local_trusted" | "authenticated" } = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -161,7 +161,7 @@ async function createApp(actor: Record<string, unknown> = {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes({} as any, {} as any, { deploymentMode: opts.deploymentMode }));
   app.use(errorHandler);
   return app;
 }
@@ -902,6 +902,69 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInteractionService.rejectInteraction).not.toHaveBeenCalled();
+  });
+
+  it("allows local_implicit actor to accept a request_confirmation in local_trusted mode", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: { version: 1, prompt: "Approve?" },
+        result: { version: 1, outcome: "accepted" },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(
+      { type: "board", userId: "local-board", companyIds: ["company-1"], source: "local_implicit", isInstanceAdmin: true },
+      { deploymentMode: "local_trusted" },
+    );
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalled();
+  });
+
+  it("allows local_implicit actor to reject a request_confirmation in local_trusted mode", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-3",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-3",
+      payload: { version: 1, prompt: "Approve?" },
+      result: { version: 1, outcome: "rejected" },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp(
+      { type: "board", userId: "local-board", companyIds: ["company-1"], source: "local_implicit", isInstanceAdmin: true },
+      { deploymentMode: "local_trusted" },
+    );
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3/reject")
+      .send({ reason: "Not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.rejectInteraction).toHaveBeenCalled();
   });
 
   it("allows authenticated board user to accept a request_confirmation", async () => {

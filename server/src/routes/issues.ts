@@ -1018,6 +1018,7 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    deploymentMode?: "local_trusted" | "authenticated";
   } = {},
 ) {
   const router = Router();
@@ -6376,11 +6377,13 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
-      // Block unauthenticated local_trusted requests from resolving request_confirmation.
-      // In local_trusted mode every unauthenticated request is attributed to local-board,
-      // making it impossible to verify explicit human intent. Board authentication
-      // (board claim + board API key) is required for governance confirmations.
-      if (req.actor.source === "local_implicit") {
+      // Block unauthenticated implicit requests from resolving request_confirmation in
+      // authenticated mode. In that mode, local_implicit means a truly unauthenticated API
+      // call that cannot prove explicit human intent; board authentication (board claim +
+      // board API key) is required for governance confirmations.
+      // In local_trusted mode the machine operator IS the board user — there is no board
+      // claim or session auth flow, so local_implicit is the legitimate auth path.
+      if (req.actor.source === "local_implicit" && opts.deploymentMode !== "local_trusted") {
         const candidate = await issueThreadInteractionService(db).getById(interactionId);
         if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
           res.status(403).json({
@@ -6499,9 +6502,10 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
-      // Block unauthenticated local_trusted requests from rejecting request_confirmation.
-      // Same reasoning as the accept guard above: local_implicit cannot prove human intent.
-      if (req.actor.source === "local_implicit") {
+      // Block unauthenticated implicit requests from rejecting request_confirmation in
+      // authenticated mode. Same reasoning as the accept guard above.
+      // In local_trusted mode, local_implicit is the legitimate auth path for the board user.
+      if (req.actor.source === "local_implicit" && opts.deploymentMode !== "local_trusted") {
         const candidate = await issueThreadInteractionService(db).getById(interactionId);
         if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
           res.status(403).json({
