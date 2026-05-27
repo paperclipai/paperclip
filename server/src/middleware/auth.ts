@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
+import { isRunIdParseError, parseOptionalRunId } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -20,7 +21,7 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? {
@@ -33,7 +34,26 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    // Single trust boundary for X-Paperclip-Run-Id. The header flows into
+    // Postgres uuid columns (issues.checkout_run_id, etc.) via actor.runId,
+    // so anything that isn't a canonical UUID is rejected here before it can
+    // reach the service layer. Absent header: null (fall through to JWT
+    // claim, which is minted by services/heartbeat.ts). Empty string: 400,
+    // because that's a caller bug (send the header or omit it, don't blank).
+    const runIdHeaderResult = parseOptionalRunId(req.header("x-paperclip-run-id"), "header");
+    if (isRunIdParseError(runIdHeaderResult)) {
+      logger.warn(
+        { source: runIdHeaderResult.source, got: runIdHeaderResult.got, url: req.originalUrl },
+        "auth_middleware reject invalid_run_id",
+      );
+      res.status(400).json({
+        error: "invalid_run_id",
+        source: runIdHeaderResult.source,
+        got: runIdHeaderResult.got,
+      });
+      return;
+    }
+    const runIdHeader = runIdHeaderResult ?? undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {

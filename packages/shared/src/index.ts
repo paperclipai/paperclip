@@ -1038,6 +1038,17 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
+export {
+  isRunId,
+  isRunIdParseError,
+  parseOptionalRunId,
+  parseRunId,
+  unsafeRunId,
+  type RunId,
+  type RunIdParseError,
+  type RunIdSource,
+} from "./validators/index.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
