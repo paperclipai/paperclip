@@ -11,6 +11,63 @@ export const HERMES_PHASE1_APPROVAL_PACKAGE = {
   blocked: ["autonomous heartbeat", "Hermes repo write", "direct DB writes", "deploy/send/publish"],
 };
 
+export const HERMES_PROFILE_ROSTER = [
+  {
+    name: "yoon-orchestrator",
+    role: "Routes work, decomposes tasks, owns Hermes Kanban",
+    toolsets: ["kanban", "memory", "skills", "session_search", "web", "browser"],
+    phase: "phase 1",
+  },
+  {
+    name: "yoon-research",
+    role: "Public research, market scans, source summaries",
+    toolsets: ["web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 1",
+  },
+  {
+    name: "yoon-docs",
+    role: "Internal docs, handoffs, summaries, procedure drafts",
+    toolsets: ["file", "memory", "skills", "session_search"],
+    phase: "phase 1",
+  },
+  {
+    name: "yoon-business",
+    role: "Business division planning and KPI work",
+    toolsets: ["web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+  {
+    name: "yoon-startup",
+    role: "Everyone's Startup division planning",
+    toolsets: ["web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+  {
+    name: "yoon-academy",
+    role: "Academy/Tinker operations",
+    toolsets: ["web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+  {
+    name: "yoon-media",
+    role: "YouTube/content production pipeline planning",
+    toolsets: ["kanban", "web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+  {
+    name: "yoon-tincolive",
+    role: "TincoLive product/development planning",
+    toolsets: ["kanban", "web", "browser", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+  {
+    name: "yoon-codex-bridge",
+    role: "Creates and audits Paperclip issues for Codex implementation",
+    toolsets: ["kanban", "web", "memory", "skills", "session_search"],
+    phase: "phase 2",
+  },
+];
+
 export function findYoonCompanyAgent(agents: Agent[] | undefined, keyword: "codex" | "hermes") {
   return agents?.find((agent) => {
     const haystack = `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();

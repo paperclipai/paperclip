@@ -15,6 +15,7 @@ import {
   getYoonCompanyHermesStatus,
   HERMES_PHASE1_APPROVAL_PACKAGE,
   HERMES_PAPERCLIP_ADAPTER_VERSION,
+  HERMES_PROFILE_ROSTER,
 } from "../lib/yooncompany-hermes-status";
 import { cn } from "../lib/utils";
 
@@ -173,6 +174,32 @@ export function YoonCompanyHermesStatusPanel({
               </span>
             ))}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-3 border border-border bg-background px-3 py-2">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+            <Workflow className="h-3.5 w-3.5" />
+            Hermes profile roster 미리보기
+          </div>
+          <div className="text-xs text-muted-foreground">읽기 전용 · profile 생성 안 됨</div>
+        </div>
+        <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {HERMES_PROFILE_ROSTER.map((profile) => (
+            <div key={profile.name} className="min-w-0 border border-border bg-muted/20 px-2.5 py-2">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <div className="truncate text-sm font-medium">{profile.name}</div>
+                <span className="shrink-0 border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                  {profile.phase}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{profile.role}</p>
+              <div className="mt-2 truncate text-xs text-muted-foreground">
+                {profile.toolsets.join(", ")}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
