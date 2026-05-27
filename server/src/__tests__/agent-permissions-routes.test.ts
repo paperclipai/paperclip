@@ -11,6 +11,7 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 const agentId = "11111111-1111-4111-8111-111111111111";
+const targetAgentId = "11111111-1111-4111-8111-222222222222";
 const companyId = "22222222-2222-4222-8222-222222222222";
 
 const baseAgent = {
@@ -68,6 +69,7 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
@@ -310,6 +312,7 @@ describe.sequential("agent permission routes", () => {
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
@@ -356,6 +359,11 @@ describe.sequential("agent permission routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-1",
+      agentId,
+      status: "queued",
+    });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
@@ -477,6 +485,88 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(403);
+  });
+
+  it("blocks agent-authenticated cross-agent wakeups without task assignment permission", async () => {
+    const targetAgent = {
+      ...baseAgent,
+      id: targetAgentId,
+      name: "Target",
+      urlKey: "target",
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === targetAgentId ? targetAgent : baseAgent));
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${targetAgentId}/wakeup`)
+      .send({
+        source: "automation",
+        reason: "human_merge_gate_escalation",
+      }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows agents with task assignment permission to wake same-company agents", async () => {
+    const targetAgent = {
+      ...baseAgent,
+      id: targetAgentId,
+      name: "Target",
+      urlKey: "target",
+    };
+    const wakeRun = {
+      id: "run-cross-agent",
+      agentId: targetAgentId,
+      status: "queued",
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => (id === targetAgentId ? targetAgent : baseAgent));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockHeartbeatService.wakeup.mockResolvedValue(wakeRun);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${targetAgentId}/wakeup`)
+      .send({
+        source: "automation",
+        reason: "human_merge_gate_escalation",
+        triggerDetail: "system",
+      }));
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual(wakeRun);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "tasks:assign",
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      targetAgentId,
+      expect.objectContaining({
+        source: "automation",
+        triggerDetail: "system",
+        reason: "human_merge_gate_escalation",
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      }),
+    );
   });
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {

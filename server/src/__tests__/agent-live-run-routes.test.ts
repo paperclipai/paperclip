@@ -577,6 +577,68 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("rejects malformed stalled checkout wake issue ids before queueing", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          source: "on_demand",
+          reason: "stalled_checkout_sweep",
+          forceFreshSession: true,
+          payload: {
+            issueId: "ae?",
+            mutation: "manual_unstall",
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body).toMatchObject({
+      error: "Invalid stalled checkout wake payload issueId",
+      details: {
+        field: "payload.issueId",
+        code: "invalid_issue_id",
+      },
+    });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("normalizes stalled checkout wake issue identifiers before queueing", async () => {
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const query = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn(async () => [{ id: issueId }]),
+    };
+    const db = {
+      select: vi.fn(() => query),
+    };
+
+    const res = await requestApp(
+      await createApp(db),
+      (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
+        .send({
+          source: "on_demand",
+          reason: "stalled_checkout_sweep",
+          forceFreshSession: true,
+          payload: {
+            issueId: "NOX-4140",
+            mutation: "manual_unstall",
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      reason: "stalled_checkout_sweep",
+      payload: {
+        issueId,
+        mutation: "manual_unstall",
+      },
+    }));
+  });
+
   it("calls heartbeat.wakeup with the legacy minimal shape when the body is empty", async () => {
     const res = await requestApp(
       await createApp(),
