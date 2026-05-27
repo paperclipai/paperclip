@@ -35,6 +35,8 @@ export interface ClassifyProcessLossCauseOptions {
   /**
    * Signal #4: whether the Paperclip API responded normally at classification time.
    * Derived from the lightweight scheduler health cache — see `makeApiHealthCache`.
+   * When `false`, the concurrent API disruption weakly corroborates a shared infra event.
+   * When `true` or `undefined`, no signal fires — a healthy API does not rule out agent cause.
    */
   apiHealthy?: boolean;
 }
@@ -50,7 +52,7 @@ export interface ClassifyProcessLossCauseOptions {
  *   susceptible to spoofing via `process.stderr.write(...)` or `process.exit(137)`:
  *   - Signal #2 (clean stderr)
  *   - Signal #3 (exit code 137)
- *   - Signal #4 (apiHealthy — absence of evidence, not agent-controlled per se,
+ *   - Signal #4 (apiHealthy === false — concurrent API disruption, not agent-controlled,
  *                but paired with weak signals it cannot strengthen confidence)
  *
  * A run with classifyConfidence="weak" and causeClass="infrastructure" should be
@@ -98,9 +100,12 @@ export function classifyProcessLossCause(
     weakSignals.push("signal_3_oom_kill");
   }
 
-  // Signal #4 — API healthy at classification time (WEAK — absence of evidence)
-  if (options?.apiHealthy === true) {
-    weakSignals.push("signal_4_api_healthy");
+  // Signal #4 — API unhealthy at classification time (WEAK — concurrent infra hiccup)
+  // Fires when apiHealthy === false: a simultaneous API disruption weakly corroborates
+  // a shared infrastructure event. apiHealthy === true adds no discriminating power
+  // (agents crash during healthy windows — that is the normal agent-cause scenario).
+  if (options?.apiHealthy === false) {
+    weakSignals.push("signal_4_api_unhealthy");
   }
 
   if (weakSignals.length > 0) {

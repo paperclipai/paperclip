@@ -20,11 +20,13 @@ describe("classifyProcessLossCause", () => {
   });
 
   describe("signal #4 — apiHealthy", () => {
-    it("(a) returns infrastructure when apiHealthy=true and no other signals fire", () => {
-      const result = classifyProcessLossCause(base, { apiHealthy: true });
+    // GNO-216: inverted from apiHealthy===true. A concurrent API disruption weakly
+    // corroborates shared infra failure. apiHealthy===true adds no discriminating power.
+    it("(a) returns infrastructure when apiHealthy=false and no other signals fire", () => {
+      const result = classifyProcessLossCause(base, { apiHealthy: false });
       expect(result.causeClass).toBe("infrastructure");
       expect(result.classifyConfidence).toBe("weak");
-      expect(result.reason).toContain("signal_4_api_healthy");
+      expect(result.reason).toContain("signal_4_api_unhealthy");
     });
 
     it("(b) absence of apiHealthy (undefined) maintains agent-cause behaviour", () => {
@@ -32,8 +34,8 @@ describe("classifyProcessLossCause", () => {
       expect(result.causeClass).toBe("agent");
     });
 
-    it("(b) apiHealthy=false maintains agent-cause behaviour", () => {
-      const result = classifyProcessLossCause(base, { apiHealthy: false });
+    it("(b) apiHealthy=true maintains agent-cause behaviour (healthy API does not imply infra cause)", () => {
+      const result = classifyProcessLossCause(base, { apiHealthy: true });
       expect(result.causeClass).toBe("agent");
     });
   });
@@ -107,7 +109,7 @@ describe("classifyProcessLossCause", () => {
     // Even with weak signals present, signal #1 dominates with primary confidence
     const result = classifyProcessLossCause(
       { ...base, exitCode: 137, stderrExcerpt: "OOM kill log" },
-      { apiHealthy: true, coReapedSameCompanyRunIds: ["peer-run"] },
+      { apiHealthy: false, coReapedSameCompanyRunIds: ["peer-run"] },
     );
     expect(result.causeClass).toBe("infrastructure");
     expect(result.classifyConfidence).toBe("primary");
@@ -117,13 +119,13 @@ describe("classifyProcessLossCause", () => {
   it("combines multiple weak signals in the reason string", () => {
     const result = classifyProcessLossCause(
       { ...base, exitCode: 137, stderrExcerpt: "OOM kill log" },
-      { apiHealthy: true },
+      { apiHealthy: false },
     );
     expect(result.causeClass).toBe("infrastructure");
     expect(result.classifyConfidence).toBe("weak");
     expect(result.reason).toContain("signal_2_clean_stderr");
     expect(result.reason).toContain("signal_3_oom_kill");
-    expect(result.reason).toContain("signal_4_api_healthy");
+    expect(result.reason).toContain("signal_4_api_unhealthy");
   });
 
   // GNO-183 regression: agent spoofing via process.stderr.write + process.exit
