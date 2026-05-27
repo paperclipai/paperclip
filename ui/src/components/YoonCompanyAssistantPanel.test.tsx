@@ -145,6 +145,11 @@ describe("YoonCompanyAssistantPanel", () => {
     });
     await flush();
 
+    expect(container.textContent).toContain("현재 화면 컨텍스트 자동 첨부");
+    expect(container.textContent).toContain("이슈 초안에 포함");
+    expect(container.textContent).toContain("회사: YoonCompany (YOO)");
+    expect(container.textContent).toContain("경로: /YOO/agents/hermes-research-worker?tab=runs#latest");
+
     const textarea = container.querySelector("textarea");
     expect(textarea).not.toBeNull();
     await act(async () => {
