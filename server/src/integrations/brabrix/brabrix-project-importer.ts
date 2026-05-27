@@ -1080,17 +1080,39 @@ export function createBrabrixProjectImporter(input: {
     );
 
     const backlogIssueMap: Record<string, string> = {};
+    const warnings: string[] = [];
+    const downgradedInProgressItems: Array<{
+      itemId: string;
+      title: string;
+      reason: string;
+      issueId: string | null;
+    }> = [];
     let upserted = 0;
 
     for (const item of backlog) {
       const mapped = mapBrabrixBacklogItemToIssue({ backlogItem: item });
       const goalId = args.featureGoalMap[item.parentId ?? ""] ?? args.featureGoalMap[item.itemId] ?? null;
       const existingIssue = byOriginId.get(item.itemId) ?? null;
+      const hasAssignee = Boolean(existingIssue?.assigneeAgentId || existingIssue?.assigneeUserId);
+      const normalizedStatus =
+        mapped.status === "in_progress" && !hasAssignee
+          ? "todo"
+          : mapped.status;
+      if (mapped.status === "in_progress" && !hasAssignee) {
+        downgradedInProgressItems.push({
+          itemId: item.itemId,
+          title: mapped.title,
+          reason: existingIssue
+            ? "existing issue has no assignee"
+            : "new issues are imported without assignee",
+          issueId: existingIssue?.id ?? null,
+        });
+      }
       if (existingIssue) {
         const updated = await issues.update(existingIssue.id, {
           title: mapped.title,
           description: mapped.description,
-          status: mapped.status,
+          status: normalizedStatus,
           priority: mapped.priority,
           goalId,
         });
@@ -1106,7 +1128,7 @@ export function createBrabrixProjectImporter(input: {
         goalId,
         title: mapped.title,
         description: mapped.description,
-        status: mapped.status,
+        status: normalizedStatus,
         priority: mapped.priority,
         originKind: BRABRIX_BACKLOG_ISSUE_ORIGIN_KIND,
         originId: item.itemId,
@@ -1124,9 +1146,30 @@ export function createBrabrixProjectImporter(input: {
       await issues.update(issueId, { parentId: parentIssueId });
     }
 
+    if (downgradedInProgressItems.length > 0) {
+      const sample = downgradedInProgressItems
+        .slice(0, 5)
+        .map((item) => item.itemId)
+        .join(", ");
+      warnings.push(
+        `${downgradedInProgressItems.length} Brabrix backlog item(s) were imported as todo instead of in_progress because no assignee was available.`,
+      );
+      log.warn(
+        {
+          companyId: input.companyId,
+          localProjectId: args.localProjectId,
+          downgradedCount: downgradedInProgressItems.length,
+          sampleBacklogItemIds: sample,
+          items: downgradedInProgressItems,
+        },
+        "brabrix backlog sync downgraded in_progress items without assignee",
+      );
+    }
+
     return {
       backlogIssueMap,
       issuesUpserted: upserted,
+      warnings,
     };
   }
 
@@ -1282,7 +1325,11 @@ export function createBrabrixProjectImporter(input: {
       brabrixProjectId: bundle.project.projectId,
       linkedSkills: bundle.linkedSkills,
     });
-    const importWarnings = [...(bundle.warnings ?? []), ...skillsImport.warnings];
+    const importWarnings = [
+      ...(bundle.warnings ?? []),
+      ...backlogIssues.warnings,
+      ...skillsImport.warnings,
+    ];
 
     const workspaceId = await persistWorkspaceBrabrixMetadata({
       localProjectId: local.project.id,

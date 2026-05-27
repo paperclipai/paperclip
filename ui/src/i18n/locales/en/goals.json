@@ -1,0 +1,11 @@
+{
+  "pageTitle": "Goals",
+  "empty": {
+    "selectCompany": "Select a company to view goals.",
+    "noGoals": "No goals yet.",
+    "addGoal": "Add Goal"
+  },
+  "actions": {
+    "newGoal": "New Goal"
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "profile": {
+    "title": "Perfil",
+    "subtitle": "Controle como sua conta aparece na barra lateral e em outras áreas do board.",
+    "loading": "Carregando perfil...",
+    "errors": {
+      "load": "Falha ao carregar perfil.",
+      "update": "Falha ao atualizar perfil.",
+      "upload": "Falha ao enviar avatar.",
+      "remove": "Falha ao remover avatar.",
+      "selectCompany": "Selecione uma empresa antes de enviar um avatar de perfil."
+    },
+    "card": {
+      "noEmail": "Sem e-mail",
+      "uploadHintStored": "Armazenado no storage de arquivos do Brabrix Agent para {{companyName}}.",
+      "uploadHintSelectCompany": "Selecione uma empresa para enviar um avatar para o storage do Brabrix Agent.",
+      "clickHint": "Clique no avatar para enviar uma nova imagem. {{uploadHint}}"
+    },
+    "buttons": {
+      "changePhoto": "Alterar foto",
+      "uploadPhoto": "Enviar foto",
+      "remove": "Remover",
+      "saving": "Salvando...",
+      "saveProfile": "Salvar perfil"
+    },
+    "fields": {
+      "displayName": "Nome de exibição",
+      "displayNameHint": "Mostrado no rodapé da conta na sidebar e em superfícies de autoria de comentários.",
+      "displayNamePlaceholder": "Board",
+      "email": "E-mail",
+      "emailHint": "O e-mail é gerenciado pela sua sessão de autenticação e é somente leitura aqui."
+    },
+    "language": {
+      "title": "Idioma da interface",
+      "hint": "Escolha seu idioma preferido para menus, páginas e fluxos."
+    }
+  },
+  "accountMenu": {
+    "displayNameFallback": "Board",
+    "signedIn": "Conectado",
+    "localWorkspace": "Board local do workspace",
+    "accountBadge": "Conta",
+    "localBadge": "Local",
+    "openMenu": "Abrir menu da conta",
+    "actions": {
+      "viewProfile": {
+        "label": "Ver perfil",
+        "description": "Abra seu histórico de atividade, tarefas e uso."
+      },
+      "editProfile": {
+        "label": "Editar perfil",
+        "description": "Atualize seu nome de exibição e avatar."
+      },
+      "instanceSettings": {
+        "label": "Configurações da instância",
+        "description": "Volte para a última página de configurações que você abriu."
+      },
+      "docs": {
+        "label": "Documentação",
+        "description": "Abra a documentação do {{appName}} em uma nova aba."
+      },
+      "toggleToLight": "Mudar para tema claro",
+      "toggleToDark": "Mudar para tema escuro",
+      "toggleDescription": "Alternar aparência da aplicação."
+    },
+    "signOut": {
+      "pending": "Saindo...",
+      "default": "Sair",
+      "description": "Encerrar esta sessão do navegador."
+    }
+  }
+}

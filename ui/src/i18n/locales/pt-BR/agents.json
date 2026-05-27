@@ -1,0 +1,8 @@
+{
+  "toasts": {
+    "paused": "Agente pausado",
+    "resumed": "Agente retomado",
+    "couldNotPause": "Não foi possível pausar o agente",
+    "couldNotResume": "Não foi possível retomar o agente"
+  }
+}

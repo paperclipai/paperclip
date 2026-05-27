@@ -1,0 +1,72 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Create your first company",
+      "description": "Get started by creating a company.",
+      "newCompany": "New Company"
+    }
+  },
+  "states": {
+    "loading": "Loading..."
+  },
+  "actions": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "remove": "Remove",
+    "change": "Change",
+    "upload": "Upload",
+    "create": "Create"
+  },
+  "language": {
+    "label": "Language",
+    "description": "Choose the interface language for your workspace.",
+    "active": "Current language: {{language}}",
+    "options": {
+      "en": "English",
+      "pt-BR": "Português (Brasil)"
+    }
+  },
+  "navigation": {
+    "skipToMainContent": "Skip to Main Content",
+    "openSidebar": "Open sidebar",
+    "closeSidebar": "Close sidebar"
+  },
+  "breadcrumbs": {
+    "dashboard": "Dashboard",
+    "issues": "Issues",
+    "goals": "Goals",
+    "agents": "Agents",
+    "projects": "Projects",
+    "workspaces": "Workspaces",
+    "settings": "Settings",
+    "instanceSettings": "Instance Settings",
+    "companySettings": "Company Settings",
+    "profile": "Profile",
+    "skills": "Skills",
+    "detail": "Detail",
+    "costs": "Costs",
+    "activity": "Activity",
+    "inbox": "Inbox",
+    "routines": "Routines",
+    "approvals": "Approvals",
+    "search": "Search",
+    "general": "General",
+    "access": "Access",
+    "heartbeats": "Heartbeats",
+    "experimental": "Experimental",
+    "plugins": "Plugins",
+    "adapters": "Adapters",
+    "members": "Members",
+    "invites": "Invites",
+    "secrets": "Secrets",
+    "environments": "Environments",
+    "cloudUpstream": "Cloud upstream",
+    "orgChart": "Org Chart",
+    "companies": "Companies",
+    "newAgent": "New Agent",
+    "liveRuns": "Live runs",
+    "joinRequests": "Join Requests",
+    "users": "Users",
+    "notFound": "Not Found"
+  }
+}

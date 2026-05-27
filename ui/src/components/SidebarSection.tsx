@@ -2,6 +2,7 @@ import { useState, type ComponentType, type ReactNode } from "react";
 import { Link } from "@/lib/router";
 import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { useSidebar } from "../context/SidebarContext";
 import {
   Collapsible,
@@ -68,6 +69,7 @@ function SidebarSectionHeader({
   label,
   menu,
 }: Pick<SidebarSectionProps, "collapsible" | "headerAction" | "label" | "menu">) {
+  const { t } = useTranslation();
   const { isMobile } = useSidebar();
   const [menuOpen, setMenuOpen] = useState(false);
   const hasMenu = Boolean(
@@ -90,6 +92,22 @@ function SidebarSectionHeader({
   const headerContent = <span className={labelClassName}>{label}</span>;
   const HeaderActionIcon = headerAction?.icon;
 
+  const defaultActionsAriaLabel = t("section.actions", {
+    ns: "sidebar",
+    label,
+    defaultValue: `${label} actions`,
+  });
+  const collapseAriaLabel = t("section.collapse", {
+    ns: "sidebar",
+    label,
+    defaultValue: `Collapse ${label}`,
+  });
+  const expandAriaLabel = t("section.expand", {
+    ns: "sidebar",
+    label,
+    defaultValue: `Expand ${label}`,
+  });
+
   const headingControl = hasMenu ? (
     <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
@@ -101,7 +119,7 @@ function SidebarSectionHeader({
             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
             menuOpen && "bg-accent/50",
           )}
-          aria-label={menu?.ariaLabel ?? `${label} actions`}
+          aria-label={menu?.ariaLabel ?? defaultActionsAriaLabel}
         >
           {headerContent}
         </button>
@@ -159,7 +177,7 @@ function SidebarSectionHeader({
               type="button"
               data-slot="icon-button"
               className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
+              aria-label={collapsible.open ? collapseAriaLabel : expandAriaLabel}
             >
               <ChevronRight className={caretClassName} aria-hidden="true" />
             </button>

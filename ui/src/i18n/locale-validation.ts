@@ -1,4 +1,4 @@
-import en from "./locales/en.json";
+import enCommon from "./locales/en/common.json";
 
 const MAX_STRING_LENGTH = 2_000;
 
@@ -107,13 +107,13 @@ function validateNode(path: string[], candidate: unknown, englishReference: unkn
   }
 }
 
-export function validateLocaleMessages(candidate: unknown, englishReference: unknown = en) {
+export function validateLocaleMessages(candidate: unknown, englishReference: unknown = enCommon) {
   const errors: string[] = [];
   validateNode([], candidate, englishReference, errors);
   return errors;
 }
 
-export function assertValidLocaleMessages(candidate: unknown, englishReference: unknown = en) {
+export function assertValidLocaleMessages(candidate: unknown, englishReference: unknown = enCommon) {
   const errors = validateLocaleMessages(candidate, englishReference);
   if (errors.length > 0) {
     throw new Error(`Invalid locale messages:\n${errors.join("\n")}`);

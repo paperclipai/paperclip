@@ -1,14 +1,15 @@
 import i18n, { type InitOptions, type TOptions } from "i18next";
 import { initReactI18next, useTranslation as useReactI18nextTranslation } from "react-i18next";
 
-import { DEFAULT_LOCALE, i18nextResources, supportedLocales } from "./locales";
+import { DEFAULT_LOCALE, DEFAULT_NAMESPACE, i18nextResources, supportedLocales, supportedNamespaces } from "./locales";
 
 const i18nextOptions: InitOptions = {
   resources: i18nextResources,
   lng: DEFAULT_LOCALE,
   fallbackLng: DEFAULT_LOCALE,
   supportedLngs: supportedLocales,
-  defaultNS: "translation",
+  defaultNS: DEFAULT_NAMESPACE,
+  ns: supportedNamespaces,
   interpolation: { escapeValue: false },
   returnObjects: false,
   initAsync: false,

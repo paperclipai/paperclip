@@ -1,0 +1,21 @@
+{
+  "pageTitle": "Issues",
+  "empty": {
+    "selectCompany": "Select a company to view issues."
+  },
+  "sync": {
+    "button": "Sync Issues from Brabrix",
+    "syncing": "Syncing Issues...",
+    "errors": {
+      "selectCompany": "Select a company before syncing Brabrix issues.",
+      "noProject": "No Brabrix project imported yet. Use Settings > Brabrix > Import Project first.",
+      "unexpected": "Unexpected integration error."
+    },
+    "toasts": {
+      "completedTitle": "Brabrix issues sync completed",
+      "completedBodyWithWarnings": "{{projectCount}} project(s) synced, {{issuesUpserted}} issue(s) updated, with {{warningsCount}} warning(s).",
+      "completedBody": "{{projectCount}} project(s) synced, {{issuesUpserted}} issue(s) and {{goalsUpserted}} goal(s) updated.",
+      "failedTitle": "Failed to sync issues from Brabrix"
+    }
+  }
+}

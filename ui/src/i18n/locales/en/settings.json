@@ -1,0 +1,72 @@
+{
+  "profile": {
+    "title": "Profile",
+    "subtitle": "Control how your account appears in the sidebar and other board surfaces.",
+    "loading": "Loading profile...",
+    "errors": {
+      "load": "Failed to load profile.",
+      "update": "Failed to update profile.",
+      "upload": "Failed to upload avatar.",
+      "remove": "Failed to remove avatar.",
+      "selectCompany": "Select a company before uploading a profile avatar."
+    },
+    "card": {
+      "noEmail": "No email",
+      "uploadHintStored": "Stored in Brabrix Agent file storage for {{companyName}}.",
+      "uploadHintSelectCompany": "Select a company to upload an avatar into Brabrix Agent storage.",
+      "clickHint": "Click the avatar to upload a new image. {{uploadHint}}"
+    },
+    "buttons": {
+      "changePhoto": "Change photo",
+      "uploadPhoto": "Upload photo",
+      "remove": "Remove",
+      "saving": "Saving...",
+      "saveProfile": "Save profile"
+    },
+    "fields": {
+      "displayName": "Display name",
+      "displayNameHint": "Shown in the sidebar account footer and comment author surfaces.",
+      "displayNamePlaceholder": "Board",
+      "email": "Email",
+      "emailHint": "Email is managed by your auth session and is read-only here."
+    },
+    "language": {
+      "title": "Interface language",
+      "hint": "Choose your preferred language for menus, pages, and workflows."
+    }
+  },
+  "accountMenu": {
+    "displayNameFallback": "Board",
+    "signedIn": "Signed in",
+    "localWorkspace": "Local workspace board",
+    "accountBadge": "Account",
+    "localBadge": "Local",
+    "openMenu": "Open account menu",
+    "actions": {
+      "viewProfile": {
+        "label": "View profile",
+        "description": "Open your activity, task, and usage ledger."
+      },
+      "editProfile": {
+        "label": "Edit profile",
+        "description": "Update your display name and avatar."
+      },
+      "instanceSettings": {
+        "label": "Instance settings",
+        "description": "Jump back to the last settings page you opened."
+      },
+      "docs": {
+        "label": "Documentation",
+        "description": "Open {{appName}} docs in a new tab."
+      },
+      "toggleToLight": "Switch to light mode",
+      "toggleToDark": "Switch to dark mode",
+      "toggleDescription": "Toggle the app appearance."
+    },
+    "signOut": {
+      "pending": "Signing out...",
+      "default": "Sign out",
+      "description": "End this browser session."
+    }
+  }
+}

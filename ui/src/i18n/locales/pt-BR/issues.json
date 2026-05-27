@@ -1,0 +1,21 @@
+{
+  "pageTitle": "Tarefas",
+  "empty": {
+    "selectCompany": "Selecione uma empresa para ver as tarefas."
+  },
+  "sync": {
+    "button": "Sincronizar tarefas do Brabrix",
+    "syncing": "Sincronizando tarefas...",
+    "errors": {
+      "selectCompany": "Selecione uma empresa antes de sincronizar tarefas do Brabrix.",
+      "noProject": "Nenhum projeto Brabrix foi importado ainda. Use Configurações > Brabrix > Importar projeto primeiro.",
+      "unexpected": "Erro inesperado de integração."
+    },
+    "toasts": {
+      "completedTitle": "Sincronização de tarefas Brabrix concluída",
+      "completedBodyWithWarnings": "{{projectCount}} projeto(s) sincronizado(s), {{issuesUpserted}} tarefa(s) atualizada(s), com {{warningsCount}} aviso(s).",
+      "completedBody": "{{projectCount}} projeto(s) sincronizado(s), {{issuesUpserted}} tarefa(s) e {{goalsUpserted}} objetivo(s) atualizados.",
+      "failedTitle": "Falha ao sincronizar tarefas do Brabrix"
+    }
+  }
+}

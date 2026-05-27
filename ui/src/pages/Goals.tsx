@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -12,13 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
 
 export function Goals() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pageTitle", { ns: "goals", defaultValue: "Goals" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: goals, isLoading, error } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -27,7 +29,15 @@ export function Goals() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Target} message="Select a company to view goals." />;
+    return (
+      <EmptyState
+        icon={Target}
+        message={t("empty.selectCompany", {
+          ns: "goals",
+          defaultValue: "Select a company to view goals.",
+        })}
+      />
+    );
   }
 
   if (isLoading) {
@@ -42,7 +52,7 @@ export function Goals() {
         {goals && goals.length > 0 && (
           <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Goal
+            {t("actions.newGoal", { ns: "goals", defaultValue: "New Goal" })}
           </Button>
         )}
       </div>
@@ -50,8 +60,8 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
-          action="Add Goal"
+          message={t("empty.noGoals", { ns: "goals", defaultValue: "No goals yet." })}
+          action={t("empty.addGoal", { ns: "goals", defaultValue: "Add Goal" })}
           onAction={() => openNewGoal()}
         />
       )}

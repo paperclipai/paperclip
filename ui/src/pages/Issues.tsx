@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -59,6 +60,7 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
 }
 
 export function Issues() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -120,16 +122,16 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        t("pageTitle", { ns: "issues", defaultValue: "Issues" }),
         `${location.pathname}${location.search}${location.hash}`,
         "issues",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, t],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pageTitle", { ns: "issues", defaultValue: "Issues" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
@@ -189,7 +191,10 @@ export function Issues() {
   const syncBrabrixIssues = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company before syncing Brabrix issues.");
+        throw new Error(t("sync.errors.selectCompany", {
+          ns: "issues",
+          defaultValue: "Select a company before syncing Brabrix issues.",
+        }));
       }
 
       const importedProjects = importedBrabrixProjectsQuery.data?.projects
@@ -200,7 +205,10 @@ export function Issues() {
           .filter((value) => value.trim().length > 0),
       ));
       if (projectIds.length === 0) {
-        throw new Error("No Brabrix project imported yet. Use Settings > Brabrix > Import Project first.");
+        throw new Error(t("sync.errors.noProject", {
+          ns: "issues",
+          defaultValue: "No Brabrix project imported yet. Use Settings > Brabrix > Import Project first.",
+        }));
       }
 
       const results = [];
@@ -225,24 +233,55 @@ export function Issues() {
         queryClient.invalidateQueries({ queryKey: queryKeys.brabrix.importedProjects(selectedCompanyId) }),
       ]);
       pushToast({
-        title: "Brabrix issues sync completed",
+        title: t("sync.toasts.completedTitle", {
+          ns: "issues",
+          defaultValue: "Brabrix issues sync completed",
+        }),
         body: result.warnings.length > 0
-          ? `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) updated, with ${result.warnings.length} warning(s).`
-          : `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) and ${result.goalsUpserted} goal(s) updated.`,
+          ? t("sync.toasts.completedBodyWithWarnings", {
+              ns: "issues",
+              projectCount: result.projectCount,
+              issuesUpserted: result.issuesUpserted,
+              warningsCount: result.warnings.length,
+              defaultValue: `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) updated, with ${result.warnings.length} warning(s).`,
+            })
+          : t("sync.toasts.completedBody", {
+              ns: "issues",
+              projectCount: result.projectCount,
+              issuesUpserted: result.issuesUpserted,
+              goalsUpserted: result.goalsUpserted,
+              defaultValue: `${result.projectCount} project(s) synced, ${result.issuesUpserted} issue(s) and ${result.goalsUpserted} goal(s) updated.`,
+            }),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to sync issues from Brabrix",
-        body: error instanceof Error ? error.message : "Unexpected integration error.",
+        title: t("sync.toasts.failedTitle", {
+          ns: "issues",
+          defaultValue: "Failed to sync issues from Brabrix",
+        }),
+        body: error instanceof Error
+          ? error.message
+          : t("sync.errors.unexpected", {
+              ns: "issues",
+              defaultValue: "Unexpected integration error.",
+            }),
         tone: "error",
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
+    return (
+      <EmptyState
+        icon={CircleDot}
+        message={t("empty.selectCompany", {
+          ns: "issues",
+          defaultValue: "Select a company to view issues.",
+        })}
+      />
+    );
   }
 
   return (
@@ -257,7 +296,9 @@ export function Issues() {
           {syncBrabrixIssues.isPending
             ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
             : <Link2 className="h-3.5 w-3.5 mr-1.5" />}
-          {syncBrabrixIssues.isPending ? "Syncing Issues..." : "Sync Issues from Brabrix"}
+          {syncBrabrixIssues.isPending
+            ? t("sync.syncing", { ns: "issues", defaultValue: "Syncing Issues..." })
+            : t("sync.button", { ns: "issues", defaultValue: "Sync Issues from Brabrix" })}
         </Button>
       </div>
 

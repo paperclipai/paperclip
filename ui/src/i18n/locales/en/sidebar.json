@@ -1,0 +1,108 @@
+{
+  "top": {
+    "openSearch": "Open search",
+    "newIssue": "New Issue"
+  },
+  "sections": {
+    "work": "Work",
+    "company": "Company",
+    "projects": "Projects",
+    "agents": "Agents"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "issues": "Issues",
+    "routines": "Routines",
+    "goals": "Goals",
+    "workspaces": "Workspaces",
+    "org": "Org",
+    "skills": "Skills",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings"
+  },
+  "mobile": {
+    "aria": "Mobile navigation",
+    "home": "Home",
+    "create": "Create",
+    "issues": "Issues",
+    "agents": "Agents",
+    "inbox": "Inbox"
+  },
+  "section": {
+    "actions": "{{label}} actions",
+    "collapse": "Collapse {{label}}",
+    "expand": "Expand {{label}}"
+  },
+  "instanceSettings": {
+    "title": "Instance Settings",
+    "profile": "Profile",
+    "general": "General",
+    "access": "Access",
+    "heartbeats": "Heartbeats",
+    "experimental": "Experimental",
+    "plugins": "Plugins",
+    "adapters": "Adapters"
+  },
+  "companySettings": {
+    "companyFallback": "Company",
+    "title": "Company Settings",
+    "general": "General",
+    "environments": "Environments",
+    "cloudUpstream": "Cloud upstream",
+    "members": "Members",
+    "invites": "Invites",
+    "secrets": "Secrets"
+  },
+  "projects": {
+    "newProject": "New project",
+    "menuActions": "Projects section actions",
+    "browse": "Browse projects",
+    "sort": "Project sort",
+    "sortTop": "Top",
+    "sortAlphabetical": "Alphabetical",
+    "sortRecent": "Recent",
+    "openActions": "Open actions for {{projectName}}",
+    "leaveProject": "Leave project",
+    "leaving": "Leaving...",
+    "budgetPaused": "Project paused by budget"
+  },
+  "agents": {
+    "newAgent": "New agent",
+    "menuActions": "Agents section actions",
+    "browse": "Browse agents",
+    "sort": "Agent sort",
+    "sortTop": "Top",
+    "sortAlphabetical": "Alphabetical",
+    "sortRecent": "Recent",
+    "openActions": "Open actions for {{agentName}}",
+    "editAgent": "Edit agent",
+    "resumeAgent": "Resume agent",
+    "pauseAgent": "Pause agent",
+    "updating": "Updating...",
+    "budgetPaused": "Budget paused",
+    "pausedByBudgetHint": "Agent was paused by budget limits",
+    "leaveAgent": "Leave agent",
+    "leaving": "Leaving...",
+    "liveCount": "{{count}} live",
+    "liveSuffix": "live",
+    "budgetPausedMarker": "Agent paused by budget"
+  },
+  "companyMenu": {
+    "reorder": "Reorder {{companyName}}",
+    "openWorkspaceSwitcher": "Open {{companyName}} workspace switcher",
+    "openWorkspaceSwitcherFallback": "Open workspace switcher",
+    "selectWorkspace": "Select workspace",
+    "switchWorkspace": "Switch workspace",
+    "done": "Done",
+    "edit": "Edit",
+    "noWorkspaces": "No workspaces",
+    "addCompany": "Add company...",
+    "invitePeopleTo": "Invite people to {{companyName}}",
+    "invitePeople": "Invite people",
+    "companySettings": "Company settings",
+    "signOut": "Sign out",
+    "signingOut": "Signing out..."
+  }
+}
