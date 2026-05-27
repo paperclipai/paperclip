@@ -286,6 +286,12 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
         channelId: "channel-123",
       }),
     }));
+
+    const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
+    expect(secretRows).toHaveLength(1);
+
+    const secretVersionRows = await db.select().from(companySecretVersions);
+    expect(secretVersionRows).toHaveLength(2);
   });
 
   it("rejects enabling the bridge without selecting a provider", async () => {

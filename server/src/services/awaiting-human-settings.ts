@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { companyAwaitingHumanSettings, type Db } from "@paperclipai/db";
+import { companies, companyAwaitingHumanSettings, type Db } from "@paperclipai/db";
 import type {
   AwaitingHumanProvider,
   CompanyAwaitingHumanSettings,
   UpdateCompanyAwaitingHumanSettingsRequest,
 } from "@paperclipai/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
 import {
@@ -114,51 +114,61 @@ export function awaitingHumanSettingsService(db: Db) {
     patch: UpdateCompanyAwaitingHumanSettingsRequest,
     actor?: { userId?: string | null; agentId?: string | null },
   ): Promise<CompanyAwaitingHumanSettings> {
-    const existing = await getStored(companyId);
-    const baseline = existing ?? defaultStoredSettings(companyId);
-    const previousClickUpSecretId = baseline.provider === "clickup"
-      ? baseline.providerConfigJson?.authTokenRef?.secretId ?? null
-      : null;
-
-    const nextProvider = patch.provider !== undefined ? patch.provider : baseline.provider;
-    const nextEnabled = patch.enabled !== undefined ? patch.enabled : baseline.enabled;
-
-    let nextProviderConfig: StoredClickUpProviderConfig | null =
-      baseline.provider === "clickup" ? (baseline.providerConfigJson ?? defaultStoredSettings(companyId).providerConfigJson) : null;
-
-    if (patch.provider !== undefined && patch.provider !== baseline.provider && patch.providerConfig === undefined) {
-      nextProviderConfig = null;
-    }
-
-    if (patch.providerConfig !== undefined) {
-      if (nextProvider !== "clickup" && patch.providerConfig !== null) {
-        throw unprocessable("Provider config can only be set when ClickUp is selected");
-      }
-      const normalizedConfig = normalizeClickUpAwaitingHumanProviderConfig(patch.providerConfig);
-      nextProviderConfig = nextProvider === "clickup"
-        ? {
-          authTokenRef: nextProviderConfig?.authTokenRef ?? null,
-          workspaceId: normalizedConfig?.workspaceId ?? null,
-          channelId: normalizedConfig?.channelId ?? null,
-        }
-        : null;
-    }
-
-    if (nextEnabled && !nextProvider) {
-      throw unprocessable("Cannot enable the awaiting-human bridge without selecting a provider");
-    }
-
-    if (nextProvider === "clickup") {
-      validateClickUpAwaitingHumanProviderConfig({
-        enabled: nextEnabled,
-        providerConfig: nextProviderConfig
-          ? { workspaceId: nextProviderConfig.workspaceId, channelId: nextProviderConfig.channelId }
-          : null,
-      });
-    }
-
     await db.transaction(async (tx) => {
       const txSecrets = secretService(tx);
+      await tx.execute(sql`
+        SELECT ${companies.id}
+        FROM ${companies}
+        WHERE ${eq(companies.id, companyId)}
+        FOR UPDATE
+      `);
+
+      const [existing] = await tx
+        .select()
+        .from(companyAwaitingHumanSettings)
+        .where(eq(companyAwaitingHumanSettings.companyId, companyId))
+        .limit(1);
+      const baseline = existing ?? defaultStoredSettings(companyId);
+      const previousClickUpSecretId = baseline.provider === "clickup"
+        ? baseline.providerConfigJson?.authTokenRef?.secretId ?? null
+        : null;
+
+      const nextProvider = patch.provider !== undefined ? patch.provider : baseline.provider;
+      const nextEnabled = patch.enabled !== undefined ? patch.enabled : baseline.enabled;
+
+      let nextProviderConfig: StoredClickUpProviderConfig | null =
+        baseline.provider === "clickup" ? (baseline.providerConfigJson ?? defaultStoredSettings(companyId).providerConfigJson) : null;
+
+      if (patch.provider !== undefined && patch.provider !== baseline.provider && patch.providerConfig === undefined) {
+        nextProviderConfig = null;
+      }
+
+      if (patch.providerConfig !== undefined) {
+        if (nextProvider !== "clickup" && patch.providerConfig !== null) {
+          throw unprocessable("Provider config can only be set when ClickUp is selected");
+        }
+        const normalizedConfig = normalizeClickUpAwaitingHumanProviderConfig(patch.providerConfig);
+        nextProviderConfig = nextProvider === "clickup"
+          ? {
+            authTokenRef: nextProviderConfig?.authTokenRef ?? null,
+            workspaceId: normalizedConfig?.workspaceId ?? null,
+            channelId: normalizedConfig?.channelId ?? null,
+          }
+          : null;
+      }
+
+      if (nextEnabled && !nextProvider) {
+        throw unprocessable("Cannot enable the awaiting-human bridge without selecting a provider");
+      }
+
+      if (nextProvider === "clickup") {
+        validateClickUpAwaitingHumanProviderConfig({
+          enabled: nextEnabled,
+          providerConfig: nextProviderConfig
+            ? { workspaceId: nextProviderConfig.workspaceId, channelId: nextProviderConfig.channelId }
+            : null,
+        });
+      }
 
       const nextToken = trimToken(patch.clickupPersonalToken);
       if (nextProvider === "clickup" && nextToken) {
