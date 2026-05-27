@@ -1,6 +1,7 @@
 import type {
   AdapterModel,
   AdapterModelProfileDefinition,
+  AdapterEnvironmentTestResult,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
@@ -147,6 +148,52 @@ function readConfiguredCommand(config: Record<string, unknown>, fallback: string
   return value.length > 0 ? value : fallback;
 }
 
+function readHermesConfiguredCommand(config: Record<string, unknown>): string {
+  const hermesCommand =
+    typeof config.hermesCommand === "string" ? config.hermesCommand.trim() : "";
+  if (hermesCommand.length > 0) return hermesCommand;
+  return readConfiguredCommand(config, "hermes");
+}
+
+function isHermesCodexOAuthConfig(config: unknown): boolean {
+  if (!config || typeof config !== "object") return false;
+  const provider = (config as Record<string, unknown>).provider;
+  return typeof provider === "string" && provider.trim().toLowerCase() === "openai-codex";
+}
+
+function statusFromEnvironmentChecks(checks: AdapterEnvironmentTestResult["checks"]): AdapterEnvironmentTestResult["status"] {
+  if (checks.some((check) => check.level === "error")) return "fail";
+  if (checks.some((check) => check.level === "warn")) return "warn";
+  return "pass";
+}
+
+function normalizeHermesEnvironmentTestResult<T extends { config?: unknown }>(
+  ctx: T,
+  result: AdapterEnvironmentTestResult,
+): AdapterEnvironmentTestResult {
+  if (!isHermesCodexOAuthConfig(ctx.config)) return result;
+
+  let changed = false;
+  const checks = result.checks.map((check) => {
+    if (check.code !== "hermes_no_api_keys" || check.level !== "warn") return check;
+    changed = true;
+    return {
+      ...check,
+      level: "info" as const,
+      code: "hermes_codex_oauth_api_key_not_required",
+      message: "OpenAI Codex OAuth provider selected; Hermes does not require an LLM API key for this Paperclip run.",
+      hint: "Use `hermes status` or a Paperclip run smoke test to verify the local Codex OAuth session.",
+    };
+  });
+
+  if (!changed) return result;
+  return {
+    ...result,
+    status: statusFromEnvironmentChecks(checks),
+    checks,
+  };
+}
+
 function hasPathSeparator(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
@@ -186,6 +233,10 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
     ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
       ? (ctx.config as Record<string, unknown>)
       : null;
+  const context =
+    ctx && typeof ctx === "object" && "context" in ctx && ctx.context && typeof ctx.context === "object"
+      ? (ctx.context as Record<string, unknown>)
+      : null;
   const agent =
     ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
       ? (ctx.agent as Record<string, unknown>)
@@ -207,6 +258,32 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   }
   if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
     agentAdapterConfig.hermesCommand = agentCommand;
+  }
+
+  if (config && context) {
+    const paperclipIssue =
+      context.paperclipIssue && typeof context.paperclipIssue === "object" && !Array.isArray(context.paperclipIssue)
+        ? (context.paperclipIssue as Record<string, unknown>)
+        : null;
+    const contextTaskId = typeof context.taskId === "string" && context.taskId.length > 0 ? context.taskId : undefined;
+    const contextIssueId = typeof context.issueId === "string" && context.issueId.length > 0 ? context.issueId : undefined;
+    const issueId = typeof paperclipIssue?.id === "string" && paperclipIssue.id.length > 0
+      ? paperclipIssue.id
+      : contextTaskId ?? contextIssueId;
+
+    if (!config.taskId && issueId) config.taskId = issueId;
+    if (!config.taskTitle && typeof paperclipIssue?.title === "string") config.taskTitle = paperclipIssue.title;
+    if (!config.taskBody && typeof paperclipIssue?.description === "string") {
+      config.taskBody = paperclipIssue.description;
+    } else if (!config.taskBody && typeof context.paperclipTaskMarkdown === "string") {
+      config.taskBody = context.paperclipTaskMarkdown;
+    }
+    if (!config.commentId && typeof context.commentId === "string" && context.commentId.length > 0) {
+      config.commentId = context.commentId;
+    }
+    if (!config.wakeReason && typeof context.wakeReason === "string" && context.wakeReason.length > 0) {
+      config.wakeReason = context.wakeReason;
+    }
   }
 
   return ctx;
@@ -485,7 +562,11 @@ const hermesLocalAdapter: ServerAdapterModule = {
 
     return executeHermesLocal(patchedCtx);
   },
-  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
+  testEnvironment: async (ctx) => {
+    const normalizedCtx = normalizeHermesConfig(ctx);
+    const result = await hermesTestEnvironment(normalizedCtx as never);
+    return normalizeHermesEnvironmentTestResult(normalizedCtx, result);
+  },
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,
@@ -495,6 +576,14 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
+  getRuntimeCommandSpec: (config) => {
+    const command = readHermesConfiguredCommand(config);
+    return {
+      command,
+      detectCommand: command,
+      installCommand: null,
+    };
+  },
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();
