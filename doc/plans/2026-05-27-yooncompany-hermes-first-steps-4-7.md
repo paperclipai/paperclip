@@ -9,6 +9,7 @@
 - Profile rule reinforcement approval: `655db324-ee53-4d0b-9540-64a210847356`.
 - Paperclip Orchestrator agent approval: `29a1d242-417f-4fec-9a14-1db1bb17fb9c`; hire approval `9c6adaa5-10c8-440c-baa8-5f4177fa4e78`.
 - Cross-link template approval: `86cbdc5c-3fbb-4721-b5c9-862e83898b92`.
+- Permission staging approval: `125abce0-7161-4c74-b072-d0a22d897282`.
 - Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
 - Git commit/push/PR/merge evidence: tracked by the scoped follow-up PR for each repo documentation update.
@@ -104,6 +105,24 @@ Applied on 2026-05-27 with approval `29a1d242-417f-4fec-9a14-1db1bb17fb9c`.
 - Session: `persistSession: true`
 - Permission baseline: `canCreateAgents: false`
 - Not enabled: heartbeat invocation, Hermes dispatch, repo write permission, direct DB write, deploy, delete, send, external publish.
+
+### Applied Hermes permission staging
+
+Applied on 2026-05-27 with approval `125abce0-7161-4c74-b072-d0a22d897282`.
+
+Both Paperclip Hermes agents now have:
+
+```yaml
+canCreateAgents: false
+canAssignTasks: false
+```
+
+Affected agents:
+
+- `Hermes Orchestrator` / `f4423b9a-f109-41a6-8052-48151cc67a12`
+- `Hermes Research Worker` / `be227544-1898-4146-847c-19c3c40f98cc`
+
+This keeps Hermes in proposal/orchestration mode until a later approval explicitly opens a narrower task-assignment or dispatch path.
 
 ### Object ownership
 

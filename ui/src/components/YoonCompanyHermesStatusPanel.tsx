@@ -80,6 +80,7 @@ export function YoonCompanyHermesStatusPanel({
   const safety = [
     status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
     status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
+    status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
   ].join(", ");
   const commandWarning = status.commandMatchesLocal
     ? ""

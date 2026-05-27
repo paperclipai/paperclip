@@ -273,7 +273,7 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
     expect(container.textContent).toContain("file, mcp, delegation");
     expect(container.textContent).toContain("지속 세션");
-    expect(container.textContent).toContain("--yolo 활성, agent 생성권한 없음");
+    expect(container.textContent).toContain("--yolo 활성, agent 생성권한 없음, task 배정권한 없음");
     expect(container.textContent).toContain("12 · extraArgs 이전 필요");
     expect(container.textContent).toContain("아직 제한된 Hermes 오케스트레이션 상태입니다");
   });
