@@ -250,6 +250,7 @@ export function executionWorkspaceRoutes(db: Db) {
               repoUrl: existing.repoUrl,
               baseRef: existing.baseRef,
               branchName: existing.branchName,
+              metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
                 provisionCommand:

@@ -38,6 +38,7 @@ import type {
   IssueBlockerAttention,
   IssueRecoveryAction,
   IssueRelationIssueSummary,
+  IssueScheduledRetry,
   SuccessfulRunHandoffState,
   IssueWorkMode,
 } from "@paperclipai/shared";
@@ -296,9 +297,11 @@ interface IssueChatThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
   canFalsePositiveRecoveryAction?: boolean;
@@ -3617,9 +3620,11 @@ export function IssueChatThread({
   timelineEvents = [],
   liveRuns = [],
   activeRun = null,
+  issueId = null,
   blockedBy = [],
   blockerAttention = null,
   successfulRunHandoff = null,
+  scheduledRetry = null,
   recoveryAction = null,
   onResolveRecoveryAction,
   canFalsePositiveRecoveryAction = false,
@@ -4299,10 +4304,12 @@ export function IssueChatThread({
                     />
                   ) : null}
                   <IssueBlockedNotice
+                    issueId={issueId}
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
                     successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+                    scheduledRetry={scheduledRetry}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
                         ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null

@@ -23,6 +23,7 @@ import {
   type PluginBridgeContextValue,
 } from "./bridge";
 import { initPluginBridge } from "./bridge-init";
+import { _createReactShimSourceForTests } from "./slots";
 
 function clickEvent(
   overrides: Partial<ReactMouseEvent<HTMLAnchorElement>> = {},
@@ -302,5 +303,23 @@ describe("plugin SDK markdown component bridge", () => {
     expect(renderToStaticMarkup(React.createElement(SdkManagedRoutinesList, {
       routines: [{ key: "lint", title: "Run lint", status: "active" }],
     }))).toContain("Run lint");
+  });
+});
+
+describe("plugin React shim", () => {
+  it("re-exports every named export from the host React module", () => {
+    const source = _createReactShimSourceForTests(React);
+
+    for (const name of Object.keys(React).sort()) {
+      if (name === "default") continue;
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      expect(source).toContain(`export const ${name} = R.${name};`);
+    }
+
+    expect(source).toContain("export default R;");
+    expect(source).toContain("export const useInsertionEffect = R.useInsertionEffect;");
+    expect(source).toContain("export const useId = R.useId;");
+    expect(source).toContain("export const useSyncExternalStore = R.useSyncExternalStore;");
+    expect(source).toContain("export const startTransition = R.startTransition;");
   });
 });

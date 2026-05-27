@@ -1250,7 +1250,9 @@ export function IssuesList({
       }
       else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
       else if (viewState.groupBy === "workspace" && groupKey !== "__no_workspace") {
-        const representativeIssue = group?.items.find((issue) => issue.executionWorkspaceId === groupKey) ?? null;
+        const representativeIssue = group?.items.find((issue) =>
+          issue.executionWorkspaceId === groupKey || issue.projectWorkspaceId === groupKey,
+        ) ?? null;
         const executionWorkspace = executionWorkspaceById.get(groupKey);
         if (executionWorkspace) {
           defaults.executionWorkspaceId = groupKey;
@@ -1704,6 +1706,7 @@ export function IssuesList({
                     <button
                       key={firstVisibleBlockerChip.blockerId}
                       type="button"
+                      data-slot="icon-button"
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1779,7 +1782,7 @@ export function IssuesList({
                         className={isMutedIssue ? "opacity-70" : undefined}
                         mobileLeading={
                           hasChildren ? (
-                            <button type="button" onClick={toggleCollapse}>
+                            <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                             </button>
                           ) : (
@@ -1793,6 +1796,7 @@ export function IssuesList({
                             {hasChildren ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden shrink-0 items-center sm:inline-flex"
                                 onClick={toggleCollapse}
                               >
