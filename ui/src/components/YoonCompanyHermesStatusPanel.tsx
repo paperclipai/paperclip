@@ -34,8 +34,16 @@ function formatSession(value: boolean | null) {
 
 function formatMaxTurns(status: ReturnType<typeof getYoonCompanyHermesStatus>) {
   if (!status.maxTurns) return "설정값 없음";
-  const suffix = status.maxTurns.source === "extraArgs" ? "extraArgs 이전 필요" : "구조화 설정";
+  const suffix = status.maxTurns.source === "extraArgs" ? "extraArgs 기준" : "구조화 설정";
   return `${status.maxTurns.value} · ${suffix}`;
+}
+
+function formatSafety(status: ReturnType<typeof getYoonCompanyHermesStatus>) {
+  return [
+    status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 명시됨" : "--yolo 명시 없음",
+    status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
+    status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
+  ].join(", ");
 }
 
 function Signal({
@@ -77,11 +85,7 @@ export function YoonCompanyHermesStatusPanel({
   const toolsets = formatList(status.toolsets, "Paperclip 설정값 없음");
   const missing = formatList(status.missingToolsets, "누락 없음");
   const commandValue = status.command || `${status.requiredCommand} 필요`;
-  const safety = [
-    status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
-    status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
-    status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
-  ].join(", ");
+  const safety = formatSafety(status);
   const commandWarning = status.commandMatchesLocal
     ? ""
     : ` Hermes 실행은 ${status.requiredCommand}만 기준으로 삼습니다. ${YOONCOMPANY_HERMES_COMMAND_NOTE}.`;
@@ -136,15 +140,21 @@ export function YoonCompanyHermesStatusPanel({
         />
       </div>
 
-      <div className="mt-3 grid gap-2 md:grid-cols-5">
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-6">
         <Signal icon={Workflow} label="Adapter" value={`hermes-paperclip-adapter ${HERMES_PAPERCLIP_ADAPTER_VERSION}`} />
+        <Signal
+          icon={Workflow}
+          label="Profile"
+          value={status.profile || "profile 미지정"}
+          tone={status.profile === "yoonorchestrator" ? "ok" : "warn"}
+        />
         <Signal icon={Radio} label="세션" value={formatSession(status.persistSession)} tone={status.persistSession ? "ok" : "warn"} />
         <Signal icon={ShieldCheck} label="안전 신호" value={safety} tone={status.duplicateYoloRisk || status.yolo ? "warn" : "neutral"} />
         <Signal
           icon={ClipboardList}
           label="실행 제한"
           value={formatMaxTurns(status)}
-          tone={status.maxTurns?.source === "extraArgs" ? "warn" : "neutral"}
+          tone="neutral"
         />
         <Signal
           icon={AlertTriangle}
@@ -157,7 +167,7 @@ export function YoonCompanyHermesStatusPanel({
       {!status.orchestrationReady ? (
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
           현재 Hermes는 설치된 런타임 능력보다 Paperclip 직원 설정이 좁습니다. 이 패널은 상태만 드러내며, profile 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
-          {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
+          {status.duplicateYoloRisk ? " 현재 extraArgs의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
           {commandWarning}
         </p>
       ) : null}

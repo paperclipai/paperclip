@@ -262,12 +262,12 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
   const missing = status.missingToolsets.length > 0 ? status.missingToolsets.join(", ") : "누락 없음 또는 전체 기본값";
   const session = status.persistSession === null ? "설정값 없음" : status.persistSession ? "지속 세션" : "비지속 세션";
   const safety = [
-    status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
+    status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 명시됨" : "--yolo 명시 없음",
     status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
     status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
   ].join(", ");
   const maxTurns = status.maxTurns
-    ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 이전 필요" : "구조화 설정"}`
+    ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 기준" : "구조화 설정"}`
     : "설정값 없음";
   const role = status.title || "역할 설명 없음";
   const command = status.command || `${status.requiredCommand} 필요`;
@@ -281,6 +281,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       <div className="grid gap-2">
         <StatusLine icon={Bot} label="현재 역할" value={agent ? `${agent.name} · ${role}` : "Hermes 직원 미확인"} />
         <StatusLine icon={Terminal} label="실행 명령" value={command} />
+        <StatusLine icon={Workflow} label="Profile" value={status.profile || "profile 미지정"} />
         <StatusLine icon={ClipboardList} label="Paperclip toolsets" value={toolsets} />
         <StatusLine icon={AlertTriangle} label="막힌 핵심 기능" value={missing} />
         <StatusLine icon={Radio} label="세션" value={session} />
@@ -290,7 +291,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       {status.missingToolsets.length > 0 ? (
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
           현재 설정은 아직 제한된 Hermes 오케스트레이션 상태입니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
-          {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
+          {status.duplicateYoloRisk ? " 현재 extraArgs의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
           {status.commandMatchesLocal ? "" : ` Hermes 실행은 ${status.requiredCommand} 명시 경로를 기준으로 해야 합니다.`}
         </p>
       ) : null}
