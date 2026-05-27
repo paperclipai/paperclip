@@ -2036,6 +2036,15 @@ export function agentRoutes(
       .limit(1)
       .then((rows) => rows[0] ?? null);
 
+    // Fail-closed: no active issue means no audit target — reset is vetoed.
+    // Policy: "reset silencioso é vedado" (GNO-174 §5 / GNO-128).
+    if (!activeIssue) {
+      throw unprocessable(
+        "Cannot reset agent without an active in_progress/in_review/blocked issue: no audit target available. " +
+          "Assign an audit issue to the target agent first, or use the board-level override.",
+      );
+    }
+
     const prevState = targetAgent.status;
     const prevPauseReason = (targetAgent as any).pauseReason ?? null;
 

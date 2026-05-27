@@ -124,7 +124,8 @@ function createDbStub(options: {
 
   const causeClass = options.lastFailedRunCauseClass;
   const resolvedCauseClass = causeClass === undefined ? "infrastructure" : causeClass;
-  const issueId = options.activeIssueId ?? activeIssueId;
+  // Use explicit undefined check so that null passes through as null (no active issue).
+  const issueId = options.activeIssueId === undefined ? activeIssueId : options.activeIssueId;
 
   // Track select call count: first select().from().where().orderBy().limit() is the runs query,
   // second is the issues query.
@@ -439,6 +440,18 @@ describe.sequential("POST /agents/:id/reset-infrastructure-status", () => {
         .send({ comment: "reset attempt" }),
     );
     expect(res.status).toBe(422);
+  }, 20_000);
+
+  it("rejects Class B (infrastructure) with no active issue → 422 (audit gap closure, GNO-212)", async () => {
+    // F-1: target has no in_progress/in_review/blocked issue → no audit target → fail-closed.
+    const app = await createApp(boardActor, { lastFailedRunCauseClass: "infrastructure", activeIssueId: null });
+    const res = await requestApp(app, (base) =>
+      request(base)
+        .post(`/api/agents/${targetAgentId}/reset-infrastructure-status`)
+        .send({ comment: "no issue assigned to target" }),
+    );
+    expect(res.status).toBe(422);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 20_000);
 
   it("succeeds for Class B (infrastructure) with error status and writes audit comment (200)", async () => {
