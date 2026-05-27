@@ -2,19 +2,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog,
   agents,
-  agentRuntimeState,
   agentWakeupRequests,
-  companySkills,
   companies,
   createDb,
-  documentRevisions,
-  documents,
-  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
-  issueDocuments,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -23,9 +16,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  composeSweepWakeFramePage,
+  sweepWakeFrameSlug,
+} from "../services/sweep-wake-preflight.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
+const mockGbrainCall = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
@@ -69,6 +68,16 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+  };
+});
+
+vi.mock("../services/gbrain-client-factory.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/gbrain-client-factory.js")>(
+    "../services/gbrain-client-factory.js",
+  );
+  return {
+    ...actual,
+    createServerGbrainClient: vi.fn(() => ({ call: mockGbrainCall })),
   };
 });
 
@@ -116,9 +125,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
+    mockGbrainCall.mockReset();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -132,37 +142,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       resultJson: { exitCode: 0 },
     }));
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.delete(activityLog);
-    await db.delete(companySkills);
-    await db.delete(issueComments);
-    await db.delete(issueDocuments);
-    await db.delete(documentRevisions);
-    await db.delete(documents);
-    await db.delete(issueRelations);
-    await db.delete(issueTreeHolds);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
+    await cleanupHeartbeatTestState(db, heartbeat);
   });
 
   afterAll(async () => {
@@ -381,6 +361,176 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("does not re-fire resolved-blocker sweep wakes for the same issue inside the repeat window", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished blocker",
+        status: "done",
+        priority: "high",
+        completedAt: new Date(Date.now() - 10 * 60 * 1000),
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Dependent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const firstSweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 30 * 60 * 1000,
+    });
+    expect(firstSweep).toMatchObject({ scanned: 1, woken: 1, skipped: 0, failed: 0 });
+
+    const secondSweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 30 * 60 * 1000,
+    });
+    expect(secondSweep).toMatchObject({ scanned: 1, woken: 0, skipped: 1, failed: 0 });
+  });
+
+  it("falls open for resolved-blocker sweep when server-side preflight sees a blocker completed after the frame", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueActivityAt = new Date("2026-05-21T07:00:00.000Z");
+    const frameUpdatedAt = new Date("2026-05-21T07:01:00.000Z");
+    const blockerCompletedAt = new Date("2026-05-21T07:02:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      featureFlags: { serverSideSweepPreflight: true },
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Finished blocker",
+        status: "done",
+        priority: "high",
+        completedAt: blockerCompletedAt,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Dependent issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        lastActivityAt: issueActivityAt,
+        updatedAt: issueActivityAt,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    const slug = sweepWakeFrameSlug({
+      companyId,
+      agentId,
+      issueIdentifier: `${issuePrefix}-2`,
+    });
+    const framePage = composeSweepWakeFramePage({
+      schemaVersion: 1,
+      companyId,
+      agentId,
+      agentName: "CodexCoder",
+      issueIdentifier: `${issuePrefix}-2`,
+      issueId: dependentIssueId,
+      issueLastActivityAt: issueActivityAt.toISOString(),
+      updatedAt: frameUpdatedAt.toISOString(),
+      status: "todo",
+      blockedByIssueIds: [blockerId],
+      disposition: "Stable before blocker completion",
+      nextRefreshTriggers: [],
+      consecutiveSkips: 0,
+      body: "",
+    });
+    mockGbrainCall.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "get_page" && params.slug === slug) return framePage;
+      if (method === "put_page") return null;
+      throw new Error(`unexpected gbrain call ${method}`);
+    });
+
+    const sweep = await heartbeat.reconcileResolvedBlockerDependents({
+      companyId,
+      minBlockerResolvedAgeMs: 0,
+      minRepeatWakeIntervalMs: 0,
+    });
+
+    expect(sweep).toMatchObject({ scanned: 1, woken: 1, skipped: 0, failed: 0 });
+    expect(mockGbrainCall).toHaveBeenCalledWith("get_page", { slug });
+    expect(mockGbrainCall).not.toHaveBeenCalledWith("put_page", expect.anything());
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -510,6 +660,142 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       expect(adapterCalledForRun(secondWake!.id)).toBe(true);
     } finally {
       finishFirstRun();
+    }
+  });
+
+  it("keeps scoped k8s issue assignments queued behind an active webhook run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const activeRunId = randomUUID();
+    const scopedIssueId = randomUUID();
+    const scopedWakeupRequestId = randomUUID();
+    const scopedRunId = randomUUID();
+    let finishQueuedRun!: () => void;
+    const queuedRunFinished = new Promise<void>((resolve) => {
+      finishQueuedRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementation(async () => {
+      await queuedRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+        resultJson: { exitCode: 0 },
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ally",
+      role: "reviewer",
+      status: "active",
+      adapterType: "opencode_k8s",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 3,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: scopedIssueId,
+      companyId,
+      title: "Scoped PR review",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: scopedWakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: scopedIssueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {
+          wakeReason: "github_pr_opened",
+          prReview: "Blockcast/magma#976",
+        },
+      },
+      {
+        id: scopedRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "queued",
+        wakeupRequestId: scopedWakeupRequestId,
+        contextSnapshot: {
+          issueId: scopedIssueId,
+          wakeReason: "issue_assigned",
+          wakeSource: "assignment",
+        },
+      },
+    ]);
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: scopedRunId })
+      .where(eq(agentWakeupRequests.id, scopedWakeupRequestId));
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const [scopedRun, scopedIssue, scopedWakeup] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, scopedRunId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({
+            executionRunId: issues.executionRunId,
+            executionLockedAt: issues.executionLockedAt,
+          })
+          .from(issues)
+          .where(eq(issues.id, scopedIssueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, scopedWakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      expect(scopedRun?.status).toBe("queued");
+      expect(scopedWakeup?.status).toBe("queued");
+      expect(scopedIssue).toMatchObject({
+        executionRunId: null,
+        executionLockedAt: null,
+      });
+      expect(adapterCalledForRun(scopedRunId)).toBe(false);
+    } finally {
+      finishQueuedRun();
+      await heartbeat.drainInFlightExecutions();
     }
   });
 

@@ -183,7 +183,18 @@
     min-height: 44px;
   }
 
-  [data-slot="toggle"] {
+  /* Small inline widgets keep their design size on touch devices —
+     forcing 44px here stretches checkboxes, chip menus, and icon buttons
+     that live inside dense rows (sidebar headers, issue rows, filter
+     popovers). The surrounding row provides the touch area. */
+  [data-slot="toggle"],
+  [data-slot="checkbox"],
+  [data-slot="icon-button"],
+  [data-size="xs"],
+  [data-size="icon-xs"],
+  [data-size="icon-sm"],
+  input[type="checkbox"],
+  input[type="radio"] {
     min-height: 0;
   }
 }

@@ -66,6 +66,7 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     const ownerMap: OwnerMap = { team: { platform: "alice@example.com" } };
     expect(resolveOwnerEmail(a, ownerMap)).toEqual({
       email: "bob@example.com",
+      agentId: null,
       source: "label-override",
     });
   });
@@ -79,6 +80,7 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     };
     expect(resolveOwnerEmail(a, ownerMap)).toEqual({
       email: "alice@example.com",
+      agentId: null,
       source: "owner-map",
     });
   });
@@ -90,6 +92,7 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     });
     expect(resolveOwnerEmail(a, undefined)).toEqual({
       email: "carol@example.com",
+      agentId: null,
       source: "annotation-override",
     });
   });
@@ -100,6 +103,7 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     });
     expect(resolveOwnerEmail(a, { team: { platform: "alice@example.com" } })).toEqual({
       email: null,
+      agentId: null,
       source: "no-match",
     });
   });
@@ -109,7 +113,97 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     const ownerMap: OwnerMap = { service: { foo: "bar@example.com" } };
     expect(resolveOwnerEmail(a, ownerMap)).toEqual({
       email: null,
+      agentId: null,
       source: "no-match",
+    });
+  });
+
+  describe("agent: prefix routing", () => {
+    it("ownerMap value with agent:<id> routes to agentId, not email", () => {
+      const a = alert({
+        labels: { alertname: "HarborImagePullBackOff", severity: "warning" },
+      });
+      const ownerMap: OwnerMap = {
+        alertname: {
+          HarborImagePullBackOff: "agent:c0bccc75-a449-4ece-a789-ce40bdd8e785",
+        },
+      };
+      expect(resolveOwnerEmail(a, ownerMap)).toEqual({
+        email: null,
+        agentId: "c0bccc75-a449-4ece-a789-ce40bdd8e785",
+        source: "owner-map",
+      });
+    });
+
+    it("agent: prefix is case-insensitive in the prefix only, id preserved as-is", () => {
+      const a = alert({
+        labels: { alertname: "X", severity: "info", team: "platform" },
+      });
+      const ownerMap: OwnerMap = {
+        team: { platform: "AGENT:UUID-Mixed-Case" },
+      };
+      expect(resolveOwnerEmail(a, ownerMap)).toEqual({
+        email: null,
+        agentId: "UUID-Mixed-Case",
+        source: "owner-map",
+      });
+    });
+
+    it("label override accepts agent:<id>", () => {
+      const a = alert({
+        labels: {
+          alertname: "X",
+          severity: "info",
+          paperclip_assignee_email: "agent:abc-123",
+        },
+      });
+      expect(resolveOwnerEmail(a, undefined)).toEqual({
+        email: null,
+        agentId: "abc-123",
+        source: "label-override",
+      });
+    });
+
+    it("annotation override accepts agent:<id>", () => {
+      const a = alert({
+        labels: { alertname: "X", severity: "info" },
+        annotations: { paperclip_assignee_email: "agent:abc-123" },
+      });
+      expect(resolveOwnerEmail(a, undefined)).toEqual({
+        email: null,
+        agentId: "abc-123",
+        source: "annotation-override",
+      });
+    });
+
+    it("bare 'agent:' with no id after it is treated as a blank value", () => {
+      const a = alert({
+        labels: { alertname: "X", severity: "info", team: "platform" },
+      });
+      const ownerMap: OwnerMap = { team: { platform: "agent:   " } };
+      // Skipping the blank value, no other map entries → no-match.
+      expect(resolveOwnerEmail(a, ownerMap)).toEqual({
+        email: null,
+        agentId: null,
+        source: "no-match",
+      });
+    });
+
+    it("mixed map: email values still work alongside agent values", () => {
+      const a = alert({
+        labels: { alertname: "PaperclipPgBackupStale", severity: "warning" },
+      });
+      const ownerMap: OwnerMap = {
+        alertname: {
+          HarborImagePullBackOff: "agent:c0bccc75-a449-4ece-a789-ce40bdd8e785",
+          PaperclipPgBackupStale: "release-engineer@blockcast.net",
+        },
+      };
+      expect(resolveOwnerEmail(a, ownerMap)).toEqual({
+        email: "release-engineer@blockcast.net",
+        agentId: null,
+        source: "owner-map",
+      });
     });
   });
 
@@ -247,6 +341,52 @@ describe("resolveAssigneeUserId — full chain", () => {
     const ownerMap: OwnerMap = { team: { platform: "alice@example.com" } };
     const result = await resolveAssigneeUserId(ctx, a, ownerMap);
     expect(result.assigneeUserId).toBe("user-42");
+    expect(result.assigneeAgentId).toBeUndefined();
     expect(result.resolution.source).toBe("owner-map");
+  });
+
+  it("agent:<id> in ownerMap routes to assigneeAgentId, bypassing the email lookup", async () => {
+    const { ctx, state, users } = mkCtx();
+    const a = alert({
+      labels: { alertname: "HarborImagePullBackOff", severity: "warning" },
+    });
+    const ownerMap: OwnerMap = {
+      alertname: {
+        HarborImagePullBackOff: "agent:c0bccc75-a449-4ece-a789-ce40bdd8e785",
+      },
+    };
+    const result = await resolveAssigneeUserId(ctx, a, ownerMap);
+    expect(result.assigneeUserId).toBeUndefined();
+    expect(result.assigneeAgentId).toBe(
+      "c0bccc75-a449-4ece-a789-ce40bdd8e785",
+    );
+    expect(result.resolution.source).toBe("owner-map");
+    expect(result.resolution.agentId).toBe(
+      "c0bccc75-a449-4ece-a789-ce40bdd8e785",
+    );
+    // Critical: the cache lookup must NOT fire for agent targets.
+    expect(state.get).not.toHaveBeenCalled();
+    expect(users.findByEmail).not.toHaveBeenCalled();
+  });
+
+  it("plain email ownerMap value still routes to assigneeUserId (no regression)", async () => {
+    const { ctx, state, users } = mkCtx();
+    state.get.mockResolvedValueOnce(null);
+    users.findByEmail.mockResolvedValueOnce({
+      id: "user-7",
+      email: "release-engineer@blockcast.net",
+      name: "RE",
+    });
+    const a = alert({
+      labels: { alertname: "PaperclipPgBackupStale", severity: "warning" },
+    });
+    const ownerMap: OwnerMap = {
+      alertname: {
+        PaperclipPgBackupStale: "release-engineer@blockcast.net",
+      },
+    };
+    const result = await resolveAssigneeUserId(ctx, a, ownerMap);
+    expect(result.assigneeUserId).toBe("user-7");
+    expect(result.assigneeAgentId).toBeUndefined();
   });
 });

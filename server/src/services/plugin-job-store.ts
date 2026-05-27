@@ -167,15 +167,13 @@ export function pluginJobStore(db: Db) {
         const schedule = decl.schedule ?? "";
 
         if (existing) {
-          // Update schedule if it changed; re-activate if it was paused
+          // Update schedule if it changed. Preserve paused status: operators may
+          // pause noisy jobs in production, and plugin startup must not undo it.
           const updates: Record<string, unknown> = {
             updatedAt: new Date(),
           };
           if (existing.schedule !== schedule) {
             updates.schedule = schedule;
-          }
-          if (existing.status === "paused") {
-            updates.status = "active";
           }
 
           await db

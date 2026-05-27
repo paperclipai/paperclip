@@ -1,32 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
-  agentWakeupRequests,
   agents,
   companies,
-  companyMemberships,
   createDb,
   executionWorkspaces,
-  heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
   issues,
-  principalPermissionGrants,
   projectWorkspaces,
   projects,
   routineRuns,
-  routines,
-  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
+import { heartbeatService } from "../services/heartbeat.ts";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {
@@ -87,30 +83,19 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+    heartbeat = heartbeatService(db);
+  });
 
   afterEach(async () => {
-    await db.delete(activityLog);
-    await db.delete(routineRuns);
-    await db.delete(routineTriggers);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projectWorkspaces);
-    await db.delete(principalPermissionGrants);
-    await db.delete(companyMemberships);
-    await db.delete(routines);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
-    await db.delete(instanceSettings);
+    await cleanupHeartbeatTestState(db, heartbeat, {
+      extraTruncateTables: ["instance_settings"],
+    });
   });
 
   afterAll(async () => {
@@ -325,7 +310,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
-  }, 15_000);
+  });
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();

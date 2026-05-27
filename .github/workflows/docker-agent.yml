@@ -30,7 +30,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # On workflow_run the default ref is the workflow file's branch,
           # not the head SHA of the triggering run. Pin to the SHA the
@@ -38,15 +38,15 @@ jobs:
           # tracks 1:1 with the matching paperclip-server tag.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Login to Blockcast registry
-        uses: docker/login-action@v3
+      - name: Login to Harbor
+        uses: docker/login-action@v4
         with:
-          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
-          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           # Same rationale as docker.yml — ephemeral builder per run so a
           # corrupt content-store blob can't propagate across builds. The
@@ -70,15 +70,16 @@ jobs:
       # for ad-hoc pulls and devbox parity.
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent
+          images: |
+            harbor.blockcast.net/paperclip-agent/paperclip-agent
           tags: |
             type=raw,value=sha-${{ steps.sha.outputs.short }}-k8s-vendored
             type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.agent
@@ -88,16 +89,84 @@ jobs:
           # so paperclip-agent:sha-<X> always extends paperclip:sha-<X>.
           # Falling back to `latest` here would race with concurrent server
           # builds and produce drifted layers.
+          #
+          # Pulled from harbor (not zot) — the zot/Ceph RGW backend
+          # truncates some small blobs (e.g. 32B FROM-layer descriptors)
+          # to 0 bytes on GET, producing `short read: expected N bytes
+          # but got 0: unexpected EOF` at FROM resolution. Harbor serves
+          # the same blobs correctly. Phase B cutover (BLO-5717) already
+          # parallel-pushes the server image to both registries, so the
+          # sha tag exists on harbor when this workflow runs.
           build-args: |
-            BASE_IMAGE=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:sha-${{ steps.sha.outputs.short }}-k8s-vendored
+            BASE_IMAGE=harbor.blockcast.net/paperclip/paperclip:sha-${{ steps.sha.outputs.short }}-k8s-vendored
           # Same containerd-EOF-on-attestation-manifest reasoning as the
           # server image's Docker workflow.
           provenance: false
           sbom: false
-          # Registry-backed cache (separate buildcache image so it doesn't
-          # collide with the server's). Same on-LAN-fast rationale as the
-          # server's docker.yml cache config.
-          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent:buildcache
-          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip-agent:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          # Registry-backed cache on harbor (was zot pre-2026-05-17;
+          # moved alongside BASE_IMAGE so any small cache blob can't
+          # trip the same Ceph RGW zero-byte truncation that the FROM
+          # blob hit).
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip-agent/paperclip-agent:buildcache-v6
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip-agent/paperclip-agent:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # BLO-4141: Auto-bump per-agent adapter_config.image so the freshly
+      # built tag actually lands on running agents. Without this, the new
+      # image sits in harbor unused until an operator manually PATCHes each
+      # agent — the gap that silently no-op'd the BLO-6151 wake-pre-flight
+      # rollout for three days in May 2026.
+      #
+      # The server endpoint owns the policy (eligibility filter, in-flight
+      # skip, audit-log write, retry-on-completion stashing); this step is
+      # just a thin curl. Skipped on manual workflow_dispatch so an operator
+      # can rebuild without bumping (e.g. testing image build changes).
+      #
+      # Security note: all values interpolated into the run block come from
+      # GH-controlled sources only — `vars.PAPERCLIP_API_URL` (operator var),
+      # `secrets.PAPERCLIP_BOARD_TOKEN` (secret), `steps.sha.outputs.short`
+      # (7 hex chars from a commit SHA), and `github.event.workflow_run.head_sha`
+      # (commit SHA, hex-only). No user-controlled strings (issue titles,
+      # commit messages, refs, etc.) reach the shell, so workflow-injection
+      # vectors don't apply here.
+      #
+      # Requires GH repo secret PAPERCLIP_BOARD_TOKEN — a board-tier token
+      # with agents:create permission for the production company. If unset,
+      # the step warns and exits 0 so a missing secret doesn't break the
+      # build; the prior manual-bump workflow remains intact.
+      - name: Bump agent image refs in cluster
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          PAPERCLIP_API: ${{ vars.PAPERCLIP_API_URL || 'https://paperclip.blockcast.net' }}
+          PAPERCLIP_BOARD_TOKEN: ${{ secrets.PAPERCLIP_BOARD_TOKEN }}
+          NEW_IMAGE_SHORT: ${{ steps.sha.outputs.short }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Production company id for Blockcast :: CEO. If we add more
+          # companies, refactor the endpoint to take a list (or call it N
+          # times here); single POST for now.
+          COMPANY_ID: aaced805-3491-4ee5-9b14-cdf70cb81d47
+        run: |
+          set -euo pipefail
+          if [ -z "${PAPERCLIP_BOARD_TOKEN:-}" ]; then
+            echo "::warning::PAPERCLIP_BOARD_TOKEN not set; skipping agent image bump (manual operator PATCH still required)"
+            exit 0
+          fi
+          NEW_IMAGE="harbor.blockcast.net/paperclip-agent/paperclip-agent:sha-${NEW_IMAGE_SHORT}-k8s-vendored"
+          response=$(mktemp)
+          http=$(curl -sS -o "$response" -w "%{http_code}" \
+            -X POST "${PAPERCLIP_API}/api/admin/agents/bump-agent-image" \
+            -H "Authorization: Bearer ${PAPERCLIP_BOARD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg image "$NEW_IMAGE" --arg sha "$BUILD_SHA" --arg cid "$COMPANY_ID" '
+              { companyId: $cid, image: $image, source: "ci:docker-agent.yml", buildSha: $sha }
+            ')")
+          echo "HTTP $http"
+          jq '.' "$response" || cat "$response"
+          if [ "$http" != "200" ]; then
+            echo "::error::bump-agent-image returned HTTP $http"
+            exit 1
+          fi
+          echo "Bumped: $(jq -r '.bumped | length' "$response") agents"
+          echo "Skipped: $(jq -r '.skipped | length' "$response") agents (will auto-retry on next run completion)"
+          echo "Already on target: $(jq -r '.unchanged | length' "$response") agents"

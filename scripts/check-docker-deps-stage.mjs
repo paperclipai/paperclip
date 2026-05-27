@@ -25,7 +25,7 @@ function extractDepsStage(dockerfileText) {
   return captured.join("\n");
 }
 
-function parseWorkspaceRoots(workspaceText) {
+function parseWorkspaceEntries(workspaceText) {
   return workspaceText
     .split("\n")
     .map((line) => line.match(/^\s*-\s+(.+)\s*$/)?.[1]?.trim() ?? null)
@@ -33,12 +33,28 @@ function parseWorkspaceRoots(workspaceText) {
       if (!entry) return entry;
       return entry.replace(/^(['"])(.*)\1$/, "$2");
     })
-    .filter(Boolean)
+    .filter(Boolean);
+}
+
+function parseWorkspaceRoots(workspaceText) {
+  return parseWorkspaceEntries(workspaceText)
     .filter((entry) => !entry.startsWith("!"))
     .map((entry) => entry.replace(/\*+$/, ""))
     .filter((entry) => entry.length > 0)
     .filter((entry) => !entry.includes("examples"))
     .filter((entry) => !entry.includes("create-paperclip-plugin"));
+}
+
+// Exclusions in pnpm-workspace.yaml (entries beginning with `!`) keep nested
+// trees out of the workspace. Honor them when scanning for package.json
+// files so e.g. packages/services/** (Python + Node services that ship as
+// their own container images and don't participate in the root pnpm graph)
+// don't trigger the deps-stage check.
+function parseWorkspaceExcludes(workspaceText) {
+  return parseWorkspaceEntries(workspaceText)
+    .filter((entry) => entry.startsWith("!"))
+    .map((entry) => entry.slice(1))
+    .map((entry) => globToRegExp(entry));
 }
 
 function walkPackageJsonFiles(rootRelative, maxDepth) {
@@ -132,15 +148,25 @@ function main() {
     process.exit(1);
   }
 
-  const workspaceRoots = parseWorkspaceRoots(readFileSync(workspacePath, "utf8"));
+  const workspaceText = readFileSync(workspacePath, "utf8");
+  const workspaceRoots = parseWorkspaceRoots(workspaceText);
   if (workspaceRoots.length === 0) {
     console.error("Could not derive workspace roots from pnpm-workspace.yaml.");
     process.exit(1);
   }
 
+  const workspaceExcludes = parseWorkspaceExcludes(workspaceText);
+
   const requiredPackageJsons = [...new Set(
     workspaceRoots.flatMap((root) => walkPackageJsonFiles(root, 2)),
-  )].sort();
+  )]
+    .filter((pkg) => {
+      const pkgDir = path.posix.dirname(pkg);
+      return !workspaceExcludes.some((regex) =>
+        regex.test(pkgDir) || regex.test(`${pkgDir}/`) || regex.test(pkg),
+      );
+    })
+    .sort();
 
   const copySources = parseCopySources(depsStage);
   const copyMatchers = copySources.map((source) => ({

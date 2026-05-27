@@ -506,6 +506,12 @@ async function hydrateVisibleIssueComment(
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
+  "issue.document_created",
+  "issue.document_updated",
+  "issue.document_restored",
+  "issue.document_deleted",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -820,6 +826,17 @@ function invalidateActivityQueries(
         coalescer.byKey({ queryKey: queryKeys.issues.activity(ref), refetchType });
         if (action === "issue.comment_added") {
           coalescer.byKey({ queryKey: queryKeys.issues.comments(ref), refetchType });
+        }
+        if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
+          const documentKey = readString(details?.key);
+          coalescer.byKey({ queryKey: queryKeys.issues.documents(ref), refetchType });
+          if (documentKey) {
+            coalescer.byKey({ queryKey: queryKeys.issues.document(ref, documentKey), refetchType });
+            coalescer.byKey({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), refetchType });
+          } else {
+            coalescer.byKey({ queryKey: ["issues", "document", ref], refetchType });
+            coalescer.byKey({ queryKey: ["issues", "document-revisions", ref], refetchType });
+          }
         }
         if (action?.startsWith("issue.thread_interaction_")) {
           coalescer.byKey({ queryKey: queryKeys.issues.interactions(ref), refetchType });

@@ -729,6 +729,7 @@ export const PLUGIN_CAPABILITIES = [
   "users.read",
   "projects.read",
   "project.workspaces.read",
+  "execution.workspaces.read",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -974,6 +975,8 @@ export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
   "goal",
   "run",
   "comment",
+  "execution_workspace",
+  "project_workspace",
 ] as const;
 export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
 
@@ -1051,9 +1054,11 @@ export const PLUGIN_EVENT_TYPES = [
   "issue.document.updated",
   "issue.document.deleted",
   "issue.relations.updated",
+  "issue.thread_interaction.created",
   "issue.checked_out",
   "issue.released",
   "issue.assignment_wakeup_requested",
+  "issue.escalation.needs_human_decision",
   "agent.created",
   "agent.updated",
   "agent.status_changed",

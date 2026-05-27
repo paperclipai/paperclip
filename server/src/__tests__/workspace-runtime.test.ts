@@ -1745,6 +1745,125 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
   }, 15_000);
 
+  it("rebinds a stale shared project_primary cwd to the managed checkout when the persisted cwd is not a git repo", async () => {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-rebind-home-"));
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    try {
+      const companyId = "company-rebind-1";
+      const projectId = "project-rebind-1";
+      const repoUrl = "https://example.test/Blockcast/paperclip.git";
+
+      const managedCwd = path.resolve(
+        paperclipHome,
+        "instances",
+        "default",
+        "projects",
+        companyId,
+        projectId,
+        "paperclip",
+      );
+      await fs.mkdir(managedCwd, { recursive: true });
+      await runGit(managedCwd, ["init"]);
+      await runGit(managedCwd, ["config", "user.email", "paperclip@example.com"]);
+      await runGit(managedCwd, ["config", "user.name", "Paperclip Test"]);
+      await fs.writeFile(path.join(managedCwd, "README.md"), "managed\n", "utf8");
+      await runGit(managedCwd, ["add", "README.md"]);
+      await runGit(managedCwd, ["commit", "-m", "managed checkout"]);
+
+      const staleCwd = path.resolve(
+        paperclipHome,
+        "instances",
+        "default",
+        "projects",
+        companyId,
+        projectId,
+        "_default",
+      );
+      await fs.mkdir(staleCwd, { recursive: true });
+
+      const realized = await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: managedCwd,
+          source: "project_primary",
+          projectId,
+          workspaceId: "workspace-rebind-1",
+          repoUrl,
+          repoRef: "master",
+        },
+        workspace: {
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          cwd: staleCwd,
+          providerRef: null,
+          projectId,
+          projectWorkspaceId: "workspace-rebind-1",
+          repoUrl,
+          baseRef: "master",
+          branchName: null,
+        },
+        issue: {
+          id: "issue-rebind-1",
+          identifier: "PAP-REBIND-1",
+          title: "Stale shared workspace cwd",
+        },
+        agent: {
+          id: "agent-rebind-1",
+          name: "Codex Coder",
+          companyId,
+        },
+      });
+
+      expect(realized).not.toBeNull();
+      expect(realized?.cwd).toBe(managedCwd);
+      expect(realized?.strategy).toBe("project_primary");
+      expect(realized?.source).toBe("project_primary");
+      expect(realized?.warnings.some((w) => w.includes("Rebound stale shared workspace cwd"))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("leaves a shared project_primary cwd alone when it already contains a git checkout", async () => {
+    const repoRoot = await createTempRepo();
+    const realized = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-rebind-noop",
+        workspaceId: "workspace-rebind-noop",
+        repoUrl: "https://example.test/Blockcast/paperclip.git",
+        repoRef: "master",
+      },
+      workspace: {
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        cwd: repoRoot,
+        providerRef: null,
+        projectId: "project-rebind-noop",
+        projectWorkspaceId: "workspace-rebind-noop",
+        repoUrl: "https://example.test/Blockcast/paperclip.git",
+        baseRef: "master",
+        branchName: null,
+      },
+      issue: null,
+      agent: {
+        id: "agent-rebind-noop",
+        name: "Codex Coder",
+        companyId: "company-rebind-noop",
+      },
+    });
+
+    expect(realized?.cwd).toBe(repoRoot);
+    expect(realized?.warnings).toEqual([]);
+  });
+
   it("auto-detects the default branch when baseRef is not configured", async () => {
     // Create a repo with "master" as default branch (not "main")
     const repoRoot = await createTempRepo("master");
@@ -2800,7 +2919,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

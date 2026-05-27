@@ -19,6 +19,7 @@ function snapshot(
     reset7d?: number | null;
     utilization5h?: number | null;
     utilization7d?: number | null;
+    snapshotCapturedAt?: string | null;
   }>,
 ): CcrotateTierCacheSnapshot {
   return {
@@ -32,12 +33,14 @@ function snapshot(
           && a.reset7d === undefined
           && a.utilization5h === undefined
           && a.utilization7d === undefined
+          && a.snapshotCapturedAt === undefined
           ? null
           : {
             reset5h: a.reset5h ?? null,
             reset7d: a.reset7d ?? null,
             utilization5h: a.utilization5h ?? null,
             utilization7d: a.utilization7d ?? null,
+            snapshotCapturedAt: a.snapshotCapturedAt ?? null,
           },
     })),
   };
@@ -61,16 +64,15 @@ describe("mapAdapterToCcrotateTarget", () => {
     expect(mapAdapterToCcrotateTarget("claude_k8s")).toBe("claude");
   });
 
+  it("maps opencode_k8s to codex for OpenAI-backed OpenCode agents", () => {
+    expect(mapAdapterToCcrotateTarget("opencode_k8s")).toBe("codex");
+  });
+
   it("returns null for adapters without a ccrotate provider", () => {
     expect(mapAdapterToCcrotateTarget("cursor")).toBeNull();
     expect(mapAdapterToCcrotateTarget("gemini_local")).toBeNull();
     expect(mapAdapterToCcrotateTarget("process")).toBeNull();
     expect(mapAdapterToCcrotateTarget("http")).toBeNull();
-    // opencode_k8s intentionally NOT mapped — its backing provider varies
-    // per deployment (OpenAI- or Anthropic-backed), so we can't blanket-
-    // gate it on either pool. Revisit when the unified ccrotate_runtime
-    // adapter lands with per-agent target config.
-    expect(mapAdapterToCcrotateTarget("opencode_k8s")).toBeNull();
   });
 });
 
@@ -165,6 +167,44 @@ describe("evaluateTierCacheSnapshot", () => {
     expect(result.allow).toBe(false);
     expect(result.resumeAt).not.toBeNull();
     expect(result.resumeAt!.getTime()).toBe(earliest5h * 1000);
+  });
+
+  it("allows optimistically when every account is exhausted AND every snapshot is >5min stale", () => {
+    // BLO-freshness-loop (2026-05-17): `ccrotate refresh`'s burst-probe-all
+    // routinely false-flags accounts as `exhausted` due to Anthropic per-org
+    // Usage API throttling. The cluster's freshness-loop (ccrotate-serve
+    // sidecar) re-probes one account at a time to correct the labels — but
+    // until it sweeps the pool, the gate must not deadlock heartbeats on
+    // stale labels. Mirror the inconclusive-snapshot fallback for the
+    // stale-snapshot case.
+    const sixMinAgo = new Date(now.getTime() - 6 * 60_000).toISOString();
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "a@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo },
+        { email: "b@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(true);
+    expect(result.usableAccount).toBeNull();
+  });
+
+  it("does NOT trigger stale-snapshot fallback when even one account snapshot is fresh", () => {
+    // If the freshness-loop has just re-probed any account and confirmed
+    // it's still exhausted, the cache is trustworthy. Don't bypass.
+    const sixMinAgo = new Date(now.getTime() - 6 * 60_000).toISOString();
+    const tenSecAgo = new Date(now.getTime() - 10_000).toISOString();
+    const result = evaluateTierCacheSnapshot(
+      "claude",
+      snapshot([
+        { email: "a@x.com", serviceTier: "exhausted", snapshotCapturedAt: sixMinAgo, reset5h: 1777680600 },
+        { email: "b@x.com", serviceTier: "exhausted", snapshotCapturedAt: tenSecAgo, reset5h: 1777680600 },
+      ]),
+      now,
+    );
+    expect(result.allow).toBe(false);
+    expect(result.resumeAt).not.toBeNull();
   });
 
   it("denies with null resumeAt when no resets are present", () => {
@@ -963,5 +1003,211 @@ describe("readDefaultCcrotateTierCache", () => {
     const snap = await readDefaultCcrotateTierCache("codex");
     expect(snap?.accounts[0]?.email).toBe("x@x.com");
     expect(snap?.accounts[0]?.serviceTier).toBe("available");
+  });
+});
+
+// T6 — verifier branch on the deny path.
+import type { CcrotateVerifier } from "../services/ccrotate-serve-verifier.js";
+import { VerifierError } from "../services/ccrotate-serve-verifier.js";
+
+function makeVerifier(impl: CcrotateVerifier["probeOne"]): CcrotateVerifier {
+  return { probeOne: impl };
+}
+
+describe("tier-gate — verifier branch", () => {
+  const allExhausted = {
+    updatedAt: new Date().toISOString(),
+    accounts: [
+      {
+        email: "a@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+      {
+        email: "b@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+      {
+        email: "c@x.com",
+        status: "success",
+        serviceTier: "exhausted",
+        rateLimits: { snapshotCapturedAt: new Date().toISOString() },
+      },
+    ],
+  };
+
+  it("allows when verifier returns usable", async () => {
+    const verifier = makeVerifier(async (_t, email) => ({
+      email,
+      status: "success",
+      serviceTier: "base",
+      rateLimits: {},
+    }) as any);
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("denies when verifier confirms exhausted", async () => {
+    const verifier = makeVerifier(async (_t, email) => ({
+      email,
+      status: "success",
+      serviceTier: "exhausted",
+      rateLimits: {},
+    }) as any);
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("optimistic-allow on transport error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("transport", "boom");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("fail-closed deny on auth error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("auth", "401");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("optimistic-allow on circuit_open error", async () => {
+    const verifier = makeVerifier(async () => {
+      throw new VerifierError("circuit_open", "ccrotate-serve unreachable");
+    });
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(true);
+  });
+
+  it("verifier NOT called when cache shows usable account", async () => {
+    const probe = vi.fn(async () =>
+      ({
+        email: "x",
+        status: "success",
+        serviceTier: "base",
+        rateLimits: {},
+      }) as any,
+    );
+    const verifier = makeVerifier(probe);
+    const usable = {
+      updatedAt: new Date().toISOString(),
+      accounts: [
+        {
+          email: "a@x.com",
+          status: "success",
+          serviceTier: "base",
+          rateLimits: { utilization5h: 4, utilization7d: 5 },
+        },
+      ],
+    };
+    const gate = createCcrotateTierGate({
+      readCache: async () => usable as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("regression: no verifier → existing deny on all-exhausted cache", async () => {
+    const gate = createCcrotateTierGate({
+      readCache: async () => allExhausted as any,
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+    });
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    expect(result.allow).toBe(false);
+  });
+
+  it("invalidates in-process cache after verifier call so next checkAdapter re-reads", async () => {
+    let readCount = 0;
+    const probe = vi.fn(
+      async (_t, email) =>
+        ({
+          email,
+          status: "success",
+          serviceTier: "base",
+          rateLimits: {},
+        }) as any,
+    );
+    const verifier = makeVerifier(probe);
+    const gate = createCcrotateTierGate({
+      readCache: async () => {
+        readCount++;
+        return allExhausted as any;
+      },
+      log: { info: vi.fn(), warn: vi.fn() } as any,
+      verifier,
+      cacheTtlMs: 60_000,
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a1",
+      now: new Date(),
+    });
+    await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "a2",
+      now: new Date(),
+    });
+    expect(readCount).toBe(2);
   });
 });

@@ -1349,6 +1349,15 @@ async function handleWebhookEvent(
       ctx.logger.info(`Webhook synced issue update: ${link.linearIdentifier}`);
 
     } else if (action === "create") {
+      const config = await ctx.config.get();
+      if (config.disableLinearOriginatedCreates !== false) {
+        const linearIdentifier = (data.identifier as string | undefined) ?? linearIssueId;
+        ctx.logger.info(
+          `Skipping Linear issue.create webhook for ${linearIdentifier} (disableLinearOriginatedCreates=true; use Link Linear Issue action for explicit pair)`,
+        );
+        return;
+      }
+
       // New issue created in Linear → create in Paperclip
       const companyId = await getCompanyId(ctx);
       if (!companyId) return;

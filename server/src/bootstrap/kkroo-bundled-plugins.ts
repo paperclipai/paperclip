@@ -17,6 +17,7 @@
  * Treat `index.ts` as upstream-aligned territory.
  */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { logger } from "../middleware/logger.js";
@@ -126,12 +127,54 @@ async function upgradeBundledPlugin(
   }
 }
 
+async function enableBundledPlugin(
+  ctx: BootstrapContext,
+  spec: LocalPluginInstall,
+  pluginId: string,
+  fromStatus: string,
+): Promise<void> {
+  try {
+    const res = await ctx.fetchInternal(`${ctx.baseUrl}/api/plugins/${pluginId}/enable`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      const result = (await res.json()) as { pluginKey?: string; status?: string };
+      logger.info(
+        { pluginKey: result.pluginKey ?? spec.pluginKey, fromStatus, status: result.status },
+        `${spec.displayName} plugin recovered from non-ready status`,
+      );
+    } else {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      logger.warn(
+        { pluginKey: spec.pluginKey, fromStatus, error: err.error },
+        `${spec.displayName} plugin recovery enable failed`,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { pluginKey: spec.pluginKey, fromStatus, err },
+      `${spec.displayName} plugin recovery enable threw`,
+    );
+  }
+}
+
 async function installLocalPluginIfAbsent(
   ctx: BootstrapContext,
   spec: LocalPluginInstall,
 ): Promise<void> {
   const installed = await listInstalledPlugins(ctx);
-  const existing = installed.find((p) => p.pluginKey === spec.pluginKey && p.status === "ready");
+  const existing = installed.find((p) => p.pluginKey === spec.pluginKey);
+  const bundlePathExists = existsSync(spec.absPath);
+
+  if (!bundlePathExists) {
+    if (!existing || existing.status !== "ready") {
+      logger.debug(
+        { pluginKey: spec.pluginKey, path: spec.absPath },
+        `${spec.displayName} plugin local bundle path missing; skipping local fallback`,
+      );
+    }
+    return;
+  }
 
   // packageName drift: a previous deploy installed this pluginKey from a
   // different packageName (e.g. registry has @lucitra/X but the in-image
@@ -162,6 +205,9 @@ async function installLocalPluginIfAbsent(
         `${spec.displayName} plugin packageName drifted — force-reinstalling from bundle`,
       );
       await forceReinstallLocalPlugin(ctx, spec);
+      if (existing.status !== "ready") {
+        await enableBundledPlugin(ctx, spec, existing.id, existing.status);
+      }
       return;
     }
     // packagePath drift: the registry record was created by the upstream npm
@@ -182,11 +228,29 @@ async function installLocalPluginIfAbsent(
         `${spec.displayName} plugin packagePath missing or drifted — force-reinstalling from bundle`,
       );
       await forceReinstallLocalPlugin(ctx, spec);
+      if (existing.status !== "ready") {
+        await enableBundledPlugin(ctx, spec, existing.id, existing.status);
+      }
       return;
     }
-    if (bundle.version && existing.version && compareVersions(bundle.version, existing.version) > 0) {
+    if (
+      existing.status === "ready" &&
+      bundle.version &&
+      existing.version &&
+      compareVersions(bundle.version, existing.version) > 0
+    ) {
       await upgradeBundledPlugin(ctx, spec, existing.id, bundle.version, existing.version);
       return;
+    }
+    if (existing.status === "disabled" || existing.status === "error" || existing.status === "upgrade_pending") {
+      await enableBundledPlugin(ctx, spec, existing.id, existing.status);
+      return;
+    }
+    if (existing.status !== "ready") {
+      logger.warn(
+        { pluginKey: spec.pluginKey, status: existing.status },
+        `${spec.displayName} plugin is installed but not recoverable by bundled bootstrap`,
+      );
     }
     return;
   }

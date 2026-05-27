@@ -50,11 +50,54 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 const BOT_URL = process.env.CCROTATE_AUTH_BOT_URL ?? "http://ccrotate-auth-bot.paperclip.svc:7000";
 const REQUEST_TIMEOUT_MS = Number(process.env.CCROTATE_AUTH_BOT_TIMEOUT_MS ?? "60000");
 const SLACK_WEBHOOK_URL = (process.env.PAPERCLIP_SLACK_ESCALATION_WEBHOOK_URL ?? "").trim();
 const SLACK_TIMEOUT_MS = Number(process.env.PAPERCLIP_SLACK_ESCALATION_TIMEOUT_MS ?? "5000");
+const BACKOFF_PATH = process.env.CCROTATE_RELOGIN_BACKOFF_PATH ?? "/paperclip/.ccrotate/relogin-backoff.json";
+const BACKOFF_MS = Number(process.env.CCROTATE_RELOGIN_BACKOFF_MS ?? String(60 * 60 * 1000));
+
+interface BackoffEntry { lastAttemptAt: number; lastStatus: number | "error" }
+type BackoffMap = Record<string, BackoffEntry>;
+
+function loadBackoff(): BackoffMap {
+  try {
+    return JSON.parse(readFileSync(BACKOFF_PATH, "utf8")) as BackoffMap;
+  } catch {
+    return {};
+  }
+}
+
+function saveBackoff(map: BackoffMap): void {
+  try {
+    const dir = dirname(BACKOFF_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(BACKOFF_PATH, JSON.stringify(map), { mode: 0o664 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[ccrotate-relogin-trigger] backoff persist failed: ${msg}`);
+  }
+}
+
+function backoffKey(target: string, email: string): string {
+  return `${target}:${email}`;
+}
+
+function isOnBackoff(map: BackoffMap, target: string, email: string): { onBackoff: true; remainingMs: number } | { onBackoff: false } {
+  const entry = map[backoffKey(target, email)];
+  if (!entry) return { onBackoff: false };
+  const elapsed = Date.now() - entry.lastAttemptAt;
+  if (elapsed >= BACKOFF_MS) return { onBackoff: false };
+  return { onBackoff: true, remainingMs: BACKOFF_MS - elapsed };
+}
+
+function recordAttempt(map: BackoffMap, target: string, email: string, status: number | "error"): void {
+  map[backoffKey(target, email)] = { lastAttemptAt: Date.now(), lastStatus: status };
+  saveBackoff(map);
+}
 
 function adapterToTarget(adapterType: string): "claude" | "codex" | null {
   if (/(^|_)(claude)(_|$)/.test(adapterType)) return "claude";
@@ -228,15 +271,33 @@ async function main(): Promise<void> {
     console.log(`[ccrotate-relogin-trigger] no active ${target} account — skip`);
     return;
   }
+  // Per-email backoff: a successful relogin freshens the OAuth tokens but
+  // doesn't reset Anthropic's 5h cap, so an exhausted active account will
+  // re-trigger this hook on every dispatched run. Without backoff the bot
+  // gets POSTed every ~30s for the same email, blocking other accounts
+  // (the bot serializes relogins via serializeRelogin) and burning a
+  // Camoufox session each cycle. One attempt per email per hour bounds
+  // the storm.
+  const backoff = loadBackoff();
+  const backoffState = isOnBackoff(backoff, target, email);
+  if (backoffState.onBackoff) {
+    const remainMin = Math.round(backoffState.remainingMs / 60000);
+    console.log(
+      `[ccrotate-relogin-trigger] backoff target=${target} email=${email} — last attempt within ${Math.round(BACKOFF_MS / 60000)}m window; ${remainMin}m remaining; skip`,
+    );
+    return;
+  }
   console.log(`[ccrotate-relogin-trigger] agent=${agentId} adapter=${adapterType} target=${target} email=${email} errorCode=${errorCode}`);
 
   let result: { needsEscalation: false } | { needsEscalation: true; reason: EscalationContext["reason"]; detail: string };
   try {
     const botResp = await notifyBot(email, target);
+    recordAttempt(backoff, target, email, botResp.status);
     result = classifyBotResult(botResp);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const aborted = err instanceof Error && err.name === "AbortError";
+    recordAttempt(backoff, target, email, "error");
     result = classifyBotResult({ error: msg, aborted });
   }
 

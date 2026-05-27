@@ -15,6 +15,9 @@ permissions:
   # doesn't push anything, so read scope is enough.
   packages: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-and-push:
     runs-on: self-hosted
@@ -24,7 +27,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Self-hosted runner reuses its workspace across builds. A previous
       # build (or a developer session sharing the same checkout dir) may
@@ -39,18 +42,17 @@ jobs:
           find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
           find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
 
-      # The Blockcast private registry is the only push target. Configure
-      # via repo variable BLOCKCAST_REGISTRY_HOST + the USERNAME variable +
-      # PASSWORD secret in repo Settings. ghcr.io mirroring was removed
-      # because nothing in the deploy path consumes it — the cluster pulls
-      # exclusively from BLOCKCAST_REGISTRY_HOST and skipping the duplicate
-      # push cuts the build-and-push step's wall time roughly in half.
-      - name: Login to Blockcast registry
-        uses: docker/login-action@v3
+      # Harbor is the push target. Configure via HARBOR_USERNAME +
+      # HARBOR_PASSWORD secrets in the Blockcast org Settings (org-wide
+      # visibility=all, backed by the pusher-cluster Harbor robot).
+      # Cluster pulls exclusively from harbor.blockcast.net; ghcr.io
+      # mirroring was removed because nothing in the deploy path consumes it.
+      - name: Login to Harbor
+        uses: docker/login-action@v4
         with:
-          registry: ${{ vars.BLOCKCAST_REGISTRY_HOST }}
-          username: ${{ vars.BLOCKCAST_REGISTRY_USERNAME }}
-          password: ${{ secrets.BLOCKCAST_REGISTRY_PASSWORD }}
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
       # github-mcp-server is pulled from ghcr.io as part of the multi-stage
       # build (Dockerfile FROM ghcr.io/github/github-mcp-server:vX.Y.Z).
@@ -58,14 +60,14 @@ jobs:
       # tripping master builds with `failed to fetch oauth token: denied`.
       # Authenticated pulls use the per-repo limit which is high enough.
       - name: Login to ghcr.io for base-image pulls
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
         with:
           # Tear the builder down at end-of-job so a corrupt content-store
           # blob can't survive into the next run. Commit 822ebd0 bumped
@@ -86,16 +88,17 @@ jobs:
       # Dockerfile's `COPY vendor/*` lines).
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip
+          images: |
+            harbor.blockcast.net/paperclip/paperclip
           tags: |
             type=sha,prefix=sha-,suffix=-k8s-vendored,format=short
             type=raw,value=latest-k8s-vendored,enable={{is_default_branch}}
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -124,8 +127,8 @@ jobs:
           # context can even be hashed; v4 is empty until cache-to writes
           # to it, and the cleanup:true above ensures each run's local
           # builder starts fresh so the corruption can't be re-introduced.
-          cache-from: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v4
-          cache-to: type=registry,ref=${{ vars.BLOCKCAST_REGISTRY_HOST }}/paperclip:buildcache-v4,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip/paperclip:buildcache-v6
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip/paperclip:buildcache-v6,mode=max,image-manifest=true,oci-mediatypes=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -136,7 +139,7 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: self-hosted
-    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' && vars.BLOCKCAST_REGISTRY_HOST != '' }}
+    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' }}
     timeout-minutes: 15
     concurrency:
       # Serialize deploys to the same target so a fast-followup push doesn't
@@ -145,7 +148,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Compute short sha
         id: sha
@@ -153,7 +156,7 @@ jobs:
 
       - name: Write kubeconfig
         env:
-          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_KKROO }}
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_PAPERCLIP_CI_DEPLOY }}
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/.kube"
@@ -161,12 +164,6 @@ jobs:
           chmod 600 "$RUNNER_TEMP/.kube/config"
           echo "KUBECONFIG=$RUNNER_TEMP/.kube/config" >> "$GITHUB_ENV"
 
-      # The self-hosted runner is expected to ship with kubectl + helm. The
-      # pve* runners are inside the same network as the cluster API — no
-      # extra networking needed. The kubeconfig comes from secrets.KUBECONFIG_KKROO
-      # (an SA token kubeconfig scoped to the paperclip namespace via a
-      # RoleBinding to the admin ClusterRole). To opt out, unset
-      # `vars.PAPERCLIP_CI_DEPLOY`.
       - name: Verify tooling + cluster reach
         env:
           NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
@@ -174,6 +171,7 @@ jobs:
           set -e
           which helm kubectl
           helm version --short
+          kubectl auth whoami -o yaml
           kubectl -n "$NS" get statefulset paperclip -o jsonpath='{.spec.replicas}{"\n"}'
 
       # Use --set image.tag so the deployed tag tracks the just-built image
@@ -190,11 +188,20 @@ jobs:
         run: |
           set -e
           echo "rolling out ${TAG} to ${NS}/${RELEASE}"
+          # --timeout bumped 10m → 30m on 2026-05-23 after rev 316 + several
+          # prior revs hit "context deadline exceeded" while the cluster was
+          # in apiserver/kubelet-latency cascade (control-plane nodes at
+          # 110/110 pods, multus FailedCreatePodSandBox storms). The
+          # underlying StatefulSet/Deployment rollouts kept progressing
+          # asynchronously and completed in the 15-30min window after helm
+          # gave up at 10m. 30m absorbs that window without changing CI's
+          # report-success semantics for healthy rollouts (which still
+          # finish in ~30-90s). Investigate further if 30m proves too short.
           helm upgrade "${RELEASE}" ./deploy/helm/paperclip \
             -n "${NS}" \
             -f deploy/helm/paperclip/values.blockcast.yaml \
             --set image.tag="${TAG}" \
-            --wait --timeout 10m
+            --wait --timeout 30m
           helm -n "${NS}" list | head -3
           kubectl -n "${NS}" get pod -l app.kubernetes.io/name=paperclip \
             -o custom-columns=NAME:.metadata.name,IMAGE:.spec.containers[0].image,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount

@@ -8,8 +8,8 @@
 # `paperclip-database-url` Secrets are pre-created out of band.
 
 image:
-  repository: registry.blockcast.net/paperclip
-  tag: sha-64076ef7-k8s-vendored
+  repository: harbor.blockcast.net/paperclip/paperclip
+  tag: sha-43832ee-k8s-vendored
   pullPolicy: Always
   # Bump this to the kkroo image tag built from this repo when deploying.
 
@@ -62,6 +62,20 @@ env:
         secretKeyRef:
           name: paperclip-alertmanager-webhook-token
           key: bearer-token
+    # ccrotate-serve verifier bearer for the heartbeat tier-gate active-verify
+    # path. heartbeat.ts builds the CcrotateServeVerifier from
+    # CCROTATE_SERVE_BASE_URL (or auto-injected CCROTATE_SERVE_SERVICE_HOST +
+    # _PORT_SERVE from the ccrotate-serve Service) + this token. When the env
+    # is missing the gate logs ccrotate.verifier_disabled and falls back to
+    # the pre-T6 deny behavior. The Secret is the same one ccrotate-serve
+    # reads on its end (single source of truth for the bearer).
+    # See [[ccrotate-active-verify-tier-gate]] + spec
+    # .planning/2026-05-17-active-verify-tier-gate-design.md §3.
+    - name: CCROTATE_SERVE_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-serve-secrets
+          key: serveToken
     # PAPERCLIP_PUBLIC_URL pins the auth base so plugin UIs do not fall back
     # to window.location.origin (which would break behind cloudflared / when
     # iframed). PAPERCLIP_AUTH_BASE_URL_MODE=explicit makes the server treat
@@ -70,6 +84,57 @@ env:
       value: https://paperclip.blockcast.net
     - name: PAPERCLIP_AUTH_BASE_URL_MODE
       value: explicit
+    # Disable self-serve email+password registration. Stops the
+    # unauthenticated `POST /api/auth/sign-up/email` exploitation chain
+    # documented in BLO-* (filed 2026-05-20): anonymous user → signup →
+    # cli-auth challenge → self-approve → `pcp_board_*` bearer that the
+    # paperclip-public-tools auth-proxy at `/ccrotate`, `/linear`, `/figma`,
+    # `/webflow`, `/tempo`, `/gbrain` accepts wholesale (the proxy validates
+    # via `/api/cli-auth/me` and does not check company-membership). Verified
+    # end-to-end against production 2026-05-20T20:14Z with synthetic users
+    # since cleaned up. Proper fix is OIDC + auth-proxy membership check
+    # (PCL-1879); this is the stopgap.
+    - name: PAPERCLIP_AUTH_DISABLE_SIGN_UP
+      value: "true"
+    # Microsoft Entra OIDC for SSO. The Entra app `paperclip-prod`
+    # (appId 6c125fa4-deda-43c9-8475-f9c15d0f2976) is registered in the
+    # blockcast.net tenant with redirect URI
+    # https://paperclip.blockcast.net/api/auth/callback/microsoft. The
+    # better-auth instance reads these env vars and enables
+    # socialProviders.microsoft when all three are present
+    # (server/src/auth/better-auth.ts). 24-month client secret rotation:
+    # `az ad app credential reset --id 6c125fa4-... --display-name <name>`,
+    # then `kubectl create secret … --dry-run=client -o yaml | kubectl apply -f -`
+    # to replace the K8s Secret in-place.
+    - name: MICROSOFT_CLIENT_ID
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_CLIENT_ID
+    - name: MICROSOFT_TENANT_ID
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_TENANT_ID
+    - name: MICROSOFT_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-microsoft-oidc
+          key: MICROSOFT_CLIENT_SECRET
+    # BLO-6295 piece D — daily Entra group reconciler. Loops every
+    # MICROSOFT_GROUP_RECONCILE_INTERVAL_HOURS (default 24h) over every
+    # paperclip user with a linked Microsoft account, queries Graph
+    # for current group memberships, and applies the same reconcile
+    # logic as the signin-time better-auth hook
+    # (server/src/auth/microsoft-rbac.ts): ssh-users → Blockcast
+    # operator membership, AdminAgents → pending admin-elevation
+    # approval (NOT auto-grant). Catches off-boarding from AdminAgents
+    # even when the affected user doesn't sign in. The paperclip-prod
+    # Entra app has Group.Read.All app-permission granted with admin
+    # consent so the client_credentials grant against Microsoft Graph
+    # works.
+    - name: MICROSOFT_GROUP_RECONCILE_ENABLED
+      value: "true"
     - name: PAPERCLIP_DEPLOYMENT_MODE
       value: authenticated
     - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
@@ -80,6 +145,15 @@ env:
       value: "true"
     - name: PAPERCLIP_RUNTIME_API_CANDIDATES_JSON
       value: '["https://paperclip.blockcast.net"]'
+    # Designated PR reviewer agent (Ally). The github-webhook route fires
+    # an additional wake here on `pull_request.opened`,
+    # `pull_request.ready_for_review`, and `pull_request_review.submitted`
+    # so PRs without a paperclip identifier still get reviewed. Ally runs
+    # both `/pr-review-toolkit:review-pr` and `/gstack:codex review` per
+    # wake and posts one consolidated comment. The webhook coalesces by
+    # repo+pr+reason so burst events don't queue redundant reviews.
+    - name: PAPERCLIP_PR_REVIEWER_AGENT_ID
+      value: "e0a5011d-5c94-4801-be52-64c14f98ac26"
     # GitHub PAT for the in-image github-mcp-server (stdio mode). The
     # claude_k8s adapter reads this StatefulSet pod's env spec and copies
     # any valueFrom entry — incl. secretKeyRef — onto every agent Job pod
@@ -130,12 +204,44 @@ env:
     # binary code / stack / fs cache. Tune up further if the heap-used metric
     # gets close to this ceiling under load.
     - name: NODE_OPTIONS
-      value: "--max-old-space-size=3072"
+      value: "--max-old-space-size=4608"
+    # Anthropic routing for paperclip-spawned agent Job pods. Agents reach
+    # Anthropic through paperclip-public-tools → ccrotate-serve using the
+    # pcp_board_* bearer, so they don't need /paperclip/.ccrotate/ on disk.
+    # The claude_k8s adapter copies these valueFrom entries onto every Job
+    # pod it creates (inheritedEnvValueFrom). ANTHROPIC_AUTH_TOKEN is the
+    # Bearer-style var preferred by Claude Code / Anthropic SDK >=0.30;
+    # ANTHROPIC_API_KEY mirrors it for older SDK paths. Secret
+    # paperclip-ccrotate-board-token is pre-created out of band.
+    - name: ANTHROPIC_BASE_URL
+      value: "https://paperclip.blockcast.net/ccrotate"
+    - name: ANTHROPIC_AUTH_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-board-token
+          key: token
+    - name: ANTHROPIC_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: paperclip-ccrotate-board-token
+          key: token
+
+# Worker tier also runs plugin workers and scheduled plugin jobs. Linear's
+# periodic sync can transiently burn CPU over large BLO backlogs; keep enough
+# headroom for Alertmanager webhooks and health probes to complete.
+resources:
+  requests:
+    cpu: 1500m
+    memory: 2Gi
+  limits:
+    cpu: "4"
+    memory: 6Gi
 
 persistence:
   enabled: true
   # storageClassName / accessMode / size are ignored when existingClaim is set —
-  # paperclip-data is a 50Gi RWX cephfs PVC pre-created out of band. Kept here
+  # paperclip-data is a 200Gi RWX cephfs PVC managed from onprem-k8s
+  # paperclip/paperclip-data-pvc.yaml. Kept here
   # for documentation only.
   storageClassName: cephfs
   accessMode: ReadWriteMany
@@ -146,6 +252,44 @@ persistence:
   # /paperclip. StatefulSet volumeClaimTemplates can't be reused by Job pods, so we
   # bind to a standalone PVC by name.
   existingClaim: paperclip-data
+
+# Clear the chart's default pod.securityContext.fsGroup (1000). paperclip-data
+# is a 50Gi RWX cephfs PVC with ~2M inodes; with fsGroup set, kubelet runs a
+# recursive chown over the whole volume on every pod mount (cephfs +
+# fsGroupChangePolicy=OnRootMismatch does not reliably short-circuit), so each
+# rollout grinds 30-45 min and helm `--wait` exits "context deadline exceeded"
+# (onprem-k8s #225). The seed initContainer already does targeted chowns of the
+# paths it writes, so a volume-wide fsGroup walk is pure overhead. Explicit
+# null overrides the chart default instead of merging with it.
+pod:
+  securityContext:
+    fsGroup: null
+    fsGroupChangePolicy: null
+
+# HA API/worker split (§2 — Phase 1 server + Phase 2 chart shipped via
+# Blockcast/paperclip#73, image sha-f324704). The chart splits the single-pod
+# StatefulSet into a multi-replica HTTP API Deployment plus a singleton worker
+# StatefulSet. The worker owns heartbeat scheduler + plugin workers + Linear
+# tunnel + DB backup; the API tier serves HTTP traffic only with
+# `PAPERCLIP_NODE_ROLE=api` (plugin RPC paths 503 cleanly on it via stub —
+# acceptable trade-off for HA; bridge is Phase 3 follow-up).
+#
+# Two-step rollout:
+#   Phase A (current): api.enabled=false — new image with NODE_ROLE code rolls
+#     onto paperclip-0 as before; no topology change. Verify paperclip-0 healthy.
+#   Phase B (after verify): set api.enabled=true — chart creates
+#     Deployment/paperclip-api (2 replicas, RollingUpdate maxSurge=1
+#     maxUnavailable=0). Service selector switches to component=api. Workers
+#     stay on the StatefulSet, mount same paperclip-data PVC (RWX cephfs).
+#
+# Rollback: flip api.enabled back to false + helm upgrade. Service selector
+# reverts; Deployment is reaped; StatefulSet stays.
+api:
+  enabled: true
+  replicas: 2
+  maxSurge: 1
+  maxUnavailable: 0
+  spreadAcrossNodes: true
 
 # Service account must mount its bearer token so the k8s-Job adapters can
 # create Jobs / read Pod logs / patch Secrets via the in-cluster kubeconfig.
@@ -158,9 +302,6 @@ serviceAccount:
 rbac:
   create: true
 
-# Pin paperclip-0 to the dedicated paperclip worker (k8s-paperclip-1).
-# Spawned k8s-Job agent pods inherit this scheduling from the parent pod by
-# default. Per-agent adapter config can still override it when needed.
 nodeSelector:
   workload: paperclip
 

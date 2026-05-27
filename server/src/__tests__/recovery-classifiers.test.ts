@@ -11,6 +11,7 @@ import {
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
   isStrandedIssueRecoveryOriginKind,
+  isZeroTokenStartupFailureRun,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
 
@@ -244,5 +245,75 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+});
+
+describe("zero-token startup-failure classifier (BLO-5681)", () => {
+  it("flags terminal zero-token pre-model startup failures (camelCase usage)", () => {
+    expect(
+      isZeroTokenStartupFailureRun({
+        status: "failed",
+        errorCode: "context_overflow",
+        usageJson: { inputTokens: 0, outputTokens: 0 },
+      }),
+    ).toBe(true);
+  });
+
+  it("flags zero-token failures with snake_case usage keys", () => {
+    expect(
+      isZeroTokenStartupFailureRun({
+        status: "failed",
+        errorCode: "context_overflow",
+        usageJson: { input_tokens: 0, output_tokens: 0 },
+      }),
+    ).toBe(true);
+  });
+
+  it("treats an absent usage blob as zero work", () => {
+    expect(isZeroTokenStartupFailureRun({ status: "failed", errorCode: "context_overflow" })).toBe(true);
+    expect(
+      isZeroTokenStartupFailureRun({ status: "failed", errorCode: "context_overflow", usageJson: null }),
+    ).toBe(true);
+  });
+
+  it("flags every member of the pre-model startup-failure family across terminal statuses", () => {
+    expect(isZeroTokenStartupFailureRun({ status: "failed", errorCode: "context_length_exceeded" })).toBe(true);
+    expect(isZeroTokenStartupFailureRun({ status: "timed_out", errorCode: "startup_error_pre_model" })).toBe(true);
+    expect(isZeroTokenStartupFailureRun({ status: "cancelled", errorCode: "context_overflow" })).toBe(true);
+  });
+
+  it("trims surrounding whitespace on the error code", () => {
+    expect(isZeroTokenStartupFailureRun({ status: "failed", errorCode: "  context_overflow  " })).toBe(true);
+  });
+
+  it("does NOT flag a run that actually burned tokens", () => {
+    expect(
+      isZeroTokenStartupFailureRun({
+        status: "failed",
+        errorCode: "context_overflow",
+        usageJson: { inputTokens: 5000, outputTokens: 0 },
+      }),
+    ).toBe(false);
+    expect(
+      isZeroTokenStartupFailureRun({
+        status: "failed",
+        errorCode: "context_overflow",
+        usageJson: { input_tokens: 0, output_tokens: 12 },
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT flag transient failure codes (recovery wrapper still applies)", () => {
+    for (const errorCode of ["rate_limit_exhausted", "mcp_timeout", "adapter_failed", "process_lost"]) {
+      expect(isZeroTokenStartupFailureRun({ status: "failed", errorCode, usageJson: { inputTokens: 0, outputTokens: 0 } })).toBe(false);
+    }
+  });
+
+  it("does NOT flag non-terminal-unsuccessful or empty runs", () => {
+    expect(isZeroTokenStartupFailureRun({ status: "succeeded", errorCode: "context_overflow" })).toBe(false);
+    expect(isZeroTokenStartupFailureRun({ status: "running", errorCode: "context_overflow" })).toBe(false);
+    expect(isZeroTokenStartupFailureRun({ status: "failed", errorCode: null })).toBe(false);
+    expect(isZeroTokenStartupFailureRun(null)).toBe(false);
+    expect(isZeroTokenStartupFailureRun(undefined)).toBe(false);
   });
 });

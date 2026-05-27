@@ -11,17 +11,24 @@ concurrency:
 
 jobs:
   policy:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
+        # Exemptions: (1) the dedicated chore/refresh-lockfile branch that CI
+        # itself uses to land refreshes; (2) any PR authored by the
+        # `blockcast-ci-packages[bot]` automation, which opens upstream-merge
+        # PRs (e.g. BLO-6287) that legitimately carry lockfile diffs picked
+        # up from the upstream `chore(lockfile): refresh pnpm-lock.yaml`
+        # commits. Both paths are bot-driven and trusted; human/agent PRs
+        # remain blocked.
+        if: github.head_ref != 'chore/refresh-lockfile' && github.event.pull_request.user.login != 'blockcast-ci-packages[bot]'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
@@ -62,10 +69,51 @@ jobs:
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
           fi
 
-  verify:
+  typecheck_release_registry:
+    name: Typecheck + Release Registry
     needs: [policy]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck workspaces whose build scripts skip TypeScript
+        run: pnpm run typecheck:build-gaps
+
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
+
+  general_tests:
+    name: General tests (${{ matrix.group_label }})
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: general-server
+            group_label: server
+          - group: general-workspaces-a
+            group_label: workspaces-a
+          - group: general-workspaces-b
+            group_label: workspaces-b
 
     steps:
       - name: Checkout repository
@@ -85,14 +133,51 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck workspaces whose build scripts skip TypeScript
-        run: pnpm run typecheck:build-gaps
+      - name: Run grouped general test suites
+        run: pnpm test:run:general -- --group '${{ matrix.group }}'
 
-      - name: Run general test suites
-        run: pnpm test:run:general
+  verify:
+    # Preserve the legacy required-check name while the underlying work runs in parallel.
+    name: verify
+    if: ${{ always() }}
+    needs: [typecheck_release_registry, general_tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
 
-      - name: Verify release registry test coverage
-        run: pnpm run test:release-registry
+    steps:
+      - name: Fail if any split verify lane failed
+        env:
+          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+          test "$GENERAL_TESTS_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
+
+  build:
+    name: Build
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build
@@ -121,7 +206,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -148,7 +233,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -179,7 +264,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

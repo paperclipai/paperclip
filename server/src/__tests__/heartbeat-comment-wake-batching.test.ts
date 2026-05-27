@@ -463,6 +463,220 @@ describe("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
+  it("defers cross-PR review wakes instead of coalescing them into the active PR run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const activeRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ally",
+      role: "reviewer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "github_pr_opened",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "github_pr_opened",
+        reviewKind: "pr_review",
+        githubRepoFullName: "Blockcast/magma",
+        githubPrNumber: 980,
+        paperclipTaskMarkdown: "Review Blockcast/magma PR #980",
+      },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review PRs",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: activeRunId,
+      executionAgentNameKey: "ally",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "github_pr_review_requested",
+      reason: "github_pr_review_requested",
+      payload: {
+        issueId,
+        githubRepoFullName: "Blockcast/nop",
+        githubPrNumber: 86,
+        paperclipTaskMarkdown: "Review Blockcast/nop PR #86",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "github_pr_review_requested",
+        reviewKind: "pr_review",
+        githubRepoFullName: "Blockcast/nop",
+        githubPrNumber: 86,
+        paperclipTaskMarkdown: "Review Blockcast/nop PR #86",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "github-webhook",
+    });
+
+    expect(secondRun).toBeNull();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    expect(deferredWake?.reason).toBe("issue_execution_deferred");
+    expect((deferredWake?.payload as Record<string, unknown> | null)?._paperclipWakeContext).toMatchObject({
+      reviewKind: "pr_review",
+      githubRepoFullName: "Blockcast/nop",
+      githubPrNumber: 86,
+      paperclipTaskMarkdown: "Review Blockcast/nop PR #86",
+    });
+
+    const coalescedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "coalesced"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(coalescedWake).toBeNull();
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect((runs[0]?.contextSnapshot as Record<string, unknown> | null)?.githubPrNumber).toBe(980);
+  }, 120_000);
+
+  it("scopes contextless PR review wakes by repo and PR when taskKey is omitted", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const activeRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db, { skipQueuedRunDispatch: true });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ally",
+      role: "reviewer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "github_pr_opened",
+      status: "running",
+      contextSnapshot: {
+        wakeReason: "github_pr_opened",
+        reviewKind: "pr_review",
+        githubRepoFullName: "Blockcast/magma",
+        githubPrNumber: 980,
+        paperclipTaskMarkdown: "Review Blockcast/magma PR #980",
+      },
+    });
+
+    const secondRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "github_pr_review_requested",
+      reason: "github_pr_review_requested",
+      payload: {
+        source: "github",
+        event: "issue_comment",
+        repoFullName: "Blockcast/nop",
+        prNumber: 86,
+      },
+      contextSnapshot: {
+        wakeSource: "automation",
+        wakeTriggerDetail: "system",
+        githubRepoFullName: "Blockcast/nop",
+        githubPrNumber: 86,
+        paperclipTaskMarkdown: "Review Blockcast/nop PR #86",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "github-webhook",
+    });
+
+    expect(secondRun).not.toBeNull();
+    expect(secondRun?.status).toBe("queued");
+
+    const coalescedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "coalesced"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(coalescedWake).toBeNull();
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .orderBy(asc(heartbeatRuns.createdAt));
+
+    expect(runs).toHaveLength(2);
+    expect((runs[0]?.contextSnapshot as Record<string, unknown> | null)?.githubPrNumber).toBe(980);
+    expect((runs[0]?.contextSnapshot as Record<string, unknown> | null)?.taskKey).toBeUndefined();
+    expect((runs[1]?.contextSnapshot as Record<string, unknown> | null)?.githubPrNumber).toBe(86);
+    expect((runs[1]?.contextSnapshot as Record<string, unknown> | null)?.taskKey).toBe("pr_review:Blockcast/nop:86");
+  }, 120_000);
+
   it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

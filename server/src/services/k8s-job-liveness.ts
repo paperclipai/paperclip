@@ -6,6 +6,17 @@ import { logger } from "../middleware/logger.js";
 // Job pods. Matches the chart's deploy namespace; an explicit env override
 // is supported for unusual deployments.
 const PAPERCLIP_K8S_NAMESPACE = process.env.PAPERCLIP_K8S_NAMESPACE ?? "paperclip";
+const ENABLE_K8S_JOB_LIVENESS_IN_TESTS =
+  process.env.PAPERCLIP_ENABLE_K8S_JOB_LIVENESS_IN_TESTS === "true";
+const IS_TEST_ENVIRONMENT = process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+const K8S_JOB_LIVENESS_TIMEOUT_MS = Number(
+  process.env.PAPERCLIP_K8S_JOB_LIVENESS_TIMEOUT_MS ??
+    (IS_TEST_ENVIRONMENT ? "100" : "2000"),
+);
+const K8S_JOB_LIVENESS_TIMEOUT_SECONDS = Math.max(
+  1,
+  Math.ceil(K8S_JOB_LIVENESS_TIMEOUT_MS / 1000),
+);
 
 // Agent Job manifests carry app.kubernetes.io/managed-by=paperclip and a
 // paperclip.io/run-id label that maps directly to heartbeat_runs.id. The
@@ -14,6 +25,12 @@ const PAPERCLIP_K8S_NAMESPACE = process.env.PAPERCLIP_K8S_NAMESPACE ?? "papercli
 const AGENT_JOB_LABEL_SELECTOR = "app.kubernetes.io/managed-by=paperclip";
 const RUN_ID_LABEL = "paperclip.io/run-id";
 
+export type AgentJobRunStatus = {
+  phase: "active" | "succeeded" | "failed";
+  reason?: string | null;
+  message?: string | null;
+};
+
 type ClientState =
   | { kind: "uninitialized" }
   | { kind: "unavailable"; reason: string }
@@ -21,10 +38,31 @@ type ClientState =
 
 let clientState: ClientState = { kind: "uninitialized" };
 
+function requestOptionsWithTimeout() {
+  return {
+    middlewareMergeStrategy: "append" as const,
+    promiseMiddleware: [
+      {
+        async pre(context: { setSignal(signal: AbortSignal): void }) {
+          context.setSignal(AbortSignal.timeout(K8S_JOB_LIVENESS_TIMEOUT_MS));
+          return context;
+        },
+        async post<T>(context: T) {
+          return context;
+        },
+      },
+    ],
+  };
+}
+
 function initClient(): ClientState {
   if (clientState.kind !== "uninitialized") return clientState;
   try {
     const kc = new k8s.KubeConfig();
+    if (IS_TEST_ENVIRONMENT && !ENABLE_K8S_JOB_LIVENESS_IN_TESTS) {
+      clientState = { kind: "unavailable", reason: "disabled in test environment" };
+      return clientState;
+    }
     // In-cluster (mounted SA token) is the production path. For local dev
     // we deliberately don't fall back to loadFromDefault — the reaper would
     // otherwise hit the developer's personal kubeconfig and list Jobs in
@@ -47,37 +85,87 @@ function initClient(): ClientState {
 
 const RUN_ID_LABEL_FILTER_PREFIX = `${RUN_ID_LABEL}=`;
 
+function conditionIsTrue(condition: k8s.V1JobCondition | undefined) {
+  return condition?.status === "True";
+}
+
+export function classifyAgentJobRunStatus(job: k8s.V1Job): AgentJobRunStatus {
+  const conditions = job.status?.conditions ?? [];
+  const failedCondition = conditions.find((condition) => condition.type === "Failed");
+  if (conditionIsTrue(failedCondition)) {
+    return {
+      phase: "failed",
+      reason: failedCondition?.reason ?? null,
+      message: failedCondition?.message ?? null,
+    };
+  }
+
+  const completeCondition = conditions.find((condition) => condition.type === "Complete");
+  const active = job.status?.active ?? 0;
+  const succeeded = job.status?.succeeded ?? 0;
+  const expectedCompletions = job.spec?.completions ?? 1;
+  if (conditionIsTrue(completeCondition) || (active <= 0 && succeeded >= expectedCompletions)) {
+    return {
+      phase: "succeeded",
+      reason: completeCondition?.reason ?? "Complete",
+      message: completeCondition?.message ?? null,
+    };
+  }
+
+  return { phase: "active", reason: null, message: null };
+}
+
+/**
+ * Returns the current Kubernetes Job phase by heartbeat run ID for managed
+ * external-lifecycle agent Jobs, or null when the kube API cannot be queried.
+ */
+export async function listAgentJobRunStatuses(): Promise<Map<string, AgentJobRunStatus> | null> {
+  const state = initClient();
+  if (state.kind !== "ready") return null;
+  try {
+    const list = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: AGENT_JOB_LABEL_SELECTOR,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
+    const statuses = new Map<string, AgentJobRunStatus>();
+    for (const job of list.items ?? []) {
+      const runId = job.metadata?.labels?.[RUN_ID_LABEL];
+      if (typeof runId === "string" && runId.length > 0) {
+        statuses.set(runId, classifyAgentJobRunStatus(job));
+      }
+    }
+    return statuses;
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      "k8s job-liveness status list failed; falling back to staleness heuristic",
+    );
+    return null;
+  }
+}
+
 /**
  * Returns the set of heartbeat run IDs that currently have a live Job in the
- * paperclip namespace. Runs whose Job has been deleted (helm restart, manual
- * cleanup, kube-state failure, etc.) are absent from the set and should be
- * eligible for immediate `process_lost` reaping.
+ * paperclip namespace. Runs whose Job has completed or failed are absent from
+ * the set so callers that only understand liveness don't treat terminal Jobs
+ * as still running.
  *
  * Returns null when the kube API is unavailable (not in cluster, RBAC missing,
  * transient API error). Callers fall back to the time-based staleness window
  * in that case.
  */
 export async function listLiveAgentJobRunIds(): Promise<Set<string> | null> {
-  const state = initClient();
-  if (state.kind !== "ready") return null;
-  try {
-    const list = await state.api.listNamespacedJob({
-      namespace: PAPERCLIP_K8S_NAMESPACE,
-      labelSelector: AGENT_JOB_LABEL_SELECTOR,
-    });
-    const runIds = new Set<string>();
-    for (const job of list.items ?? []) {
-      const runId = job.metadata?.labels?.[RUN_ID_LABEL];
-      if (typeof runId === "string" && runId.length > 0) runIds.add(runId);
-    }
-    return runIds;
-  } catch (error) {
-    logger.warn(
-      { error: error instanceof Error ? error.message : String(error) },
-      "k8s job-liveness list failed; falling back to staleness heuristic",
-    );
-    return null;
+  const statuses = await listAgentJobRunStatuses();
+  if (statuses === null) return null;
+  const runIds = new Set<string>();
+  for (const [runId, status] of statuses) {
+    if (status.phase === "active") runIds.add(runId);
   }
+  return runIds;
 }
 
 /**
@@ -97,20 +185,27 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const list = await state.api.listNamespacedJob({
-      namespace: PAPERCLIP_K8S_NAMESPACE,
-      labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${RUN_ID_LABEL_FILTER_PREFIX}${runId}`,
-    });
+    const list = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${RUN_ID_LABEL_FILTER_PREFIX}${runId}`,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
     let deleted = 0;
     for (const job of list.items ?? []) {
       const name = job.metadata?.name;
       if (!name) continue;
       try {
-        await state.api.deleteNamespacedJob({
-          name,
-          namespace: PAPERCLIP_K8S_NAMESPACE,
-          propagationPolicy: "Background",
-        });
+        await state.api.deleteNamespacedJob(
+          {
+            name,
+            namespace: PAPERCLIP_K8S_NAMESPACE,
+            propagationPolicy: "Background",
+          },
+          requestOptionsWithTimeout(),
+        );
         deleted += 1;
       } catch (error) {
         logger.warn(
@@ -126,6 +221,45 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
       "k8s deleteAgentJobsForRun: list failed",
     );
     return null;
+  }
+}
+
+// Verified against production Job pod labels (kubectl get pods -l app.kubernetes.io/managed-by=paperclip)
+// and adapter sources at paperclip-adapter-{claude,opencode}-k8s/src/server/job-manifest.ts
+// which set "paperclip.io/agent-id" (hyphen) on every agent Job.
+const AGENT_ID_LABEL = "paperclip.io/agent-id";
+
+/**
+ * Returns true when there is at least one active (not yet completed) Job for
+ * the given agent in the paperclip namespace. Returns false when the kube API
+ * is unavailable (not in cluster, RBAC missing, transient error) so the
+ * caller can degrade to DB-only in-flight detection.
+ */
+export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
+  const state = initClient();
+  if (state.kind !== "ready") return false;
+  try {
+    const res = await state.api.listNamespacedJob(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
+    const items = res.items ?? [];
+    return items.some((job) => {
+      const status = job.status;
+      if (!status) return true;
+      const active = status.active ?? 0;
+      const succeeded = status.succeeded ?? 0;
+      const failed = status.failed ?? 0;
+      return active > 0 || (succeeded === 0 && failed === 0);
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn({ agentId, error: reason }, "k8s in-flight check failed; falling back to DB-only");
+    return false;
   }
 }
 

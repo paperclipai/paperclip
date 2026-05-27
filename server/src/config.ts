@@ -106,6 +106,24 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  // Process role for HA topology. When set to "api", the process serves
+  // HTTP traffic only — no in-process plugin workers, no heartbeat
+  // scheduler. When set to "worker", the process owns the heartbeat
+  // scheduler + plugin workers (and may also serve HTTP — though typically
+  // only an internal Service points at workers). When set to "all" (the
+  // default), behavior is identical to pre-split single-pod paperclip:
+  // one process owns everything.
+  // Set via PAPERCLIP_NODE_ROLE env. Used by index.ts to gate which
+  // subsystems start.
+  paperclipNodeRole: "api" | "worker" | "all";
+  // Base URL of the worker tier's internal Service, e.g.
+  // "http://paperclip-workers:3100". Only consulted on the API tier
+  // (PAPERCLIP_NODE_ROLE=api): worker-dependent plugin routes reverse-proxy
+  // here so plugin lifecycle/bridge calls land on the pod that actually
+  // owns pluginWorkerManager. Unset → those routes 503 via the API-tier
+  // stub as before (no worker tier reachable). Set via
+  // PAPERCLIP_WORKERS_INTERNAL_URL env.
+  paperclipWorkersInternalUrl: string | null;
   companyDeletionEnabled: boolean;
   linearOAuthClientId: string;
   linearOAuthClientSecret: string;
@@ -116,6 +134,11 @@ export interface Config {
   // route refuses every request -- accepting unsigned webhooks would
   // let any caller drive paperclip wakes by impersonating GitHub.
   githubWebhookSecret: string;
+  // Agent ID that receives an additional wake on `pull_request.opened`,
+  // `pull_request.ready_for_review`, and `pull_request_review.submitted`
+  // events to drive PR review automation. When unset, the github-webhook
+  // route only wakes the issue assignee (legacy behavior).
+  githubPrReviewerAgentId: string;
   telemetryEnabled: boolean;
 }
 
@@ -274,6 +297,16 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  // PAPERCLIP_NODE_ROLE — defaults to "all" (single-pod, pre-split behavior).
+  // Set to "api" for HTTP-only API replicas (no plugin workers, no scheduler).
+  // Set to "worker" for the singleton workload that drives heartbeat dispatch
+  // and hosts plugin workers. Unknown values fall back to "all" to preserve
+  // safety (the worst case is a single process doing everything).
+  const paperclipNodeRoleRaw = process.env.PAPERCLIP_NODE_ROLE ?? "all";
+  const paperclipNodeRole: "api" | "worker" | "all" =
+    paperclipNodeRoleRaw === "api" || paperclipNodeRoleRaw === "worker"
+      ? paperclipNodeRoleRaw
+      : "all";
   const databaseBackupEnabled =
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -359,8 +392,16 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled:
+      // API role implies scheduler off regardless of HEARTBEAT_SCHEDULER_ENABLED.
+      // Setting both lets `kubectl set env` toggles work the way operators expect.
+      paperclipNodeRole === "api"
+        ? false
+        : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    paperclipNodeRole,
+    paperclipWorkersInternalUrl:
+      process.env.PAPERCLIP_WORKERS_INTERNAL_URL?.trim().replace(/\/+$/, "") || null,
     companyDeletionEnabled,
     linearOAuthClientId: process.env.PAPERCLIP_LINEAR_CLIENT_ID ?? "",
     linearOAuthClientSecret: process.env.PAPERCLIP_LINEAR_CLIENT_SECRET ?? "",
@@ -368,6 +409,14 @@ export function loadConfig(): Config {
       process.env.PAPERCLIP_LINEAR_REDIRECT_URI ??
       `http://localhost:${Number(process.env.PORT) || fileConfig?.server.port || 3100}/api/auth/linear/callback`,
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? "",
+    // Agent ID that receives an additional wake on `pull_request.opened`,
+    // `pull_request.ready_for_review`, and `pull_request_review.submitted`
+    // events to drive PR review automation. When unset, the github-webhook
+    // route only wakes the issue assignee (legacy behavior). The reviewer
+    // wake fires regardless of whether the PR branch references a paperclip
+    // identifier, so PRs without a BLO-XXX in the branch/title/body still
+    // get reviewed.
+    githubPrReviewerAgentId: process.env.PAPERCLIP_PR_REVIEWER_AGENT_ID ?? "",
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
 }

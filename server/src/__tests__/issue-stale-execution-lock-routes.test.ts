@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -38,7 +39,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-execution-lock-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -66,11 +68,12 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     return app;
   }
 
-  async function seedCompanyAgentAndRuns() {
+  async function seedCompanyAgentAndRuns(options: { staleRunStatus?: string } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const failedRunId = randomUUID();
     const currentRunId = randomUUID();
+    const staleRunStatus = options.staleRunStatus ?? "failed";
 
     await db.insert(companies).values({
       id: companyId,
@@ -94,7 +97,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         id: failedRunId,
         companyId,
         agentId,
-        status: "failed",
+        status: staleRunStatus,
         invocationSource: "manual",
         finishedAt: new Date(),
       },
@@ -109,6 +112,67 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     ]);
 
     return { companyId, agentId, failedRunId, currentRunId };
+  }
+
+  async function seedQueuedIssueContextRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  }) {
+    const queuedWakeupId = randomUUID();
+    const scheduledWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    const scheduledRunId = randomUUID();
+    const runningRunId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: queuedWakeupId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "assignment",
+        status: "queued",
+      },
+      {
+        id: scheduledWakeupId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "timer",
+        status: "queued",
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: queuedRunId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "queued",
+        invocationSource: "assignment",
+        wakeupRequestId: queuedWakeupId,
+        contextSnapshot: { issueId: input.issueId },
+      },
+      {
+        id: scheduledRunId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "scheduled_retry",
+        invocationSource: "timer",
+        wakeupRequestId: scheduledWakeupId,
+        scheduledRetryAt: new Date(Date.now() + 60_000),
+        contextSnapshot: { issueId: input.issueId },
+      },
+      {
+        id: runningRunId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "running",
+        invocationSource: "assignment",
+        startedAt: new Date(),
+        contextSnapshot: { issueId: input.issueId },
+      },
+    ]);
+
+    return { queuedWakeupId, scheduledWakeupId, queuedRunId, scheduledRunId, runningRunId };
   }
 
   function agentActor(companyId: string, agentId: string, runId: string): Express.Request["actor"] {
@@ -147,6 +211,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionAgentNameKey: "codexcoder",
       executionLockedAt: new Date(),
     });
+    const staleContext = await seedQueuedIssueContextRuns({ companyId, agentId, issueId });
 
     const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
       .patch(`/api/issues/${issueId}`)
@@ -169,6 +234,103 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, [
+        staleContext.queuedRunId,
+        staleContext.scheduledRunId,
+        staleContext.runningRunId,
+      ]));
+    expect(Object.fromEntries(runs.map((run) => [run.id, {
+      status: run.status,
+      errorCode: run.errorCode,
+    }]))).toEqual({
+      [staleContext.queuedRunId]: {
+        status: "cancelled",
+        errorCode: "issue_checkout_adopted",
+      },
+      [staleContext.scheduledRunId]: {
+        status: "cancelled",
+        errorCode: "issue_checkout_adopted",
+      },
+      [staleContext.runningRunId]: {
+        status: "running",
+        errorCode: null,
+      },
+    });
+  });
+
+  it("allows a same-agent current run to close an issue owned by a stale adapter_failed checkout run", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "adapter_failed",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Routine close after adapter wedge",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("done");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("keeps live different-run ownership protected", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns({
+      staleRunStatus: "running",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Live run conflict",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
   });
 
   it("allows the rightful assignee to release after the owning run failed", async () => {
@@ -210,6 +372,85 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: null,
       executionRunId: null,
       executionLockedAt: null,
+    });
+  });
+
+  it("cancels queued and scheduled issue-context runs when releasing an issue", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release stale queue cleanup",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+    const staleContext = await seedQueuedIssueContextRuns({ companyId, agentId, issueId });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/release`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+      })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, [
+        staleContext.queuedRunId,
+        staleContext.scheduledRunId,
+        staleContext.runningRunId,
+      ]));
+    expect(Object.fromEntries(runs.map((run) => [run.id, {
+      status: run.status,
+      errorCode: run.errorCode,
+    }]))).toEqual({
+      [staleContext.queuedRunId]: {
+        status: "cancelled",
+        errorCode: "issue_released",
+      },
+      [staleContext.scheduledRunId]: {
+        status: "cancelled",
+        errorCode: "issue_released",
+      },
+      [staleContext.runningRunId]: {
+        status: "running",
+        errorCode: null,
+      },
+    });
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(inArray(agentWakeupRequests.id, [
+        staleContext.queuedWakeupId,
+        staleContext.scheduledWakeupId,
+      ]));
+    expect(Object.fromEntries(wakeups.map((wakeup) => [wakeup.id, {
+      status: wakeup.status,
+      error: wakeup.error,
+    }]))).toEqual({
+      [staleContext.queuedWakeupId]: {
+        status: "skipped",
+        error: "Cancelled because the issue was released",
+      },
+      [staleContext.scheduledWakeupId]: {
+        status: "skipped",
+        error: "Cancelled because the issue was released",
+      },
     });
   });
 

@@ -5,7 +5,9 @@ import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
+  CompanySecret,
   Routine,
+  RoutineEnvConfig,
   RoutineRevision,
   RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
@@ -95,6 +97,7 @@ function snapshotV1(overrides?: Partial<RoutineRevisionSnapshotV1["routine"]>): 
       concurrencyPolicy: "coalesce_if_active",
       catchUpPolicy: "skip_missed",
       variables: [],
+      env: null,
       ...overrides,
     },
     triggers: [],
@@ -319,6 +322,152 @@ describe("RoutineHistoryTab", () => {
       (call) => call[0]?.title === "Restored revision 1 as revision 3",
     );
     expect(successCall).toBeTruthy();
+  });
+
+  it("shows env summary on the revision preview and routes counts into restore dialog", async () => {
+    const env: RoutineEnvConfig = {
+      GH_TOKEN: { type: "secret_ref", secretId: "secret-1", version: "latest" },
+      LOG_LEVEL: { type: "plain", value: "debug" },
+    };
+    const current = createRevision({
+      id: "revision-2",
+      revisionNumber: 2,
+      snapshot: snapshotV1({ env }),
+    });
+    const old = createRevision({
+      id: "revision-1",
+      revisionNumber: 1,
+      snapshot: snapshotV1({
+        env: { GH_TOKEN: { type: "secret_ref", secretId: "secret-1", version: 3 } },
+      }),
+    });
+    mockRoutinesApi.listRevisions.mockResolvedValue([current, old]);
+    const secrets: CompanySecret[] = [
+      {
+        id: "secret-1",
+        companyId: "company-1",
+        key: "gh_token",
+        name: "github-bot",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        externalRef: null,
+        providerConfigId: null,
+        providerMetadata: null,
+        latestVersion: 4,
+        description: null,
+        lastResolvedAt: null,
+        lastRotatedAt: null,
+        deletedAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ];
+    await render({ secrets });
+    expect(container.textContent).toContain("Env");
+    expect(container.textContent).toContain("2 keys (1 secret ref)");
+
+    const oldRow = container.querySelector(
+      "[data-testid='revision-row-1']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      oldRow?.click();
+    });
+    await flush();
+    const restoreButtons = Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent === "Restore as new revision",
+    );
+    expect(restoreButtons.length).toBeGreaterThan(0);
+    await act(async () => {
+      restoreButtons[0].click();
+    });
+    await flush();
+    expect(container.textContent).toContain("Routine secrets will revert");
+    expect(container.textContent).toContain("1 key removed");
+    expect(container.textContent).toContain("1 key changed");
+  });
+
+  it("labels secret-ref env diffs by changed secret instead of binding kind", async () => {
+    const current = createRevision({
+      id: "revision-2",
+      revisionNumber: 2,
+      snapshot: snapshotV1({
+        env: { GH_TOKEN: { type: "secret_ref", secretId: "secret-2", version: "latest" } },
+      }),
+    });
+    const old = createRevision({
+      id: "revision-1",
+      revisionNumber: 1,
+      snapshot: snapshotV1({
+        env: { GH_TOKEN: { type: "secret_ref", secretId: "secret-1", version: "latest" } },
+      }),
+    });
+    const secrets: CompanySecret[] = [
+      {
+        id: "secret-1",
+        companyId: "company-1",
+        key: "old_token",
+        name: "old-token",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        externalRef: null,
+        providerConfigId: null,
+        providerMetadata: null,
+        latestVersion: 1,
+        description: null,
+        lastResolvedAt: null,
+        lastRotatedAt: null,
+        deletedAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+      {
+        id: "secret-2",
+        companyId: "company-1",
+        key: "new_token",
+        name: "new-token",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        externalRef: null,
+        providerConfigId: null,
+        providerMetadata: null,
+        latestVersion: 1,
+        description: null,
+        lastResolvedAt: null,
+        lastRotatedAt: null,
+        deletedAt: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ];
+    mockRoutinesApi.listRevisions.mockResolvedValue([current, old]);
+    await render({ secrets });
+
+    const oldRow = container.querySelector(
+      "[data-testid='revision-row-1']",
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      oldRow?.click();
+    });
+    await flush();
+    const compareButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Compare with current",
+    );
+    await act(async () => {
+      compareButton?.click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Env GH_TOKEN secret");
+    expect(container.textContent).not.toContain("Env GH_TOKEN binding kind");
   });
 
   it("invokes onRestored with the restore response so the editor can rehydrate (PAP-3588)", async () => {

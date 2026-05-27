@@ -1,0 +1,36 @@
+{
+  "_notes": "Captured 2026-04-17 from Chrome 147 via CDP. Override at ~/.designer/selectors.override.json. Prefer data-testid over class names — Claude's styled-components classes (sc-xxx) are regenerated on every build.",
+  "_urls": {
+    "home": "https://claude.ai/design",
+    "session": "https://claude.ai/design/p/{uuid}"
+  },
+  "login": {
+    "signedInIndicator": "[data-testid=\"create-project-button\"]"
+  },
+  "home": {
+    "creator": "[data-testid=\"project-creator\"]",
+    "nameInput": "input[placeholder=\"Project name\"]",
+    "wireframeButtonText": "Wireframe",
+    "highFiButtonText": "High fidelity",
+    "createButton": "[data-testid=\"create-project-button\"]",
+    "projectsList": "[data-testid=\"projects-list\"]",
+    "projectCard": "[data-testid=\"project-card\"]"
+  },
+  "composer": {
+    "promptTextarea": "[data-testid=\"chat-composer-input\"]",
+    "sendButton": "[data-testid=\"chat-send-button\"]",
+    "stopButton": null,
+    "attachButton": "button[aria-label=\"Attach file\"]",
+    "modelButton": "[data-testid=\"model-selector-button\"]"
+  },
+  "preview": {
+    "iframeOrContainer": "[data-testid=\"html-viewer-iframe\"]",
+    "exportButtonText": "Export",
+    "shareButtonText": "Share",
+    "emptyStateHeading": "Creations will appear here"
+  },
+  "messages": {
+    "chatMessagesContainer": "[data-testid=\"chat-messages\"]",
+    "generatingIndicator": null
+  }
+}

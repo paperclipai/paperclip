@@ -694,6 +694,27 @@
       "when": 1778842800000,
       "tag": "0098_activity_log_entity_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1779317570852,
+      "tag": "0099_agents_pending_image_bump",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1778787362162,
+      "tag": "0100_tranquil_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1778976000000,
+      "tag": "0101_routine_env_runtime_contract",
+      "breakpoints": true
     }
   ]
 }

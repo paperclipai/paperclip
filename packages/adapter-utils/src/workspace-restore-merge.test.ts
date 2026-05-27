@@ -63,7 +63,9 @@ describe("workspace restore merge", () => {
   it("ignores non-file entries when capturing snapshots", async () => {
     if (process.platform === "win32") return;
 
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+    // GitHub Actions can set TMPDIR to a long workspace path; Unix domain
+    // socket paths have a small platform limit, so keep this fixture short.
+    const rootDir = await mkdtemp(path.join("/tmp", "pcr-"));
     cleanupDirs.push(rootDir);
     const socketPath = path.join(rootDir, "runtime.sock");
     const server = net.createServer();

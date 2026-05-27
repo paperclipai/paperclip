@@ -6,8 +6,9 @@
  * returns a deferral with the soonest plausible resume time so the heartbeat
  * scheduler can stop burning quota until ccrotate has a fresh account.
  *
- * Provider mapping: only `claude_local` and `codex_local` are routed through
- * ccrotate today. All other adapter types are passed through (no opinion).
+ * Provider mapping: Claude adapters use the `claude` ccrotate target; Codex
+ * and OpenCode/OpenAI adapters use the `codex` ccrotate target. Other adapter
+ * types are passed through (no opinion).
  *
  * The cache file lives at:
  *   - ~/.ccrotate/tier-cache.json        (Claude target)
@@ -24,6 +25,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+
+import { VerifierError } from "./ccrotate-serve-verifier.js";
+import type { CcrotateVerifier } from "./ccrotate-serve-verifier.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -46,6 +50,17 @@ export interface CcrotateTierCacheAccount {
     utilization5h?: number | null;
     /** Percent of the 7-day rolling Claude window consumed (0–100). */
     utilization7d?: number | null;
+    /**
+     * ISO timestamp ccrotate-serve writes per-account when it ran the probe
+     * that produced this snapshot row. Distinct from the wrapping snapshot's
+     * `updatedAt`, which is bumped on ANY upsert — so it doesn't tell you
+     * how stale a SPECIFIC account's tier-state actually is.
+     *
+     * The gate uses this to detect "exhausted label written by a burst
+     * probe-all >5min ago but freshness-loop hasn't re-verified yet".
+     * See [[ccrotate-burst-probe-false-positive]].
+     */
+    snapshotCapturedAt?: string | null;
   } | null;
 }
 
@@ -89,6 +104,15 @@ export interface CcrotateTierGateOptions {
    * hours. Defaults to 15 min.
    */
   maxDeferralMs?: number;
+  /**
+   * Optional verifier — when set, the gate calls `verifier.probeOne` on the
+   * deny path to live-probe one random exhausted candidate before deferring.
+   * Defends against burst-poisoned tier-cache labels by getting a fresh
+   * answer from ccrotate-serve before committing to a quota-based skip.
+   * T6 (2026-05-17). See [[ccrotate-burst-probe-false-positive]] and
+   * `.planning/2026-05-17-active-verify-tier-gate-design.md`.
+   */
+  verifier?: CcrotateVerifier;
 }
 
 export interface CcrotateGateAllowResult {
@@ -142,7 +166,15 @@ const DEFAULT_GRACE_MS = 120_000;
 // MAX_DEFERRAL_MS so a fresh `refresh-one`, a new switch, or an account
 // moving back to usable gets picked up promptly. Without this, a far-future
 // resumeAt locked the same agent into a 28h skip (BLO-4975).
-const DEFAULT_MAX_DEFERRAL_MS = 15 * 60_000;
+//
+// 5min (2026-05-17, was 15min): with the ccrotate-serve freshness-loop now
+// sweeping one account every ~90s, the longest gap between a stale-label
+// flip and its discovery is one sweep round (~20min for the full pool).
+// 15min was over-cautious — it meant a heartbeat dispatch deferred 14:30
+// (just before a sweep flip) wouldn't re-check until 14:45 even though the
+// pool was usable by 14:35. 5min keeps the deferral useful as a debounce
+// without holding stale state past the freshness-loop's reaction time.
+const DEFAULT_MAX_DEFERRAL_MS = 5 * 60_000;
 
 /**
  * Maps a paperclip agent adapter type to the ccrotate target whose tier-cache
@@ -153,14 +185,19 @@ const DEFAULT_MAX_DEFERRAL_MS = 15 * 60_000;
  * key shares billing/quota with the host's `claude` pool — so the tier-cache
  * IS authoritative for whether the adapter has any usable credit. Mapping it
  * to "claude" gives the heartbeat scheduler quota-aware deferral on
- * exhaustion (instead of looping 401s every heartbeat). Actual rotation of
- * the adapter's LLM call is a separate adapter (claude_k8s_ccrotate), not
- * this gate.
+ * exhaustion (instead of looping 401s every heartbeat).
+ *
+ * `opencode_k8s` in the Blockcast deployment is OpenAI-backed (`openai/*`
+ * models) and authenticates through the same ChatGPT/Codex subscription pool
+ * that `codex_local` uses. The relogin trigger already maps opencode/codex to
+ * the codex target; the scheduler must do the same or OpenCode agents keep
+ * waking while every OpenAI account is unusable.
  */
 export function mapAdapterToCcrotateTarget(adapterType: string): CcrotateTarget | null {
   if (adapterType === "claude_local") return "claude";
   if (adapterType === "claude_k8s") return "claude";
   if (adapterType === "codex_local") return "codex";
+  if (adapterType === "opencode_k8s") return "codex";
   return null;
 }
 
@@ -274,6 +311,40 @@ export function evaluateTierCacheSnapshot(
       acc.rateLimits === null,
   );
   if (snapshot.accounts.length > 0 && inconclusive) {
+    return { allow: true, resumeAt: null, usableAccount: null };
+  }
+
+  // Stale-snapshot fallback (2026-05-17). Symmetric with the inconclusive
+  // fallback above: if every account's per-account `snapshotCapturedAt` is
+  // older than the freshness-loop's stale floor (~5min), the `exhausted`
+  // labels are very likely leftovers from the periodic burst-probe-all
+  // cron that didn't get refreshed yet by the per-account freshness loop.
+  // Allow optimistically — let the run attempt the API call. If it 401/quotas,
+  // quotaExhaustedHook fires; if it succeeds, the account flips to `base` on
+  // its next probe.
+  //
+  // Cost of being wrong: one failed agent run vs. up to 15min of deferral
+  // on a stale label (the existing MAX_DEFERRAL_MS cap). The freshness-loop
+  // sweeps all 13 accounts every ~20min, so any genuinely-exhausted state
+  // gets re-confirmed within one sweep — the optimistic path doesn't keep
+  // firing once labels are fresh.
+  //
+  // The gate only trips this when EVERY account is stale, not just some, so
+  // a healthy mix of freshly-base + stale-exhausted accounts still hits the
+  // regular usable path above.
+  const STALE_SNAPSHOT_GRACE_MS = 5 * 60_000;
+  const accountsWithSnapshots = snapshot.accounts.filter(
+    (acc) => !!acc.rateLimits?.snapshotCapturedAt,
+  );
+  if (
+    accountsWithSnapshots.length > 0 &&
+    accountsWithSnapshots.length === snapshot.accounts.length &&
+    accountsWithSnapshots.every((acc) => {
+      const captured = Date.parse(acc.rateLimits!.snapshotCapturedAt!);
+      if (!Number.isFinite(captured)) return false;
+      return now.getTime() - captured > STALE_SNAPSHOT_GRACE_MS;
+    })
+  ) {
     return { allow: true, resumeAt: null, usableAccount: null };
   }
 
@@ -435,6 +506,120 @@ export function createCcrotateTierGate(opts: CcrotateTierGateOptions): CcrotateT
         return email
           ? { allow: true, switchedTo: { target, email } }
           : { allow: true };
+      }
+
+      // T6 verifier branch (2026-05-17): when the cache says deny but a
+      // verifier is wired, probe ONE random exhausted candidate live before
+      // committing to deferral. Defends against burst-poisoned `exhausted`
+      // labels written by the periodic probe-all cron — those labels are
+      // FRESH (so the stale-snapshot fallback above doesn't catch them) but
+      // were produced by per-org-throttled Usage API calls returning 429,
+      // not by actual account exhaustion. See
+      // [[ccrotate-burst-probe-false-positive]].
+      if (opts.verifier) {
+        const exhaustedCandidates = snapshot.accounts.filter(
+          (a) => a.status === "success" && a.serviceTier === "exhausted",
+        );
+        if (exhaustedCandidates.length > 0) {
+          // T2: random pick. Burst-poison writes mark accounts FRESHEST
+          // (the cron just wrote them), so sort-by-stale doesn't target
+          // false positives. Random sidesteps the sort question; memo +
+          // write-through in the verifier amortize across agents in the
+          // same heartbeat tick.
+          // Non-null asserted: `exhaustedCandidates.length > 0` is checked
+          // above, so the random-index access is provably safe. The
+          // assertion appeases `noUncheckedIndexedAccess` without adding
+          // an unreachable branch.
+          const picked = exhaustedCandidates[
+            Math.floor(Math.random() * exhaustedCandidates.length)
+          ]!;
+          try {
+            const result = await opts.verifier.probeOne(target, picked.email);
+            // T4: invalidate the in-process tier-cache regardless of the
+            // verifier's outcome so the next checkAdapter for any agent
+            // re-reads disk and picks up the write-through label the
+            // verifier just persisted.
+            cache.delete(target);
+            const usable = USABLE_TIERS[target].has(result.serviceTier ?? "");
+            if (usable) {
+              // Best-effort switcher path mirrors the allow-from-cache
+              // branch above so the kernel hands the agent an active
+              // account that actually matches the just-verified label.
+              if (
+                opts.switcher &&
+                lastSwitchedEmail.get(target) !== picked.email
+              ) {
+                const sw = await opts.switcher.switchTo(target, picked.email);
+                if (sw.ok) {
+                  lastSwitchedEmail.set(target, picked.email);
+                  opts.log.info(
+                    { target, email: picked.email },
+                    "ccrotate.verifier_allow_after_switch",
+                  );
+                } else {
+                  opts.log.warn(
+                    {
+                      target,
+                      email: picked.email,
+                      err: sw.error ?? "unknown",
+                    },
+                    "ccrotate.verifier_allow_switch_failed",
+                  );
+                }
+              } else {
+                opts.log.info(
+                  { target, email: picked.email },
+                  "ccrotate.verifier_allow",
+                );
+              }
+              deferrals.delete(key);
+              return {
+                allow: true,
+                switchedTo: { target, email: picked.email },
+              };
+            }
+            opts.log.info(
+              { target, email: picked.email },
+              "ccrotate.verifier_confirmed_exhausted",
+            );
+            // Fall through to the existing deny path below.
+          } catch (err) {
+            const ve = err as VerifierError;
+            if (ve && ve.kind === "auth") {
+              // T3 fail-closed: a misconfigured verifier (401/403) must
+              // NOT bypass quota gating — silently optimistic-allowing
+              // every dispatch would mask the auth misconfig with a
+              // flood of out_of_credits failures.
+              opts.log.warn(
+                {
+                  target,
+                  email: picked.email,
+                  err: ve.message,
+                },
+                "ccrotate.verifier_auth_failure_fail_closed",
+              );
+              // Fall through to the existing deny path below.
+            } else {
+              // T3 optimistic-allow on transport/timeout/circuit_open.
+              // Matches the existing inconclusive-snapshot fallback
+              // policy: when we can't tell, prefer letting one run try
+              // and rely on quotaExhaustedHook + the verifier circuit
+              // breaker to recover. Cost of being wrong: one failed run
+              // vs. cluster deadlock.
+              opts.log.warn(
+                {
+                  target,
+                  email: picked.email,
+                  kind: ve?.kind ?? "unknown",
+                  err: ve?.message ?? String(err),
+                },
+                "ccrotate.verifier_transport_error_optimistic_allow",
+              );
+              deferrals.delete(key);
+              return { allow: true };
+            }
+          }
+        }
       }
 
       const resumeAtMs =

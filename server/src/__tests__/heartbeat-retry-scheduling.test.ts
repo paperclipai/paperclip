@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
-  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
-  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
@@ -19,7 +17,47 @@ import {
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   heartbeatService,
+  shouldScheduleAutomaticRunRetry,
 } from "../services/heartbeat.ts";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage: "Adapter failed",
+    errorCode: "adapter_failed",
+    summary: "failed",
+    resultJson: {} as Record<string, unknown>,
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../telemetry.ts", () => ({
+  getTelemetryClient: () => ({ track: vi.fn() }),
+}));
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackAgentFirstHeartbeat: vi.fn(),
+  };
+});
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,17 +77,22 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-retry-scheduling-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
-    await db.delete(heartbeatRunEvents);
-    await db.delete(environmentLeases);
-    await db.delete(issues);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Adapter failed",
+      errorCode: "adapter_failed",
+      summary: "failed",
+      resultJson: {},
+      provider: "test",
+      model: "test-model",
+    }));
+    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
   });
 
   afterAll(async () => {
@@ -124,6 +167,166 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   }
 
+  async function seedQueuedRunFixture(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    now: Date;
+    contextSnapshot?: Record<string, unknown>;
+  }) {
+    await db.insert(companies).values({
+      id: input.companyId,
+      name: "Paperclip",
+      issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: input.agentId,
+      companyId: input.companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: input.runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "assignment",
+      status: "queued",
+      triggerDetail: "github_pr_review_requested",
+      contextSnapshot: input.contextSnapshot ?? {},
+      updatedAt: input.now,
+      createdAt: input.now,
+    });
+
+    const issueId = typeof input.contextSnapshot?.issueId === "string" ? input.contextSnapshot.issueId : null;
+    if (issueId) {
+      await db.insert(issues).values({
+        id: issueId,
+        companyId: input.companyId,
+        title: "Queued run retry fixture",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: input.agentId,
+        executionRunId: input.runId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: input.now,
+        issueNumber: 1,
+        identifier: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+      });
+    }
+  }
+
+  async function getScheduledTransientRetryForRun(runId: string) {
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows.find((row) => row.scheduledRetryReason === "transient_failure") ?? null);
+  }
+
+  async function expectPlainPrReviewFailureSchedulesRetry(errorCode: "adapter_failed" | "process_lost") {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-05-25T08:00:00.000Z");
+
+    await seedQueuedRunFixture({
+      companyId,
+      agentId,
+      runId: sourceRunId,
+      now,
+      contextSnapshot: {
+        issueId: randomUUID(),
+        wakeReason: "github_pr_review_requested",
+        reviewKind: "pr_review",
+        githubRepoFullName: "Blockcast/paperclip",
+        githubPrNumber: 7457,
+      },
+    });
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: errorCode === "process_lost" ? "Process lost" : "Adapter failed",
+      errorCode,
+      summary: "failed",
+      resultJson: {},
+      provider: "test",
+      model: "test-model",
+    });
+
+    await heartbeat.__test_executeRunForTesting(sourceRunId);
+
+    const sourceRun = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, sourceRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceRun).toMatchObject({
+      status: "failed",
+      errorCode,
+    });
+    expect(sourceRun?.contextSnapshot as Record<string, unknown>).toMatchObject({
+      reviewKind: "pr_review",
+    });
+
+    const retryRun = await getScheduledTransientRetryForRun(sourceRunId);
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: sourceRunId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+    });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).toMatchObject({
+      wakeReason: "transient_failure_retry",
+      retryReason: "transient_failure",
+      reviewKind: "pr_review",
+      githubPrNumber: 7457,
+    });
+  }
+
+  it("schedules a bounded retry for PR-review adapter_failed without adapter recovery metadata", async () => {
+    await expectPlainPrReviewFailureSchedulesRetry("adapter_failed");
+  });
+
+  it("schedules a bounded retry for PR-review process_lost without adapter recovery metadata", async () => {
+    await expectPlainPrReviewFailureSchedulesRetry("process_lost");
+  });
+
+  it("does not schedule a bounded retry for non-PR adapter_failed without adapter recovery metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-05-25T08:05:00.000Z");
+
+    await seedQueuedRunFixture({
+      companyId,
+      agentId,
+      runId: sourceRunId,
+      now,
+      contextSnapshot: {
+        issueId: randomUUID(),
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    await heartbeat.__test_executeRunForTesting(sourceRunId);
+
+    expect(await getScheduledTransientRetryForRun(sourceRunId)).toBeNull();
+  });
+
   it("schedules a retry with durable metadata and only promotes it when due", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -195,6 +398,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: 1,
       scheduledRetryReason: "transient_failure",
     });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
 
     const earlyPromotion = await heartbeat.promoteDueScheduledRetries(new Date("2026-04-20T12:01:59.000Z"));
@@ -216,6 +420,56 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.id, scheduled.run.id))
       .then((rows) => rows[0] ?? null);
     expect(promotedRun?.status).toBe("queued");
+  });
+
+  it("treats idempotent GitHub PR-review adapter failures as retry-eligible", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: {
+          wakeReason: "github_pr_opened",
+          reviewKind: "pr_review",
+          githubPrNumber: 976,
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: {
+          wakeReason: "github_pr_review_submitted",
+          reviewKind: "pr_review",
+          githubPrNumber: 976,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retry plain adapter failures when the wake is not an idempotent PR review", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_assigned",
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_assigned",
+        },
+      }),
+    ).toBe(false);
   });
 
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {

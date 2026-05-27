@@ -1,0 +1,113 @@
+name: Docker (designer)
+
+# Builds + pushes the paperclip-designer image (vendored @pro-vi/designer
+# that drives claude.ai/design). Does NOT auto-deploy — the cluster yaml
+# that consumes this image pins a specific sha-tag and bumping it is a
+# separate operator step.
+#
+# Trigger: any change under packages/services/designer/. Master and tags
+# only; no PR builds (HARBOR_PASSWORD org secret isn't available to forks).
+# Pre-build gate runs `npm run check` (tsc --noEmit) so a broken upstream
+# sync fails CI before the Docker layer wastes runner time.
+#
+# Security: this workflow does NOT interpolate any untrusted event input
+# (github.event.*, github.head_ref, etc.) into run: commands — only
+# repository secrets via env. Same posture as docker-webflow-bot.yml.
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "packages/services/designer/**"
+      - ".github/workflows/docker-designer.yml"
+    tags:
+      - "designer-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Use setup-node@v4 to match the sibling workflows (pr.yml, release.yml).
+      # @v5 auto-detects the package manager from any lockfile it can find by
+      # walking up the workspace tree; with this repo's `pnpm-lock.yaml` at the
+      # root, it tries to invoke pnpm — which is not installed on the
+      # self-hosted runners that don't pre-run `pnpm/action-setup`. The
+      # designer subdir is npm-only, so we just stay on @v4 to skip the
+      # auto-detect.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: packages/services/designer
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check
+        working-directory: packages/services/designer
+        run: npm run check
+
+      - name: Build
+        working-directory: packages/services/designer
+        run: npm run build
+
+  build-and-push:
+    needs: test
+    runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: docker-designer-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Clean stale node_modules from runner workspace
+        run: |
+          find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: true
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            harbor.blockcast.net/paperclip-designer/designer
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: packages/services/designer
+          file: packages/services/designer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip-designer/designer:buildcache-v1
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip-designer/designer:buildcache-v1,mode=max,image-manifest=true,oci-mediatypes=true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

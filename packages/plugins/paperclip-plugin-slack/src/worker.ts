@@ -44,6 +44,7 @@ import {
   formatAssigneeDmIssueCreated,
   formatIssueDone,
   formatApprovalCreated,
+  formatIssueThreadInteractionCreated,
   formatApprovalResolved,
   formatAgentError,
   formatAgentConnected,
@@ -910,6 +911,9 @@ const plugin = definePlugin({
       ctx.events.on("approval.created", async (event) => {
         await notify(event, formatApprovalCreated, config.approvalsChannelId);
       });
+      ctx.events.on("issue.thread_interaction.created", async (event) => {
+        await notify(event, formatIssueThreadInteractionCreated, config.approvalsChannelId);
+      });
     }
     if (config.notifyOnAgentError) {
       ctx.events.on("agent.run.failed", async (event) => {
@@ -1009,10 +1013,14 @@ const plugin = definePlugin({
     // =========================================================================
     // Jobs
     // =========================================================================
-    // Daily digest
-    if (config.enableDailyDigest) {
-      ctx.jobs.register("daily-digest", async () => {
-        const companies = await ctx.companies.list({ limit: 100, offset: 0 });
+    // Daily digest. Register the handler unconditionally so the scheduler
+    // (driven by the manifest cron) finds it; gate the work on
+    // `enableDailyDigest` inside the handler. Without this, instances that
+    // leave `enableDailyDigest` at its default (false) log a
+    // "No handler registered for job 'daily-digest'" error every day.
+    ctx.jobs.register("daily-digest", async () => {
+      if (!config.enableDailyDigest) return;
+      const companies = await ctx.companies.list({ limit: 100, offset: 0 });
         for (const company of companies) {
           const channelId = await resolveChannel(
             ctx,
@@ -1097,7 +1105,8 @@ const plugin = definePlugin({
         }
         ctx.logger.info("Daily digest posted to Slack");
         await ctx.metrics.write("slack.digest.sent", 1);
-      });
+    });
+    if (config.enableDailyDigest) {
       // Accumulate costs
       ctx.events.on("cost_event.created", async (event) => {
         const payload = event.payload as Record<string, unknown>;
@@ -1402,6 +1411,7 @@ const plugin = definePlugin({
       "agent.status_changed",
       "cost_event.created",
       "approval.created",
+      "issue.thread_interaction.created",
     ] as const;
     for (const eventType of watchableEvents) {
       ctx.events.on(eventType, async (event) => {

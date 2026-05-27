@@ -9,6 +9,12 @@ packages:
   # Keep this smoke fixture installable as a local plugin example without
   # forcing PRs to commit pnpm-lock.yaml for a new workspace importer.
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
+  # packages/services/ houses long-running containerized services (Python +
+  # Node) that ship as images via per-service Docker workflows. They keep
+  # their own dependency graphs (Python doesn't speak pnpm; Node services
+  # here use local package-lock.json) so the root workspace stays clean.
+  # See packages/services/README.md.
+  - "!packages/services/**"
   - server
   - ui
   - cli

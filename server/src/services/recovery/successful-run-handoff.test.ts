@@ -76,11 +76,17 @@ describe("successful run handoff decision", () => {
       resumeIntent: true,
       resumeFromRunId: "run-1",
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       handoffRequired: true,
       modelProfile: "cheap",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
@@ -159,6 +165,26 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "source run is already a corrective handoff run",
+    });
+  });
+
+  it("does not re-run a successful GitHub PR review after only the issue disposition write failed", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "github_pr_review_requested",
+          reviewKind: "pr_review",
+          githubRepoFullName: "Blockcast/linux-amt",
+          githubPrNumber: 51,
+          githubHeadSha: "54900568",
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "successful PR review run already may have emitted an external side effect",
     });
   });
 

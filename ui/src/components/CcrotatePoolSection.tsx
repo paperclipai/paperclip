@@ -197,6 +197,7 @@ function PoolHeader() {
       <span className="shrink-0 w-12 text-right" title="5-hour session window">5h</span>
       <span className="shrink-0 w-12 text-right" title="7-day window (all models)">7d</span>
       <span className="shrink-0 w-24 text-right">Availability</span>
+      <span className="shrink-0 w-28 text-right">API limit</span>
     </div>
   );
 }
@@ -237,6 +238,9 @@ function PoolRow({ row }: { row: CcrotateAccountRow }) {
       </span>
       <span className="text-muted-foreground shrink-0 w-24 text-right truncate">
         {row.availability}
+      </span>
+      <span className="text-muted-foreground shrink-0 w-28 text-right truncate" title={row.apiLimit ?? "unknown"}>
+        {row.apiLimit ?? "unknown"}
       </span>
     </div>
   );

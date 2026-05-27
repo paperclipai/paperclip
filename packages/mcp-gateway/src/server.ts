@@ -15,6 +15,7 @@
  */
 
 import http from "node:http";
+import { fileURLToPath } from "node:url";
 import { loadUpstreams, matchUpstream, type UpstreamMap } from "./upstreams.js";
 import {
   MCP_SESSION_HEADER,
@@ -49,6 +50,16 @@ interface ForwardResult {
   status: number;
   headers: Headers;
   body: Buffer;
+}
+
+export function buildInitializeReplayHeaders(
+  inboundHeaders: http.IncomingHttpHeaders,
+): http.IncomingHttpHeaders {
+  const headers: http.IncomingHttpHeaders = { ...inboundHeaders };
+  delete headers[MCP_SESSION_HEADER];
+  headers["content-type"] = "application/json";
+  headers.accept = "application/json, text/event-stream";
+  return headers;
 }
 
 async function forward(
@@ -171,7 +182,7 @@ async function handleRequest(
         const replayInitResult = await forward(
           matched.upstreamUrl,
           "POST",
-          { "content-type": "application/json", accept: "application/json, text/event-stream" },
+          buildInitializeReplayHeaders(req.headers),
           record.initializePayload,
           null,
         );
@@ -261,4 +272,6 @@ function main(): void {
   }
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main();
+}

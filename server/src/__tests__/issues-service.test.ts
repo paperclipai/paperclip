@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   createDb,
   environments,
@@ -15,6 +16,7 @@ import {
   issueComments,
   issueThreadInteractions,
   issueInboxArchives,
+  issueApprovals,
   issueRelations,
   issues,
   projectWorkspaces,
@@ -233,7 +235,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -473,6 +475,46 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(result.map((issue) => issue.id)).toEqual([titleMatchId, descriptionMatchId]);
+  });
+
+  it("can page issues by most recently updated before priority", async () => {
+    const companyId = randomUUID();
+    const oldCriticalIssueId = randomUUID();
+    const recentMediumIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: oldCriticalIssueId,
+        companyId,
+        title: "Old critical issue",
+        status: "todo",
+        priority: "critical",
+        updatedAt: new Date("2026-05-01T10:00:00.000Z"),
+      },
+      {
+        id: recentMediumIssueId,
+        companyId,
+        title: "Recent medium issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-05-17T21:12:29.993Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {
+      limit: 1,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+
+    expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
   });
 
   it("ranks comment matches ahead of description-only matches", async () => {
@@ -1317,6 +1359,72 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments[0]?.body).toBe("Comment should be visible");
   });
 
+  it("lists user comments when a candidate attribution run log is missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Comments issue with missing run log",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-05-12T22:58:00.000Z"),
+      startedAt: new Date("2026-05-12T22:58:00.000Z"),
+      finishedAt: new Date("2026-05-12T23:14:00.000Z"),
+      logStore: "local_file",
+      logRef: "missing/run-log.ndjson",
+      logBytes: 128,
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "user-1",
+      body: "Comment should still be visible",
+      createdAt: new Date("2026-05-12T23:00:00.000Z"),
+      updatedAt: new Date("2026-05-12T23:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      order: "desc",
+      limit: 50,
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([commentId]);
+    expect(comments[0]?.body).toBe("Comment should still be visible");
+    expect(comments[0]?.metadata).toBeNull();
+  });
+
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
     const companyId = randomUUID();
     const blockerId = randomUUID();
@@ -1451,7 +1559,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2222,10 +2330,12 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -2797,6 +2907,48 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       ]);
     });
 
+    it("suppresses the sweep when the dependent has a pending request confirmation", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(),
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        kind: "request_confirmation",
+        status: "pending",
+        payload: {},
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
+    it("suppresses the sweep for in_review dependents even without a pending interaction", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
+    it("suppresses the sweep when the dependent has a pending linked approval", async () => {
+      const ctx = await setupBlockedDependentWithExecutive();
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, ctx.blockedIssueId));
+      const approvalId = randomUUID();
+      await db.insert(approvals).values({
+        id: approvalId,
+        companyId: ctx.companyId,
+        type: "issue_review",
+        status: "pending",
+        payload: {},
+      });
+      await db.insert(issueApprovals).values({
+        companyId: ctx.companyId,
+        issueId: ctx.blockedIssueId,
+        approvalId,
+      });
+
+      await expect(svc.listResolvedBlockerDependentsToSweep(ctx.companyId, sweepOpts)).resolves.toEqual([]);
+    });
+
     it("does NOT suppress the sweep for non-blocked candidates (todo/in_progress) regardless of hold marker", async () => {
       const ctx = await setupBlockedDependentWithExecutive();
       // Flip dependent to `todo`; an exec hold on a non-blocked candidate is meaningless to this sweep.
@@ -2881,6 +3033,52 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     });
   });
 
+  it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const sourceIssueId = randomUUID();
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        status: "blocked",
+        priority: "medium",
+      },
+      {
+        id: recoveryIssueId,
+        companyId,
+        title: "Liveness escalation issue",
+        status: "in_progress",
+        priority: "high",
+        originKind: "harness_liveness_escalation",
+        originId: `harness_liveness:${companyId}:${sourceIssueId}:invalid_review_participant:none`,
+      },
+    ]);
+
+    await svc.update(sourceIssueId, {
+      blockedByIssueIds: [recoveryIssueId],
+    });
+    await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: recoveryIssueId })],
+    });
+
+    await svc.update(recoveryIssueId, {
+      status: "done",
+    });
+
+    await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
+      blockedBy: [],
+    });
+  });
+
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -2924,6 +3122,150 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
     ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects blocked to todo promotion when the latest unanswered agent comment awaits user input", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const commentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorAgentId: assigneeAgentId,
+      body: "Blocked awaiting Omar: @omar, can you pick a hostname for the preview deploy?",
+      createdAt: new Date("2026-05-16T10:08:00.000Z"),
+    });
+
+    await expect(
+      svc.update(issueId, { status: "todo" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        event: "sweep_blocked_promotion_skipped_awaiting_user",
+        counter: "sweep.blocked_promotion_skipped_awaiting_user",
+        commentId,
+      }),
+    });
+  });
+
+  it("allows blocked to todo promotion when the latest agent comment is not awaiting user input", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: assigneeAgentId,
+      body: "Push permissions blocker is resolved; ready to resume.",
+      createdAt: new Date("2026-05-16T10:08:00.000Z"),
+    });
+
+    const updated = await svc.update(issueId, { status: "todo" });
+
+    expect(updated).toMatchObject({ id: issueId, status: "todo" });
+  });
+
+  it("allows blocked to todo promotion after a user replies to the agent question", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked issue",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId,
+    });
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: assigneeAgentId,
+        body: "@omar, can you pick a hostname for the preview deploy?",
+        createdAt: new Date("2026-05-16T10:08:00.000Z"),
+      },
+      {
+        companyId,
+        issueId,
+        authorUserId: "omar",
+        body: "Use ocm-preview.blockcast.network.",
+        createdAt: new Date("2026-05-16T10:20:00.000Z"),
+      },
+    ]);
+
+    const updated = await svc.update(issueId, { status: "todo" });
+
+    expect(updated).toMatchObject({ id: issueId, status: "todo" });
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
@@ -3013,7 +3355,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3393,7 +3735,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3473,7 +3815,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-execution-lock-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3593,5 +3935,89 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+
+  it("rejects checkout of a stale routine duplicate when another open issue owns the execution lock", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerIssueId = randomUUID();
+    const duplicateIssueId = randomUUID();
+    const ownerRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const routineId = randomUUID();
+    const dispatchFingerprint = "routine-dispatch-fingerprint";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: ownerRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      invocationSource: "assignment",
+    });
+    await db.insert(issues).values([
+      {
+        id: ownerIssueId,
+        companyId,
+        title: "Owner routine execution",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: ownerRunId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: dispatchFingerprint,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: duplicateIssueId,
+        companyId,
+        title: "Stale duplicate routine execution",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: routineId,
+        originFingerprint: dispatchFingerprint,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await expect(
+      svc.checkout(duplicateIssueId, agentId, ["todo"], checkoutRunId),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        issueId: duplicateIssueId,
+        ownerIssueId,
+        ownerExecutionRunId: ownerRunId,
+      },
+    });
+
+    const duplicateIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, duplicateIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(duplicateIssue?.executionRunId).toBeNull();
   });
 });

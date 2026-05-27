@@ -42,14 +42,13 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createApiTierPluginWorkerManagerStub } from "./services/plugin-worker-manager-stub.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { logShutdownSignal, writeShutdownBreadcrumb } from "./shutdown-log.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { plugins } from "@paperclipai/db";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
-import { pluginRegistryService } from "./services/plugin-registry.js";
-import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import {
   autoConfigureAlertmanagerFromEnv,
   autoConfigureLinearFromEnv,
@@ -347,6 +346,31 @@ export async function startServer(): Promise<StartedServer> {
     return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
   }
 
+  function isPostgresConnectionString(connectionString: string): boolean {
+    try {
+      const parsed = new URL(connectionString);
+      return parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+    } catch {
+      return false;
+    }
+  }
+
+  function assertCloudDatabaseContract(): void {
+    if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
+      return;
+    }
+    if (!config.databaseUrl) {
+      throw new Error(
+        "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
+      );
+    }
+    if (!isPostgresConnectionString(config.databaseUrl)) {
+      throw new Error(
+        "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+      );
+    }
+  }
+
   function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
     if (!rawUrl) return undefined;
     try {
@@ -430,6 +454,7 @@ export async function startServer(): Promise<StartedServer> {
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
+  assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
@@ -803,7 +828,13 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
-  const pluginWorkerManager = createPluginWorkerManager();
+  // PAPERCLIP_NODE_ROLE=api uses a stub manager that throws on operations and
+  // returns safe-empty for read queries. All other roles ("worker", "all")
+  // get the real subprocess-spawning manager.
+  const pluginWorkerManager =
+    config.paperclipNodeRole === "api"
+      ? createApiTierPluginWorkerManagerStub()
+      : createPluginWorkerManager();
   // One-shot token used by autoInstallBundledPlugins to authenticate its
   // loopback HTTP calls to /api/plugins/install (which require instance admin).
   // Lives only in this Node process — never written to disk or logged.
@@ -1014,7 +1045,10 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
-  if (config.databaseBackupEnabled) {
+  // Database backup is a singleton scheduled task (writes one file per
+  // interval; multiple replicas racing would clobber the same target).
+  // Worker tier owns this; API tier skips it entirely.
+  if (config.databaseBackupEnabled && config.paperclipNodeRole !== "api") {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -1123,16 +1157,51 @@ export async function startServer(): Promise<StartedServer> {
     logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
   }
 
-  // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
-    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
-    copyWorkspaceSdkFiles();
-  }).catch((err) => {
-    logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
-  });
+  // Auto-install bundled plugins (idempotent — skips if already installed).
+  // Skipped on the API tier: /api/plugins/install hits pluginWorkerManager
+  // which is stubbed; the workers tier owns plugin installs.
+  if (config.paperclipNodeRole !== "api") {
+    void autoInstallBundledPlugins(db as any, internalBootstrapToken).then(() => {
+      // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
+      copyWorkspaceSdkFiles();
+    }).catch((err) => {
+      logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
+    });
+  } else {
+    logger.info(
+      { role: config.paperclipNodeRole },
+      "skipping auto-install of bundled plugins (API tier — workers tier owns plugin lifecycle)",
+    );
+  }
 
-  // Start Linear tunnel if Linear is connected and cloudflared is available
-  if (config.linearOAuthClientId) {
+  // BLO-6295 piece D — daily Microsoft Entra group reconciler. Gated on
+  // MICROSOFT_GROUP_RECONCILE_ENABLED=true; only the worker / all tier
+  // runs it so HA API replicas don't spin up parallel reconcilers.
+  if (
+    process.env.MICROSOFT_GROUP_RECONCILE_ENABLED === "true" &&
+    config.paperclipNodeRole !== "api"
+  ) {
+    void (async () => {
+      try {
+        const { startMicrosoftGroupReconciler } = await import(
+          "./services/microsoft-group-reconciler.js"
+        );
+        startMicrosoftGroupReconciler({ db: db as any });
+        logger.info(
+          { role: config.paperclipNodeRole },
+          "microsoft-group-reconciler started",
+        );
+      } catch (err) {
+        logger.warn({ err }, "microsoft-group-reconciler failed to start (non-fatal)");
+      }
+    })();
+  }
+
+  // Start Linear tunnel if Linear is connected and cloudflared is available.
+  // The tunnel is a singleton outbound cloudflared process; running multiple
+  // copies (one per API replica) would point Linear's webhooks at whichever
+  // tunnel won the race. Worker tier owns this.
+  if (config.linearOAuthClientId && config.paperclipNodeRole !== "api") {
     void (async () => {
       try {
         const { secretService } = await import("./services/index.js");
@@ -1166,6 +1235,41 @@ export async function startServer(): Promise<StartedServer> {
 
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Synchronous stderr breadcrumb FIRST — survives pino's async transport
+      // dropping logs across process.exit. See BLO-4137 post-merge gap.
+      logShutdownSignal(signal);
+      logger.info({ signal }, "Shutdown signal received — beginning graceful drain");
+
+      // 1. Drain SSE bridge streams FIRST — emit `event: shutdown` on each,
+      //    end() the socket, and await each response's 'finish' event so the
+      //    shutdown frame actually hits the wire before we proceed. Order
+      //    matters: server.close() below blocks on existing connections, so
+      //    if we awaited it before draining we'd deadlock on the SSE sockets.
+      //    Bounded by timeoutMs so a wedged stream can't hold the whole
+      //    process past terminationGracePeriod.
+      try {
+        const { sseRegistry } = await import("./services/sse-registry.js");
+        await sseRegistry.drain({ timeoutMs: 25_000, reason: `shutdown:${signal}` });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // Mirror to stderr — see writeShutdownBreadcrumb for why pino alone
+        // can lose late-shutdown lines on process.exit.
+        writeShutdownBreadcrumb(`sseRegistry.drain failed: ${errMsg}`);
+        logger.warn({ err }, "sseRegistry.drain failed");
+      }
+
+      // 2. Now stop accepting new connections. With SSEs drained, server.close
+      //    has no long-lived connections to wait on and resolves quickly. The
+      //    closeIdleConnections call sweeps up any remaining keep-alive
+      //    sockets that might otherwise keep the callback pending.
+      await new Promise<void>((resolve) => {
+        server.close((err) => {
+          if (err) logger.warn({ err }, "server.close error");
+          resolve();
+        });
+        server.closeIdleConnections?.();
+      });
+
       // Flush telemetry
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
@@ -1189,14 +1293,30 @@ export async function startServer(): Promise<StartedServer> {
         await stopLinearTunnel(cleanupToken);
       } catch { /* best effort */ }
 
+      const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
+      appShutdown?.();
+
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        writeShutdownBreadcrumb(`stopping embedded PostgreSQL (signal=${signal})`);
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
           await embeddedPostgres?.stop();
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          writeShutdownBreadcrumb(`embedded PostgreSQL stop failed: ${errMsg}`);
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
+
+      writeShutdownBreadcrumb(`handler complete; exiting (signal=${signal})`);
+      logger.info({ signal }, "Shutdown handler complete; exiting");
+
+      // Flush pino's async buffer before process.exit. Otherwise the trailing
+      // log lines (and any straggler writes from the drain/close steps) are
+      // dropped when libuv stops, making post-mortem debugging blind.
+      try {
+        (logger as unknown as { flush?: (cb?: () => void) => void }).flush?.();
+      } catch { /* best effort */ }
 
       process.exit(0);
     };

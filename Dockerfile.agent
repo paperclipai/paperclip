@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.20
+# syntax=harbor.blockcast.net/dockerfile/dockerfile:1.20
 #
 # paperclip-agent base image — extends the paperclip server image with the
 # build/devops toolchain that technical agents need to actually do work in
@@ -14,7 +14,7 @@
 # Tagged separately as `paperclip-agent:sha-…-k8s-vendored` so the heavy
 # toolchain doesn't bloat the paperclip-server image.
 
-ARG BASE_IMAGE=registry.blockcast.net/paperclip:latest-k8s-vendored
+ARG BASE_IMAGE=harbor.blockcast.net/paperclip/paperclip:latest-k8s-vendored
 FROM ${BASE_IMAGE}
 
 USER root
@@ -22,6 +22,9 @@ USER root
 # Build essentials + unzip (kubelogin ships as a zip)
 # chromium runtime libs (BLO-3663) — required for headless browser / Playwright / screenshot capabilities
 # Canonical list from `npx playwright install-deps chromium --dry-run`
+# Cypress runtime libs (BLO-6436) — libgtk-3-0t64 + libxss1 + libxtst6 +
+# xauth + libnotify4 cover what Cypress 14's Electron runtime needs on top
+# of the Playwright set (Playwright bundles Chromium and skips these).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
         build-essential pkg-config libssl-dev unzip \
@@ -30,6 +33,7 @@ RUN apt-get update \
         libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
         libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
         libxfixes3 libxkbcommon0 libxrandr2 xvfb \
+        libgtk-3-0t64 libxss1 libxtst6 xauth libnotify4 \
         fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 \
         xfonts-scalable fonts-liberation fonts-ipafont-gothic \
         fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf \
@@ -101,6 +105,76 @@ RUN curl -fsSL "https://github.com/int128/kubelogin/releases/download/${KUBELOGI
   && mv /tmp/kubelogin /usr/local/bin/kubectl-oidc_login \
   && chmod +x /usr/local/bin/kubectl-oidc_login \
   && rm -f /tmp/kubelogin.zip /tmp/LICENSE
+
+# ---------------------------------------------------------------------------
+# Designer + browser automation CLIs (ccrotate-designer-lease)
+# ---------------------------------------------------------------------------
+
+# Bake designer + agent-browser globally at pinned versions. Drops the
+# 'npx -y' supply-chain dependency from the designer-loop skill (codex F6).
+# When CCROTATE_DESIGNER_LEASE_HOST is set, agents in this image use the
+# baked CLIs against a remote Chrome via CDP — no Chrome bundling required.
+ARG DESIGNER_VERSION=0.3.6
+ARG AGENT_BROWSER_VERSION=0.27.0
+RUN npm i -g \
+    @pro-vi/designer@${DESIGNER_VERSION} \
+    agent-browser@${AGENT_BROWSER_VERSION} \
+  && which designer && which agent-browser
+
+# ---------------------------------------------------------------------------
+# Protocol Buffers (BLO-5492)
+# ---------------------------------------------------------------------------
+# magma's orc8r/cloud/go genpb step needs `protoc` + protoc-gen-go +
+# protoc-gen-go-grpc. Pinned versions match the magma go.mod toolchain
+# (google.golang.org/protobuf v1.34+, google.golang.org/grpc v1.65+).
+ARG PROTOC_VERSION=27.2
+ARG PROTOC_GEN_GO_VERSION=v1.34.2
+ARG PROTOC_GEN_GO_GRPC_VERSION=v1.4.0
+RUN curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" \
+       -o /tmp/protoc.zip \
+  && unzip -q /tmp/protoc.zip 'bin/protoc' 'include/*' -d /usr/local \
+  && chmod -R a+rX /usr/local/include/google \
+  && rm /tmp/protoc.zip \
+  && GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+       google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} \
+  && GOBIN=/usr/local/bin /usr/local/go/bin/go install \
+       google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION} \
+  && rm -rf /root/go /root/.cache \
+  && protoc --version \
+  && protoc-gen-go --version \
+  && protoc-gen-go-grpc --version
+
+# ---------------------------------------------------------------------------
+# Self-serve dependency installation (BLO-5492)
+# ---------------------------------------------------------------------------
+# Agents run as `USER node` below; without sudo they cannot apt-install a
+# missing tool when one comes up (terraform, awscli, a new lint binary, …).
+# Every gap would otherwise require a Dockerfile.agent rebuild + image roll
+# — the structural pattern this issue is fixing.
+#
+# Sudo is scoped NOPASSWD to package-management commands only — `apt`,
+# `apt-get`, `dpkg`, `dpkg-reconfigure`, and `pipx`. Not `sudo bash` /
+# `sudo -i`, so the blast radius stays inside Debian's package
+# infrastructure. Agent code that wants arbitrary root must change the
+# Dockerfile.
+#
+# npm-global prefix is moved to /home/node/.npm-global so `npm i -g`
+# from the node user also works without sudo. The existing root-installed
+# globals (designer, agent-browser) remain under /usr/local/bin and stay
+# on PATH; the new prefix is prepended to PATH so user installs win on
+# name collisions.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends sudo pipx \
+  && rm -rf /var/lib/apt/lists/* \
+  && install -m 0440 /dev/null /etc/sudoers.d/node-pkg-install \
+  && printf 'node ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/dpkg-reconfigure, /usr/bin/pipx\n' \
+       > /etc/sudoers.d/node-pkg-install \
+  && chmod 0440 /etc/sudoers.d/node-pkg-install \
+  && visudo -c -f /etc/sudoers.d/node-pkg-install \
+  && install -d -o node -g node -m 0755 /home/node/.npm-global /home/node/.npm-cache
+ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
+ENV NPM_CONFIG_CACHE=/home/node/.npm-cache
+ENV PATH=/home/node/.npm-global/bin:$PATH
 
 # Hand back to the non-root `node` user — paperclip's docker-entrypoint.sh
 # runs as that uid (matches the host user mapping established in the base

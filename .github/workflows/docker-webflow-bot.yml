@@ -1,0 +1,134 @@
+name: Docker (webflow-bot)
+
+# Builds + pushes the paperclip-webflow-bot image. Does NOT auto-deploy
+# — the cluster yaml at onprem-k8s/paperclip/webflow-designer-bot.yaml
+# pins a specific sha-tag and updating it is a separate operator step.
+#
+# This image also serves as the BASE for sibling services that share the
+# Camoufox + Playwright + VNC toolchain (currently figma-bot inherits
+# FROM harbor.blockcast.net/paperclip-webflow-bot/webflow-bot:latest).
+# That dependency means this workflow must succeed before downstream
+# Docker builds can pick up changes.
+#
+# Trigger: any change under packages/services/webflow-bot/.
+#
+# - pull_request: runs ONLY the `test` job (ruff + pytest) so PRs get
+#   gated before merge. Mirrors PR #180's fix for docker-figma-bot.yml
+#   (closes the gate gap that bit PR #173 — green PR-level CI then 1m3s
+#   post-merge ruff failure that blocked the image rebuild).
+#   build-and-push is gated on `github.event_name != pull_request`
+#   so fork PRs (which lack HARBOR_PASSWORD) cannot 401 attempting to push.
+# - push to master or webflow-bot-v* tags: runs both jobs.
+# - workflow_dispatch: manually fires both jobs from any ref.
+#
+# Security: this workflow does NOT interpolate any untrusted event input
+# (github.event.*, github.head_ref, etc.) into run: commands. The only
+# secrets used are HARBOR_USERNAME/HARBOR_PASSWORD via env (build-and-push
+# job only). Adding pull_request does NOT expose secrets to fork PRs
+# because the if-gate on build-and-push prevents that job from running
+# on pull_request events. Mirrored from docker-mcp-gateway.yml +
+# docker-figma-bot.yml.
+
+on:
+  push:
+    branches:
+      - "master"
+    paths:
+      - "packages/services/webflow-bot/**"
+      - ".github/workflows/docker-webflow-bot.yml"
+    tags:
+      - "webflow-bot-v*"
+  pull_request:
+    paths:
+      - "packages/services/webflow-bot/**"
+      - ".github/workflows/docker-webflow-bot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dev dependencies
+        working-directory: packages/services/webflow-bot
+        run: |
+          python -m pip install --upgrade pip
+          # Install only dev/test deps so this step doesn't try to fetch
+          # the 250MB Camoufox Firefox binary. Structural tests run via
+          # AST inspection and don't actually import camoufox / playwright.
+          python -m pip install pytest pytest-cov ruff mypy
+
+      - name: Run ruff lint
+        working-directory: packages/services/webflow-bot
+        run: ruff check src/ tests/
+
+      - name: Run pytest
+        working-directory: packages/services/webflow-bot
+        run: pytest tests/ -v
+
+  build-and-push:
+    # Skip on pull_request events: forks don't have HARBOR_PASSWORD, and
+    # same-repo PRs shouldn't push transient sha tags pre-merge.
+    # Mirrors docker-figma-bot.yml.
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: docker-webflow-bot-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Clean stale node_modules from runner workspace
+        run: |
+          find . -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name node_modules -type l -exec rm -f {} + 2>/dev/null || true
+
+      - name: Login to Harbor
+        uses: docker/login-action@v4
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: true
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            harbor.blockcast.net/paperclip-webflow-bot/webflow-bot
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/services/webflow-bot/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          cache-from: type=registry,ref=harbor.blockcast.net/paperclip-webflow-bot/webflow-bot:buildcache-v1
+          cache-to: type=registry,ref=harbor.blockcast.net/paperclip-webflow-bot/webflow-bot:buildcache-v1,mode=max,image-manifest=true,oci-mediatypes=true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

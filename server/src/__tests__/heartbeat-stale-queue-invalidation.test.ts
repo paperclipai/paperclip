@@ -14,6 +14,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { cleanupHeartbeatTestState } from "./helpers/cleanup-heartbeat-test-state.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
@@ -66,13 +67,26 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   `));
 }
 
-async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
+// Wait until `fn()` returns true, polling every 50ms up to `timeoutMs`. The
+// default is 15s, not 3s, because each await chain here goes:
+//   queued → dispatcher poll → adapter execute → status running → postRun
+//   write → status succeeded
+// which is a few hundred ms in isolation but bursts to 2-5s under CI load
+// (embedded-postgres warm-up after a fork-pool reset, shared-runner I/O
+// contention, etc.). The 3s default was the direct cause of intermittent
+// 'expected running to be succeeded' failures on verify_canary — see
+// run 26258560789 job 77286814262 on PR #129.
+//
+// Throws on deadline expiry so the timeout surfaces directly instead of
+// being masked by a downstream `expect(...).toBe(...)` symptom.
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await fn()) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return fn();
+  if (await fn()) return true;
+  throw new Error(`waitForCondition: predicate did not become true within ${timeoutMs}ms`);
 }
 
 type SeedOptions = {
@@ -96,7 +110,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     mockAdapterExecute.mockReset();
@@ -111,26 +125,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       resultJson: { summary: "Stale-queue invalidation test run." },
     }));
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    // ACCESS EXCLUSIVE on companies + CASCADE clears the whole dependency tree
-    // atomically, blocking concurrent inserts from the fire-and-forget postRun
-    // lifecycle hook (heartbeat.ts:6568) so it can't race a heartbeat_run_events
-    // insert between us deleting events and deleting runs.
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    await cleanupHeartbeatTestState(db, heartbeat);
   });
 
   afterAll(async () => {
@@ -325,6 +320,82 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.status).toBe("cancelled");
     expect(run?.errorCode).toBe("issue_terminal_status");
     expect(wakeup?.status).toBe("skipped");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("cancels non-interaction queued runs when the issue execution lock cannot be acquired", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const historicalRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: historicalRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      errorCode: "process_lost",
+      error: "Historical failed run",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked by historical run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: historicalRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_execution_lock_not_acquired");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_execution_lock_not_acquired" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("could not acquire the issue execution lock");
+    expect(issue?.executionRunId).toBe(historicalRunId);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 

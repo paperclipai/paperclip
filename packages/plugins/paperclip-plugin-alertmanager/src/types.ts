@@ -123,6 +123,11 @@ export interface AlertStateRecord {
   paperclipIssueId: string;
   paperclipCompanyId: string;
   assigneeUserId: string | null;
+  /**
+   * Set when ownerMap routes to an agent via the `agent:<id>` value syntax.
+   * Mutually exclusive with `assigneeUserId` — at most one is non-null.
+   */
+  assigneeAgentId: string | null;
   alertname: string;
   severity: string;
   firstSeenAt: string;
@@ -152,11 +157,19 @@ export interface ObservabilityUrls {
 }
 
 /**
- * Result of the owner-resolution pipeline (§7.7). Carries the email that
- * matched (so the caller can log it) plus which step produced it.
+ * Result of the owner-resolution pipeline (§7.7). Carries the email OR
+ * the agentId that matched (so the caller can log it) plus which step
+ * produced it. `email` and `agentId` are mutually exclusive — at most one
+ * is set on any non-`no-match` resolution.
+ *
+ * ownerMap values prefixed with `agent:<uuid>` (case-insensitive prefix)
+ * resolve to `agentId` and bypass the `users.findByEmail` cache lookup.
+ * Plain email values resolve to `email` and follow the original §7.7
+ * email → user-id flow.
  */
 export interface OwnerResolution {
   email: string | null;
+  agentId: string | null;
   source:
     | "label-override"
     | "owner-map"

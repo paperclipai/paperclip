@@ -1,6 +1,9 @@
+import express from "express";
+import request from "supertest";
 import { describe, expect, it } from "vitest";
 
-import { parseWhenOutput } from "../routes/ccrotate.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { ccrotateRoutes, parseWhenOutput } from "../routes/ccrotate.js";
 
 describe("parseWhenOutput (BLO-4938)", () => {
   it("classifies a codex near_limit line as usableNow (BLO-4938)", () => {
@@ -80,5 +83,22 @@ describe("parseWhenOutput (BLO-4938)", () => {
     const result = parseWhenOutput(sample);
     expect(result.usableNow).toHaveLength(2);
     expect(result.degraded).toBe(true);
+  });
+});
+
+describe("ccrotateRoutes auth", () => {
+  it("rejects unauthenticated status requests", async () => {
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use("/api/ccrotate", ccrotateRoutes());
+    app.use(errorHandler);
+
+    const res = await request(app).get("/api/ccrotate/status");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Unauthorized" });
   });
 });

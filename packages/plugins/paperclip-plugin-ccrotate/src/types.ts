@@ -9,6 +9,7 @@ export interface AccountRow {
   utilization7dSonnet: number | null;
   utilization7dOpus: number | null;
   availability: string;
+  apiLimit: string | null;
   isActive: boolean;
   isHealthy: boolean;
 }

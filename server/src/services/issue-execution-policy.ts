@@ -384,6 +384,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       timeoutAt: parsed.data.monitor.timeoutAt ?? null,
       maxAttempts: parsed.data.monitor.maxAttempts ?? null,
       recoveryPolicy: parsed.data.monitor.recoveryPolicy ?? null,
+      productivityReviewDisabled: parsed.data.monitor.productivityReviewDisabled ?? false,
     }
     : null;
 

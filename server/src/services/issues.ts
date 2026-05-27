@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -54,7 +54,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -71,6 +71,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { getTelemetryClient } from "../telemetry.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { allocateIdentifier, deleteLinearIssueForCompany } from "./identifier-allocator.js";
 import {
@@ -79,13 +80,19 @@ import {
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
 import { runEvidenceGate, type EvidenceFetchResult } from "./evidence-gate-wiring.js";
-import { parseIssueGraphLivenessIncidentKey } from "./recovery/origins.js";
+import {
+  parseIssueGraphLivenessIncidentKey,
+  RECOVERY_ORIGIN_KINDS,
+} from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+const BLOCKED_PROMOTION_AWAITING_USER_EVENT = "sweep_blocked_promotion_skipped_awaiting_user";
+const BLOCKED_PROMOTION_AWAITING_USER_COUNTER = "sweep.blocked_promotion_skipped_awaiting_user";
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -94,6 +101,79 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+
+function awaitingUserInputReason(body: string): string | null {
+  const normalized = body.toLowerCase();
+  const hasExplicitPhrase = [
+    "pick a",
+    "confirm",
+    "let me know",
+    "blocked on clarification",
+    "blocked awaiting",
+    "awaiting user",
+    "awaiting your",
+  ].some((phrase) => normalized.includes(phrase));
+  if (hasExplicitPhrase) return "explicit_phrase";
+
+  const hasQuestion = body.includes("?");
+  const hasUserMention = /(^|\s)@[^\s]+|user:\/\//.test(body);
+  if (hasQuestion && hasUserMention) return "question_with_user_mention";
+
+  return null;
+}
+
+async function findBlockedPromotionAwaitingUserInput(
+  dbOrTx: any,
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
+) {
+  const latestAgentComment = await dbOrTx
+    .select({
+      id: issueComments.id,
+      body: issueComments.body,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        or(
+          sql<boolean>`${issueComments.authorAgentId} IS NOT NULL`,
+          sql<boolean>`${issueComments.createdByRunId} IS NOT NULL`,
+          eq(issueComments.authorType, "agent"),
+        )!,
+      ),
+    )
+    .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+    .limit(1)
+    .then((rows: Array<{ id: string; body: string; createdAt: Date }>) => rows[0] ?? null);
+
+  if (!latestAgentComment) return null;
+  const reason = awaitingUserInputReason(latestAgentComment.body);
+  if (!reason) return null;
+
+  const userReplyAfterAgentQuestion = await dbOrTx
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, issue.companyId),
+        eq(issueComments.issueId, issue.id),
+        sql<boolean>`${issueComments.authorUserId} IS NOT NULL`,
+        gt(issueComments.createdAt, latestAgentComment.createdAt),
+      ),
+    )
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+  if (userReplyAfterAgentQuestion) return null;
+  return {
+    commentId: latestAgentComment.id,
+    commentCreatedAt: latestAgentComment.createdAt,
+    reason,
+  };
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -123,6 +203,45 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function findOpenRoutineExecutionLockOwnerForIssue(db: Db, companyId: string, issueId: string) {
+  const target = await db
+    .select({
+      id: issues.id,
+      originKind: issues.originKind,
+      originId: issues.originId,
+      originFingerprint: issues.originFingerprint,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  if (!target || target.originKind !== "routine_execution" || !target.originId) return null;
+
+  return db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      executionRunId: issues.executionRunId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "routine_execution"),
+        eq(issues.originId, target.originId),
+        eq(issues.originFingerprint, target.originFingerprint),
+        inArray(issues.status, OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES),
+        isNull(issues.hiddenAt),
+        isNotNull(issues.executionRunId),
+        ne(issues.id, issueId),
+      ),
+    )
+    .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -242,6 +361,8 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
+  sortField?: "updated";
+  sortDir?: "asc" | "desc";
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -342,7 +463,15 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "error",
+  "adapter_failed",
+  "cancelled",
+  "timed_out",
+]);
+const STALE_ISSUE_CONTEXT_RUN_STATUSES = ["queued", "scheduled_retry"] as const;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 
 function escapeLikePattern(value: string): string {
@@ -810,6 +939,43 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
     .filter((value): value is Date => value instanceof Date)
     .sort((a, b) => b.getTime() - a.getTime());
   return normalized[0] ?? null;
+}
+
+function issueListOrderBy(
+  companyId: string,
+  {
+    hasSearch,
+    priorityOrder,
+    searchOrder,
+    sortField,
+    sortDir,
+  }: {
+    hasSearch: boolean;
+    priorityOrder: SQL;
+    searchOrder: SQL;
+    sortField?: IssueFilters["sortField"];
+    sortDir?: IssueFilters["sortDir"];
+  },
+) {
+  const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
+  if (sortField === "updated") {
+    const activityOrder = sortDir === "asc"
+      ? asc(canonicalLastActivityAt)
+      : desc(canonicalLastActivityAt);
+    const updatedOrder = sortDir === "asc" ? asc(issues.updatedAt) : desc(issues.updatedAt);
+    const idOrder = sortDir === "asc" ? asc(issues.id) : desc(issues.id);
+    return hasSearch
+      ? [asc(searchOrder), activityOrder, updatedOrder, idOrder]
+      : [activityOrder, updatedOrder, idOrder];
+  }
+
+  return [
+    hasSearch ? asc(searchOrder) : asc(priorityOrder),
+    asc(priorityOrder),
+    desc(canonicalLastActivityAt),
+    desc(issues.updatedAt),
+    desc(issues.id),
+  ];
 }
 
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
@@ -2958,6 +3124,7 @@ export function issueService(db: Db) {
   }
 
   async function readRunLogText(run: {
+    runId?: string | null;
     logStore: string | null;
     logRef: string | null;
     logBytes: number | null;
@@ -2971,19 +3138,30 @@ export function issueService(db: Db) {
     let content = "";
     let nextOffset: number | undefined = 0;
 
-    while (nextOffset !== undefined) {
-      const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
-      if (remainingBytes <= 0) break;
-      const chunk = await store.read(
-        { store: "local_file", logRef: run.logRef },
-        {
-          offset,
-          limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
-        },
-      );
-      content += chunk.content;
-      nextOffset = chunk.nextOffset;
-      offset = chunk.nextOffset ?? 0;
+    try {
+      while (nextOffset !== undefined) {
+        const remainingBytes = ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES - Buffer.byteLength(content, "utf8");
+        if (remainingBytes <= 0) break;
+        const chunk = await store.read(
+          { store: "local_file", logRef: run.logRef },
+          {
+            offset,
+            limitBytes: Math.min(ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES, remainingBytes),
+          },
+        );
+        content += chunk.content;
+        nextOffset = chunk.nextOffset;
+        offset = chunk.nextOffset ?? 0;
+      }
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        logger.warn(
+          { err, runId: run.runId ?? undefined, logRef: run.logRef },
+          "missing heartbeat run log while deriving issue comment metadata",
+        );
+        return content;
+      }
+      throw err;
     }
 
     return content;
@@ -3435,12 +3613,23 @@ export function issueService(db: Db) {
       )
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted) {
+      await cancelStaleIssueContextRuns({
+        companyId: adopted.companyId,
+        issueId: adopted.id,
+        keepRunId: input.actorRunId,
+        reason: "Cancelled because the issue checkout was adopted by the current execution run",
+        errorCode: "issue_checkout_adopted",
+      });
+    }
 
     return adopted;
   }
@@ -3470,12 +3659,23 @@ export function issueService(db: Db) {
       )
       .returning({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
       .then((rows) => rows[0] ?? null);
+
+    if (adopted) {
+      await cancelStaleIssueContextRuns({
+        companyId: adopted.companyId,
+        issueId: adopted.id,
+        keepRunId: input.actorRunId,
+        reason: "Cancelled because the issue checkout was adopted by the current execution run",
+        errorCode: "issue_checkout_adopted",
+      });
+    }
 
     return adopted;
   }
@@ -3545,6 +3745,56 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
 
     return cleared != null;
+  }
+
+  async function cancelStaleIssueContextRuns(input: {
+    companyId: string;
+    issueId: string;
+    keepRunId?: string | null;
+    reason: string;
+    errorCode: string;
+  }) {
+    const now = new Date();
+    const conditions: SQL[] = [
+      eq(heartbeatRuns.companyId, input.companyId),
+      inArray(heartbeatRuns.status, STALE_ISSUE_CONTEXT_RUN_STATUSES),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+    ];
+    if (input.keepRunId) {
+      conditions.push(ne(heartbeatRuns.id, input.keepRunId));
+    }
+
+    const cancelled = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: input.reason,
+        errorCode: input.errorCode,
+        updatedAt: now,
+      })
+      .where(and(...conditions))
+      .returning({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      });
+
+    const wakeupRequestIds = cancelled
+      .map((run) => run.wakeupRequestId)
+      .filter((id): id is string => Boolean(id));
+    if (wakeupRequestIds.length > 0) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "skipped",
+          finishedAt: now,
+          error: input.reason,
+          updatedAt: now,
+        })
+        .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+    }
+
+    return cancelled.length;
   }
 
   return {
@@ -3683,18 +3933,17 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const baseQuery = db
         .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
-        .orderBy(
-          hasSearch ? asc(searchOrder) : asc(priorityOrder),
-          asc(priorityOrder),
-          desc(canonicalLastActivityAt),
-          desc(issues.updatedAt),
-          desc(issues.id),
-        );
+        .orderBy(...issueListOrderBy(companyId, {
+          hasSearch,
+          priorityOrder,
+          searchOrder,
+          sortField: filters?.sortField,
+          sortDir: filters?.sortDir,
+        }));
       const pageQuery = offset > 0
         ? (limit === undefined ? baseQuery.offset(offset) : baseQuery.limit(limit).offset(offset))
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
@@ -4154,7 +4403,9 @@ export function issueService(db: Db) {
         isNotNull(issues.assigneeAgentId),
         isNull(issues.completedAt),
         isNull(issues.cancelledAt),
-        notInArray(issues.status, ["done", "cancelled", "backlog"]),
+        // This is lost-wake recovery for executable work. `in_review` issues
+        // already have a reviewer/CI path and should not be polled by agents.
+        inArray(issues.status, ["todo", "in_progress", "blocked"]),
       ];
       if (companyId) candidateConditions.push(eq(issues.companyId, companyId));
 
@@ -4225,14 +4476,58 @@ export function issueService(db: Db) {
         if (results.length >= limit) break;
       }
 
+      const resultIds = results.map((r) => r.id);
+      if (resultIds.length === 0) return results;
+
+      // Explicit waiting paths (request_confirmation/chooser interactions and
+      // linked approvals) are already a live action path. The blocker-resolved
+      // sweep is a lost-wake recovery path; it must not re-wake executor agents
+      // that are parked waiting for a human or reviewer decision.
+      const explicitlyWaitingIssueIds = new Set<string>();
+      const pendingInteractionRows = await db
+        .select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            inArray(issueThreadInteractions.issueId, resultIds),
+            inArray(issueThreadInteractions.status, BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES),
+          ),
+        );
+      for (const row of pendingInteractionRows) explicitlyWaitingIssueIds.add(row.issueId);
+
+      const pendingApprovalRows = await db
+        .select({ issueId: issueApprovals.issueId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            inArray(issueApprovals.issueId, resultIds),
+            inArray(approvals.status, BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES),
+          ),
+        );
+      for (const row of pendingApprovalRows) explicitlyWaitingIssueIds.add(row.issueId);
+
+      const resultsAfterExplicitWaitingSuppression = explicitlyWaitingIssueIds.size === 0
+        ? results
+        : results.filter((r) => {
+            const suppress = explicitlyWaitingIssueIds.has(r.id);
+            if (suppress) {
+              logger.debug(
+                { issueId: r.id },
+                "blockers_resolved_sweep: suppressed because issue has an explicit pending interaction or approval",
+              );
+            }
+            return !suppress;
+          });
+
       // BLO-3496: companion suppression to listWakeableBlockedDependents. The
       // edge-triggered path checks executive `do not retry before <ts>` markers
       // before waking; the sweep must too, otherwise a CTO hold gets bypassed
       // every time the periodic reconciler runs and fires the wake again.
-      const blockedResultIds = results
+      const blockedResultIds = resultsAfterExplicitWaitingSuppression
         .filter((r) => candidateStatusById.get(r.id) === "blocked")
         .map((r) => r.id);
-      if (blockedResultIds.length === 0) return results;
+      if (blockedResultIds.length === 0) return resultsAfterExplicitWaitingSuppression;
 
       const pendingConfirmationRows = await db
         .select({ issueId: issueThreadInteractions.issueId })
@@ -4277,8 +4572,8 @@ export function issueService(db: Db) {
         }
       }
       return suppressedIssueIds.size === 0
-        ? results
-        : results.filter((r) => !suppressedIssueIds.has(r.id));
+        ? resultsAfterExplicitWaitingSuppression
+        : resultsAfterExplicitWaitingSuppression.filter((r) => !suppressedIssueIds.has(r.id));
     },
 
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
@@ -4733,6 +5028,25 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceSettings;
       }
 
+      if (existing.status === "blocked" && issueData.status === "todo") {
+        const awaitingUserInput = await findBlockedPromotionAwaitingUserInput(dbOrTx, existing);
+        if (awaitingUserInput) {
+          const details = {
+            event: BLOCKED_PROMOTION_AWAITING_USER_EVENT,
+            counter: BLOCKED_PROMOTION_AWAITING_USER_COUNTER,
+            issueId: existing.id,
+            commentId: awaitingUserInput.commentId,
+            commentCreatedAt: awaitingUserInput.commentCreatedAt.toISOString(),
+            reason: awaitingUserInput.reason,
+          };
+          logger.warn(details, "blocked to todo promotion skipped because latest agent comment awaits user input");
+          getTelemetryClient()?.track(BLOCKED_PROMOTION_AWAITING_USER_COUNTER, {
+            reason: awaitingUserInput.reason,
+          });
+          throw conflict("Blocked issue is awaiting user input", details);
+        }
+      }
+
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
@@ -5016,6 +5330,25 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status &&
+          existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+        ) {
+          const parsedIncident = parseIssueGraphLivenessIncidentKey(existing.originId);
+          if (parsedIncident?.issueId && parsedIncident.companyId === existing.companyId) {
+            await tx
+              .delete(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, existing.companyId),
+                  eq(issueRelations.issueId, existing.id),
+                  eq(issueRelations.relatedIssueId, parsedIncident.issueId),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              );
+          }
+        }
         return enriched;
       };
 
@@ -5119,6 +5452,18 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
+
+      if (checkoutRunId) {
+        const routineLockOwner = await findOpenRoutineExecutionLockOwnerForIssue(db, issueCompany.companyId, id);
+        if (routineLockOwner) {
+          throw conflict("Routine execution already locked by another open issue", {
+            issueId: id,
+            ownerIssueId: routineLockOwner.id,
+            ownerIdentifier: routineLockOwner.identifier,
+            ownerExecutionRunId: routineLockOwner.executionRunId,
+          });
+        }
+      }
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -5267,6 +5612,13 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (retried) {
+            await cancelStaleIssueContextRuns({
+              companyId: retried.companyId,
+              issueId: retried.id,
+              keepRunId: checkoutRunId,
+              reason: "Cancelled because the stale issue execution lock was adopted by the current run",
+              errorCode: "issue_execution_lock_adopted",
+            });
             const [enriched] = await withIssueLabels(db, [retried]);
             return enriched;
           }
@@ -5377,12 +5729,20 @@ export function issueService(db: Db) {
             )
             .returning({
               id: issues.id,
+              companyId: issues.companyId,
               status: issues.status,
               assigneeAgentId: issues.assigneeAgentId,
               checkoutRunId: issues.checkoutRunId,
             })
             .then((rows) => rows[0] ?? null);
           if (refreshed) {
+            await cancelStaleIssueContextRuns({
+              companyId: refreshed.companyId,
+              issueId: refreshed.id,
+              keepRunId: actorRunId,
+              reason: "Cancelled because the stale issue execution lock was adopted by the current run",
+              errorCode: "issue_execution_lock_adopted",
+            });
             return { ...refreshed, adoptedFromRunId: current.executionRunId };
           }
         }
@@ -5444,12 +5804,18 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      await cancelStaleIssueContextRuns({
+        companyId: updated.companyId,
+        issueId: updated.id,
+        reason: "Cancelled because the issue was released",
+        errorCode: "issue_released",
+      });
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },
 
-    adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
-      db.transaction(async (tx) => {
+    adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) => {
+      const result = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );
@@ -5491,7 +5857,17 @@ export function issueService(db: Db) {
             executionRunId: existing.executionRunId,
           },
         };
-      }),
+      });
+      if (result) {
+        await cancelStaleIssueContextRuns({
+          companyId: result.issue.companyId,
+          issueId: result.issue.id,
+          reason: "Cancelled because the issue was force-released",
+          errorCode: "issue_force_released",
+        });
+      }
+      return result;
+    },
     forceRelease: async (id: string) => {
       const existing = await db
         .select()
@@ -5519,6 +5895,12 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      await cancelStaleIssueContextRuns({
+        companyId: updated.companyId,
+        issueId: updated.id,
+        reason: "Cancelled because the issue was force-released",
+        errorCode: "issue_force_released",
+      });
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },

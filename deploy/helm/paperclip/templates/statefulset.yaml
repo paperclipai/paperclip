@@ -17,6 +17,11 @@ spec:
     metadata:
       labels:
         {{- include "paperclip.selectorLabels" . | nindent 8 }}
+        {{- if .Values.api.enabled }}
+        # Additive (not in selector — StatefulSet selectors are immutable).
+        # Distinguishes worker-tier pods from API-tier pods for Service routing.
+        app.kubernetes.io/component: worker
+        {{- end }}
         {{- with .Values.pod.labels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -330,6 +335,43 @@ spec:
               # paperclip-server, not by hand-editing this file.
               MCP_FILE="${BASE}/.mcp.json"
               MCP_BRIDGE_JS="/app/packages/mcp-server/dist/stdio.js"
+
+              # gbrain endpoint selection. Two paths exist:
+              #   1. admin-ui:3130/mcp   — OAuth Bearer, scales independently
+              #   2. gbrain-mcp-internal:3131/gbrain — bridge (unauthed),
+              #      same gbrain backend but OOMs ~3/hr under aggregate load.
+              # We pick #1 by minting a Bearer here against the CEO agent's
+              # OAuth client at boot. Per-agent identity at the paperclip
+              # plugin layer is preserved via adapter_config.mcpServers.gbrain
+              # (refreshed by the gbrain-oauth-refresher CronJob in
+              # onprem-k8s/paperclip/). All 7 agents have equivalent /mcp
+              # access; using CEO's client for the shared claude-direct
+              # path is operationally neutral.
+              # Falls back to the bridge if minting fails so claude_k8s still
+              # has a working gbrain MCP path on first deploy / outage.
+              GBRAIN_ENTRY='{"type":"http","url":"http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain"}'
+              if [ -r /etc/paperclip-plugin-gbrain/clients.json ]; then
+                CEO_ID=$(jq -r '."4eca1725-632f-45fa-97a2-8cf7e0430958".client_id // empty' /etc/paperclip-plugin-gbrain/clients.json 2>/dev/null || true)
+                CEO_SEC=$(jq -r '."4eca1725-632f-45fa-97a2-8cf7e0430958".client_secret // empty' /etc/paperclip-plugin-gbrain/clients.json 2>/dev/null || true)
+                if [ -n "${CEO_ID}" ] && [ -n "${CEO_SEC}" ]; then
+                  GBRAIN_BEARER=$(curl -sf --max-time 5 -X POST \
+                    http://gbrain-mcp-admin.paperclip.svc.cluster.local:3130/token \
+                    --data-urlencode "grant_type=client_credentials" \
+                    --data-urlencode "client_id=${CEO_ID}" \
+                    --data-urlencode "client_secret=${CEO_SEC}" 2>/dev/null \
+                    | jq -r '.access_token // empty' 2>/dev/null || true)
+                  if [ -n "${GBRAIN_BEARER}" ]; then
+                    GBRAIN_ENTRY=$(jq -nc \
+                      --arg url "http://gbrain-mcp-admin.paperclip.svc.cluster.local:3130/mcp" \
+                      --arg auth "Bearer ${GBRAIN_BEARER}" \
+                      '{type:"http", url:$url, headers:{Authorization:$auth}}')
+                    echo "seed: minted gbrain Bearer; routing claude direct MCP at admin-ui:3130/mcp"
+                  else
+                    echo "seed: gbrain /token call failed; falling back to bridge:3131/gbrain"
+                  fi
+                fi
+              fi
+
               if [ -f "${MCP_BRIDGE_JS}" ]; then
                 # Cluster-internal MCP servers (deployed via kubectl in the
                 # paperclip ns; see .planning/mcp-servers.yaml). All agents
@@ -339,8 +381,15 @@ spec:
                 #   - prometheus  — pab1it0/prometheus-mcp-server, pointed at
                 #                    in-cluster prometheus.monitoring.
                 #   - tempo       — Tempo 2.10's built-in MCP at /api/mcp.
-                #   - kubernetes  — containers/kubernetes-mcp-server, readonly
-                #                    tier (cluster-wide get/list/watch).
+                #   - k8s-ro      — containers/kubernetes-mcp-server, READONLY
+                #                    tier (cluster-wide get/list/watch, no
+                #                    secrets). Direct in-cluster reach via the
+                #                    `-readonly` Service; bypasses the public
+                #                    paperclip-mcp-gateway hop. Named to match
+                #                    the public path convention (/k8s-ro/mcp,
+                #                    /k8s-rw/mcp, /k8s-admin/mcp) so escalations
+                #                    layered in by claude_k8s adapterConfig
+                #                    (k8s-rw, k8s-admin) read consistently.
                 #   - github      — github/github-mcp-server bundled in this
                 #                    image (see Dockerfile github-mcp stage).
                 #                    Stdio mode reads GITHUB_PERSONAL_ACCESS_TOKEN
@@ -367,9 +416,9 @@ spec:
                     "type": "http",
                     "url": "http://tempo.monitoring.svc.cluster.local:3200/api/mcp"
                   },
-                  "kubernetes": {
+                  "k8s-ro": {
                     "type": "sse",
-                    "url": "http://kubernetes-mcp-server-admin.paperclip.svc.cluster.local:8080/sse"
+                    "url": "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/sse"
                   },
                   "github": {
                     "command": "/usr/local/bin/github-mcp-server",
@@ -379,18 +428,107 @@ spec:
                     "type": "http",
                     "url": "http://linear-mcp-server.paperclip.svc.cluster.local:8000/mcp"
                   },
-                  "gbrain": {
-                    "type": "http",
-                    "url": "http://gbrain-mcp-internal.paperclip.svc.cluster.local:3131/gbrain"
-                  }
+                  "gbrain": ${GBRAIN_ENTRY}
                 }
               }
               EOF
                 chown 1000:1000 "${MCP_FILE}" 2>/dev/null || true
-                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + kubernetes-readonly + github + linear + gbrain MCP servers"
+                echo "seed: wrote ${MCP_FILE} with paperclip + prometheus + tempo + k8s-ro + github + linear + gbrain MCP servers"
               else
                 echo "seed: skipping mcp.json — bridge stdio.js not found at ${MCP_BRIDGE_JS}"
               fi
+
+              # Install Claude Code plugins from claude-plugins-official +
+              # Blockcast/hindsight marketplaces. The image bakes
+              # @anthropic-ai/claude-code but no plugins; the PVC at /paperclip
+              # masks anything baked under HOME, so plugins must be installed
+              # at pod boot (idempotent — `claude plugin install` no-ops if
+              # already present). Marketplaces only need to be added once but
+              # `marketplace add` is also idempotent. All inputs are static so
+              # this runs in ~30s on a fresh PVC and a few seconds on warm.
+              #
+              # Plugins land in /paperclip/.claude/plugins/, visible to both
+              # the server pod's claude sessions AND to any claude_k8s Job pod
+              # that mounts the same PVC.
+              #
+              # If `claude` is unavailable for any reason the block is
+              # non-fatal — agents that don't need these plugins continue to
+              # work, and the next seed run will retry.
+              CLAUDE_BIN="/usr/local/bin/claude"
+              if [ -x "${CLAUDE_BIN}" ]; then
+                # claude expects $HOME to point at the user's claude dir for
+                # plugin scope=user installs (default scope).
+                export HOME="${BASE}"
+                run_claude_plugin_seed() {
+                  label="$1"
+                  shift
+                  if ! timeout 45s "$@" 2>&1; then
+                    echo "seed: ${label} failed or timed out (non-fatal)"
+                  fi
+                }
+                echo "seed: registering Claude Code plugin marketplaces"
+                run_claude_plugin_seed "marketplace add claude-plugins-official" "${CLAUDE_BIN}" plugin marketplace add anthropics/claude-plugins-official | grep -v "already" || true
+                if jq -e '.hindsight.source.repo == "vectorize-io/hindsight"' "${BASE}/.claude/plugins/known_marketplaces.json" >/dev/null 2>&1; then
+                  echo "seed: replacing hindsight marketplace with Blockcast fork"
+                  run_claude_plugin_seed "marketplace remove old hindsight" "${CLAUDE_BIN}" plugin marketplace remove hindsight | grep -v "not found" || true
+                fi
+                run_claude_plugin_seed "marketplace add Blockcast/hindsight" "${CLAUDE_BIN}" plugin marketplace add Blockcast/hindsight | grep -v "already" || true
+                echo "seed: installing Claude Code plugins (idempotent)"
+                for plugin in \
+                  pr-review-toolkit@claude-plugins-official \
+                  code-review@claude-plugins-official \
+                  commit-commands@claude-plugins-official \
+                  mcp-server-dev@claude-plugins-official \
+                  claude-md-management@claude-plugins-official \
+                  feature-dev@claude-plugins-official \
+                  agent-sdk-dev@claude-plugins-official \
+                  plugin-dev@claude-plugins-official \
+                  frontend-design@claude-plugins-official \
+                  hindsight-memory@hindsight \
+                ; do
+                  run_claude_plugin_seed "plugin install ${plugin}" "${CLAUDE_BIN}" plugin install "${plugin}" | tail -2 || true
+                done
+                chown -R 1000:1000 "${BASE}/.claude" 2>/dev/null || true
+              else
+                echo "seed: skipping plugin install — claude not at ${CLAUDE_BIN}"
+              fi
+
+              # Hindsight-memory plugin config. The plugin installs above as
+              # a Claude Code plugin, but it only activates on UserPromptSubmit
+              # /Stop hooks when ${HOME}/.hindsight/claude-code.json exists
+              # with a bankId. Without this, the plugin loads silently and
+              # never recalls or retains.
+              #
+              # Bank choice: the shared "agent-memories" bank (cross-agent
+              # conversational memory). The existing in-cluster
+              # paperclip-plugin-hindsight already writes per-agent
+              # structured memory to `paperclip::<companyId>::<agentId>`
+              # banks via the paperclip event bus; the CC plugin here
+              # captures the orthogonal layer (intra-session learnings,
+              # UserPromptSubmit context) and shares it across agents.
+              # /paperclip is the PVC mount and ${HOME}=/paperclip for all
+              # claude_k8s Job pods, so a single config here is visible to
+              # every agent. Re-writes each pod start to stay in sync if
+              # the API endpoint or bank changes.
+              HS_CONFIG="${BASE}/.hindsight/claude-code.json"
+              mkdir -p "$(dirname "${HS_CONFIG}")"
+              cat > "${HS_CONFIG}" <<'EOF'
+              {
+                "hindsightApiUrl": "http://hindsight-api.hindsight.svc.cluster.local:8888",
+                "bankId": "agent-memories",
+                "bankMission": "",
+                "enableKnowledgeTools": true,
+                "retainMode": "chunked",
+                "retainEveryNTurns": 5,
+                "retainOverlapTurns": 1,
+                "retainMaxChars": 30000,
+                "retainToolCalls": false,
+                "requestTimeoutSeconds": 30
+              }
+              EOF
+              chmod 0600 "${HS_CONFIG}"
+              chown 1000:1000 "${BASE}/.hindsight" "${HS_CONFIG}" 2>/dev/null || true
+              echo "seed: wrote ${HS_CONFIG} pinning hindsight-memory CC plugin to agent-memories bank"
           env:
             {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED
@@ -402,6 +540,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       containers:
         - name: paperclip
           image: {{ include "paperclip.image" . }}
@@ -419,6 +560,12 @@ spec:
               containerPort: {{ .Values.env.port }}
               protocol: TCP
           env:
+            {{- if .Values.api.enabled }}
+            # HA split: this is the workers tier. Heartbeat scheduler + plugin
+            # workers + Linear tunnel + database backup all live here.
+            - name: PAPERCLIP_NODE_ROLE
+              value: worker
+            {{- end }}
             - name: HOST
               value: {{ .Values.env.host | quote }}
             - name: PORT
@@ -443,6 +590,14 @@ spec:
             {{- toYaml .Values.probes.readiness | nindent 12 }}
           startupProbe:
             {{- toYaml .Values.probes.startup | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                # Sleep so the Service endpoint removal propagates to kube-proxy /
+                # Cilium before SIGTERM hits the process. The Node SIGTERM handler
+                # then has the full terminationGracePeriodSeconds (default 30s) to
+                # drain SSE connections via sseRegistry.drain(timeoutMs: 25_000).
+                command: ["sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

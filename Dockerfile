@@ -1,5 +1,7 @@
-# syntax=docker/dockerfile:1.20
-FROM node:lts-trixie-slim AS base
+# syntax=harbor.blockcast.net/dockerfile/dockerfile:1.20
+# Mirrored from docker.io/library/node:lts-trixie-slim to avoid Docker Hub
+# anonymous rate limits on self-hosted BuildKit runners.
+FROM harbor.blockcast.net/paperclip/node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 # Disable Debian's auto-clean of apt cache so the BuildKit cache mount
@@ -55,6 +57,7 @@ COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
+COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
@@ -67,7 +70,9 @@ COPY packages/plugins/paperclip-plugin-linear/package.json packages/plugins/pape
 COPY packages/plugins/paperclip-plugin-alertmanager/package.json packages/plugins/paperclip-plugin-alertmanager/
 COPY packages/plugins/paperclip-plugin-slack/package.json packages/plugins/paperclip-plugin-slack/
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
+COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
+COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 # pnpm store mount: re-uses the content-addressable cache of downloaded
 # tarballs between builds so we only fetch packages whose hashes
@@ -85,9 +90,17 @@ WORKDIR /vendor
 # Each repo's build → `pnpm pack` (or `npm pack`) produces the .tgz the
 # production stage installs. We never commit the tgz; it's reproduced on
 # every image build.
-ARG CCROTATE_REF=2729a0cc3612bc179d0eb925876a8a903961a6df
-ARG CLAUDE_K8S_REF=ab6930171693c9a561e9032b8997eefe40150b5b
-ARG OPENCODE_K8S_REF=a1e0a0cec2451c39db659223654c1ff914f7bbe1
+ARG CCROTATE_REF=4ce3b9834ab340041ee8136c9a9d4e4f2f00ab5e
+# Re-pinned 2026-05-22 to master tips after kkroo claude-k8s#3 / #4 and
+# opencode-k8s#16 / #17 merged. Brings in:
+#  - `--group=1000` on the DinD sidecar so uid-1000 main containers can
+#    use /var/run/docker.sock (closes BLO-5492).
+#  - Raised dind defaults: dockerCpuLimit 2 → 4, dockerMemoryLimit 2Gi → 8Gi.
+#    Heavy CIAB-class agents still override to 4/16Gi explicitly; this
+#    only changes the floor for agents that enable dind without setting
+#    explicit limits.
+ARG CLAUDE_K8S_REF=1aa45069d847a425dc910b6571bb732324faf103
+ARG OPENCODE_K8S_REF=7415df50682ff7308a330a156c7cc38996b3b840
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest

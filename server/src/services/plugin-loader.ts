@@ -43,6 +43,7 @@ import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
+import { ApiTierPluginWorkerError } from "./plugin-worker-manager-stub.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -1064,11 +1065,22 @@ export function pluginLoader(
       return plugin;
     }
 
-    await registry.update(plugin.id, {
-      packageName: plugin.packageName,
-      version: manifest.version,
-      manifest,
-    });
+    try {
+      await registry.update(plugin.id, {
+        packageName: plugin.packageName,
+        version: manifest.version,
+        manifest,
+      });
+    } catch (err) {
+      log.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "plugin-loader: manifest refresh persistence failed; activating with package manifest",
+      );
+    }
 
     return {
       ...plugin,
@@ -2083,6 +2095,27 @@ export function pluginLoader(
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+
+      // Defense-in-depth for PR #105: if activation reaches this catch on the
+      // API tier (i.e. the underlying error is ApiTierPluginWorkerError from
+      // the worker-manager stub), do NOT poison the DB row with status=error.
+      // The workers tier owns the canonical plugin lifecycle; an API-tier
+      // caller hitting this path is a bug in the caller, not the plugin.
+      // The startup loadAll is already gated in server/src/app.ts, but any
+      // future lazy activation code path on api-tier would otherwise strand
+      // the plugin DB row until manual /enable.
+      if (err instanceof ApiTierPluginWorkerError) {
+        log.warn(
+          { pluginId, pluginKey, err: errorMessage },
+          "plugin-loader: ignoring activation attempt on API tier — workers tier owns plugin lifecycle; DB status preserved",
+        );
+        return {
+          plugin: activePlugin,
+          success: false,
+          error: errorMessage,
+          registered,
+        };
+      }
 
       log.error(
         { pluginId, pluginKey, err: errorMessage },

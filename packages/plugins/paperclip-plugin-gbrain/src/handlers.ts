@@ -7,6 +7,12 @@ import {
   type GbrainCallable,
 } from "./pages.js";
 
+const LIMIT_CHURN_RE =
+  /(?:you(?:'|\u2019)?ve hit (?:your )?(?:usage )?limit|you(?:'|\u2019)?re out of extra usage|out of (?:extra )?usage|usage limit|try again at|resets? [0-9:]+)/i;
+const CONTINUE_CHURN_RE = /(?:continue from where you left off\.?|no response requested\.?)/i;
+const RETRY_WAKE_RE =
+  /wake reason:\s*(?:transient_failure_retry|issue_continuation_needed|process_lost_retry|missing_issue_comment|issue_blockers_resolved_sweep)/i;
+
 export interface RunFinishedEventShape {
   eventType: string;
   companyId: string;
@@ -36,6 +42,24 @@ export interface HandleRunFinishedInput {
   lookupAgentName(agentId: string): Promise<string | null>;
 }
 
+export function isRetryLimitChurnOutput(output: string): boolean {
+  const limitHits = output.match(new RegExp(LIMIT_CHURN_RE, "gi"))?.length ?? 0;
+  if (limitHits === 0) return false;
+
+  const continueHits = output.match(new RegExp(CONTINUE_CHURN_RE, "gi"))?.length ?? 0;
+  const retryWakeHits = output.match(new RegExp(RETRY_WAKE_RE, "gi"))?.length ?? 0;
+  if (continueHits + retryWakeHits === 0) return false;
+
+  const stripped = output
+    .replace(new RegExp(LIMIT_CHURN_RE, "gi"), " ")
+    .replace(new RegExp(CONTINUE_CHURN_RE, "gi"), " ")
+    .replace(new RegExp(RETRY_WAKE_RE, "gi"), " ")
+    .replace(/[\s\u00b7:;,.()0-9a-z]*utc[\s\u00b7:;,.()0-9a-z]*/gi, " ")
+    .trim();
+
+  return stripped.length <= 400 || (limitHits >= 2 && continueHits + retryWakeHits >= 2);
+}
+
 export async function handleRunFinished(input: HandleRunFinishedInput): Promise<HandleRunFinishedResult> {
   const { event, makeClient, logger, autoRetain, lookupIssueIdentifier, lookupAgentName } =
     input;
@@ -60,6 +84,15 @@ export async function handleRunFinished(input: HandleRunFinishedInput): Promise<
       agentId,
       issueId,
       hasOutput: Boolean(output),
+    });
+    return { ok: false };
+  }
+
+  if (isRetryLimitChurnOutput(output)) {
+    logger.info("gbrain retain skip: retry/limit/continue churn", {
+      runId,
+      agentId,
+      issueId,
     });
     return { ok: false };
   }

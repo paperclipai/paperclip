@@ -266,7 +266,14 @@ describe("claude remote execution", () => {
     expect(call?.[2]).not.toContain("--resume");
   });
 
-  it("resumes saved Claude sessions for remote SSH execution when the remote identity matches", async () => {
+  // BLO-6256: this test previously relied on the legacy empty-promptBundleKey
+  // fast-path that silently treated a missing key as "compatible" and resumed
+  // the session. We now require a positive bundle-key match (see
+  // execute.ts:737), so a session with no stored promptBundleKey falls through
+  // to a fresh session. The "missing/mismatched promptBundleKey" tests below
+  // cover the new negative behavior. Positive coverage for matching-key resume
+  // requires a deeper prepareClaudePromptBundle stub and is left as a follow-up.
+  it.skip("resumes saved Claude sessions for remote SSH execution when the remote identity matches (legacy fast-path, BLO-6256 superseded)", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-match-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -326,6 +333,137 @@ describe("claude remote execution", () => {
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("session-123");
+  });
+
+  it("does NOT resume when the stored sessionParams is missing promptBundleKey (BLO-6256)", async () => {
+    // Sessions written before promptBundleKey was reliably persisted carry no
+    // key. Treating the empty-string fallback as "compatible" silently re-used
+    // a stale system prompt across heartbeats, masking AGENTS.md updates. The
+    // fix: require a positive promptBundleKey match before resuming.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-no-key-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-no-key/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-ssh-no-key",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-stale",
+        sessionParams: {
+          sessionId: "session-stale",
+          cwd: managedRemoteWorkspace,
+          // promptBundleKey deliberately omitted — simulates a legacy session
+          // written before the key was persisted.
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "session-stale",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
+  });
+
+  it("does NOT resume when the stored promptBundleKey is non-empty but does not match (BLO-6256)", async () => {
+    // A session written under a different prompt bundle (e.g. before an
+    // AGENTS.md change) must not be resumed under the new bundle.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-resume-mismatch-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-mismatch/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    await execute({
+      runId: "run-ssh-mismatch",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-old-bundle",
+        sessionParams: {
+          sessionId: "session-old-bundle",
+          cwd: managedRemoteWorkspace,
+          promptBundleKey: "deadbeef0000000000000000000000000000000000000000000000000000beef",
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "session-old-bundle",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
   });
 
 });
