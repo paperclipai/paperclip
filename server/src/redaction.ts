@@ -50,6 +50,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+function isError(value: unknown): value is Error {
+  return value instanceof Error;
+}
+
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
@@ -131,4 +135,53 @@ export function redactSensitiveText(input: string): string {
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,
   );
+}
+
+function redactSensitiveLogValueInternal(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (typeof value !== "object") return value;
+  if (depth > 12) return "[Truncated]";
+
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveLogValueInternal(entry, seen, depth + 1));
+  }
+
+  if (value instanceof Date) return value;
+
+  if (isError(value)) {
+    const serialized: Record<string, unknown> = {
+      type: value.constructor?.name ?? "Error",
+      message: redactSensitiveText(value.message),
+      stack: value.stack ? redactSensitiveText(value.stack) : undefined,
+    };
+    for (const [key, entry] of Object.entries(value as Error & Record<string, unknown>)) {
+      if (key in serialized) continue;
+      serialized[key] = SECRET_PAYLOAD_KEY_RE.test(key)
+        ? REDACTED_EVENT_VALUE
+        : redactSensitiveLogValueInternal(entry, seen, depth + 1);
+    }
+    const cause = (value as Error & { cause?: unknown }).cause;
+    if (cause !== undefined) {
+      serialized.cause = redactSensitiveLogValueInternal(cause, seen, depth + 1);
+    }
+    return serialized;
+  }
+
+  if (!isPlainObject(value)) return value;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    redacted[key] = SECRET_PAYLOAD_KEY_RE.test(key)
+      ? REDACTED_EVENT_VALUE
+      : redactSensitiveLogValueInternal(entry, seen, depth + 1);
+  }
+  return redacted;
+}
+
+export function redactSensitiveLogValue<T>(value: T): T {
+  return redactSensitiveLogValueInternal(value, new WeakSet<object>(), 0) as T;
 }

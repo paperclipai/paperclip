@@ -18,6 +18,7 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
+  list: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
@@ -93,6 +94,51 @@ describe("secret routes", () => {
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
     expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("redacts persistence-only secret material fields returned by the service", async () => {
+    const createdAt = new Date("2026-05-06T00:00:00.000Z");
+    mockSecretService.list.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        companyId: "company-1",
+        key: "openai-api-key",
+        name: "OpenAI API Key",
+        provider: "local_encrypted",
+        status: "active",
+        managedMode: "paperclip_managed",
+        externalRef: null,
+        providerConfigId: null,
+        providerMetadata: null,
+        latestVersion: 1,
+        description: null,
+        lastResolvedAt: null,
+        lastRotatedAt: createdAt,
+        deletedAt: null,
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        createdAt,
+        updatedAt: createdAt,
+        referenceCount: 0,
+        value: "raw-secret-should-not-leak",
+        material: { ciphertext: "ciphertext-should-not-leak" },
+        valueSha256: "hash-should-not-leak",
+        fingerprintSha256: "fingerprint-should-not-leak",
+      },
+    ]);
+
+    const res = await request(createApp()).get("/api/companies/company-1/secrets");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0]).not.toHaveProperty("value");
+    expect(res.body[0]).not.toHaveProperty("material");
+    expect(res.body[0]).not.toHaveProperty("valueSha256");
+    expect(res.body[0]).not.toHaveProperty("fingerprintSha256");
+    expect(res.body[0].key).toBe("openai-api-key");
+    expect(JSON.stringify(res.body)).not.toContain("raw-secret-should-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("ciphertext-should-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("hash-should-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("fingerprint-should-not-leak");
   });
 
   it("rejects provider vault routes for non-board actors", async () => {
@@ -343,6 +389,50 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("accessKey");
+  });
+
+  it("redacts credential-like provider vault config fields returned by the service", async () => {
+    const createdAt = new Date("2026-05-06T00:00:00.000Z");
+    mockSecretService.listProviderConfigs.mockResolvedValue([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-1",
+        provider: "aws_secrets_manager",
+        displayName: "AWS prod",
+        status: "ready",
+        isDefault: true,
+        config: {
+          region: "us-east-1",
+          secretNamePrefix: "paperclip",
+          accessKeyId: "AKIA-SHOULD-NOT-LEAK",
+          nested: { clientSecret: "client-secret-should-not-leak" },
+        },
+        healthStatus: "ok",
+        healthCheckedAt: createdAt,
+        healthMessage: "ok",
+        healthDetails: {
+          code: "ok",
+          authorization: "Bearer should-not-leak",
+        },
+        disabledAt: null,
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ]);
+
+    const res = await request(createApp()).get("/api/companies/company-1/secret-provider-configs");
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].config.region).toBe("us-east-1");
+    expect(res.body[0].config.secretNamePrefix).toBe("paperclip");
+    expect(res.body[0].config.accessKeyId).toBe("***REDACTED***");
+    expect(res.body[0].config.nested.clientSecret).toBe("***REDACTED***");
+    expect(res.body[0].healthDetails.authorization).toBe("***REDACTED***");
+    expect(JSON.stringify(res.body)).not.toContain("AKIA-SHOULD-NOT-LEAK");
+    expect(JSON.stringify(res.body)).not.toContain("client-secret-should-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("Bearer should-not-leak");
   });
 
   it("removes provider vault config locally without deleting remote provider data", async () => {

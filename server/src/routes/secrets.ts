@@ -14,6 +14,67 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
+
+const SECRET_RESPONSE_OMIT_KEYS = new Set([
+  "fingerprintSha256",
+  "fingerprint_sha256",
+  "material",
+  "plainText",
+  "plaintext",
+  "rawValue",
+  "secretValue",
+  "value",
+  "valueSha256",
+  "value_sha256",
+]);
+const PROVIDER_CONFIG_SECRET_KEY_RE =
+  /(?:access[-_]?key(?:[-_]?id)?|api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|client[-_]?secret|credential|connectionstring|cookie|jwt|passwd|password|private[-_]?key|secret[-_]?access[-_]?key|token)$/i;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function redactSecretApiRecord<T>(record: T): T {
+  if (Array.isArray(record)) {
+    return record.map((item) => redactSecretApiRecord(item)) as T;
+  }
+  if (!isPlainRecord(record)) return record;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (SECRET_RESPONSE_OMIT_KEYS.has(key)) continue;
+    redacted[key] = value;
+  }
+  return redacted as T;
+}
+
+function redactProviderConfigApiRecord<T>(record: T): T {
+  if (Array.isArray(record)) {
+    return record.map((item) => redactProviderConfigApiRecord(item)) as T;
+  }
+  if (!isPlainRecord(record)) return record;
+
+  return {
+    ...record,
+    config: redactProviderConfigPayload(record.config),
+    healthDetails: redactProviderConfigPayload(record.healthDetails),
+  } as T;
+}
+
+function redactProviderConfigPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactProviderConfigPayload);
+  if (!isPlainRecord(value)) return value;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    redacted[key] = PROVIDER_CONFIG_SECRET_KEY_RE.test(key)
+      ? REDACTED_EVENT_VALUE
+      : redactProviderConfigPayload(child);
+  }
+  return redacted;
+}
 
 export function secretRoutes(db: Db) {
   const router = Router();
@@ -39,7 +100,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.listProviderConfigs(companyId));
+    res.json(redactProviderConfigApiRecord(await svc.listProviderConfigs(companyId)));
   });
 
   router.post(
@@ -109,7 +170,7 @@ export function secretRoutes(db: Db) {
       },
     });
 
-    res.status(201).json(created);
+    res.status(201).json(redactProviderConfigApiRecord(created));
   });
 
   router.get("/secret-provider-configs/:id", async (req, res) => {
@@ -120,7 +181,7 @@ export function secretRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    res.json(existing);
+    res.json(redactProviderConfigApiRecord(existing));
   });
 
   router.patch("/secret-provider-configs/:id", validate(updateSecretProviderConfigSchema), async (req, res) => {
@@ -159,7 +220,7 @@ export function secretRoutes(db: Db) {
       },
     });
 
-    res.json(updated);
+    res.json(redactProviderConfigApiRecord(updated));
   });
 
   router.delete("/secret-provider-configs/:id", async (req, res) => {
@@ -192,7 +253,7 @@ export function secretRoutes(db: Db) {
       },
     });
 
-    res.json(removed);
+    res.json(redactProviderConfigApiRecord(removed));
   });
 
   router.post("/secret-provider-configs/:id/default", async (req, res) => {
@@ -225,7 +286,7 @@ export function secretRoutes(db: Db) {
       },
     });
 
-    res.json(updated);
+    res.json(redactProviderConfigApiRecord(updated));
   });
 
   router.post("/secret-provider-configs/:id/health", async (req, res) => {
@@ -266,7 +327,7 @@ export function secretRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
-    res.json(secrets);
+    res.json(redactSecretApiRecord(secrets));
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
@@ -301,7 +362,7 @@ export function secretRoutes(db: Db) {
       details: { name: created.name, provider: created.provider },
     });
 
-    res.status(201).json(created);
+    res.status(201).json(redactSecretApiRecord(created));
   });
 
   router.post(
@@ -410,7 +471,7 @@ export function secretRoutes(db: Db) {
       details: { version: rotated.latestVersion },
     });
 
-    res.json(rotated);
+    res.json(redactSecretApiRecord(rotated));
   });
 
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {
@@ -452,7 +513,7 @@ export function secretRoutes(db: Db) {
       details: { name: updated.name },
     });
 
-    res.json(updated);
+    res.json(redactSecretApiRecord(updated));
   });
 
   router.get("/secrets/:id/usage", async (req, res) => {
