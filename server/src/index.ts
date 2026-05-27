@@ -403,18 +403,19 @@ let resolveSession:
   | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
   | undefined;
 let resolveSessionFromHeaders:
-  | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
+  | ((req: import("node:http").IncomingMessage) => Promise<BetterAuthSessionResult | null>)
   | undefined;
 if (config.deploymentMode === "local_trusted") {
   await ensureLocalTrustedBoardPrincipal(db as any);
 }
 if (config.deploymentMode === "authenticated") {
   const {
+    createAutoModeBetterAuthInstances,
     createBetterAuthHandler,
     createBetterAuthInstance,
     deriveAuthTrustedOrigins,
     resolveBetterAuthSession,
-    resolveBetterAuthSessionFromHeaders,
+    resolveBetterAuthSessionFromRequest,
   } = await import("./auth/better-auth.js");
   const betterAuthSecret =
     process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
@@ -441,10 +442,12 @@ if (config.deploymentMode === "authenticated") {
     },
     "Authenticated mode auth origin configuration",
   );
-  const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
+  const auth = config.authBaseUrlMode === "auto"
+    ? createAutoModeBetterAuthInstances(db as any, config, effectiveTrustedOrigins)
+    : createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
   betterAuthHandler = createBetterAuthHandler(auth);
   resolveSession = (req) => resolveBetterAuthSession(auth, req);
-  resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
+  resolveSessionFromHeaders = (req) => resolveBetterAuthSessionFromRequest(auth, req);
   await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
   authReady = true;
 }
@@ -481,7 +484,7 @@ process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
 
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
-  resolveSessionFromHeaders,
+  resolveSessionFromRequest: resolveSessionFromHeaders,
 });
 
 if (config.heartbeatSchedulerEnabled) {

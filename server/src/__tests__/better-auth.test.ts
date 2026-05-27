@@ -48,31 +48,43 @@ function buildConfig(overrides?: Partial<Config>): Config {
   };
 }
 
-describe("createBetterAuthInstance", () => {
+describe("better auth config", () => {
   beforeEach(() => {
+    vi.resetModules();
     betterAuthMock.mockClear();
     drizzleAdapterMock.mockClear();
     delete process.env.BETTER_AUTH_SECRET;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
   });
 
-  it("enables trusted proxy header inference in auto mode", async () => {
-    const { createBetterAuthInstance } = await import("../auth/better-auth.js");
+  it("creates secure and insecure auto-mode auth instances", async () => {
+    const { createAutoModeBetterAuthInstances } = await import("../auth/better-auth.js");
 
-    createBetterAuthInstance({} as never, buildConfig(), ["http://127.0.0.1:3100"]);
+    createAutoModeBetterAuthInstances({} as never, buildConfig(), ["http://127.0.0.1:3100"]);
 
-    expect(betterAuthMock).toHaveBeenCalledWith(
+    expect(betterAuthMock).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
         trustedOrigins: ["http://127.0.0.1:3100"],
         advanced: {
-          trustedProxyHeaders: true,
+          useSecureCookies: true,
+        },
+      }),
+    );
+    expect(betterAuthMock).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        trustedOrigins: ["http://127.0.0.1:3100"],
+        advanced: {
+          useSecureCookies: false,
         },
       }),
     );
     expect(betterAuthMock.mock.calls[0]?.[0]).not.toHaveProperty("baseURL");
+    expect(betterAuthMock.mock.calls[1]?.[0]).not.toHaveProperty("baseURL");
   });
 
-  it("preserves explicit baseURL mode without proxy header inference", async () => {
+  it("preserves explicit baseURL mode without cookie override", async () => {
     const { createBetterAuthInstance } = await import("../auth/better-auth.js");
 
     createBetterAuthInstance(
@@ -91,5 +103,39 @@ describe("createBetterAuthInstance", () => {
       }),
     );
     expect(betterAuthMock.mock.calls[0]?.[0]).not.toHaveProperty("advanced");
+  });
+});
+
+describe("shouldUseSecureCookiesForAutoMode", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("trusts forwarded protocol from loopback-side proxies", async () => {
+    const { shouldUseSecureCookiesForAutoMode } = await import("../auth/better-auth.js");
+    const headers = new Headers({
+      "x-forwarded-proto": "https",
+    });
+
+    expect(
+      shouldUseSecureCookiesForAutoMode(headers, {
+        protocol: "http",
+        remoteAddress: "::ffff:127.0.0.1",
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores spoofed forwarded protocol from non-loopback clients", async () => {
+    const { shouldUseSecureCookiesForAutoMode } = await import("../auth/better-auth.js");
+    const headers = new Headers({
+      "x-forwarded-proto": "https",
+    });
+
+    expect(
+      shouldUseSecureCookiesForAutoMode(headers, {
+        protocol: "http",
+        remoteAddress: "192.168.1.20",
+      }),
+    ).toBe(false);
   });
 });
