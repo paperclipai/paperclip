@@ -5,7 +5,7 @@ export const YOONCOMPANY_HERMES_COMMAND_NOTE = "PATH의 hermes.exe를 쓰지 말
 export const YOONCOMPANY_HERMES_BOARD = "yooncompany";
 export const HERMES_ORCHESTRATION_TOOLSETS = ["file", "browser", "mcp", "delegation", "kanban"];
 export const HERMES_PAPERCLIP_ADAPTER_VERSION = "0.3.0";
-export const HERMES_ADAPTER_MANAGED_YOLO = true;
+export const HERMES_ADAPTER_MANAGED_YOLO = false;
 export const HERMES_PHASE1_APPROVAL_PACKAGE = {
   title: "Hermes-first 1단계 지속 설정 승인",
   action: "Hermes 오케스트레이터 profile/Kanban 운영 기준과 Paperclip 읽기 전용 표시만 허용",
@@ -195,12 +195,27 @@ function parseMaxTurns(config: Record<string, unknown>, extraArgs: string[]) {
   return null;
 }
 
+function parseProfile(extraArgs: string[]) {
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    const arg = extraArgs[index];
+    if (arg === "--profile" || arg === "-p") {
+      return readString(extraArgs[index + 1]);
+    }
+    if (arg.startsWith("--profile=")) {
+      return readString(arg.slice("--profile=".length));
+    }
+  }
+
+  return "";
+}
+
 export function getYoonCompanyHermesStatus(agent: Agent | null) {
   const config = asRecord(agent?.adapterConfig);
   const command = readString(config.hermesCommand) || readString(config.command);
   const toolsets = parseToolsets(config);
   const extraArgs = readStringArray(config.extraArgs);
   const maxTurns = parseMaxTurns(config, extraArgs);
+  const profile = parseProfile(extraArgs);
   const missingToolsets = toolsets.length > 0
     ? HERMES_ORCHESTRATION_TOOLSETS.filter((toolset) => !toolsets.includes(toolset))
     : [];
@@ -219,7 +234,8 @@ export function getYoonCompanyHermesStatus(agent: Agent | null) {
     explicitYolo,
     adapterManagedYolo: HERMES_ADAPTER_MANAGED_YOLO,
     duplicateYoloRisk,
-    yolo: explicitYolo || HERMES_ADAPTER_MANAGED_YOLO,
+    yolo: explicitYolo,
+    profile,
     maxTurns,
     canCreateAgents,
     canAssignTasks,

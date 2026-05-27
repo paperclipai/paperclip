@@ -104,9 +104,11 @@ describe("YoonCompanyHermesStatusPanel", () => {
     expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
     expect(container.textContent).toContain("막힘: file, mcp, delegation");
     expect(container.textContent).toContain("hermes-paperclip-adapter 0.3.0");
+    expect(container.textContent).toContain("Profile");
+    expect(container.textContent).toContain("yoonorchestrator");
     expect(container.textContent).toContain("지속 세션");
-    expect(container.textContent).toContain("--yolo 활성, agent 생성권한 없음, task 배정권한 없음");
-    expect(container.textContent).toContain("12 · extraArgs 이전 필요");
+    expect(container.textContent).toContain("--yolo 명시 없음, agent 생성권한 없음, task 배정권한 없음");
+    expect(container.textContent).toContain("12 · extraArgs 기준");
     expect(container.textContent).toContain("승인 패키지 초안");
     expect(container.textContent).toContain("Hermes-first 1단계 지속 설정 승인");
     expect(container.textContent).toContain("yoonorchestrator");
