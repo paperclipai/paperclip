@@ -68,6 +68,46 @@ export const HERMES_PROFILE_ROSTER = [
   },
 ];
 
+export const HERMES_KANBAN_PREVIEW_COLUMNS = [
+  {
+    key: "intake",
+    label: "Intake",
+    purpose: "Paperclip issue/approval 요청을 Hermes 작업 후보로 정리",
+    owner: "yoon-orchestrator",
+    gate: "L3/L4는 Paperclip approval 필요",
+  },
+  {
+    key: "research_docs",
+    label: "Research/Docs",
+    purpose: "조사, 문서화, 로그 요약, 운영 메모를 profile별로 처리",
+    owner: "yoon-research · yoon-docs",
+    gate: "repo/DB 변경 없음",
+  },
+  {
+    key: "codex_handoff",
+    label: "Codex Handoff",
+    purpose: "구현이 필요한 항목을 Paperclip issue로 넘겨 Codex가 처리",
+    owner: "yoon-codex-bridge · Codex Lead Engineer",
+    gate: "커밋/PR 증거 필요",
+  },
+  {
+    key: "evidence_done",
+    label: "Evidence/Done",
+    purpose: "검증 명령, 브라우저 확인, 남은 위험을 Paperclip에 남김",
+    owner: "yoon-orchestrator",
+    gate: "evidence 없으면 완료 아님",
+  },
+];
+
+export const HERMES_PAPERCLIP_CROSSLINK_FIELDS = [
+  { key: "paperclip_issue_id", label: "Paperclip issue", example: "YOO-101" },
+  { key: "paperclip_approval_id", label: "Paperclip approval", example: "approval_id: none" },
+  { key: "hermes_board", label: "Hermes board", example: "yooncompany" },
+  { key: "hermes_task_id", label: "Hermes task", example: "hk_abc123" },
+  { key: "hermes_profile", label: "Hermes profile", example: "yoon-research" },
+  { key: "codex_run_or_pr", label: "Codex evidence", example: "PR #2 / command log" },
+];
+
 export function findYoonCompanyAgent(agents: Agent[] | undefined, keyword: "codex" | "hermes") {
   return agents?.find((agent) => {
     const haystack = `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();
