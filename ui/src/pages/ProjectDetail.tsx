@@ -10,6 +10,8 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
+import { useLiveUpdatesHealth } from "../context/LiveUpdatesProvider";
+import { usePageVisible } from "../lib/issue-run-polling";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -158,6 +160,8 @@ function ColorPicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { isWsHealthy } = useLiveUpdatesHealth();
+  const isPageVisible = usePageVisible();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -169,7 +173,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     queryKey: queryKeys.liveRuns(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 15_000 : false),
+    refetchIntervalInBackground: false,
   });
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId),
@@ -220,6 +225,8 @@ function ProjectPluginOperationsList({
 }) {
   const queryClient = useQueryClient();
   const originKindPrefix = `plugin:${pluginKey}`;
+  const { isWsHealthy } = useLiveUpdatesHealth();
+  const isPageVisible = usePageVisible();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -235,7 +242,8 @@ function ProjectPluginOperationsList({
     queryKey: queryKeys.liveRuns(companyId),
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
     enabled: !!companyId,
-    refetchInterval: 5000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 15_000 : false),
+    refetchIntervalInBackground: false,
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
@@ -283,6 +291,8 @@ export function ProjectDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
+  const isPageVisible = usePageVisible();
+  const { isWsHealthy } = useLiveUpdatesHealth();
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
@@ -422,7 +432,8 @@ export function ProjectDetail() {
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
     queryFn: () => budgetsApi.overview(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
-    refetchInterval: 30_000,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 30_000 : false),
+    refetchIntervalInBackground: false,
     staleTime: 5_000,
   });
 

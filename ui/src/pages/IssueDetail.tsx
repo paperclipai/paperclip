@@ -779,7 +779,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    refetchInterval: hasLiveRuns ? 5000 : false,
+    refetchInterval: (hasLiveRuns && !isWsHealthy && isPageVisible) ? 5000 : false,
+    refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];
@@ -1410,7 +1411,7 @@ export function IssueDetail() {
     queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
     // WS events keep this stale for immediate refresh; fallback poll guards background tabs.
-    refetchInterval: isPageVisible ? 15_000 : false,
+    refetchInterval: isWsHealthy ? false : (isPageVisible ? 15_000 : false),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
   });
