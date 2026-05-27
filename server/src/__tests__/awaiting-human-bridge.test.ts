@@ -523,7 +523,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const seeded = await seedAwaitingHumanInteraction();
     const [issueBefore] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, seeded.issueId));
     const service = awaitingHumanBridgeService(db, {
-      resolveProviderForCompany: async () => "clickup",
+      resolveProviderForCompany: async () => "slack",
       resolveAdapter: () => ({
         send: vi.fn(async () => ({
           externalThreadId: "thread-1",
@@ -563,7 +563,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nPlease revise the summary first.");
+    expect(comments[0]?.body).toBe("Slack reply received:\n\nPlease revise the summary first.");
 
     const [interaction] = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
@@ -1039,7 +1039,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(inboundAfterFirstPoll).toHaveLength(1);
 
     const second = await service.pollActiveBridges(new Date("2026-05-22T00:09:00.000Z"));
-    expect(second.approved).toBe(1);
+    expect(second.approved).toBe(0);
+    expect(closeBridgeSpy).toHaveBeenCalledTimes(1);
 
     const [interactionAfterSecondPoll] = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
@@ -1056,6 +1057,85 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(updatedBridge).toEqual(expect.objectContaining({
       status: "closed",
       closeOutcome: "approved",
+    }));
+
+    closeBridgeSpy.mockRestore();
+  });
+
+  it("dedupes a reject signal if closeBridge fails after the transaction commits", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reject_signal",
+              externalEventId: "reject-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "No, change the plan.",
+              receivedAt: new Date("2026-05-22T00:02:00.000Z"),
+              metadata: { resolutionSource: "clickup_reply" },
+            },
+          ],
+        })),
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    const bridge = await service.openOrReuseForInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      agentId: seeded.agentId,
+      ...approvalNotification(),
+    });
+
+    const originalCloseBridge = service.closeBridge.bind(service);
+    let failCloseBridgeOnce = true;
+    const closeBridgeSpy = vi.spyOn(service, "closeBridge").mockImplementation(async (...args: Parameters<typeof originalCloseBridge>) => {
+      if (failCloseBridgeOnce) {
+        failCloseBridgeOnce = false;
+        throw new Error("bridge close failed");
+      }
+      return originalCloseBridge(...args);
+    });
+
+    const first = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
+    expect(first.failed).toBe(1);
+
+    const [interactionAfterFirstPoll] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interactionAfterFirstPoll?.status).toBe("rejected");
+
+    const inboundAfterFirstPoll = await db.select().from(awaitingHumanBridgeInboundEvents)
+      .where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
+    expect(inboundAfterFirstPoll).toHaveLength(1);
+
+    const second = await service.pollActiveBridges(new Date("2026-05-22T00:09:00.000Z"));
+    expect(second.rejected).toBe(0);
+    expect(closeBridgeSpy).toHaveBeenCalledTimes(1);
+
+    const [interactionAfterSecondPoll] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interactionAfterSecondPoll?.status).toBe("rejected");
+
+    const inboundAfterSecondPoll = await db.select().from(awaitingHumanBridgeInboundEvents)
+      .where(eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id));
+    expect(inboundAfterSecondPoll).toHaveLength(1);
+
+    const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "rejected",
     }));
 
     closeBridgeSpy.mockRestore();
@@ -1465,7 +1545,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const result = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
 
-    expect(result.rejected).toBe(1);
+    expect(result.rejected).toBe(0);
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
       status: "closed",
@@ -2302,7 +2382,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const result = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
 
-    expect(result.approved).toBe(1);
+    expect(result.approved).toBe(0);
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
       status: "closed",

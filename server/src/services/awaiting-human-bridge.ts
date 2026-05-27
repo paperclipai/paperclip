@@ -81,6 +81,21 @@ function truncateText(value: string, maxLength: number) {
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+function formatProviderLabel(provider: string) {
+  const normalized = provider.trim();
+  if (normalized.length === 0) return "Reply";
+  if (normalized.toLowerCase() === "clickup") return "ClickUp";
+  return normalized
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function buildReplyReceivedBody(provider: string, replyBody: string) {
+  return `${formatProviderLabel(provider)} reply received:\n\n${replyBody}`;
+}
+
 function normalizeForMatch(value: string) {
   return value
     .toLowerCase()
@@ -550,6 +565,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     row: typeof awaitingHumanBridges.$inferSelect;
     outcome?: "approved" | "rejected" | "expired" | "superseded" | "cancelled" | null;
     reason?: string | null;
+    notifyAdapter?: boolean;
   }) {
     const [updated] = await db.update(awaitingHumanBridges).set({
       status: "closed",
@@ -560,21 +576,23 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       updatedAt: new Date(),
     }).where(eq(awaitingHumanBridges.id, input.row.id)).returning();
 
-    try {
-      await deps.resolveAdapter(input.row.provider).close({
-        bridgeId: input.row.id,
-        externalThreadId: input.row.externalThreadId ?? null,
-        externalMessageId: input.row.externalMessageId ?? null,
-        outcome: input.outcome ?? null,
-        reason: input.reason ?? null,
-      });
-    } catch (error) {
-      logger.warn({
-        err: error,
-        bridgeId: input.row.id,
-        companyId: input.row.companyId,
-        issueId: input.row.issueId,
-      }, "failed to close awaiting_human bridge adapter after closing row");
+    if (input.notifyAdapter !== false) {
+      try {
+        await deps.resolveAdapter(input.row.provider).close({
+          bridgeId: input.row.id,
+          externalThreadId: input.row.externalThreadId ?? null,
+          externalMessageId: input.row.externalMessageId ?? null,
+          outcome: input.outcome ?? null,
+          reason: input.reason ?? null,
+        });
+      } catch (error) {
+        logger.warn({
+          err: error,
+          bridgeId: input.row.id,
+          companyId: input.row.companyId,
+          issueId: input.row.issueId,
+        }, "failed to close awaiting_human bridge adapter after closing row");
+      }
     }
 
     return updated ?? input.row;
@@ -1235,7 +1253,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               };
             }
 
-            const body = `ClickUp reply received:\n\n${replyBody}`;
+            const body = buildReplyReceivedBody(row.provider, replyBody);
             const [comment] = await tx.insert(issueComments).values({
               companyId: row.companyId,
               issueId: row.issueId,
@@ -1273,7 +1291,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             ? replyProcessing.resolvedInteraction
             : null;
 
-          const body = replyProcessing.body ?? `ClickUp reply received:\n\n${replyBody}`;
+          const body = replyProcessing.body ?? buildReplyReceivedBody(row.provider, replyBody);
           const [issueRow] = await db.select({
             status: issues.status,
             identifier: issues.identifier,
@@ -1390,7 +1408,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         if (!issue) continue;
 
         if (event.kind === "approval_signal") {
-          await db.transaction(async (tx) => {
+          const approvalProcessing = await db.transaction(async (tx) => {
             const txDb = tx as unknown as Db;
             const txInteractionsSvc = issueThreadInteractionService(txDb);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
@@ -1407,7 +1425,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             }).returning({ id: awaitingHumanBridgeInboundEvents.id });
 
             if (!recorded) {
-              return;
+              return { duplicate: true as const };
             }
 
             const { interaction, createdIssues, continuationIssue } = await txInteractionsSvc.acceptInteraction({
@@ -1450,7 +1468,18 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 clickupReaction: typeof event.metadata?.clickupReaction === "string" ? event.metadata.clickupReaction : null,
               },
             });
+
+            return { duplicate: false as const };
           });
+          if (approvalProcessing.duplicate) {
+            await closeBridgeRow({
+              row,
+              outcome: "approved",
+              reason: event.body?.trim() || null,
+              notifyAdapter: false,
+            });
+            continue;
+          }
           await this.closeBridge({
             bridgeId: row.id,
             outcome: "approved",
@@ -1463,7 +1492,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         }
 
         if (event.kind === "reject_signal") {
-          await db.transaction(async (tx) => {
+          const rejectionProcessing = await db.transaction(async (tx) => {
             const txDb = tx as unknown as Db;
             const txInteractionsSvc = issueThreadInteractionService(txDb);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
@@ -1480,7 +1509,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             }).returning({ id: awaitingHumanBridgeInboundEvents.id });
 
             if (!recorded) {
-              return;
+              return { duplicate: true as const };
             }
 
             const interaction = await txInteractionsSvc.rejectInteraction({
@@ -1501,7 +1530,18 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               },
               dbClient: txDb,
             });
+
+            return { duplicate: false as const };
           });
+          if (rejectionProcessing.duplicate) {
+            await closeBridgeRow({
+              row,
+              outcome: "rejected",
+              reason: event.body?.trim() || null,
+              notifyAdapter: false,
+            });
+            continue;
+          }
           await this.closeBridge({
             bridgeId: row.id,
             outcome: "rejected",
