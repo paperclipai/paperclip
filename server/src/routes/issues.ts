@@ -622,10 +622,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  runId?: string | null;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  if (input.runId) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -636,9 +638,11 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
+  runId?: string | null;
 }) {
   if (!input.hasComment) return false;
   if (input.actorType !== "user") return false;
+  if (input.runId) return false;
   if (input.issueStatus !== "in_progress") return false;
   return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
 }
@@ -3826,6 +3830,7 @@ export function issueRoutes(
         issueStatus: existing.status,
         assigneeAgentId: requestedAssigneeAgentId,
         actorType: actor.actorType,
+        runId: actor.runId,
       })
         ? await svc.getCurrentScheduledRetry(existing.id)
         : null;
@@ -3840,6 +3845,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          runId: actor.runId,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -4596,7 +4602,7 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const skipAssigneeCommentWake = selfComment || Boolean(actor.runId) || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -5495,6 +5501,7 @@ export function issueRoutes(
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
+        runId: actor.runId,
       })
         ? await svc.getCurrentScheduledRetry(issue.id)
         : null;
@@ -5508,6 +5515,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        runId: actor.runId,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =
@@ -5683,7 +5691,7 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const skipWake = selfComment || Boolean(actor.runId) || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
