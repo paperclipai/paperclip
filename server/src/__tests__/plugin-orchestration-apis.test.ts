@@ -23,6 +23,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { logActivity, setPluginEventBus } from "../services/activity-log.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -262,6 +263,124 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         }),
       ]),
     );
+  });
+
+  it("forwards non-plugin issue and approval activity to plugin subscribers", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const approvalId = randomUUID();
+    const createRunId = randomUUID();
+    const doneRunId = randomUUID();
+    const emitted: unknown[] = [];
+    await db.insert(heartbeatRuns).values([
+      {
+        id: createRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "assignment",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: doneRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "assignment",
+        contextSnapshot: { issueId },
+      },
+    ]);
+    setPluginEventBus({
+      emit: async (event) => {
+        emitted.push(event);
+        return { delivered: 1, errors: [] };
+      },
+    } as any);
+
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: createRunId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        identifier: `${issuePrefix(companyId)}-1`,
+        title: "Agent-created issue",
+        status: "todo",
+      },
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: doneRunId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        identifier: `${issuePrefix(companyId)}-1`,
+        status: "done",
+        _previous: { status: "in_progress" },
+      },
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: "board-user-1",
+      action: "approval.created",
+      entityType: "approval",
+      entityId: approvalId,
+      details: {
+        type: "request_board_approval",
+        status: "pending",
+      },
+    });
+
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        eventType: "issue.created",
+        actorType: "agent",
+        actorId: agentId,
+        entityId: issueId,
+        entityType: "issue",
+        companyId,
+        payload: expect.objectContaining({
+          status: "todo",
+          agentId,
+          runId: createRunId,
+        }),
+      }),
+      expect.objectContaining({
+        eventType: "issue.updated",
+        actorType: "agent",
+        actorId: agentId,
+        entityId: issueId,
+        entityType: "issue",
+        companyId,
+        payload: expect.objectContaining({
+          status: "done",
+          agentId,
+          runId: doneRunId,
+        }),
+      }),
+      expect.objectContaining({
+        eventType: "approval.created",
+        actorType: "user",
+        actorId: "board-user-1",
+        entityId: approvalId,
+        entityType: "approval",
+        companyId,
+        payload: expect.objectContaining({
+          status: "pending",
+          agentId: null,
+          runId: null,
+        }),
+      }),
+    ]);
   });
 
   it("enforces plugin origin namespaces", async () => {
