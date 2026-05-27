@@ -126,6 +126,14 @@ const HERMES_COMMAND_LINES = [
   `- 주의: ${YOONCOMPANY_HERMES_COMMAND_NOTE}.`,
 ];
 
+const APPROVAL_GATE_LINES = [
+  "승인 게이트:",
+  "- L0-L1: 읽기, 조사, 요약, 초안 작성은 보류 이슈로 접수 가능.",
+  "- L2: repo 코드/테스트 변경은 명확한 작업 범위가 필요.",
+  "- L3-L4: DB/config/agent rule/자동화/배포/삭제/발송/외부 공개/비용 변경은 Paperclip 승인 id가 있어야 실행.",
+  "- 승인 전 상태값: approval_id: none, dangerous_actions_executed: none.",
+];
+
 function codexDescription(kind: "ask" | "guide" | "analyze", context: string, userRequest = "") {
   const intent = kind === "guide"
     ? "현재 화면 사용법과 다음 클릭 위치를 설명하고, 필요하면 작업으로 쪼개라."
@@ -148,6 +156,8 @@ function codexDescription(kind: "ask" | "guide" | "analyze", context: string, us
     "",
     ...CODEX_6002_SEQUENCE,
     "",
+    ...APPROVAL_GATE_LINES,
+    "",
     "- 확인한 사실, 추정, 남은 검증을 분리하라.",
     "- 코드 변경이 필요하면 작은 단위로 계획하고 검증하라.",
     "",
@@ -167,6 +177,8 @@ function hermesDescription(context: string, userRequest = "") {
     ...HERMES_COMMAND_LINES,
     "",
     ...HERMES_CROSSLINK_TEMPLATE_LINES,
+    "",
+    ...APPROVAL_GATE_LINES,
     "",
     context,
     "",
@@ -188,6 +200,8 @@ function hermesApprovalDescription(context: string) {
     ...HERMES_COMMAND_LINES,
     "",
     ...HERMES_CROSSLINK_TEMPLATE_LINES,
+    "",
+    ...APPROVAL_GATE_LINES,
     "",
     "승인 제목:",
     HERMES_PHASE1_APPROVAL_PACKAGE.title,
@@ -295,6 +309,22 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
           {status.commandMatchesLocal ? "" : ` Hermes 실행은 ${status.requiredCommand} 명시 경로를 기준으로 해야 합니다.`}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function ApprovalGateCard() {
+  return (
+    <div className="border border-amber-400/40 bg-amber-50/60 px-3 py-2 text-amber-950 dark:bg-amber-950/20 dark:text-amber-100">
+      <div className="flex items-center gap-2 text-xs font-semibold">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        실행 승인 게이트
+      </div>
+      <div className="mt-2 grid gap-1 text-xs leading-5">
+        <div>읽기/조사/초안은 접수 가능</div>
+        <div>코드 변경은 명확한 범위 필요</div>
+        <div>L3/L4는 Paperclip 승인 id 없으면 실행 금지</div>
+      </div>
     </div>
   );
 }
@@ -461,6 +491,7 @@ export function YoonCompanyAssistantPanel() {
                   </div>
                 </div>
               ) : null}
+              <ApprovalGateCard />
               <button
                 type="button"
                 disabled={disabled || !requestText.trim()}
