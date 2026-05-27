@@ -133,6 +133,7 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
     expect(mockExpireWaitingBridges).toHaveBeenCalledTimes(1);
+    expect(mockRetryFailedBridgeOpenings).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -206,6 +207,7 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
+    expect(mockRetryFailedBridgeOpenings).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledWith([
       expect.objectContaining({

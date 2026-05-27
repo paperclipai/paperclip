@@ -153,6 +153,7 @@ export async function resolveAwaitingHumanReviewFile(
     key: string;
     title: string | null;
     format: string;
+    body: string | null;
     byte_size: number;
   }>(sql`
     SELECT

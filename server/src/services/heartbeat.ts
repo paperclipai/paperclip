@@ -5341,6 +5341,7 @@ export function heartbeatService(db: Db) {
         interactionIds: [] as string[],
       };
     }
+    await awaitingHumanBridge.retryFailedBridgeOpenings();
     const legacyDeliveredInteractions = await db
       .select({
         companyId: activityLog.companyId,
