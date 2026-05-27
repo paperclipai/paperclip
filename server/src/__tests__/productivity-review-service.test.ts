@@ -701,7 +701,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issuePrefix: seeded.issuePrefix,
       count: 2,
       now,
-      ageMs: 8 * 60 * 60 * 1000,
+      ageMs: 25 * 60 * 60 * 1000,
     });
 
     const result = await productivityReviewService(db).reconcileProductivityReviews({
