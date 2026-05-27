@@ -13,6 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "companies.read",
     "issues.read",
     "issues.create",
+    "issues.update",
     "issue.comments.create",
     "agents.read",
     "ui.dashboardWidget.register",

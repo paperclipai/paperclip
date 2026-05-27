@@ -1,4 +1,5 @@
 import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
+import { execFile, type ExecFileException } from "node:child_process";
 import { ACTION_KEYS, type GuidedIssueKind } from "./constants.js";
 
 type CreateGuidedIssueParams = {
@@ -11,6 +12,8 @@ type AgentCandidate = Awaited<ReturnType<PluginContext["agents"]["list"]>>[numbe
 const HEALTH_MESSAGE = "YoonCompany command plugin ready";
 const YOONCOMPANY_HERMES_COMMAND = "C:\\yooncompany\\bin\\hermes.exe";
 const YOONCOMPANY_HERMES_BOARD = "yooncompany";
+const YOONCOMPANY_HERMES_CWD = "C:\\yooncompany";
+const YOONCOMPANY_HERMES_PROFILE = "yoonorchestrator";
 
 const HERMES_CROSSLINK_TEMPLATE = [
   "Paperclip ↔ Hermes 연결 필드:",
@@ -36,6 +39,10 @@ const CODEX_6002_SEQUENCE = [
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function parseGuidedIssueKind(value: unknown): GuidedIssueKind {
@@ -149,6 +156,85 @@ function getIssueTemplate(kind: GuidedIssueKind): {
   };
 }
 
+function applyGeneratedCrossLinks(description: string, issue: { id: string; identifier?: string | null }, hermesTaskId: string) {
+  return description
+    .replace("- paperclip_issue_id: generated_after_issue_creation", `- paperclip_issue_id: ${issue.id}`)
+    .replace(
+      "- paperclip_issue_identifier: generated_after_issue_creation",
+      `- paperclip_issue_identifier: ${issue.identifier ?? issue.id}`,
+    )
+    .replace("- hermes_task_id: pending", `- hermes_task_id: ${hermesTaskId}`);
+}
+
+function execHermes(args: string[]) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(
+      YOONCOMPANY_HERMES_COMMAND,
+      args,
+      {
+        cwd: YOONCOMPANY_HERMES_CWD,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      },
+      (error: ExecFileException | null, stdout: string, stderr: string) => {
+        if (error) {
+          reject(Object.assign(error, { stdout, stderr }));
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
+  });
+}
+
+function parseHermesTaskId(stdout: string) {
+  const parsed = readRecord(JSON.parse(stdout));
+  const id = readString(parsed.id);
+  if (!id) throw new Error("Hermes Kanban task response did not include an id");
+  return id;
+}
+
+async function createHermesKanbanTaskForIssue(issue: { id: string; identifier?: string | null; title: string }) {
+  const issueRef = issue.identifier ?? issue.id;
+  const body = [
+    "Paperclip ↔ Hermes 연결 필드:",
+    `- paperclip_issue_id: ${issue.id}`,
+    `- paperclip_issue_identifier: ${issueRef}`,
+    "- paperclip_approval_id: approval_id: none",
+    `- hermes_board: ${YOONCOMPANY_HERMES_BOARD}`,
+    "- hermes_task_id: generated_by_hermes",
+    `- hermes_profile: ${YOONCOMPANY_HERMES_PROFILE}`,
+    "- codex_agent_id: pending_if_code_change_required",
+    "- risk_level: L0-L1 until approval states otherwise",
+    "- dangerous_actions_executed: none",
+    "",
+    "Paperclip에서 생성한 Hermes 조사/오케스트레이션 triage 작업입니다.",
+    "실행, dispatch, repo write, 배포, 삭제, 외부 발송은 하지 마세요.",
+    "필요하면 Paperclip 승인 id를 먼저 요구하세요.",
+  ].join("\n");
+
+  const { stdout } = await execHermes([
+    "kanban",
+    "--board",
+    YOONCOMPANY_HERMES_BOARD,
+    "create",
+    "--body",
+    body,
+    "--assignee",
+    YOONCOMPANY_HERMES_PROFILE,
+    "--triage",
+    "--idempotency-key",
+    `paperclip:${issue.id}:ask_hermes`,
+    "--created-by",
+    `Paperclip ${issueRef}`,
+    "--json",
+    issue.title,
+  ]);
+
+  return parseHermesTaskId(stdout);
+}
+
 async function createGuidedIssue(ctx: PluginContext, params: CreateGuidedIssueParams) {
   const companyId = readString(params.companyId);
   if (!companyId) throw new Error("companyId is required");
@@ -166,6 +252,21 @@ async function createGuidedIssue(ctx: PluginContext, params: CreateGuidedIssuePa
     assigneeAgentId: targetAgent?.id,
   });
 
+  let hermesTaskId: string | null = null;
+  let hermesBridgeError: string | null = null;
+  if (kind === "ask_hermes") {
+    try {
+      hermesTaskId = await createHermesKanbanTaskForIssue(issue);
+      await ctx.issues.update(
+        issue.id,
+        { description: applyGeneratedCrossLinks(template.description, issue, hermesTaskId) },
+        companyId,
+      );
+    } catch (caught) {
+      hermesBridgeError = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+
   await ctx.issues.createComment(
     issue.id,
     [
@@ -173,7 +274,13 @@ async function createGuidedIssue(ctx: PluginContext, params: CreateGuidedIssuePa
       "",
       "approval_id: none",
       "",
-      "이 빠른 실행은 Paperclip 보류 작업만 만들었습니다. 직접 실행, 위험 작업, 외부 작업은 수행하지 않았습니다.",
+      hermesTaskId
+        ? `Hermes Kanban 연결: ${YOONCOMPANY_HERMES_BOARD} / ${hermesTaskId}`
+        : hermesBridgeError
+          ? `Hermes Kanban 연결 실패: ${hermesBridgeError}`
+          : "Hermes Kanban 연결: not_applicable",
+      "",
+      "이 빠른 실행은 대기 작업만 만들었습니다. 직접 실행, 위험 작업, 외부 작업은 수행하지 않았습니다.",
       "담당자는 미리 지정되지만 상태는 대기(backlog)로 유지됩니다. 실행하려면 보드에서 상태를 변경하세요.",
     ].join("\n"),
     companyId,
@@ -184,6 +291,8 @@ async function createGuidedIssue(ctx: PluginContext, params: CreateGuidedIssuePa
     identifier: issue.identifier,
     title: issue.title,
     assigneeAgentId: issue.assigneeAgentId,
+    hermesTaskId,
+    hermesBridgeStatus: hermesTaskId ? "created" : hermesBridgeError ? "failed" : "not_applicable",
     route: `/issues/${issue.identifier ?? issue.id}`,
   };
 }

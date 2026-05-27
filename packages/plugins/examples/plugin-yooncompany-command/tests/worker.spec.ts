@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
+
+const execFileMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", () => ({
+  execFile: execFileMock,
+}));
 
 function agent(overrides: Record<string, unknown>) {
   const now = new Date();
@@ -33,6 +39,13 @@ function agent(overrides: Record<string, unknown>) {
 }
 
 describe("YoonCompany command worker", () => {
+  beforeEach(() => {
+    execFileMock.mockReset();
+    execFileMock.mockImplementation((_command, _args, _options, callback) => {
+      callback(null, JSON.stringify({ id: "t_bridge_001" }), "");
+    });
+  });
+
   it("creates Codex quick-action issues as backlog drafts with the 6002 sequence", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({
@@ -104,9 +117,26 @@ describe("YoonCompany command worker", () => {
     expect(issue?.description).toContain("Hermes 보드: yooncompany");
     expect(issue?.description).toContain("PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행");
     expect(issue?.description).toContain("Paperclip ↔ Hermes 연결 필드");
-    expect(issue?.description).toContain("hermes_task_id: pending");
+    expect(issue?.description).toContain("paperclip_issue_id: ");
+    expect(issue?.description).toContain("paperclip_issue_identifier: ");
+    expect(issue?.description).toContain("hermes_task_id: t_bridge_001");
     expect(issue?.description).toContain("hermes_profile: yoonorchestrator");
     expect(issue?.description).toContain("dangerous_actions_executed: none");
     expect(issue?.description).toContain("repo 파일 수정, 배포, 병합, push, 삭제, DB 쓰기");
+    expect(execFileMock).toHaveBeenCalledWith(
+      "C:\\yooncompany\\bin\\hermes.exe",
+      expect.arrayContaining([
+        "kanban",
+        "--board",
+        "yooncompany",
+        "create",
+        "--triage",
+        "--idempotency-key",
+        `paperclip:${result.id}:ask_hermes`,
+        "--json",
+      ]),
+      expect.objectContaining({ cwd: "C:\\yooncompany", windowsHide: true }),
+      expect.any(Function),
+    );
   });
 });
