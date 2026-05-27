@@ -1412,6 +1412,34 @@ export function issueRoutes(
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
 
+    // FIX (FUL-4002): Prevent recovery action from being cancelled during recovery-owner
+    // checkout. When recovery sets an issue to `blocked` and wakes the recovery owner,
+    // that checkout transitions the issue back to `in_progress`, which normally marks the
+    // recovery action as "stale" and cancels it. The cancel resets attemptCount → 1,
+    // so the next recovery cycle creates a fresh action and posts a duplicate comment.
+    // Skip cancellation when the issue's current checkoutRunId belongs to a run that
+    // was woken by this recovery action — the agent is actively working on the recovery.
+    if (
+      input.statusChanged === true &&
+      input.issue.status === "in_progress" &&
+      input.issue.checkoutRunId &&
+      (activeRecoveryAction.kind === "stranded_assigned_issue" ||
+        activeRecoveryAction.kind === "missing_disposition")
+    ) {
+      const checkoutRun = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.issue.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      const ctx = checkoutRun?.contextSnapshot ?? {};
+      if (
+        readNonEmptyString(ctx.wakeReason) === "source_scoped_recovery_action" &&
+        readNonEmptyString(ctx.recoveryActionId) === activeRecoveryAction.id
+      ) {
+        return activeRecoveryAction;
+      }
+    }
+
     const resolutionNote = await classifySourceRecoveryRevalidation(input);
     if (!resolutionNote) return activeRecoveryAction;
 

@@ -277,6 +277,13 @@ function issueIdFromWakePayload(payload: unknown) {
     readNonEmptyString(nestedContext.taskId);
 }
 
+function hasExplicitDoneDispositionSignal(body: string | null | undefined) {
+  if (!body) return false;
+  const normalized = body.toLowerCase();
+  if (!normalized.includes("final disposition")) return false;
+  return /(?:\*\*)?final disposition(?:\*\*)?\s*:\s*(?:\*\*)?done(?:\*\*)?/.test(normalized);
+}
+
 function issueUiLink(issue: { identifier: string | null; id: string }, prefix: string) {
   const label = issue.identifier ?? issue.id;
   return `[${label}](/${prefix}/issues/${label})`;
@@ -659,6 +666,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         .then((rows) => rows[0] ?? null),
     ]);
     return Boolean(comment || attachment);
+  }
+
+  async function latestRunDoneSignalComment(issueId: string, runId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.createdByRunId, runId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -2511,6 +2536,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
     return action;
   }
 
+  // FIX (FUL-4002): Stop waking the recovery owner after this many failed recovery cycles.
+  // At this point the agent consistently fails on every checkout; further wakes only burn
+  // budget. The issue stays blocked so the board/TODD can intervene.
+  const MAX_STRANDED_RECOVERY_AGENT_WAKE_ATTEMPTS = 3;
+
   async function enqueueSourceScopedStrandedRecoveryWake(input: {
     action: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
     issue: typeof issues.$inferSelect;
@@ -2519,6 +2549,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (!input.action.ownerAgentId) return;
+    if (input.action.attemptCount > MAX_STRANDED_RECOVERY_AGENT_WAKE_ATTEMPTS) {
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -2829,8 +2862,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       .from(issues)
       .where(
         and(
-          isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress"]),
+          inArray(issues.status, ["todo", "in_progress", "in_review"]),
           sql`${issues.assigneeAgentId} is not null`,
         ),
       );
@@ -2860,6 +2892,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))) {
         result.skipped += 1;
         continue;
+      }
+
+      if (issue.status === "in_review") {
+        const executionState = parseObject(issue.executionState);
+        const hasReviewParticipant = Boolean(readNonEmptyString(executionState.currentParticipant));
+        if (hasReviewParticipant) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (issue.assigneeUserId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const hasPendingInteraction = await db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => Boolean(rows[0]));
+        if (hasPendingInteraction) {
+          result.skipped += 1;
+          continue;
+        }
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
@@ -2974,6 +3042,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         continue;
       }
 
+      if (latestRun) {
+        const explicitDoneComment = await latestRunDoneSignalComment(issue.id, latestRun.id);
+        if (hasExplicitDoneDispositionSignal(explicitDoneComment?.body)) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "done",
+          });
+          if (updated) {
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: latestRun.id,
+              action: "issue.stranded_done_signal_auto_completed",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issue.identifier,
+                previousStatus: issue.status,
+                status: "done",
+                source: "recovery.reconcile_stranded_done_signal",
+                latestRunId: latestRun.id,
+                evidenceCommentId: explicitDoneComment.id,
+              },
+            });
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
         continue;
@@ -2986,6 +3087,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         }
         if (!handoffEvidence.exhausted) {
           result.skipped += 1;
+          continue;
+        }
+        const correctiveRunId = handoffEvidence.correctiveRunId;
+        const explicitDoneComment = await latestRunDoneSignalComment(issue.id, correctiveRunId);
+        if (hasExplicitDoneDispositionSignal(explicitDoneComment?.body)) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "done",
+          });
+          if (updated) {
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: correctiveRunId,
+              action: "issue.successful_run_handoff_auto_completed",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issue.identifier,
+                previousStatus: issue.status,
+                status: "done",
+                source: "recovery.reconcile_successful_run_handoff_done_signal",
+                correctiveRunId,
+                evidenceCommentId: explicitDoneComment.id,
+              },
+            });
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
@@ -3971,6 +4103,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
+      skippedPerCategoryCap: 0,
     };
 
     if (!autoRecoveryEnabled) {
@@ -3978,9 +4111,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
       return result;
     }
 
+    const seenEscalationStates = new Set<string>();
     for (const finding of findings) {
       if (!isLivenessFindingInsideAutoRecoveryLookback(finding, cutoff, updatedAtByIssueKey)) {
         result.skippedOutsideLookback += 1;
+        result.skipped += 1;
+        continue;
+      }
+      if (seenEscalationStates.has(finding.state)) {
+        result.skippedPerCategoryCap += 1;
         result.skipped += 1;
         continue;
       }
@@ -3989,10 +4128,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup; o
         runId: opts?.runId ?? null,
       });
       if (escalation.kind === "created") {
+        seenEscalationStates.add(finding.state);
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
       } else if (escalation.kind === "existing") {
+        seenEscalationStates.add(finding.state);
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
