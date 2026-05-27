@@ -151,6 +151,37 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
     await expect(secrets.resolveSecretValue(companyId, secret.id, "latest")).resolves.toBe("new-token");
   });
 
+  it("rejects enabling ClickUp without a stored or incoming token", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const service = awaitingHumanSettingsService(db);
+
+    await expect(service.update(companyId, {
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+      },
+    }, {
+      userId: "user-1",
+      agentId: null,
+    })).rejects.toThrow(/personal token/i);
+
+    const settingsRows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
+    expect(settingsRows).toHaveLength(0);
+
+    const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
+    expect(secretRows).toHaveLength(0);
+  });
+
   it("uses an upsert when two first-time saves race for the same company", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -168,6 +199,7 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
         workspaceId: "workspace-123",
         channelId: "channel-123",
       },
+      clickupPersonalToken: "race-token",
     };
 
     await Promise.all([

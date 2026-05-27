@@ -180,6 +180,10 @@ export function awaitingHumanSettingsService(db: Db) {
       }
     }
 
+    if (nextProvider === "clickup" && nextEnabled && !nextProviderConfig?.authTokenRef?.secretId) {
+      throw unprocessable("A ClickUp personal token is required when enabling the ClickUp bridge");
+    }
+
     const values = {
       enabled: nextEnabled,
       provider: nextProvider,
