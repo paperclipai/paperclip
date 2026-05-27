@@ -226,6 +226,11 @@ jobs:
   canary_dry_run:
     name: Canary Dry Run
     needs: [policy]
+    # Gated off for the ValAdrien OS fork: release.sh is stubbed because npm
+    # publishing under @valadrien-os/* is deferred (see PRD §7 and
+    # Architecture §10 — Build / Release / CI). Re-enable once the release
+    # pipeline is reactivated.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
