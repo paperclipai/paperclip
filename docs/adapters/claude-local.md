@@ -10,6 +10,21 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 - Claude Code CLI installed (`claude` command available)
 - `ANTHROPIC_API_KEY` set in the environment or agent config
 
+## Routing Claude through an Anthropic-compatible proxy
+
+If `api.anthropic.com` is unreachable from your deployment (corporate egress, regional restrictions) or you want to route Claude requests through a self-hosted relay, set `ANTHROPIC_BASE_URL` on the server process or inside an agent's `adapter_config.env`. The adapter forwards `envConfig` to the spawned `claude` CLI subprocess, and the Anthropic SDK that the CLI ships with honours this variable for every outbound request — no Paperclip-side code change required.
+
+Example agent `adapter_config.env`:
+
+```json
+{
+  "ANTHROPIC_BASE_URL": "https://your-anthropic-compatible-proxy.example.com",
+  "ANTHROPIC_API_KEY": "sk-..."
+}
+```
+
+This is the same mechanism the CLI documents for itself; Paperclip simply preserves the env vars when spawning the subprocess. Any proxy that speaks Anthropic's wire format works (e.g. self-hosted relays, regional gateways used in places where direct access is blocked).
+
 ## Configuration Fields
 
 | Field | Type | Required | Description |
