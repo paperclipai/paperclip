@@ -91,6 +91,7 @@ describe("codex managed home", () => {
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
 
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     vi.spyOn(fs, "symlink").mockImplementationOnce(async () => {
       const error = new Error("operation not permitted") as NodeJS.ErrnoException;
       error.code = "EPERM";
