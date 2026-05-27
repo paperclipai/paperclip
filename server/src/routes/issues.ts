@@ -49,7 +49,9 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type IssueExecutionPolicy,
   type IssueRelationIssueSummary,
+  type IssueWorkProduct,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -116,6 +118,9 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const PR_MERGE_GATE_MONITOR_DELAY_MS = 15 * 60 * 1000;
+const PR_MERGE_GATE_MONITOR_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const PR_MERGE_GATE_MONITOR_MAX_ATTEMPTS = 1;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -1185,6 +1190,147 @@ export function issueRoutes(
       environmentId,
       { allowedDrivers: ["local", "ssh", "sandbox"] },
     );
+  }
+
+  function readWorkProductMetadataFlag(product: IssueWorkProduct, keys: string[]) {
+    const metadata = product.metadata;
+    if (!metadata || typeof metadata !== "object") return undefined;
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === "boolean") return value;
+    }
+    return undefined;
+  }
+
+  function readWorkProductMetadataString(product: IssueWorkProduct, keys: string[]) {
+    const metadata = product.metadata;
+    if (!metadata || typeof metadata !== "object") return null;
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === "string" && value.trim().length > 0) return value.trim().toLowerCase();
+    }
+    return null;
+  }
+
+  function isPullRequestMergeGateDisabled(product: IssueWorkProduct) {
+    return readWorkProductMetadataFlag(product, [
+      "mergeGate",
+      "mergeGateRequired",
+      "requireMergeBeforeDone",
+    ]) === false || readWorkProductMetadataFlag(product, [
+      "terminalWithoutMergeAccepted",
+      "doneWithoutMergeAccepted",
+      "mergeGateOverrideAccepted",
+    ]) === true;
+  }
+
+  function isPullRequestMerged(product: IssueWorkProduct) {
+    if (product.status === "merged") return true;
+    if (readWorkProductMetadataFlag(product, ["merged"]) === true) return true;
+    if (readWorkProductMetadataString(product, ["state", "mergeState"]) === "merged") return true;
+    const metadata = product.metadata;
+    return Boolean(
+      metadata &&
+      typeof metadata === "object" &&
+      typeof metadata.mergedAt === "string" &&
+      metadata.mergedAt.trim().length > 0
+    );
+  }
+
+  function classifyPullRequestMergeGate(product: IssueWorkProduct) {
+    const state = readWorkProductMetadataString(product, ["state", "reviewDecision", "checksConclusion"]);
+    if (product.status === "closed" || state === "closed") return "closed-unmerged";
+    if (product.status === "draft" || readWorkProductMetadataFlag(product, ["draft", "isDraft"]) === true) return "draft";
+    if (product.status === "failed" || product.healthStatus === "unhealthy" || state === "failure" || state === "failed") {
+      return "failing-checks";
+    }
+    if (product.status === "changes_requested" || product.reviewState === "changes_requested" || state === "changes_requested") {
+      return "changes-requested";
+    }
+    return "open-unmerged";
+  }
+
+  function buildPullRequestMergeGateMonitor(input: {
+    product: IssueWorkProduct;
+    reason: string;
+    scheduledBy: "assignee" | "board";
+    previousPolicy: IssueExecutionPolicy | null;
+  }): IssueExecutionPolicy {
+    const nextCheckAt = new Date(Date.now() + PR_MERGE_GATE_MONITOR_DELAY_MS).toISOString();
+    const timeoutAt = new Date(Date.now() + PR_MERGE_GATE_MONITOR_TIMEOUT_MS).toISOString();
+    const prRef = input.product.url ?? input.product.externalId ?? input.product.id;
+    return normalizeIssueExecutionPolicy({
+      mode: input.previousPolicy?.mode ?? "normal",
+      commentRequired: input.previousPolicy?.commentRequired ?? true,
+      stages: input.previousPolicy?.stages ?? [],
+      monitor: {
+        nextCheckAt,
+        notes: `PR merge gate: ${input.reason}; re-check ${prRef} before completing this issue.`,
+        scheduledBy: input.scheduledBy,
+        kind: "external_service",
+        serviceName: "github_pull_request_merge",
+        externalRef: prRef,
+        timeoutAt,
+        maxAttempts: PR_MERGE_GATE_MONITOR_MAX_ATTEMPTS,
+        recoveryPolicy: "wake_owner",
+      },
+    })!;
+  }
+
+  async function applyPullRequestMergeGateBeforeDone(input: {
+    existing: {
+      id: string;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      executionPolicy?: unknown;
+    };
+    updateFields: Record<string, unknown>;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    if (input.updateFields.status !== "done") return;
+    const listForIssue = (workProductsSvc as { listForIssue?: (issueId: string) => Promise<IssueWorkProduct[]> }).listForIssue;
+    if (typeof listForIssue !== "function") return;
+
+    const products = await listForIssue(input.existing.id);
+    const gatedPullRequests = products.filter((product) =>
+      product.type === "pull_request" && !isPullRequestMergeGateDisabled(product)
+    );
+    const blockingPullRequest = gatedPullRequests.find((product) => !isPullRequestMerged(product));
+    if (!blockingPullRequest) return;
+
+    const reason = classifyPullRequestMergeGate(blockingPullRequest);
+    input.updateFields.status = "in_review";
+
+    const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+      ? input.existing.assigneeUserId ?? null
+      : input.updateFields.assigneeUserId as string | null;
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId ?? null
+      : input.updateFields.assigneeAgentId as string | null;
+
+    if (nextAssigneeUserId) return;
+    const monitorOwnerAgentId = nextAssigneeAgentId ?? input.actor.agentId ?? null;
+    if (!monitorOwnerAgentId) {
+      if (input.actor.actorType === "user") {
+        input.updateFields.assigneeUserId = input.actor.actorId;
+      }
+      return;
+    }
+
+    if (!nextAssigneeAgentId) {
+      input.updateFields.assigneeAgentId = monitorOwnerAgentId;
+      input.updateFields.assigneeUserId = null;
+    }
+
+    const previousPolicy = normalizeIssueExecutionPolicy(
+      (input.updateFields.executionPolicy ?? input.existing.executionPolicy ?? null) as Record<string, unknown> | null,
+    );
+    input.updateFields.executionPolicy = buildPullRequestMergeGateMonitor({
+      product: blockingPullRequest,
+      reason,
+      scheduledBy: input.actor.actorType === "user" ? "board" : "assignee",
+      previousPolicy,
+    });
   }
 
   async function assertAgentInReviewReviewPath(input: {
@@ -3926,6 +4072,11 @@ export function issueRoutes(
         actor.actorType,
       );
     }
+    await applyPullRequestMergeGateBeforeDone({
+      existing,
+      updateFields,
+      actor,
+    });
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
       updateFields.executionPolicy !== undefined

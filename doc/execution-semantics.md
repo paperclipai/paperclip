@@ -80,6 +80,18 @@ An external review service can also be a valid review path when the issue keeps 
 
 The work is complete and terminal.
 
+For code-backed work with associated pull-request work products, `done` also means the merge requirement is satisfied unless a board/user accepted a non-merge terminal outcome and that exception is recorded on the pull-request work product metadata.
+
+### Pull-request merge gate
+
+A pull request is first-class issue evidence when it is stored as an issue work product with `type: "pull_request"`. Comments that merely paste PR URLs are useful context, but they are not enough to create merge-gated lifecycle semantics.
+
+When an issue attempts to move to `done`, Paperclip checks associated pull-request work products unless that work product explicitly disables the merge gate (`metadata.mergeGateRequired: false`, `metadata.requireMergeBeforeDone: false`) or records an accepted non-merge terminal outcome (`metadata.terminalWithoutMergeAccepted: true`, `metadata.doneWithoutMergeAccepted: true`, or `metadata.mergeGateOverrideAccepted: true`).
+
+If all merge-gated pull requests are merged (`status: "merged"`, `metadata.merged: true`, `metadata.state: "merged"`, or a non-empty `metadata.mergedAt`), the issue may become `done`.
+
+If any merge-gated pull request is open, draft, closed-unmerged, failing checks, or changes-requested, Paperclip keeps the issue in `in_review` and arms a bounded one-shot monitor (`serviceName: "github_pull_request_merge"`, `recoveryPolicy: "wake_owner"`) so the assignee is woken to re-check the PR and choose the next owner/action. The monitor is an action path, not an assertion that the PR will merge automatically.
+
 ### `cancelled`
 
 The work will not continue and is terminal.

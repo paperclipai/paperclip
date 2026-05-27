@@ -99,8 +99,8 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
-- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
-- `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
+- `done`: the requested work is complete, verification is recorded, no follow-up remains on this issue, and any merge-gated pull request work products are merged or have an explicit board/user-accepted non-merge terminal outcome recorded in work-product metadata.
+- `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path. For code-backed issues with an open/unmerged PR work product, use `in_review` with a bounded PR merge monitor rather than terminal `done`.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or monitor/recovery path that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
@@ -133,7 +133,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
-- `done` — work complete, no follow-up on this issue.
+- `done` — work complete, no follow-up on this issue, and merge-gated PR work products are merged or explicitly accepted as non-merge terminal outcomes.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.

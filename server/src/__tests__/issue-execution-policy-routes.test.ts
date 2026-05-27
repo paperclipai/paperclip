@@ -38,6 +38,9 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
 }));
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -95,7 +98,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => mockWorkProductService,
   }));
 }
 
@@ -152,6 +155,7 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -353,6 +357,303 @@ describe("issue execution policy routes", () => {
         status: "in_review",
         monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
       }),
+    );
+  });
+
+  it("keeps an open PR-linked issue in_review with a bounded merge monitor instead of done", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "PR-linked issue",
+      executionPolicy: null,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "work-product-1",
+        companyId: "company-1",
+        projectId: null,
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "409",
+        title: "PR #409",
+        url: "https://github.com/paperclipai/paperclip/pull/409",
+        status: "ready_for_review",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: null,
+        metadata: { state: "open" },
+        createdByRunId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        monitorNextCheckAt: expect.any(Date),
+        monitorScheduledBy: "assignee",
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({
+            serviceName: "github_pull_request_merge",
+            maxAttempts: 1,
+            recoveryPolicy: "wake_owner",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("allows a PR-linked issue to finish when the associated PR is merged", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Merged PR issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "work-product-1",
+        companyId: "company-1",
+        projectId: null,
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "410",
+        title: "PR #410",
+        url: "https://github.com/paperclipai/paperclip/pull/410",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: null,
+        metadata: { merged: true },
+        createdByRunId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("routes a closed-unmerged PR-linked issue to owner action instead of done", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Closed PR issue",
+      executionPolicy: null,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "work-product-closed",
+        companyId: "company-1",
+        projectId: null,
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "411",
+        title: "PR #411",
+        url: "https://github.com/paperclipai/paperclip/pull/411",
+        status: "closed",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: null,
+        metadata: { state: "closed", merged: false },
+        createdByRunId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+    expect(patch.status).toBe("in_review");
+    expect(patch.executionPolicy.monitor.notes).toContain("closed-unmerged");
+    expect(patch.executionPolicy.monitor.maxAttempts).toBe(1);
+  });
+
+  it("leaves done completion unchanged for issues without pull request work products", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1011",
+      title: "Docs issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("allows board-accepted non-merge terminal outcomes through PR work product metadata", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1012",
+      title: "Accepted unmerged PR issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "work-product-accepted",
+        companyId: "company-1",
+        projectId: null,
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "412",
+        title: "PR #412",
+        url: "https://github.com/paperclipai/paperclip/pull/412",
+        status: "closed",
+        reviewState: "approved",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: null,
+        metadata: { terminalWithoutMergeAccepted: true },
+        createdByRunId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "done" }),
     );
   });
 
