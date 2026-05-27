@@ -418,7 +418,7 @@ We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for deta
 
 ## License
 
-MIT &copy; 2026 Paperclip
+MIT &copy; 2026 Paperclip Labs, Inc
 
 ## Star History
 
