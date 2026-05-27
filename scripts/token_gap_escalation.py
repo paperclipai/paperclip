@@ -10,6 +10,7 @@ Runs every 30 minutes to:
 
 import argparse
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -62,23 +63,22 @@ class TokenGapEscalationMonitor:
         if not comments or "items" not in comments:
             return False
 
-        # Check for GitHub token-related error patterns
         token_error_patterns = [
-            "github.*token",
-            "authentication.*failed",
-            "bad credentials",
-            "invalid token",
-            "token.*expired",
-            "token.*invalid",
-            "401.*github",
-            "github.*401",
-            "permission denied.*github"
+            r"github.*token",
+            r"authentication.*failed",
+            r"bad credentials",
+            r"invalid token",
+            r"token.*expired",
+            r"token.*invalid",
+            r"401.*github",
+            r"github.*401",
+            r"permission denied.*github"
         ]
 
         for comment in comments.get("items", []):
             body = comment.get("body", "").lower()
             for pattern in token_error_patterns:
-                if pattern.replace(".*", "").lower() in body or (pattern.startswith(".*") and pattern[2:].lower() in body):
+                if re.search(pattern, body):
                     return True
         return False
 
