@@ -105,6 +105,14 @@ describe("YoonCompanyHermesStatusPanel", () => {
     expect(container.textContent).toContain("yoon-business");
     expect(container.textContent).toContain("yoon-tincolive");
     expect(container.textContent).toContain("yoon-codex-bridge");
+    expect(container.textContent).toContain("Hermes Kanban 읽기 전용 미리보기");
+    expect(container.textContent).toContain("board/task 생성 안 됨");
+    expect(container.textContent).toContain("Codex Handoff");
+    expect(container.textContent).toContain("evidence 없으면 완료 아님");
+    expect(container.textContent).toContain("Paperclip ↔ Hermes 교차링크 템플릿");
+    expect(container.textContent).toContain("DB schema 변경 없음");
+    expect(container.textContent).toContain("Hermes task");
+    expect(container.textContent).toContain("hk_abc123");
     expect(container.querySelector('a[href="/agents"]')?.textContent).toContain("직원 보기");
     expect(container.querySelector('a[href="/approvals"]')?.textContent).toContain("승인 보기");
 

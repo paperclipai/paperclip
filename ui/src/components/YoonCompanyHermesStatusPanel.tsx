@@ -13,8 +13,10 @@ import { Link } from "@/lib/router";
 import {
   findYoonCompanyAgent,
   getYoonCompanyHermesStatus,
+  HERMES_KANBAN_PREVIEW_COLUMNS,
   HERMES_PHASE1_APPROVAL_PACKAGE,
   HERMES_PAPERCLIP_ADAPTER_VERSION,
+  HERMES_PAPERCLIP_CROSSLINK_FIELDS,
   HERMES_PROFILE_ROSTER,
 } from "../lib/yooncompany-hermes-status";
 import { cn } from "../lib/utils";
@@ -200,6 +202,46 @@ export function YoonCompanyHermesStatusPanel({
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 xl:grid-cols-[1.3fr_1fr]">
+        <div className="border border-border bg-background px-3 py-2">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+              <ClipboardList className="h-3.5 w-3.5" />
+              Hermes Kanban 읽기 전용 미리보기
+            </div>
+            <div className="text-xs text-muted-foreground">board/task 생성 안 됨</div>
+          </div>
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            {HERMES_KANBAN_PREVIEW_COLUMNS.map((column) => (
+              <div key={column.key} className="min-w-0 border border-border bg-muted/20 px-2.5 py-2">
+                <div className="truncate text-sm font-medium">{column.label}</div>
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{column.purpose}</p>
+                <div className="mt-2 truncate text-xs text-muted-foreground">{column.owner}</div>
+                <div className="mt-1 truncate text-xs text-muted-foreground">{column.gate}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border border-border bg-background px-3 py-2">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between xl:flex-col xl:items-start">
+            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+              <GitBranch className="h-3.5 w-3.5" />
+              Paperclip ↔ Hermes 교차링크 템플릿
+            </div>
+            <div className="text-xs text-muted-foreground">DB schema 변경 없음</div>
+          </div>
+          <div className="mt-2 space-y-1.5">
+            {HERMES_PAPERCLIP_CROSSLINK_FIELDS.map((field) => (
+              <div key={field.key} className="flex min-w-0 items-center justify-between gap-2 border border-border bg-muted/20 px-2.5 py-1.5 text-xs">
+                <span className="truncate font-medium">{field.label}</span>
+                <span className="truncate text-muted-foreground">{field.example}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </section>
