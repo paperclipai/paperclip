@@ -21,6 +21,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueMarkerSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
@@ -2595,11 +2596,17 @@ export function issueRoutes(
       if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
       else recoveryActionByIssue.delete(issue.id);
     }));
-    res.json(result.map((issue) => ({
-      ...issue,
-      successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-      activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-    })));
+    res.json(result.map((issue) => {
+      const blockedByIssueIds = Array.isArray(issue.blockedBy)
+        ? issue.blockedBy.map((blocker) => blocker.id)
+        : [];
+      return {
+        ...issue,
+        blockedByIssueIds,
+        successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+      };
+    }));
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
@@ -7410,6 +7417,52 @@ export function issueRoutes(
     })();
 
     res.status(201).json(comment);
+  });
+
+  // POST /api/issues/:id/markers — company-scoped write path for observation markers.
+  // Bypasses assignee ownership check so watcher agents can record dedup state on
+  // cross-assignee issues without violating least-privilege controls on the main comment
+  // mutation path. Markers do not fire wake events and cannot mutate issue workflow state.
+  router.post("/issues/:id/markers", validate(addIssueMarkerSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Only agent actors can write issue markers" });
+      return;
+    }
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    const comment = await svc.addComment(
+      id,
+      req.body.body,
+      { agentId: actorAgentId, runId: actor.runId },
+      { presentation: null, metadata: null },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.marker_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        commentId: comment.id,
+        markerKind: req.body.kind,
+        identifier: issue.identifier,
+      },
+    });
+    res.status(201).json({ comment, kind: req.body.kind });
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {

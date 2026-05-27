@@ -66,6 +66,7 @@ const mockStorageService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  listForIssue: vi.fn(async () => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
@@ -399,6 +400,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockReset();
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
@@ -1007,6 +1010,49 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
+  it.each([
+    {
+      name: "board-assigned issue",
+      issue: makeIssue({
+        status: "todo",
+        assigneeAgentId: null,
+        assigneeUserId: "board-user",
+      }),
+      interactions: [],
+    },
+    {
+      name: "in_review issue with pending interaction",
+      issue: makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+      }),
+      interactions: [{ id: "interaction-1", status: "pending", kind: "request_confirmation" }],
+    },
+    {
+      name: "awaiting-board labeled issue",
+      issue: makeIssue({
+        status: "todo",
+        assigneeAgentId: ownerAgentId,
+        labels: [{ id: "label-1", name: "awaiting-board" }],
+      }),
+      interactions: [],
+    },
+  ])("rejects agent auto-correction writes on protected triage state: $name", async ({ issue, interactions }) => {
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue(interactions as any);
+
+    const app = await createApp(ownerActor());
+    const patchRes = await request(app).patch(`/api/issues/${issueId}`).send({ status: "todo", assigneeAgentId: null });
+    const commentRes = await request(app).post(`/api/issues/${issueId}/comments`).send({
+      body: "Routing correction: reassigned to executor.",
+    });
+
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(403);
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
@@ -1019,7 +1065,7 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(res.body.error).toBe("Agent cannot mutate board-owned or board-hold issues");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -1146,5 +1192,119 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("issue markers endpoint (cross-assignee dedup write path)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/access.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/agents.js");
+    vi.doUnmock("../services/documents.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/work-products.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockAccessService.canUser.mockReset();
+    mockAccessService.hasPermission.mockReset();
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "cc111111-1111-4111-8111-111111111111",
+      body: "[discord-notified:int-123:2026-05-27T00:00:00Z]",
+      authorType: "agent",
+      authorAgentId: peerAgentId,
+      createdAt: new Date().toISOString(),
+      presentation: null,
+      metadata: null,
+    });
+  });
+
+  it("allows a peer agent to write a marker to a cross-assignee issue (bypasses ownership check)", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "discord-notified", body: "[discord-notified:int-123:2026-05-27T00:00:00Z]" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.kind).toBe("discord-notified");
+    expect(res.body.comment).toBeDefined();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "[discord-notified:int-123:2026-05-27T00:00:00Z]",
+      expect.objectContaining({ agentId: peerAgentId }),
+      expect.objectContaining({ presentation: null }),
+    );
+  });
+
+  it("does not fire a wake event when a marker is written", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "discord-notified", body: "[discord-notified:int-123:2026-05-27T00:00:00Z]" });
+
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects board actors from writing markers", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "discord-notified", body: "[discord-notified:int-123:2026-05-27T00:00:00Z]" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown marker kinds", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "arbitrary-injection", body: "[discord-notified:int-123:2026-05-27T00:00:00Z]" });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects body exceeding 500 characters", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_review", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "discord-notified", body: "x".repeat(501) });
+
+    expect(res.status).toBe(400);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the target issue does not exist", async () => {
+    mockIssueService.getById.mockResolvedValue(null);
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/markers`)
+      .send({ kind: "discord-notified", body: "[discord-notified:int-999:2026-05-27T00:00:00Z]" });
+
+    expect(res.status).toBe(404);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 });
