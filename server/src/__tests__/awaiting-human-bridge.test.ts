@@ -970,6 +970,55 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     });
   });
 
+  it("treats near-miss yes tokens as affirmative intent", async () => {
+    const seeded = await seedAskUserQuestionsBinaryInteraction();
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reply",
+              externalEventId: "reply-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "es",
+              metadata: { clickupReplyId: "reply-1" },
+            },
+          ],
+        })),
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    await service.openForPendingInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+    });
+
+    await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
+
+    const [interaction] = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    expect(interaction?.status).toBe("answered");
+    expect(interaction?.result).toMatchObject({
+      version: 1,
+      answers: [
+        { questionId: "surface_check", optionIds: ["full_render"] },
+        { questionId: "roundtrip_observation", optionIds: ["mirrored"] },
+      ],
+      summaryMarkdown: "es",
+    });
+  });
+
   it("accepts the interaction, wakes the agent, and closes the bridge on approval", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
@@ -2505,6 +2554,67 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.externalMessageId).toBe("message-42");
+  });
+
+  it("skips polling an existing delivered bridge until nextPollAt", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    const poll = vi.fn(async () => {
+      throw new Error("bridge polled too early");
+    });
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-42",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll,
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    const bridge = await service.openForPendingInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+    });
+    expect(bridge).not.toBeNull();
+
+    const nextPollAt = new Date(Date.now() + 10 * 60_000);
+    await db.update(awaitingHumanBridges).set({
+      nextPollAt,
+    }).where(eq(awaitingHumanBridges.id, bridge!.id));
+
+    const result = await service.reconcileDeliveredInteractions([
+      {
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        interactionId: seeded.interactionId,
+        assigneeAgentId: seeded.agentId,
+        createdByAgentId: seeded.agentId,
+        handoffDetails: {
+          notificationDelivery: {
+            status: "sent",
+            channel: "clickup-chat",
+            externalId: "message-42",
+          },
+        },
+      },
+    ]);
+
+    expect(poll).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      checked: 0,
+      approved: 0,
+      rejected: 0,
+      replies: 0,
+      noSignal: 0,
+      failed: 0,
+      skipped: 1,
+      approvedIssueIds: [],
+      approvedInteractionIds: [],
+    });
   });
 
   it("reconciles an eligible delivered interaction through the bridge and aggregates the poll result", async () => {

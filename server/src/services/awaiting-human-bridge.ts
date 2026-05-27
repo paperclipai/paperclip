@@ -167,7 +167,6 @@ function isWithinEditDistance(a: string, b: string, maxDistance: number) {
       next.push(value);
       rowMin = Math.min(rowMin, value);
     }
-    if (rowMin > maxDistance) return false;
     for (let j = 0; j < next.length; j += 1) {
       prev[j] = next[j] as number;
     }
@@ -1043,7 +1042,12 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         ))
         .orderBy(awaitingHumanBridges.createdAt)
         .limit(1);
-      if (existing) return existing;
+      if (existing) {
+        return {
+          bridge: existing,
+          reusedExisting: true as const,
+        };
+      }
 
       const [created] = await db.insert(awaitingHumanBridges).values({
         companyId: input.companyId,
@@ -1059,7 +1063,12 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         target: awaitingHumanBridges.interactionId,
         where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
       }).returning();
-      if (created) return created;
+      if (created) {
+        return {
+          bridge: created,
+          reusedExisting: false as const,
+        };
+      }
       const [existingAfterConflict] = await db
         .select()
         .from(awaitingHumanBridges)
@@ -1067,13 +1076,16 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           eq(awaitingHumanBridges.companyId, input.companyId),
           eq(awaitingHumanBridges.interactionId, input.interactionId),
           inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
-        ))
-        .orderBy(awaitingHumanBridges.createdAt)
-        .limit(1);
+      ))
+      .orderBy(awaitingHumanBridges.createdAt)
+      .limit(1);
       if (!existingAfterConflict) {
         throw new Error("Failed to attach existing awaiting human delivery bridge");
       }
-      return existingAfterConflict;
+      return {
+        bridge: existingAfterConflict,
+        reusedExisting: true as const,
+      };
     },
 
     async reconcileDeliveredInteractions(input: Array<{
@@ -1085,6 +1097,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       handoffDetails: unknown;
     }>) {
       const summary = emptySummary();
+      const now = new Date();
 
       for (const candidate of input) {
         const details = parseObject(candidate.handoffDetails);
@@ -1106,7 +1119,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         }
 
         try {
-          const bridge = await this.attachOrReuseExistingDelivery({
+          const { bridge, reusedExisting } = await this.attachOrReuseExistingDelivery({
             companyId: candidate.companyId,
             issueId: candidate.issueId,
             interactionId: candidate.interactionId,
@@ -1114,7 +1127,11 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             provider: "clickup",
             externalMessageId: messageId,
           });
-          const bridgeResult = await this.pollBridge(bridge.id);
+          if (reusedExisting && bridge.nextPollAt && bridge.nextPollAt > now) {
+            summary.skipped += 1;
+            continue;
+          }
+          const bridgeResult = await this.pollBridge(bridge.id, now);
           summary.checked += bridgeResult.checked;
           summary.approved += bridgeResult.approved;
           summary.rejected += bridgeResult.rejected;

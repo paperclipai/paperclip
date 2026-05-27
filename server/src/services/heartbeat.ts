@@ -101,6 +101,7 @@ import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import {
   hasAnyAwaitingHumanBridgeAdapter,
+  hasAwaitingHumanBridgeAdapter,
   resolveAwaitingHumanBridgeAdapter,
 } from "./awaiting-human-bridge-registry.js";
 import { recordComment, recordRunStatus } from "../otel.js";
@@ -5342,65 +5343,69 @@ export function heartbeatService(db: Db) {
       };
     }
     await awaitingHumanBridge.retryFailedBridgeOpenings();
-    const legacyDeliveredInteractions = await db
-      .select({
-        companyId: activityLog.companyId,
-        issueId: activityLog.entityId,
-        interactionId: sql<string | null>`${activityLog.details} ->> 'interactionId'`.as("interactionId"),
-        assigneeAgentId: sql<string | null>`${activityLog.details} ->> 'assigneeAgentId'`.as("assigneeAgentId"),
-        createdByAgentId: activityLog.agentId,
-        handoffDetails: activityLog.details,
-      })
-      .from(activityLog)
-      .innerJoin(issues, and(
-        eq(activityLog.companyId, issues.companyId),
-        sql`${activityLog.entityId} = cast(${issues.id} as text)`,
-      ))
-      .innerJoin(issueThreadInteractions, and(
-        eq(activityLog.companyId, issueThreadInteractions.companyId),
-        sql`${activityLog.details} ->> 'interactionId' = cast(${issueThreadInteractions.id} as text)`,
-      ))
-      .where(and(
-        eq(activityLog.entityType, "issue"),
-        eq(activityLog.action, "issue.awaiting_human.entered"),
-        eq(issues.status, "awaiting_human"),
-        eq(issueThreadInteractions.status, "pending"),
-        sql`not exists (
-          select 1
-          from ${awaitingHumanBridges}
-          where ${awaitingHumanBridges.interactionId} = cast(${activityLog.details} ->> 'interactionId' as uuid)
-            and ${awaitingHumanBridges.status} in ('pending_delivery', 'waiting_for_human')
-        )`,
-      ))
-      .orderBy(desc(activityLog.createdAt))
-      .limit(200);
+    const emptyLegacyResult = {
+      checked: 0,
+      approved: 0,
+      rejected: 0,
+      failed: 0,
+      skipped: 0,
+      noSignal: 0,
+      approvedIssueIds: [] as string[],
+      approvedInteractionIds: [] as string[],
+    };
+    let legacyResult = emptyLegacyResult;
+    if (hasAwaitingHumanBridgeAdapter("clickup")) {
+      const legacyDeliveredInteractions = await db
+        .select({
+          companyId: activityLog.companyId,
+          issueId: activityLog.entityId,
+          interactionId: sql<string | null>`${activityLog.details} ->> 'interactionId'`.as("interactionId"),
+          assigneeAgentId: sql<string | null>`${activityLog.details} ->> 'assigneeAgentId'`.as("assigneeAgentId"),
+          createdByAgentId: activityLog.agentId,
+          handoffDetails: activityLog.details,
+        })
+        .from(activityLog)
+        .innerJoin(issues, and(
+          eq(activityLog.companyId, issues.companyId),
+          sql`${activityLog.entityId} = cast(${issues.id} as text)`,
+        ))
+        .innerJoin(issueThreadInteractions, and(
+          eq(activityLog.companyId, issueThreadInteractions.companyId),
+          sql`${activityLog.details} ->> 'interactionId' = cast(${issueThreadInteractions.id} as text)`,
+        ))
+        .where(and(
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.action, "issue.awaiting_human.entered"),
+          eq(issues.status, "awaiting_human"),
+          eq(issueThreadInteractions.status, "pending"),
+          sql`not exists (
+            select 1
+            from ${awaitingHumanBridges}
+            where ${awaitingHumanBridges.interactionId} = cast(${activityLog.details} ->> 'interactionId' as uuid)
+              and ${awaitingHumanBridges.status} in ('pending_delivery', 'waiting_for_human')
+          )`,
+        ))
+        .orderBy(desc(activityLog.createdAt))
+        .limit(200);
 
-    const deliveredCandidates = legacyDeliveredInteractions.filter((candidate) => {
-      if (!candidate.interactionId || candidate.interactionId.trim().length === 0) return false;
-      const details = parseObject(candidate.handoffDetails);
-      const delivery = parseObject(details.notificationDelivery);
-      return delivery.status === "sent" || delivery.status === "enqueued";
-    }).map((candidate) => ({
-      companyId: candidate.companyId,
-      issueId: candidate.issueId,
-      interactionId: candidate.interactionId as string,
-      assigneeAgentId: candidate.assigneeAgentId,
-      createdByAgentId: candidate.createdByAgentId,
-      handoffDetails: candidate.handoffDetails,
-    }));
+      const deliveredCandidates = legacyDeliveredInteractions.filter((candidate) => {
+        if (!candidate.interactionId || candidate.interactionId.trim().length === 0) return false;
+        const details = parseObject(candidate.handoffDetails);
+        const delivery = parseObject(details.notificationDelivery);
+        return delivery.status === "sent" || delivery.status === "enqueued";
+      }).map((candidate) => ({
+        companyId: candidate.companyId,
+        issueId: candidate.issueId,
+        interactionId: candidate.interactionId as string,
+        assigneeAgentId: candidate.assigneeAgentId,
+        createdByAgentId: candidate.createdByAgentId,
+        handoffDetails: candidate.handoffDetails,
+      }));
 
-    const legacyResult = deliveredCandidates.length > 0
-      ? await awaitingHumanBridge.reconcileDeliveredInteractions(deliveredCandidates)
-      : {
-        checked: 0,
-        approved: 0,
-        rejected: 0,
-        failed: 0,
-        skipped: 0,
-        noSignal: 0,
-        approvedIssueIds: [] as string[],
-        approvedInteractionIds: [] as string[],
-      };
+      legacyResult = deliveredCandidates.length > 0
+        ? await awaitingHumanBridge.reconcileDeliveredInteractions(deliveredCandidates)
+        : emptyLegacyResult;
+    }
 
     const pendingResult = await awaitingHumanBridge.reconcilePendingConfirmations();
     return {

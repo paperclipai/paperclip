@@ -34,6 +34,7 @@ const mockReconcilePendingConfirmations = vi.hoisted(() => vi.fn(async () => ({
   interactionIds: [],
 })));
 const mockHasAnyAwaitingHumanBridgeAdapter = vi.hoisted(() => vi.fn(() => true));
+const mockHasAwaitingHumanBridgeAdapter = vi.hoisted(() => vi.fn(() => true));
 const mockResolveAwaitingHumanBridgeAdapter = vi.hoisted(() => vi.fn(() => ({
   send: vi.fn(),
   poll: vi.fn(),
@@ -50,7 +51,7 @@ vi.mock("../services/awaiting-human-bridge.js", () => ({
 }));
 vi.mock("../services/awaiting-human-bridge-registry.js", () => ({
   hasAnyAwaitingHumanBridgeAdapter: mockHasAnyAwaitingHumanBridgeAdapter,
-  hasAwaitingHumanBridgeAdapter: vi.fn(() => true),
+  hasAwaitingHumanBridgeAdapter: mockHasAwaitingHumanBridgeAdapter,
   registerAwaitingHumanBridgeAdapter: vi.fn(),
   resolveAwaitingHumanBridgeAdapter: mockResolveAwaitingHumanBridgeAdapter,
 }));
@@ -79,6 +80,8 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     mockRetryFailedBridgeOpenings.mockClear();
     mockReconcileDeliveredInteractions.mockClear();
     mockReconcilePendingConfirmations.mockClear();
+    mockHasAwaitingHumanBridgeAdapter.mockReset();
+    mockHasAwaitingHumanBridgeAdapter.mockReturnValue(true);
   });
 
   afterAll(async () => {
@@ -166,6 +169,79 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     expect(result).toEqual(expect.objectContaining({
       checked: 1,
       approved: 1,
+      failed: 0,
+      skipped: 0,
+      noApproval: 0,
+    }));
+  });
+
+  it("skips legacy delivered handoffs when the ClickUp adapter is unavailable", async () => {
+    mockHasAwaitingHumanBridgeAdapter.mockReturnValue(false);
+
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Legacy bridge goal",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Awaiting legacy approval",
+      status: "awaiting_human",
+      priority: "medium",
+      assigneeUserId: "local-board",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+      },
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "awaiting_human_handoff",
+      action: "issue.awaiting_human.entered",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        interactionId,
+        notificationDelivery: {
+          status: "sent",
+          channel: "clickup-chat",
+          externalId: "message-legacy",
+        },
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileAwaitingHumanApprovals();
+
+    expect(mockReconcileDeliveredInteractions).not.toHaveBeenCalled();
+    expect(mockReconcilePendingConfirmations).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(expect.objectContaining({
+      checked: 0,
+      approved: 0,
       failed: 0,
       skipped: 0,
       noApproval: 0,
