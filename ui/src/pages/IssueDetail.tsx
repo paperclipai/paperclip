@@ -71,6 +71,7 @@ import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { IssueWorkProductsSection } from "../components/IssueWorkProductsSection";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -134,6 +135,7 @@ import {
   type IssueAttachment,
   type IssueComment,
   type IssueThreadInteraction,
+  type IssueWorkProduct,
   type RequestConfirmationInteraction,
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
@@ -1114,6 +1116,13 @@ export function IssueDetail() {
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
   });
 
+  const { data: workProducts, isLoading: workProductsLoading } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issueId!),
+    queryFn: () => issuesApi.listWorkProducts(issueId!),
+    enabled: !!issueId,
+    placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "pending"),
+  });
+
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
@@ -1369,6 +1378,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId!) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueId!) });
   }, [issueId, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!), refetchType: "inactive" });
@@ -2202,6 +2212,54 @@ export function IssueDetail() {
     },
   });
 
+  const createWorkProduct = useMutation({
+    mutationFn: (data: Record<string, unknown>) => issuesApi.createWorkProduct(issueId!, data),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({ title: "Work product added", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to add work product",
+        body: err instanceof Error ? err.message : "Unable to add this work product",
+        tone: "error",
+      });
+    },
+  });
+
+  const updateWorkProduct = useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) =>
+      issuesApi.updateWorkProduct(id, patch),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update work product",
+        body: err instanceof Error ? err.message : "Unable to update this work product",
+        tone: "error",
+      });
+    },
+  });
+
+  const deleteWorkProduct = useMutation({
+    mutationFn: (id: string) => issuesApi.deleteWorkProduct(id),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({ title: "Work product deleted", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to delete work product",
+        body: err instanceof Error ? err.message : "Unable to delete this work product",
+        tone: "error",
+      });
+    },
+  });
+
   const archiveFromInbox = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onSuccess: () => {
@@ -2430,6 +2488,7 @@ export function IssueDetail() {
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
+  const workProductList = workProducts ?? issue?.workProducts ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
   const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
 
@@ -3190,6 +3249,15 @@ export function IssueDetail() {
           });
         }}
         extraActions={!hasAttachments ? attachmentUploadButton : null}
+      />
+
+      <IssueWorkProductsSection
+        products={workProductList}
+        isLoading={workProductsLoading && workProducts === undefined}
+        isMutating={createWorkProduct.isPending || updateWorkProduct.isPending || deleteWorkProduct.isPending}
+        onCreate={(data) => createWorkProduct.mutateAsync(data)}
+        onUpdate={(id, patch) => updateWorkProduct.mutateAsync({ id, patch })}
+        onDelete={(id) => deleteWorkProduct.mutateAsync(id)}
       />
 
       {attachmentsInitialLoading ? (
