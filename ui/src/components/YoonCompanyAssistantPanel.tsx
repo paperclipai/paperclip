@@ -264,6 +264,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
   const safety = [
     status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
     status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
+    status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
   ].join(", ");
   const maxTurns = status.maxTurns
     ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 이전 필요" : "구조화 설정"}`

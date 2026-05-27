@@ -206,6 +206,7 @@ export function getYoonCompanyHermesStatus(agent: Agent | null) {
     : [];
   const permissions = asRecord(agent?.permissions);
   const canCreateAgents = permissions.canCreateAgents === true;
+  const canAssignTasks = permissions.canAssignTasks === true;
   const persistSession = readBoolean(config.persistSession);
   const explicitYolo = extraArgs.includes("--yolo");
   const duplicateYoloRisk = HERMES_ADAPTER_MANAGED_YOLO && explicitYolo;
@@ -221,6 +222,7 @@ export function getYoonCompanyHermesStatus(agent: Agent | null) {
     yolo: explicitYolo || HERMES_ADAPTER_MANAGED_YOLO,
     maxTurns,
     canCreateAgents,
+    canAssignTasks,
     title: agent?.title ?? "",
     adapterType: agent?.adapterType ?? null,
     command,
