@@ -792,10 +792,13 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       agentId: input.agentId,
       provider: input.bridge.provider,
       status: "pending_delivery",
+    }).onConflictDoNothing({
+      target: awaitingHumanBridges.interactionId,
+      where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
     }).returning();
 
     if (!created) {
-      throw new Error("Failed to create retry awaiting human bridge after send failure");
+      return null;
     }
 
     return deliverBridgeRow({
@@ -1139,6 +1142,8 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           summary.noSignal += bridgeResult.noSignal;
           summary.failed += bridgeResult.failed;
           summary.skipped += bridgeResult.skipped;
+          summary.approvedIssueIds.push(...bridgeResult.approvedIssueIds);
+          summary.approvedInteractionIds.push(...bridgeResult.approvedInteractionIds);
         } catch {
           summary.failed += 1;
         }
@@ -1236,7 +1241,8 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         if (event.kind === "reply") {
           const replyBody = event.body?.trim() || null;
           const replyProcessing = await db.transaction(async (tx) => {
-            const txInteractionsSvc = issueThreadInteractionService(tx as unknown as Db);
+            const txDb = tx as unknown as Db;
+            const txInteractionsSvc = issueThreadInteractionService(txDb);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
               bridgeId: row.id,
               interactionId: row.interactionId,
@@ -1305,6 +1311,14 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 id: row.issueId,
                 companyId: row.companyId,
               }, row.interactionId, responsePayload, { actorType: "system" });
+              await txDb.update(awaitingHumanBridges).set({
+                status: "closed",
+                closeOutcome: "superseded",
+                closeReason: "Interaction answered via ClickUp reply.",
+                closedAt: new Date(),
+                nextPollAt: null,
+                updatedAt: new Date(),
+              }).where(eq(awaitingHumanBridges.id, row.id));
             }
 
             return {
@@ -1397,11 +1411,22 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 });
               }
 
-              await this.closeBridge({
-                bridgeId: row.id,
-                outcome: "superseded",
-                reason: "Interaction answered via ClickUp reply.",
-              });
+              try {
+                await adapter.close({
+                  bridgeId: row.id,
+                  externalThreadId: row.externalThreadId ?? null,
+                  externalMessageId: row.externalMessageId ?? null,
+                  outcome: "superseded",
+                  reason: "Interaction answered via ClickUp reply.",
+                });
+              } catch (error) {
+                logger.warn({
+                  err: error,
+                  bridgeId: row.id,
+                  companyId: row.companyId,
+                  issueId: row.issueId,
+                }, "failed to close awaiting_human bridge adapter after closing row");
+              }
 
               summary.replies += 1;
               return summary;

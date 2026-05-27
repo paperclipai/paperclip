@@ -13,7 +13,7 @@ import {
   awaitingHumanBridges,
   issueComments,
 } from "@paperclipai/db";
-import { and, asc, eq, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -481,6 +481,39 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
   });
 
+  it("skips a concurrent retry insert instead of throwing a unique constraint error", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    const insertRetryBridge = async () => {
+      const [created] = await db.insert(awaitingHumanBridges).values({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        interactionId: seeded.interactionId,
+        agentId: seeded.agentId,
+        provider: "clickup",
+        status: "pending_delivery",
+      }).onConflictDoNothing({
+        target: awaitingHumanBridges.interactionId,
+        where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
+      }).returning();
+      return created ?? null;
+    };
+
+    const [first, second] = await Promise.all([
+      insertRetryBridge(),
+      insertRetryBridge(),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+
+    const rows = await db.select().from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      status: "pending_delivery",
+      provider: "clickup",
+    }));
+  });
+
   it("builds full ask-user-questions outbound content for the bridge", async () => {
     const seeded = await seedAskUserQuestionsInteraction();
     const send = vi.fn(async () => ({
@@ -916,6 +949,55 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
     expect(bridges).toHaveLength(1);
     expect(bridges[0]).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "superseded",
+    }));
+  });
+
+  it("keeps an answered ask-user bridge closed even if adapter close fails", async () => {
+    const seeded = await seedAskUserQuestionsBinaryInteraction();
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reply",
+              externalEventId: "reply-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "question 1 is yet it got diaplyed",
+              metadata: { clickupReplyId: "reply-1" },
+            },
+          ],
+        })),
+        close: vi.fn(async () => {
+          throw new Error("clickup bridge close failed");
+        }),
+      }),
+    });
+
+    const bridge = await service.openForPendingInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+    });
+
+    expect(bridge).not.toBeNull();
+    const result = await service.pollBridge(bridge!.id, new Date("2026-05-22T00:03:00.000Z"));
+
+    expect(result.replies).toBe(1);
+
+    const [updatedBridge] = await db.select().from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.id, bridge!.id));
+    expect(updatedBridge).toEqual(expect.objectContaining({
       status: "closed",
       closeOutcome: "superseded",
     }));

@@ -172,6 +172,8 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
       failed: 0,
       skipped: 0,
       noApproval: 0,
+      issueIds: [issueId],
+      interactionIds: [interactionId],
     }));
   });
 
