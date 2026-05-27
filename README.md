@@ -1,6 +1,6 @@
 # Brabrix Agent
 
-Plataforma de agentes de IA com execucao local, orientada a workflow de desenvolvimento e integrada ao ecossistema Brabrix Dev.
+Plataforma agentic para times de engenharia que querem transformar backlog em entrega real com IA, mantendo controle do contexto, observabilidade e execução local no repositório.
 
 ![Status](https://img.shields.io/badge/status-active%20development-0f766e)
 ![Fork](https://img.shields.io/badge/fork-paperclipai%2Fpaperclip-1d4ed8)
@@ -9,264 +9,230 @@ Plataforma de agentes de IA com execucao local, orientada a workflow de desenvol
 ![pnpm](https://img.shields.io/badge/pnpm-%3E%3D9-f97316)
 
 > [!IMPORTANT]
-> Este projeto e um fork/modificacao do Paperclip. O objetivo do Brabrix Agent e evoluir o runtime para fluxos de engenharia assistida por IA no ecossistema Brabrix, sem remover os creditos e os termos da licenca MIT do projeto original.
+> Este projeto é um fork do [Paperclip](https://github.com/paperclipai/paperclip), preserva a licença MIT e os créditos originais. O foco da Brabrix é evoluir a base para fluxos de engenharia assistida por IA no ecossistema Brabrix Dev, com mudanças incrementais e compatíveis com o upstream sempre que possível.
 
-## Status do projeto
+## Visão comercial
 
-- Em desenvolvimento ativo.
-- Fork funcional com foco em execucao local, backlog orientado por IA e integracoes Brabrix.
-- Mantem compatibilidade com conceitos e estruturas do upstream sempre que possivel.
+O Brabrix Agent foi criado para squads que precisam de velocidade com governança.
 
-## O que e o Brabrix Agent
+Com ele, sua equipe consegue:
 
-O Brabrix Agent e uma plataforma para operar agentes de IA em projetos reais, com controle de contexto e execucao local no workspace.
+- reduzir tempo entre planejamento e execução técnica
+- transformar tarefas em contexto acionável para agentes
+- padronizar entregas com specs técnicas estruturadas
+- manter rastreabilidade com logs, timeline e histórico de alterações
 
-Ele combina:
+## Novidade: Gerador de Spec Técnica por Issue
 
-- runtime local para agentes (com board, goals/issues e execucoes)
-- ingestao de contexto de produto e engenharia (PRD, specs, regras, skills)
-- fluxo de backlog orientado por IA, conectado ao Brabrix Dev
-- integracoes de skills via GitHub, `skills.sh` e Brabrix SkillHub
-- workflow observavel com logs, timeline e visao de mudancas
+Agora cada issue pode deixar de ser só uma tarefa curta e virar uma especificação técnica completa, com um clique.
 
-## Fork do Paperclip
+Na tela de detalhe da issue, a ação **Gerar spec técnica** permite:
 
-> "This project is based on the amazing open source project Paperclip."
+- gerar conteúdo estruturado por IA com base no contexto da issue
+- respeitar o idioma selecionado (`pt-BR` e `en`)
+- visualizar a spec em seção separada (sem sobrescrever a descrição original)
+- copiar, editar, salvar, regenerar e cancelar geração
+- persistir como documento técnico da issue (`technical-spec`)
 
-O Brabrix Agent:
+Estrutura gerada inclui:
 
-- e um fork do Paperclip
-- preserva a licenca MIT e os creditos originais
-- busca manter compatibilidade com o modelo de orquestracao do upstream
-- adiciona integracoes e capacidades focadas no ecossistema Brabrix Dev
-
-Links importantes:
-
-- Projeto original Paperclip: [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
-- Licenca MIT original: [LICENSE upstream](https://github.com/paperclipai/paperclip/blob/master/LICENSE)
-- Licenca deste fork: [LICENSE](LICENSE)
+- resumo
+- contexto
+- objetivo técnico
+- regras de negócio
+- escopo incluído e fora de escopo
+- impactos técnicos
+- APIs/contratos
+- modelo de dados
+- critérios de aceite
+- plano de testes
+- riscos
+- checklist de implementação
+- sugestão de subtasks
 
 ## Principais funcionalidades
 
 Legenda:
-- `✅` disponivel
-- `🧪` em implementacao/evolucao
+
+- `✅` disponível
+- `🧪` em evolução
 - `🗺️` roadmap
 
-| Funcionalidade | Status | Observacao |
+| Funcionalidade | Status | Observação |
 | --- | --- | --- |
-| Agentes locais | ✅ | Adapters locais como `claude_local`, `codex_local`, `gemini_local`, `opencode_local` e outros |
-| Execucao de tasks | ✅ | Fluxo por goals/issues com execucao no projeto local |
-| Integracao com Brabrix Dev | ✅ | Importa task/contexto via endpoint de sincronizacao |
-| SkillHub integration | ✅ | Provider `brabrix_skillhub` com busca/import de skills |
-| Contexto persistente | ✅ | Estado, historico e contexto de execucao permanecem rastreaveis |
-| Backlog orientado por IA | 🧪 | Pipeline `BrabrixTask -> AgentGoal -> Context` implementado e evoluindo |
-| Multi-provider AI | ✅ | Modelo de adapters plugavel por provider/runtime |
-| Workspace local | ✅ | Execucao ligada a workspaces de projeto e execucao |
-| Timeline / logs | ✅ | Logs e eventos de execucao com visibilidade operacional |
-| Diff preview | 🧪 | Fluxo de diff via recursos/plugins de workspace diff |
-| Integracao VS Code | 🧪 | Integracao de ecossistema com Brabrix Dev VS Code extension |
-| Suporte a multiplos idiomas | ✅ | UI com i18n e locale `pt-BR` disponivel |
-| OpenAI / Claude / Gemini | ✅ | Suporte via adapters/configuracao de modelos |
-| GitHub skills | ✅ | Importacao de skills por URL/repositorio GitHub |
-| `skills.sh` | ✅ | Compatibilidade de importacao como provider de skills |
-| Brabrix SkillHub | ✅ | Busca, categorias, destaque e import quando habilitado |
+| Agentes locais | ✅ | Adapters como `claude_local`, `codex_local`, `gemini_local`, `opencode_local` e outros |
+| Execução orientada por goals/issues | ✅ | Fluxo de trabalho conectado ao projeto local |
+| Import Brabrix Project | ✅ | Importa contexto, PRD, specs, backlog, goals e skills |
+| Sincronização com Brabrix Dev | ✅ | Sincroniza tarefas/issues e contexto do projeto |
+| Brabrix SkillHub provider | ✅ | Busca, categorias, destaque e importação de skills públicas |
+| Gerador de Spec Técnica por Issue | ✅ | Geração estruturada por IA com edição/salvamento na issue |
+| Suporte a múltiplos idiomas | ✅ | i18n com `pt-BR` e `en` |
+| Logs e timeline operacional | ✅ | Observabilidade da execução e diagnóstico |
+| Diff preview e workflows avançados | 🧪 | Melhorias contínuas de revisão e automação |
+| Multi-agent orchestration avançada | 🗺️ | Evolução planejada do runtime |
 
-## Como funciona
+## Como a plataforma funciona
 
 ```text
 Brabrix Dev
   ↓
-Backlog / PRD / Specs / Skills
+Projetos / PRD / Specs / Backlog / Skills
   ↓
 Brabrix Agent
   ↓
-Execucao local no projeto
+Execução local no repositório
   ↓
-Logs / Timeline / Diff
+Logs / Timeline / Resultados
 ```
 
 ```mermaid
 flowchart TD
-  A[Brabrix Dev] --> B[Backlog / PRD / Specs / Skills]
+  A[Brabrix Dev] --> B[Projetos / PRD / Specs / Backlog / Skills]
   B --> C[Brabrix Agent]
-  C --> D[Execucao local no projeto]
-  D --> E[Logs / Timeline / Diff]
+  C --> D[Execução local no repositório]
+  D --> E[Logs / Timeline / Resultados]
 ```
 
-## Arquitetura
+## Diferenciais em relação ao Paperclip original
 
-- **Brabrix Dev**: camada de orquestracao e contexto (backlog, PRD/spec, skills e organizacao do trabalho).
-- **Brabrix Agent**: runtime local de execucao dos agentes no workspace do projeto.
-- **Providers de IA**: seguem plugaveis via adapters, preservando flexibilidade do projeto base.
+- integração nativa com Brabrix Dev
+- fluxo de importação e sincronização de projeto completo
+- provider adicional de skills: Brabrix SkillHub
+- foco em engenharia de software (contexto, backlog, spec e execução)
+- experiência em português (pt-BR) sem perder suporte global em inglês
 
-## Diferencas para o Paperclip Original
+## Subir local (modo fácil com `.sh`)
 
-Principais diferencas deste fork:
-
-- integracao com Brabrix Dev para ingestao de tarefas/contexto
-- provider adicional Brabrix SkillHub para skills corporativas/publicas
-- backlog orientado por IA com mapeamento de task para goal/contexto tecnico
-- workflows de desenvolvimento focados em entrega de software
-- foco em integracao com fluxos de IDE (incluindo VS Code no ecossistema Brabrix)
-- interface com suporte a i18n, incluindo `pt-BR`
-- branding e direcionamento de produto orientados ao ecossistema Brabrix
-
-## Instalacao
-
-### 1. Clonar o projeto
+### 1) Clonar e entrar no projeto
 
 ```bash
 git clone <url-do-seu-fork>
 cd brabrix-agent
 ```
 
-### 2. Instalar dependencias
+### 2) Instalar dependências
 
 ```bash
 pnpm install
 ```
 
-### 3. Configurar ambiente
+### 3) Subir o Brabrix Agent local
 
 ```bash
-cp .env.example .env
+./scripts/brabrix-up.sh
 ```
 
-### 4. Configurar credenciais Brabrix
+Esse script:
 
-Preencha as variaveis de integracao no `.env` (detalhes na secao de configuracao abaixo).
+- cria `.env` com defaults locais, se ainda não existir
+- prepara o worktree do Paperclip (`.paperclip/`)
+- sobe o servidor de desenvolvimento
 
-### 5. Rodar o projeto
+URL esperada: `http://127.0.0.1:3101` (ou a próxima porta livre).
+
+### 4) Parar a aplicação local
 
 ```bash
-pnpm dev
+./scripts/kill-dev.sh
 ```
 
-Servidor/API em `http://localhost:3100`.
+Para apenas visualizar o que seria encerrado:
 
-## Configuracao
+```bash
+./scripts/kill-dev.sh --dry
+```
 
-Exemplo de configuracao base:
+### 5) Gerar build local
+
+```bash
+./build.sh
+```
+
+## Subir em produção
+
+### Opção 1: Compose quickstart (mais simples)
+
+```bash
+BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+docker compose -f docker/docker-compose.quickstart.yml up --build -d
+```
+
+Parar:
+
+```bash
+docker compose -f docker/docker-compose.quickstart.yml down
+```
+
+### Opção 2: Compose completo com PostgreSQL
+
+```bash
+BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+docker compose -f docker/docker-compose.yml up --build -d
+```
+
+Parar:
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+Se quiser remover também os volumes/dados do ambiente Docker:
+
+```bash
+docker compose -f docker/docker-compose.yml down -v
+```
+
+## Configuração essencial
+
+Exemplo mínimo de variáveis em `.env`:
 
 ```env
-# Convencao usada em pipelines/scripts do ecossistema
-BRABRIX_API_KEY=
-BRABRIX_API_URL=https://api.brabrix.com
-WORKSPACE_PATH=
+DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+PORT=3100
+PAPERCLIP_PUBLIC_APP_NAME=Brabrix Agent
+VITE_PUBLIC_APP_NAME=Brabrix Agent
 
-# Variaveis consumidas diretamente pelo runtime atual
+BRABRIX_API_URL=https://api.brabrix.com
 BRABRIX_AGENT_TOKEN=
 BRABRIX_PROJECT_ID=
-BRABRIX_AGENT_ID=
-BRABRIX_PROVIDER=
-
-# Opcional (defaults internos do runtime)
-BRABRIX_PROJECT_CONTEXT_ENDPOINT=
-BRABRIX_NEXT_TASK_ENDPOINT=
-BRABRIX_SEND_RUN_LOGS_ENDPOINT=
-BRABRIX_COMPLETE_TASK_ENDPOINT=
+BRABRIX_TENANT_ID=
 
 BRABRIX_SKILLHUB_ENABLED=true
 BRABRIX_SKILLHUB_API_URL=https://api.brabrix.com
-BRABRIX_SKILLHUB_TOKEN=
-BRABRIX_SKILLHUB_API_KEY=
-BRABRIX_SKILLHUB_SEARCH_ENDPOINT=/api/public/dev-hub/items
-BRABRIX_SKILLHUB_SKILL_DETAIL_ENDPOINT=/api/public/dev-hub/items/{skillId}
-BRABRIX_SKILLHUB_CATEGORIES_ENDPOINT=/api/public/dev-hub/categories
-BRABRIX_SKILLHUB_FEATURED_ENDPOINT=/api/public/dev-hub/featured
-
-# Dados locais da instancia
-PAPERCLIP_HOME=
-PAPERCLIP_INSTANCE_ID=default
 ```
 
-Observacoes tecnicas:
+Observações importantes:
 
-- O runtime usa `BRABRIX_AGENT_TOKEN` para autenticar na integracao Brabrix.
-  - Se o valor começar com `bbx_`, o client envia `x-api-key` (mesma lógica da extensão VS Code Brabrix).
-  - Caso contrário, envia `Authorization: Bearer ...`.
-- Para endpoints que já carregam `{projectId}` no path (defaults), o sync evita enviar query params extras (`projectId`, `provider`, `agentId`) para manter compatibilidade com a API pública.
-- Para sync de goals (`Import from Brabrix`), token e project ID podem ser configurados por empresa em **Company Settings → Brabrix** (via Secrets), com fallback legado para env.
-- Para sync de goals, os endpoints default ja sao carregados pelo runtime; sobrescreva por env apenas se sua API usar paths customizados.
-- `BRABRIX_API_KEY` pode ser usada como convencao de plataforma/gateway, desde que seja mapeada para o token esperado pelo runtime.
-- Para SkillHub, os defaults publicos usam `api/public/dev-hub/*` e podem ser sobrescritos por env sem alterar código.
-- Para SkillHub, a API key pode ser configurada por empresa em **Company Settings → Brabrix** (via Secrets), com fallback legado para env.
-- `WORKSPACE_PATH` e uma variavel util de orquestracao; o runtime usa configuracoes de workspace do proprio projeto e caminhos de instancia.
+- a API key/token do Brabrix pode ser configurada por empresa em **Company Settings → Brabrix** (modelo recomendado para cloud)
+- o runtime mantém fallback para variáveis de ambiente legadas, quando necessário
+- endpoints de Brabrix e SkillHub já possuem defaults para produção e podem ser sobrescritos por ambiente
 
-## Providers suportados
-
-Suporte via adapters (core e plugins), incluindo:
-
-- OpenAI (ex.: fluxos com `codex_local`/modelos OpenAI)
-- Anthropic Claude (`claude_local`)
-- Gemini (`gemini_local`)
-- Cursor / OpenCode e outros adapters existentes no projeto
-- Adapters `process` e `http` para cenarios customizados
-
-## Skill Providers
-
-Providers de skills disponiveis:
+## Providers de skills
 
 - GitHub
 - `skills.sh`
 - Brabrix SkillHub
 
-## Visao do projeto
+Para detalhes, veja [ROADMAP.md](ROADMAP.md).
 
-O Brabrix Agent existe para fechar o loop entre planejamento e execucao:
+## Contribuição
 
-- da ideia (PRD/spec) para tarefa executavel
-- da tarefa para entrega tecnica no repositorio local
-- da execucao para observabilidade e governanca de engenharia
-
-Direcao de produto: manter base open source forte, compatibilidade com o upstream e especializacao progressiva para o ecossistema Brabrix Dev.
-
-## Roadmap
-
-Itens direcionais para proximas iteracoes:
-
-- multi-agent orchestration mais avancada
-- marketplace de skills/plugins do ecossistema
-- agentes especializados por perfil (backend, frontend, qa, etc.)
-- cloud sync e cenarios hibridos local+nuvem
-- enterprise governance (auditoria, controle e compliance ampliados)
-- VS Code deep integration com fluxos de backlog, specs e skills
-
-Para backlog expandido, veja [ROADMAP.md](ROADMAP.md).
-
-## Contribuindo
-
-Contribuicoes sao bem-vindas.
+Contribuições são bem-vindas.
 
 Fluxo recomendado:
 
-1. Abra uma issue (bug, melhoria ou proposta de feature).
-2. Crie uma branch focada em uma entrega pequena e revisavel.
-3. Mantenha compatibilidade com o upstream sempre que possivel.
-4. Inclua validacao local minima (`pnpm test` e checks relevantes ao escopo).
-5. Abra PR com contexto tecnico claro e trade-offs.
+1. abra uma issue com contexto claro
+2. implemente em branch pequena e revisável
+3. preserve compatibilidade com upstream sempre que possível
+4. rode validações locais (`pnpm test`, `typecheck`, build no escopo alterado)
+5. abra PR com trade-offs e plano de rollback quando aplicável
 
 Guia completo: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-Filosofia do projeto:
+## Licença
 
-- clareza antes de overengineering
-- evolucao incremental com feedback real de uso
-- governanca e observabilidade como partes do workflow, nao como anexos
+Este projeto está sob licença MIT.
 
-## Licenca
-
-Este projeto esta sob licenca MIT.
-
-- Licenca local do fork: [LICENSE](LICENSE)
-- Baseado no projeto Paperclip (MIT): [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
-- Aviso de copyright upstream mantido no arquivo de licenca (`Copyright (c) 2025 Paperclip AI`)
-- Creditos upstream preservados conforme os termos da licenca
-
----
-
-**Creditos**
-
-- Projeto original: Paperclip AI
-- Fork/evolucao: Brabrix Agent
+- Fork base: [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
+- Licença do fork: [LICENSE](LICENSE)
+- Licença do upstream: [LICENSE upstream](https://github.com/paperclipai/paperclip/blob/master/LICENSE)
