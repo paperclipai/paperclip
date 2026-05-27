@@ -196,7 +196,7 @@ const providerRowsByProvider: Record<string, CostByProviderModel[]> = {
       provider: "openai",
       biller: "openai",
       billingType: "subscription_overage",
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5-mini",
       costCents: 18_900,
       inputTokens: 620_000,
       cachedInputTokens: 91_000,

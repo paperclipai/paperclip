@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_MODEL,
+  modelProfiles as codexModelProfiles,
+  models as codexFallbackModels,
+} from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
@@ -43,6 +47,22 @@ describe("adapter model listing", () => {
 
     expect(models).toEqual(codexFallbackModels);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps runtime-rejected ChatGPT-account Codex models out of the fallback picker", async () => {
+    const models = await listAdapterModels("codex_local");
+    const modelIds = models.map((model) => model.id);
+
+    expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5");
+    expect(modelIds).toContain("gpt-5");
+    expect(modelIds).toContain("gpt-5-mini");
+    expect(modelIds).toContain("codex-mini-latest");
+    expect(modelIds).not.toContain("gpt-5.4");
+    expect(modelIds).not.toContain("gpt-5.3-codex");
+    expect(modelIds).not.toContain("gpt-5.3-codex-spark");
+    expect(codexModelProfiles.find((profile) => profile.key === "cheap")?.adapterConfig).toMatchObject({
+      model: "gpt-5-mini",
+    });
   });
 
   it("loads codex models dynamically and merges fallback options", async () => {
