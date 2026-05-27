@@ -119,6 +119,20 @@ describe("YoonCompanyAssistantPanel", () => {
         },
         permissions: { canCreateAgents: true },
       }),
+      makeAgent({
+        id: "hermes-orchestrator-1",
+        name: "Hermes Orchestrator",
+        title: "Hermes-first operations orchestrator - approval gated, no repo writes",
+        adapterType: "hermes_local",
+        adapterConfig: {
+          command: "C:\\yooncompany\\bin\\hermes.exe",
+          hermesCommand: "C:\\yooncompany\\bin\\hermes.exe",
+          toolsets: "terminal,memory,session_search,skills,web,browser,kanban",
+          extraArgs: ["--profile", "yoonorchestrator", "--max-turns", "12"],
+          persistSession: true,
+        },
+        permissions: { canCreateAgents: false },
+      }),
     ]);
   });
 
@@ -168,7 +182,7 @@ describe("YoonCompanyAssistantPanel", () => {
 
     expect(mockOpenNewIssue).toHaveBeenCalledWith(expect.objectContaining({
       status: "backlog",
-      assigneeAgentId: "hermes-1",
+      assigneeAgentId: "hermes-orchestrator-1",
       title: "Hermes 오케스트레이션: 현재 Hermes 권한과 조사 역할을 비교해줘",
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
@@ -250,15 +264,14 @@ describe("YoonCompanyAssistantPanel", () => {
     await flush();
 
     expect(container.textContent).toContain("Hermes 중심 상태");
-    expect(container.textContent).toContain("Hermes Research Worker · Research, memory, and report worker - repo write prohibited");
-    expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe 필요");
-    expect(container.textContent).toContain("terminal, memory, session_search, skills, web");
-    expect(container.textContent).toContain("file, browser, mcp, delegation, kanban");
-    expect(container.textContent).toContain("비지속 세션");
-    expect(container.textContent).toContain("--yolo 중복 위험, agent 생성권한 있음");
-    expect(container.textContent).toContain("8 · extraArgs 이전 필요");
-    expect(container.textContent).toContain("adapter 0.3.0은 --yolo를 내부에서 추가");
-    expect(container.textContent).toContain("제한된 조사 직원에 가깝습니다");
+    expect(container.textContent).toContain("Hermes Orchestrator · Hermes-first operations orchestrator - approval gated, no repo writes");
+    expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe");
+    expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
+    expect(container.textContent).toContain("file, mcp, delegation");
+    expect(container.textContent).toContain("지속 세션");
+    expect(container.textContent).toContain("--yolo 활성, agent 생성권한 없음");
+    expect(container.textContent).toContain("12 · extraArgs 이전 필요");
+    expect(container.textContent).toContain("아직 제한된 Hermes 오케스트레이션 상태입니다");
   });
 
   it("opens a phase 1 Hermes approval issue draft without assigning execution", async () => {
