@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 /* ---- Utilities ---- */
 
@@ -85,6 +86,7 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
 }
 
 export function RunActivityChart(props: RunChartProps) {
+  const copy = useLocalizedCopy();
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
@@ -92,7 +94,7 @@ export function RunActivityChart(props: RunChartProps) {
   const maxValue = Math.max(...activity.map(v => v.total), 1);
   const hasData = activity.some(v => v.total > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{copy("charts.noRunsYet", "No runs yet", "아직 실행이 없습니다.")}</p>;
 
   return (
     <div>
@@ -102,7 +104,14 @@ export function RunActivityChart(props: RunChartProps) {
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={copy("charts.runTooltip", "{{date}}: {{count}} runs", "{{date}}: 실행 {{count}}건", {
+                date: day,
+                count: total,
+              })}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
@@ -131,6 +140,7 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  const copy = useLocalizedCopy();
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -144,7 +154,14 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{copy("charts.noIssues", "No issues", "작업이 없습니다.")}</p>;
+
+  const priorityLabels: Record<(typeof priorityOrder)[number], string> = {
+    critical: copy("priority.critical", "Critical", "긴급"),
+    high: copy("priority.high", "High", "높음"),
+    medium: copy("priority.medium", "Medium", "보통"),
+    low: copy("priority.low", "Low", "낮음"),
+  };
 
   return (
     <div>
@@ -154,7 +171,14 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={copy("charts.issueTooltip", "{{date}}: {{count}} issues", "{{date}}: 작업 {{count}}건", {
+                date: day,
+                count: total,
+              })}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -169,7 +193,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: priorityLabels[p] }))} />
     </div>
   );
 }
@@ -184,17 +208,8 @@ const statusColors: Record<string, string> = {
   backlog: "#64748b",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
-
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  const copy = useLocalizedCopy();
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -211,7 +226,17 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{copy("charts.noIssues", "No issues", "작업이 없습니다.")}</p>;
+
+  const statusLabels: Record<string, string> = {
+    todo: copy("status.todo", "To Do", "할 일"),
+    in_progress: copy("status.inProgress", "In Progress", "진행 중"),
+    in_review: copy("status.inReview", "In Review", "검토 중"),
+    done: copy("status.done", "Done", "완료"),
+    blocked: copy("status.blocked", "Blocked", "막힘"),
+    cancelled: copy("status.cancelled", "Cancelled", "취소"),
+    backlog: copy("status.backlog", "Backlog", "대기"),
+  };
 
   return (
     <div>
@@ -221,7 +246,14 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={copy("charts.issueTooltip", "{{date}}: {{count}} issues", "{{date}}: 작업 {{count}}건", {
+                date: day,
+                count: total,
+              })}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -242,12 +274,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
 }
 
 export function SuccessRateChart(props: RunChartProps) {
+  const copy = useLocalizedCopy();
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
 
   const hasData = activity.some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{copy("charts.noRunsYet", "No runs yet", "아직 실행이 없습니다.")}</p>;
 
   return (
     <div>
@@ -257,7 +290,21 @@ export function SuccessRateChart(props: RunChartProps) {
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <div
+              key={day}
+              className="flex-1 h-full flex flex-col justify-end"
+              title={copy(
+                "charts.successTooltip",
+                "{{date}}: {{percent}}% ({{succeeded}}/{{total}})",
+                "{{date}}: {{percent}}% ({{succeeded}}/{{total}})",
+                {
+                  date: day,
+                  percent: entry.total > 0 ? Math.round(rate * 100) : 0,
+                  succeeded: entry.succeeded,
+                  total: entry.total,
+                },
+              )}
+            >
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (

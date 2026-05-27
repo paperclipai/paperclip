@@ -3,6 +3,7 @@ import type { TranscriptEntry } from "../adapters";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import { IssueChatThread } from "./IssueChatThread";
 import type { IssueChatLinkedRun } from "../lib/issue-chat-messages";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 
 const EMPTY_COMMENTS: [] = [];
 const EMPTY_TIMELINE_EVENTS: [] = [];
@@ -19,6 +20,7 @@ interface RunChatSurfaceProps {
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   companyId?: string | null;
+  locale?: string | null;
 }
 
 export const RunChatSurface = memo(function RunChatSurface({
@@ -26,7 +28,11 @@ export const RunChatSurface = memo(function RunChatSurface({
   transcript,
   hasOutput,
   companyId,
+  locale: localeProp,
 }: RunChatSurfaceProps) {
+  const currentLocale = useCurrentLocale();
+  const copy = useLocalizedCopy();
+  const locale = localeProp ?? currentLocale;
   const active = isRunActive(run);
   const liveRuns = useMemo(() => (active ? [run] : EMPTY_LIVE_RUNS), [active, run]);
   const linkedRuns = useMemo<IssueChatLinkedRun[]>(
@@ -60,11 +66,14 @@ export const RunChatSurface = memo(function RunChatSurface({
       showComposer={false}
       showJumpToLatest={false}
       variant="embedded"
-      emptyMessage={active ? "Waiting for run output..." : "No run output captured."}
+      emptyMessage={active
+        ? copy("runChat.waitingForOutput", "Waiting for run output...", "실행 출력을 기다리는 중...")
+        : copy("runChat.noOutputCaptured", "No run output captured.", "저장된 실행 출력이 없습니다.")}
       enableLiveTranscriptPolling={false}
       transcriptsByRunId={transcriptsByRunId}
       hasOutputForRun={(runId) => runId === run.id && hasOutput}
       includeSucceededRunsWithoutOutput
+      locale={locale}
     />
   );
 });

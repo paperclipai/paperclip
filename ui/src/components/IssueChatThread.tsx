@@ -137,6 +137,8 @@ import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Co
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import { useCurrentLocale } from "@/i18n/ui-copy";
+import { isKoreanLocale } from "@/i18n/locale-utils";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -174,6 +176,7 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  locale?: string | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -181,6 +184,7 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackTermsUrl: null,
   issueStatus: undefined,
   successfulRunHandoff: null,
+  locale: "en",
 });
 
 export function resolveAssistantMessageFoldedState(args: {
@@ -234,7 +238,7 @@ function findCoTSegmentIndex(
   return -1;
 }
 
-function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
+function useLiveElapsed(startMs: number | null | undefined, active: boolean, locale?: string | null): string | null {
   const [, rerender] = useState(0);
   useEffect(() => {
     if (!active || !startMs) return;
@@ -242,7 +246,7 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
     return () => clearInterval(interval);
   }, [active, startMs]);
   if (!active || !startMs) return null;
-  return formatDurationWords(Date.now() - startMs);
+  return formatDurationWords(Date.now() - startMs, locale);
 }
 
 function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
@@ -347,6 +351,7 @@ interface IssueChatThreadProps {
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
+  locale?: string | null;
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
@@ -626,11 +631,11 @@ function isUnassignedReassignValue(value: string): boolean {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-function commentDateLabel(date: Date | string | undefined): string {
+function commentDateLabel(date: Date | string | undefined, locale?: string | null): string {
   if (!date) return "";
   const then = new Date(date).getTime();
-  if (Date.now() - then < WEEK_MS) return timeAgo(date);
-  return formatShortDate(date);
+  if (Date.now() - then < WEEK_MS) return timeAgo(date, locale);
+  return formatShortDate(date, locale);
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
@@ -685,8 +690,20 @@ export function SuccessfulRunHandoffCommentCallout({
   );
 }
 
-function humanizeValue(value: string | null) {
-  if (!value) return "None";
+function humanizeValue(value: string | null, locale?: string | null) {
+  if (!value) return isKoreanLocale(locale) ? "없음" : "None";
+  if (isKoreanLocale(locale)) {
+    const labels: Record<string, string> = {
+      backlog: "대기",
+      todo: "할 일",
+      in_progress: "진행 중",
+      in_review: "검토 중",
+      blocked: "막힘",
+      done: "완료",
+      cancelled: "취소",
+    };
+    if (labels[value]) return labels[value];
+  }
   return value.replace(/_/g, " ");
 }
 
@@ -695,14 +712,15 @@ function formatTimelineAssigneeLabel(
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  locale?: string | null,
 ) {
   if (assignee.agentId) {
     return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
   }
   if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? (isKoreanLocale(locale) ? "보드" : "Board");
   }
-  return "Unassigned";
+  return isKoreanLocale(locale) ? "미지정" : "Unassigned";
 }
 
 function initialsForName(name: string) {
@@ -750,7 +768,20 @@ export function resolveIssueChatHumanAuthor(args: {
   };
 }
 
-function formatRunStatusLabel(status: string) {
+function formatRunStatusLabel(status: string, locale?: string | null) {
+  if (isKoreanLocale(locale)) {
+    const labels: Record<string, string> = {
+      succeeded: "성공",
+      failed: "실패",
+      error: "오류",
+      timed_out: "시간 초과",
+      running: "실행 중",
+      queued: "대기 중",
+      pending: "대기 중",
+      cancelled: "취소됨",
+    };
+    return labels[status] ?? status.replace(/_/g, " ");
+  }
   switch (status) {
     case "timed_out":
       return "timed out";
@@ -812,7 +843,7 @@ function IssueChatChainOfThought({
   message: ThreadMessage;
   cotParts: readonly IssueChatCoTPart[];
 }) {
-  const { agentMap } = useContext(IssueChatCtx);
+  const { agentMap, locale } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
@@ -840,7 +871,7 @@ function IssueChatChainOfThought({
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
-  const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
+  const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive, locale);
 
   useEffect(() => {
     if (isActive) setExpanded(true);
@@ -849,15 +880,15 @@ function IssueChatChainOfThought({
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    headerVerb = "Working";
-    if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
+    headerVerb = isKoreanLocale(locale) ? "작업 중" : "Working";
+    if (liveElapsed) headerSuffix = isKoreanLocale(locale) ? `${liveElapsed} 동안` : `for ${liveElapsed}`;
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
-    const durationText = formatDurationWords(durationMs);
-    headerVerb = "Worked";
-    if (durationText) headerSuffix = `for ${durationText}`;
+    const durationText = formatDurationWords(durationMs, locale);
+    headerVerb = isKoreanLocale(locale) ? "작업함" : "Worked";
+    if (durationText) headerSuffix = isKoreanLocale(locale) ? `${durationText} 동안` : `for ${durationText}`;
   } else {
-    headerVerb = "Worked";
+    headerVerb = isKoreanLocale(locale) ? "작업함" : "Worked";
   }
 
   const toolSummary = toolCountSummary(toolParts);
@@ -1273,6 +1304,7 @@ function IssueChatUserMessage({
     onCancelQueued,
     currentUserId,
     userProfileMap,
+    locale,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1371,11 +1403,11 @@ function IssueChatUserMessage({
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
               >
-                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                {message.createdAt ? commentDateLabel(message.createdAt, locale) : ""}
               </a>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+              {message.createdAt ? formatDateTime(message.createdAt, locale) : ""}
             </TooltipContent>
           </Tooltip>
           <button
@@ -1437,10 +1469,13 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
-    stopRunLabel = "Stop run",
-    stoppingRunLabel = "Stopping...",
+    stopRunLabel: configuredStopRunLabel,
+    stoppingRunLabel: configuredStoppingRunLabel,
     stopRunVariant = "stop",
+    locale,
   } = useContext(IssueChatCtx);
+  const stopRunLabel = configuredStopRunLabel ?? (isKoreanLocale(locale) ? "실행 중지" : "Stop run");
+  const stoppingRunLabel = configuredStoppingRunLabel ?? (isKoreanLocale(locale) ? "중지 중..." : "Stopping...");
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const authorName = typeof custom.authorName === "string"
@@ -1520,7 +1555,7 @@ function IssueChatAssistantMessage({
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
                   <span className="text-[11px] text-muted-foreground/50">
-                    {commentDateLabel(message.createdAt)}
+                    {commentDateLabel(message.createdAt, locale)}
                   </span>
                 ) : null}
                 <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", !folded && "rotate-180")} />
@@ -1531,13 +1566,13 @@ function IssueChatAssistantMessage({
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                  Follow-up
+                  {isKoreanLocale(locale) ? "후속" : "Follow-up"}
                 </Badge>
               ) : null}
               {isRunning ? (
                 <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
+                  {isKoreanLocale(locale) ? "실행 중" : "Running"}
                 </span>
               ) : null}
             </div>
@@ -1577,8 +1612,8 @@ function IssueChatAssistantMessage({
                 <button
                   type="button"
                   className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="Copy message"
-                  aria-label="Copy message"
+                  title={isKoreanLocale(locale) ? "메시지 복사" : "Copy message"}
+                  aria-label={isKoreanLocale(locale) ? "메시지 복사" : "Copy message"}
                   onClick={() => {
                     void navigator.clipboard.writeText(copyText).then(() => {
                       setCopied(true);
@@ -1602,11 +1637,11 @@ function IssueChatAssistantMessage({
                       href={anchorId ? `#${anchorId}` : undefined}
                       className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
                     >
-                      {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                      {message.createdAt ? commentDateLabel(message.createdAt, locale) : ""}
                     </a>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="text-xs">
-                    {message.createdAt ? formatDateTime(message.createdAt) : ""}
+                    {message.createdAt ? formatDateTime(message.createdAt, locale) : ""}
                   </TooltipContent>
                 </Tooltip>
                 <DropdownMenu>
@@ -1615,8 +1650,8 @@ function IssueChatAssistantMessage({
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
+                      title={isKoreanLocale(locale) ? "추가 작업" : "More actions"}
+                      aria-label={isKoreanLocale(locale) ? "추가 작업" : "More actions"}
                     >
                       <MoreHorizontal className="h-3.5 w-3.5" />
                     </Button>
@@ -1628,7 +1663,7 @@ function IssueChatAssistantMessage({
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
-                      Copy message
+                      {isKoreanLocale(locale) ? "메시지 복사" : "Copy message"}
                     </DropdownMenuItem>
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
@@ -1654,7 +1689,7 @@ function IssueChatAssistantMessage({
                       <DropdownMenuItem asChild>
                         <Link to={runHref} target="_blank" rel="noreferrer noopener">
                           <Search className="mr-2 h-3.5 w-3.5" />
-                          View run
+                          {isKoreanLocale(locale) ? "실행 보기" : "View run"}
                         </Link>
                       </DropdownMenuItem>
                     ) : null}
@@ -1905,6 +1940,7 @@ function ExpiredRequestConfirmationActivity({
     onAcceptInteraction,
     onRejectInteraction,
     onCancelInteraction,
+    locale,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -1930,12 +1966,12 @@ function ExpiredRequestConfirmationActivity({
     <div className="min-w-0 flex-1">
       <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
         <span className="font-medium text-foreground">{actorName}</span>
-        <span className="text-muted-foreground">updated this task</span>
+        <span className="text-muted-foreground">{isKoreanLocale(locale) ? "이 작업을 수정함" : "updated this task"}</span>
         <a
           href={anchorId ? `#${anchorId}` : undefined}
           className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
         >
-          {timeAgo(message.createdAt)}
+          {timeAgo(message.createdAt, locale)}
         </a>
         <button
           type="button"
@@ -1945,7 +1981,9 @@ function ExpiredRequestConfirmationActivity({
           onClick={() => setExpanded((current) => !current)}
         >
           <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
-          {expanded ? "Hide confirmation" : "Expired confirmation"}
+          {expanded
+            ? (isKoreanLocale(locale) ? "확인 숨기기" : "Hide confirmation")
+            : (isKoreanLocale(locale) ? "만료된 확인" : "Expired confirmation")}
         </button>
       </div>
       {expanded ? (
@@ -2188,6 +2226,7 @@ function StaleDispositionWarningRow({
   runAgentId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const { locale } = useContext(IssueChatCtx);
   const detailsId = useId();
   const sections = mapCommentMetadataToSystemNoticeSections(metadata, { runAgentId });
 
@@ -2209,7 +2248,7 @@ function StaleDispositionWarningRow({
             <span className="ml-auto flex items-center gap-1.5">
               {message.createdAt ? (
                 <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
-                  {commentDateLabel(message.createdAt)}
+                  {commentDateLabel(message.createdAt, locale)}
                 </span>
               ) : null}
               <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
@@ -2231,7 +2270,7 @@ function SystemNoticeCommentRow({
   message: ThreadMessage;
   anchorId?: string;
 }) {
-  const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const { onImageClick, agentMap, issueStatus, successfulRunHandoff, locale } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -2318,11 +2357,11 @@ function SystemNoticeCommentRow({
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
               >
-                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+                {message.createdAt ? commentDateLabel(message.createdAt, locale) : ""}
               </a>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+              {message.createdAt ? formatDateTime(message.createdAt, locale) : ""}
             </TooltipContent>
           </Tooltip>
           {anchorId ? (
@@ -2360,6 +2399,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onRejectInteraction,
     onSubmitInteractionAnswers,
     onCancelInteraction,
+    locale,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -2432,38 +2472,40 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
-            {custom.followUpRequested === true ? "requested follow-up" : "updated this task"}
+            {custom.followUpRequested === true
+              ? (isKoreanLocale(locale) ? "후속 확인을 요청함" : "requested follow-up")
+              : (isKoreanLocale(locale) ? "이 작업을 수정함" : "updated this task")}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
           >
-            {timeAgo(message.createdAt)}
+            {timeAgo(message.createdAt, locale)}
           </a>
         </div>
 
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Status
+              {isKoreanLocale(locale) ? "상태" : "Status"}
             </span>
-            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
+            <span className="text-muted-foreground">{humanizeValue(statusChange.from, locale)}</span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+            <span className="font-medium text-foreground">{humanizeValue(statusChange.to, locale)}</span>
           </div>
         ) : null}
 
         {assigneeChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
             <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Assignee
+              {isKoreanLocale(locale) ? "담당자" : "Assignee"}
             </span>
             <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap, locale)}
             </span>
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap, locale)}
             </span>
           </div>
         ) : null}
@@ -2532,7 +2574,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
-              <span className="text-muted-foreground">run</span>
+              <span className="text-muted-foreground">{isKoreanLocale(locale) ? "실행" : "run"}</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
                 className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -2540,13 +2582,13 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
                 {runId.slice(0, 8)}
               </Link>
               <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
+                {formatRunStatusLabel(runStatus, locale)}
               </span>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
               >
-                {timeAgo(message.createdAt)}
+                {timeAgo(message.createdAt, locale)}
               </a>
             </div>
           </div>
@@ -3116,6 +3158,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 }, forwardedRef) {
   const api = useAui();
   const toastActions = useOptionalToastActions();
+  const locale = useCurrentLocale();
+  const korean = isKoreanLocale(locale);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -3207,8 +3251,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       && !unassignedConfirmed
     ) {
       toastActions?.pushToast({
-        title: "No assignee selected",
-        body: "Pick an assignee or click Send again to post without one.",
+        title: korean ? "담당자가 선택되지 않음" : "No assignee selected",
+        body: korean ? "담당자를 선택하거나 보내기를 다시 눌러 담당자 없이 게시하세요." : "Pick an assignee or click Send again to post without one.",
         tone: "warn",
         dedupeKey: `issue-chat-no-assignee:${draftKey ?? ""}`,
       });
@@ -3417,9 +3461,11 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               <Paperclip className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-foreground">Drop to upload</div>
+              <div className="text-sm font-medium text-foreground">{korean ? "놓아서 업로드" : "Drop to upload"}</div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Images insert into the reply. Other files are added to this issue.
+                {korean
+                  ? "이미지는 답장에 삽입되고 다른 파일은 이 작업에 첨부됩니다."
+                  : "Images insert into the reply. Other files are added to this issue."}
               </div>
             </div>
           </div>
@@ -3430,7 +3476,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Reply"
+        placeholder={korean ? "답장" : "Reply"}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
@@ -3454,12 +3500,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading to issue"
+                ? (korean ? "작업에 업로드 중" : "Uploading to issue")
                 : attachment.status === "error"
-                  ? attachment.error ?? "Upload failed"
+                  ? attachment.error ?? (korean ? "업로드 실패" : "Upload failed")
                   : attachment.inline
-                    ? "Inserted inline"
-                    : "Attached to issue";
+                    ? (korean ? "본문에 삽입됨" : "Inserted inline")
+                    : (korean ? "작업에 첨부됨" : "Attached to issue");
             return (
               <div
                 key={attachment.id}
@@ -3505,7 +3551,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach file"
+                title={korean ? "파일 첨부" : "Attach file"}
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -3518,7 +3564,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   variant="ghost"
                   size="icon-sm"
                   data-testid="issue-chat-composer-work-mode-menu"
-                  title="More composer options"
+                  title={korean ? "작성 옵션 더 보기" : "More composer options"}
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
@@ -3542,7 +3588,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   ) : (
                     <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
                   )}
-                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                  <span>{isPlanning
+                    ? (korean ? "표준 모드로 전환" : "Switch to standard")
+                    : (korean ? "계획 모드로 전환" : "Switch to planning")}</span>
                 </button>
               </PopoverContent>
             </Popover>
@@ -3553,12 +3601,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               data-testid="issue-chat-composer-work-mode-toggle"
               data-pending-work-mode={pendingWorkMode}
               aria-pressed
-              title="Planning mode is on for this submission. Click to switch to Standard."
+              title={korean
+                ? "이번 전송은 계획 모드입니다. 표준으로 전환하려면 클릭하세요."
+                : "Planning mode is on for this submission. Click to switch to Standard."}
               onClick={() => setPendingWorkMode("standard")}
               className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
             >
               <ClipboardList className="h-3.5 w-3.5" aria-hidden />
-              <span>Planning</span>
+              <span>{korean ? "계획" : "Planning"}</span>
             </button>
           ) : null}
         </div>
@@ -3567,14 +3617,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           <InlineEntitySelector
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder={korean ? "담당자" : "Assignee"}
+            noneLabel={korean ? "담당자 없음" : "No assignee"}
+            searchPlaceholder={korean ? "담당자 검색..." : "Search assignees..."}
+            emptyMessage={korean ? "담당자를 찾을 수 없습니다." : "No assignees found."}
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">{korean ? "담당자" : "Assignee"}</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -3603,7 +3653,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         ) : null}
 
         <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
+          {submitting ? (korean ? "게시 중..." : "Posting...") : (korean ? "보내기" : "Send")}
         </Button>
       </div>
     </div>
@@ -3658,6 +3708,7 @@ export function IssueChatThread({
   emptyMessage,
   footer,
   variant = "full",
+  locale: localeProp,
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
   hasOutputForRun: hasOutputForRunOverride,
@@ -3679,6 +3730,8 @@ export function IssueChatThread({
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
 }: IssueChatThreadProps) {
+  const currentLocale = useCurrentLocale();
+  const locale = localeProp ?? currentLocale;
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
@@ -3766,6 +3819,7 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        locale,
       }),
     [
       comments,
@@ -3782,6 +3836,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      locale,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
@@ -4157,6 +4212,7 @@ export function IssueChatThread({
       onCancelInteraction: stableOnCancelInteraction,
       issueStatus,
       successfulRunHandoff,
+      locale,
     }),
     [
       feedbackDataSharingPreference,
@@ -4179,14 +4235,15 @@ export function IssueChatThread({
       stableOnCancelInteraction,
       issueStatus,
       successfulRunHandoff,
+      locale,
     ],
   );
 
   const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
   const resolvedEmptyMessage = emptyMessage
     ?? (variant === "embedded"
-      ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
+      ? (isKoreanLocale(locale) ? "아직 실행 출력이 없습니다." : "No run output yet.")
+      : (isKoreanLocale(locale) ? "아직 대화가 없습니다. 아래에 메시지를 입력하세요." : "This issue conversation is empty. Start with a message below."));
   const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
@@ -4206,7 +4263,7 @@ export function IssueChatThread({
               onClick={handleJumpToLatest}
               className="text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
-              Jump to latest
+              {isKoreanLocale(locale) ? "최신으로 이동" : "Jump to latest"}
             </button>
           </div>
         ) : null}

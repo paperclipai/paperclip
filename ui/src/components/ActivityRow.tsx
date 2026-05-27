@@ -7,6 +7,7 @@ import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -26,10 +27,12 @@ interface ActivityRowProps {
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
   className?: string;
+  locale?: string | null;
 }
 
-export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className, locale }: ActivityRowProps) {
+  const copy = useLocalizedCopy();
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap, locale });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -48,7 +51,14 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const rawActorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorName = rawActorName === "Board"
+    ? copy("actor.board", "Board", "보드")
+    : rawActorName === "System"
+      ? copy("actor.system", "System", "시스템")
+      : rawActorName === "Unknown"
+        ? copy("actor.unknown", "Unknown", "알 수 없음")
+        : rawActorName;
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
@@ -66,7 +76,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
             {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
           </p>
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt)}</span>
+        <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt, locale)}</span>
       </div>
       <IssueReferenceActivitySummary event={event} />
     </div>

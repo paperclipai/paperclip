@@ -12,6 +12,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 
 // Layout constants
 const CARD_W = 200;
@@ -173,6 +174,7 @@ const defaultDotColor = "#a3a3a3";
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
   const navigate = useNavigate();
 
   const { data: orgTree, isLoading } = useQuery({
@@ -194,8 +196,8 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("org.breadcrumb", "Org Chart", "조직도") }]);
+  }, [copy, setBreadcrumbs]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -429,7 +431,12 @@ export function OrgChart() {
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return (
+      <EmptyState
+        icon={Network}
+        message={copy("orgChart.noCompany", "Select a company to view the org chart.", "조직도를 보려면 회사를 선택하세요.")}
+      />
+    );
   }
 
   if (isLoading) {
@@ -437,7 +444,12 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return (
+      <EmptyState
+        icon={Network}
+        message={copy("orgChart.empty", "No organizational hierarchy defined.", "정의된 조직 계층이 없습니다.")}
+      />
+    );
   }
 
   return (
@@ -446,13 +458,13 @@ export function OrgChart() {
         <Link to="/company/import">
           <Button variant="outline" size="sm">
             <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
+            {copy("orgChart.import", "Import company", "회사 가져오기")}
           </Button>
         </Link>
         <Link to="/company/export">
           <Button variant="outline" size="sm">
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
+            {copy("orgChart.export", "Export company", "회사 내보내기")}
           </Button>
         </Link>
       </div>
@@ -488,8 +500,8 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={copy("orgChart.zoomIn", "Zoom in", "확대")}
+            aria-label={copy("orgChart.zoomIn", "Zoom in", "확대")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -504,16 +516,16 @@ export function OrgChart() {
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={copy("orgChart.zoomOut", "Zoom out", "축소")}
+            aria-label={copy("orgChart.zoomOut", "Zoom out", "축소")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-[10px] transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={copy("orgChart.fit", "Fit to screen", "화면에 맞춤")}
+            aria-label={copy("orgChart.fitAria", "Fit chart to screen", "조직도를 화면에 맞춤")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>

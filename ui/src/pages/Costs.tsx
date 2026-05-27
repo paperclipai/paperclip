@@ -27,6 +27,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -108,37 +109,47 @@ function FinanceSummaryCard({
   estimatedDebitCents: number;
   eventCount: number;
 }) {
+  const copy = useLocalizedCopy();
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Finance ledger</CardTitle>
+        <CardTitle className="text-base">{copy("costs.financeLedger", "Finance ledger", "재무 장부")}</CardTitle>
         <CardDescription>
-          Account-level charges that do not map to a single inference request.
+          {copy(
+            "costs.financeLedger.description",
+            "Account-level charges that do not map to a single inference request.",
+            "단일 추론 요청에 직접 매핑되지 않는 계정 단위 비용입니다.",
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3 px-5 pb-5 pt-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Debits"
+          label={copy("costs.debits", "Debits", "차감")}
           value={formatCents(debitCents)}
-          subtitle={`${eventCount} total event${eventCount === 1 ? "" : "s"} in range`}
+          subtitle={copy(
+            "costs.finance.eventsInRange",
+            eventCount === 1 ? "{{count}} total event in range" : "{{count}} total events in range",
+            "범위 내 총 이벤트 {{count}}건",
+            { count: eventCount },
+          )}
           icon={ArrowUpRight}
         />
         <MetricTile
-          label="Credits"
+          label={copy("costs.credits", "Credits", "크레딧")}
           value={formatCents(creditCents)}
-          subtitle="Refunds, offsets, and credit returns"
+          subtitle={copy("costs.credits.subtitle", "Refunds, offsets, and credit returns", "환불, 상계, 크레딧 반환")}
           icon={ArrowDownLeft}
         />
         <MetricTile
-          label="Net"
+          label={copy("costs.net", "Net", "순액")}
           value={formatCents(netCents)}
-          subtitle="Debit minus credit for the selected period"
+          subtitle={copy("costs.net.subtitle", "Debit minus credit for the selected period", "선택 기간의 차감액에서 크레딧을 뺀 값")}
           icon={ReceiptText}
         />
         <MetricTile
-          label="Estimated"
+          label={copy("costs.estimated", "Estimated", "추정")}
           value={formatCents(estimatedDebitCents)}
-          subtitle="Estimated debits that are not yet invoice-authoritative"
+          subtitle={copy("costs.estimated.subtitle", "Estimated debits that are not yet invoice-authoritative", "아직 청구서 기준으로 확정되지 않은 추정 차감액")}
           icon={Coins}
         />
       </CardContent>
@@ -149,6 +160,7 @@ function FinanceSummaryCard({
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
 
   const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
@@ -168,8 +180,8 @@ export function Costs() {
   } = useDateRange();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("costs.breadcrumb", "Costs", "비용") }]);
+  }, [copy, setBreadcrumbs]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
   const todayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -436,6 +448,17 @@ export function Costs() {
 
   const providers = useMemo(() => Array.from(byProvider.keys()), [byProvider]);
   const billers = useMemo(() => Array.from(byBiller.keys()), [byBiller]);
+  const billingModeSummary = useMemo(() => {
+    let apiRunCount = 0;
+    let subscriptionRunCount = 0;
+    let subscriptionTokens = 0;
+    for (const row of spendData?.byAgent ?? []) {
+      apiRunCount += row.apiRunCount;
+      subscriptionRunCount += row.subscriptionRunCount;
+      subscriptionTokens += row.subscriptionCachedInputTokens + row.subscriptionInputTokens + row.subscriptionOutputTokens;
+    }
+    return { apiRunCount, subscriptionRunCount, subscriptionTokens };
+  }, [spendData?.byAgent]);
 
   const effectiveProvider =
     activeProvider === "all" || providers.includes(activeProvider) ? activeProvider : "all";
@@ -463,8 +486,8 @@ export function Costs() {
       {
         value: "all",
         label: (
-          <span className="flex items-center gap-1.5">
-            <span>All providers</span>
+            <span className="flex items-center gap-1.5">
+            <span>{copy("costs.allProviders", "All providers", "전체 제공자")}</span>
             {providerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
@@ -479,7 +502,7 @@ export function Costs() {
         label: <ProviderTabLabel provider={provider} rows={byProvider.get(provider) ?? []} />,
       })),
     ];
-  }, [byProvider]);
+  }, [byProvider, copy]);
 
   const billerTabItems = useMemo(() => {
     const billerKeys = Array.from(byBiller.keys());
@@ -495,8 +518,8 @@ export function Costs() {
       {
         value: "all",
         label: (
-          <span className="flex items-center gap-1.5">
-            <span>All billers</span>
+            <span className="flex items-center gap-1.5">
+            <span>{copy("costs.allBillers", "All billers", "전체 청구자")}</span>
             {billerKeys.length > 0 ? (
               <>
                 <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
@@ -511,7 +534,7 @@ export function Costs() {
         label: <BillerTabLabel biller={biller} rows={byBiller.get(biller) ?? []} />,
       })),
     ];
-  }, [byBiller]);
+  }, [byBiller, copy]);
 
   const inferenceTokenTotal =
     (spendData?.byAgent ?? []).reduce(
@@ -522,6 +545,14 @@ export function Costs() {
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
+  const presetLabels = {
+    mtd: copy("costs.preset.mtd", PRESET_LABELS.mtd, "이번 달"),
+    "7d": copy("costs.preset.7d", PRESET_LABELS["7d"], "최근 7일"),
+    "30d": copy("costs.preset.30d", PRESET_LABELS["30d"], "최근 30일"),
+    ytd: copy("costs.preset.ytd", PRESET_LABELS.ytd, "올해"),
+    all: copy("costs.preset.all", PRESET_LABELS.all, "전체"),
+    custom: copy("costs.preset.custom", PRESET_LABELS.custom, "직접 선택"),
+  };
   const budgetPoliciesByScope = useMemo(() => ({
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
     agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
@@ -529,7 +560,7 @@ export function Costs() {
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message={copy("costs.noCompany", "Select a company to view costs.", "비용을 보려면 회사를 선택하세요.")} />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
@@ -541,9 +572,13 @@ export function Costs() {
       <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-                <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
+                <h1 className="text-3xl font-semibold tracking-tight">{copy("costs.title", "Costs", "비용")}</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Inference spend, platform fees, credits, and live quota windows.
+                  {copy(
+                    "costs.subtitle",
+                    "Inference spend, platform fees, credits, and live quota windows.",
+                    "추론 지출, 플랫폼 비용, 크레딧, 실시간 quota 구간을 관리합니다.",
+                  )}
                 </p>
             </div>
 
@@ -555,7 +590,7 @@ export function Costs() {
                   size="sm"
                   onClick={() => setPreset(key)}
                 >
-                  {PRESET_LABELS[key]}
+                  {presetLabels[key]}
                 </Button>
               ))}
             </div>
@@ -569,7 +604,7 @@ export function Costs() {
                 onChange={(event) => setCustomFrom(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               />
-              <span className="text-sm text-muted-foreground">to</span>
+              <span className="text-sm text-muted-foreground">{copy("costs.dateRange.to", "to", "까지")}</span>
               <input
                 type="date"
                 value={customTo}
@@ -581,54 +616,97 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
+              label={copy("costs.inferenceSpend", "Inference spend", "추론 지출")}
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={copy(
+                "costs.inferenceSpend.subtitle",
+                "{{tokens}} tokens across request-scoped events",
+                "요청 단위 이벤트 토큰 {{tokens}}",
+                { tokens: formatTokens(inferenceTokenTotal) },
+              )}
               icon={DollarSign}
             />
             <MetricTile
-              label="Budget"
+              label={copy("costs.budget", "Budget", "예산")}
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
                 spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                   ? `${spendData.summary.utilizationPercent}%`
-                  : "Open"
+                  : copy("costs.budget.open", "Open", "열림")
               )}
               subtitle={
                 activeBudgetIncidents.length > 0
-                  ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
+                  ? copy(
+                    "costs.budget.paused",
+                    "{{agents}} agents paused · {{projects}} projects paused",
+                    "직원 {{agents}}명 일시정지 · 프로젝트 {{projects}}개 일시정지",
+                    { agents: budgetData?.pausedAgentCount ?? 0, projects: budgetData?.pausedProjectCount ?? 0 },
+                  )
                   : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                     ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
-                    : "No monthly cap configured"
+                    : copy("costs.budget.noCap", "No monthly cap configured", "월 한도 미설정")
               }
               icon={Coins}
             />
             <MetricTile
-              label="Finance net"
+              label={copy("costs.financeNet", "Finance net", "재무 순액")}
               value={formatCents(financeData?.summary.netCents ?? 0)}
-              subtitle={`${formatCents(financeData?.summary.debitCents ?? 0)} debits · ${formatCents(financeData?.summary.creditCents ?? 0)} credits`}
+              subtitle={copy(
+                "costs.financeNet.subtitle",
+                "{{debits}} debits · {{credits}} credits",
+                "차감 {{debits}} · 크레딧 {{credits}}",
+                { debits: formatCents(financeData?.summary.debitCents ?? 0), credits: formatCents(financeData?.summary.creditCents ?? 0) },
+              )}
               icon={ReceiptText}
             />
             <MetricTile
-              label="Finance events"
+              label={copy("costs.financeEvents", "Finance events", "재무 이벤트")}
               value={String(financeData?.summary.eventCount ?? 0)}
-              subtitle={`${formatCents(financeData?.summary.estimatedDebitCents ?? 0)} estimated in range`}
+              subtitle={copy(
+                "costs.financeEvents.subtitle",
+                "{{amount}} estimated in range",
+                "범위 내 추정 {{amount}}",
+                { amount: formatCents(financeData?.summary.estimatedDebitCents ?? 0) },
+              )}
               icon={ArrowUpRight}
             />
+          </div>
+
+          <div className="grid gap-3 border border-border p-4 md:grid-cols-[1fr_auto] md:items-center">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{copy("costs.billingMode.title", "Billing mode split", "구독/API 과금 구분")}</div>
+              <div className="mt-1 text-sm text-muted-foreground">
+                {copy(
+                  "costs.billingMode.description",
+                  "Subscription-included runs are counted separately from API-billed spend so GPT Max-style usage is not mistaken for direct API charges.",
+                  "구독형 포함 실행은 API 과금 지출과 분리해 표시하므로 GPT Max형 사용량을 직접 API 비용으로 오해하지 않습니다.",
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="border border-border px-3 py-2">
+                {copy("costs.billingMode.subscription", "Subscription {{count}} runs", "구독형 {{count}}회", { count: billingModeSummary.subscriptionRunCount })}
+                {" · "}
+                {formatTokens(billingModeSummary.subscriptionTokens)}
+              </span>
+              <span className="border border-border px-3 py-2">
+                {copy("costs.billingMode.api", "API {{count}} runs", "API {{count}}회", { count: billingModeSummary.apiRunCount })}
+              </span>
+            </div>
           </div>
       </div>
 
       <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as typeof mainTab)}>
         <TabsList variant="line" className="justify-start">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="budgets">Budgets</TabsTrigger>
-          <TabsTrigger value="providers">Providers</TabsTrigger>
-          <TabsTrigger value="billers">Billers</TabsTrigger>
-          <TabsTrigger value="finance">Finance</TabsTrigger>
+          <TabsTrigger value="overview">{copy("costs.tab.overview", "Overview", "개요")}</TabsTrigger>
+          <TabsTrigger value="budgets">{copy("costs.tab.budgets", "Budgets", "예산")}</TabsTrigger>
+          <TabsTrigger value="providers">{copy("costs.tab.providers", "Providers", "제공자")}</TabsTrigger>
+          <TabsTrigger value="billers">{copy("costs.tab.billers", "Billers", "청구자")}</TabsTrigger>
+          <TabsTrigger value="finance">{copy("costs.tab.finance", "Finance", "재무")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
           {showCustomPrompt ? (
-            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+            <p className="text-sm text-muted-foreground">{copy("costs.customPrompt", "Select a start and end date to load data.", "데이터를 불러올 시작일과 종료일을 선택하세요.")}</p>
           ) : showOverviewLoading ? (
             <PageSkeleton variant="costs" />
           ) : overviewError ? (
@@ -657,9 +735,13 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-[1.3fr,1fr]">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">Inference ledger</CardTitle>
+                    <CardTitle className="text-base">{copy("costs.inferenceLedger", "Inference ledger", "추론 장부")}</CardTitle>
                     <CardDescription>
-                      Request-scoped inference spend for the selected period.
+                      {copy(
+                        "costs.inferenceLedger.description",
+                        "Request-scoped inference spend for the selected period.",
+                        "선택 기간의 요청 단위 추론 지출입니다.",
+                      )}
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
@@ -670,12 +752,12 @@ export function Costs() {
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                            ? `Budget ${formatCents(spendData.summary.budgetCents)}`
-                            : "Unlimited budget"}
+                            ? copy("costs.inferenceLedger.budget", "Budget {{amount}}", "예산 {{amount}}", { amount: formatCents(spendData.summary.budgetCents) })
+                            : copy("costs.inferenceLedger.unlimited", "Unlimited budget", "무제한 예산")}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{copy("costs.usage", "usage", "사용량")}</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
                           {formatTokens(inferenceTokenTotal)}
                         </div>
@@ -697,7 +779,12 @@ export function Costs() {
                           />
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {spendData.summary.utilizationPercent}% of monthly budget consumed in this range.
+                          {copy(
+                            "costs.inferenceLedger.utilization",
+                            "{{percent}}% of monthly budget consumed in this range.",
+                            "이 범위에서 월 예산의 {{percent}}%를 사용했습니다.",
+                            { percent: spendData.summary.utilizationPercent },
+                          )}
                         </div>
                       </div>
                     ) : null}
@@ -716,12 +803,14 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">By agent</CardTitle>
-                    <CardDescription>What each agent consumed in the selected period.</CardDescription>
+                    <CardTitle className="text-base">{copy("costs.byAgent", "By agent", "직원별")}</CardTitle>
+                    <CardDescription>
+                      {copy("costs.byAgent.description", "What each agent consumed in the selected period.", "선택 기간 동안 각 직원이 사용한 비용입니다.")}
+                    </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2 px-5 pb-5 pt-2">
                     {(spendData?.byAgent.length ?? 0) === 0 ? (
-                      <p className="text-sm text-muted-foreground">No cost events yet.</p>
+                      <p className="text-sm text-muted-foreground">{copy("costs.empty.costEvents", "No cost events yet.", "아직 비용 이벤트가 없습니다.")}</p>
                     ) : (
                       spendData?.byAgent.map((row) => {
                         const modelRows = agentModelRows.get(row.agentId) ?? [];
@@ -747,15 +836,20 @@ export function Costs() {
                               <div className="text-right text-sm tabular-nums">
                                 <div className="font-medium">{formatCents(row.costCents)}</div>
                                 <div className="text-xs text-muted-foreground">
-                                  in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
+                                  {copy("costs.tokens.inOut", "in {{input}} · out {{output}}", "입력 {{input}} · 출력 {{output}}", {
+                                    input: formatTokens(row.inputTokens + row.cachedInputTokens),
+                                    output: formatTokens(row.outputTokens),
+                                  })}
                                 </div>
                                 {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
                                   <div className="text-xs text-muted-foreground">
-                                    {row.apiRunCount > 0 ? `${row.apiRunCount} api` : "0 api"}
+                                    {row.apiRunCount > 0
+                                      ? copy("costs.runCount.api", "{{count}} api", "API {{count}}회", { count: row.apiRunCount })
+                                      : copy("costs.runCount.api", "{{count}} api", "API {{count}}회", { count: 0 })}
                                     {" · "}
                                     {row.subscriptionRunCount > 0
-                                      ? `${row.subscriptionRunCount} subscription`
-                                      : "0 subscription"}
+                                      ? copy("costs.runCount.subscription", "{{count}} subscription", "구독 {{count}}회", { count: row.subscriptionRunCount })
+                                      : copy("costs.runCount.subscription", "{{count}} subscription", "구독 {{count}}회", { count: 0 })}
                                   </div>
                                 ) : null}
                               </div>
@@ -804,19 +898,19 @@ export function Costs() {
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
-                      <CardTitle className="text-base">By project</CardTitle>
-                      <CardDescription>Run costs attributed through project-linked issues.</CardDescription>
+                      <CardTitle className="text-base">{copy("costs.byProject", "By project", "프로젝트별")}</CardTitle>
+                      <CardDescription>{copy("costs.byProject.description", "Run costs attributed through project-linked issues.", "프로젝트와 연결된 작업을 통해 귀속된 실행 비용입니다.")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5 pb-5 pt-2">
                       {(spendData?.byProject.length ?? 0) === 0 ? (
-                        <p className="text-sm text-muted-foreground">No project-attributed run costs yet.</p>
+                        <p className="text-sm text-muted-foreground">{copy("costs.empty.projectCosts", "No project-attributed run costs yet.", "아직 프로젝트 귀속 실행 비용이 없습니다.")}</p>
                       ) : (
                         spendData?.byProject.map((row, index) => (
                           <div
                             key={row.projectId ?? `unattributed-${index}`}
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
-                            <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
+                            <span className="truncate">{row.projectName ?? row.projectId ?? copy("costs.unattributed", "Unattributed", "미귀속")}</span>
                             <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
                           </div>
                         ))
@@ -824,7 +918,14 @@ export function Costs() {
                     </CardContent>
                   </Card>
 
-                  <FinanceTimelineCard rows={topFinanceEvents.slice(0, 6)} emptyMessage="No finance events yet. Add account-level charges once biller invoices or credits land." />
+                  <FinanceTimelineCard
+                    rows={topFinanceEvents.slice(0, 6)}
+                    emptyMessage={copy(
+                      "costs.empty.financeTimeline",
+                      "No finance events yet. Add account-level charges once biller invoices or credits land.",
+                      "아직 재무 이벤트가 없습니다. 청구자 인보이스나 크레딧이 반영되면 계정 단위 비용을 추가하세요.",
+                    )}
+                  />
                 </div>
               </div>
             </>
@@ -840,34 +941,38 @@ export function Costs() {
             <>
               <Card className="border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))]">
                 <CardHeader className="px-5 pt-5 pb-3">
-                  <CardTitle className="text-base">Budget control plane</CardTitle>
+                  <CardTitle className="text-base">{copy("costs.budgetControl", "Budget control plane", "예산 제어판")}</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    {copy(
+                      "costs.budgetControl.description",
+                      "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+                      "직원과 프로젝트의 강제 중지 지출 한도입니다. 제공자 구독 quota는 별도로 Providers 아래에 표시됩니다.",
+                    )}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
                   <MetricTile
-                    label="Active incidents"
+                    label={copy("costs.activeIncidents", "Active incidents", "활성 사고")}
                     value={String(activeBudgetIncidents.length)}
-                    subtitle="Open soft or hard threshold crossings"
+                    subtitle={copy("costs.activeIncidents.subtitle", "Open soft or hard threshold crossings", "열려 있는 소프트/하드 한도 초과")}
                     icon={ReceiptText}
                   />
                   <MetricTile
-                    label="Pending approvals"
+                    label={copy("costs.pendingApprovals", "Pending approvals", "대기 승인")}
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
-                    subtitle="Budget override approvals awaiting board action"
+                    subtitle={copy("costs.pendingApprovals.subtitle", "Budget override approvals awaiting board action", "보드 처리를 기다리는 예산 초과 승인")}
                     icon={ArrowUpRight}
                   />
                   <MetricTile
-                    label="Paused agents"
+                    label={copy("costs.pausedAgents", "Paused agents", "일시정지 직원")}
                     value={String(budgetData?.pausedAgentCount ?? 0)}
-                    subtitle="Agent heartbeats blocked by budget"
+                    subtitle={copy("costs.pausedAgents.subtitle", "Agent heartbeats blocked by budget", "예산으로 차단된 직원 상태 점검")}
                     icon={Coins}
                   />
                   <MetricTile
-                    label="Paused projects"
+                    label={copy("costs.pausedProjects", "Paused projects", "일시정지 프로젝트")}
                     value={String(budgetData?.pausedProjectCount ?? 0)}
-                    subtitle="Project execution blocked by budget"
+                    subtitle={copy("costs.pausedProjects.subtitle", "Project execution blocked by budget", "예산으로 차단된 프로젝트 실행")}
                     icon={DollarSign}
                   />
                 </CardContent>
@@ -876,9 +981,13 @@ export function Costs() {
               {activeBudgetIncidents.length > 0 ? (
                 <div className="space-y-3">
                   <div>
-                    <h2 className="text-lg font-semibold">Active incidents</h2>
+                    <h2 className="text-lg font-semibold">{copy("costs.activeIncidents", "Active incidents", "활성 사고")}</h2>
                     <p className="text-sm text-muted-foreground">
-                      Resolve hard stops here by raising the budget or explicitly keeping the scope paused.
+                      {copy(
+                        "costs.activeIncidents.description",
+                        "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+                        "예산을 올리거나 범위를 명시적으로 일시정지 상태로 유지해 강제 중지를 처리합니다.",
+                      )}
                     </p>
                   </div>
                   <div className="grid gap-4 xl:grid-cols-2">
@@ -907,13 +1016,19 @@ export function Costs() {
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
-                        <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
+                        <h2 className="text-lg font-semibold capitalize">
+                          {scopeType === "company"
+                            ? copy("costs.budgetScope.company", "Company budgets", "회사 예산")
+                            : scopeType === "agent"
+                              ? copy("costs.budgetScope.agent", "Agent budgets", "직원 예산")
+                              : copy("costs.budgetScope.project", "Project budgets", "프로젝트 예산")}
+                        </h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
-                            ? "Company-wide monthly policy."
+                            ? copy("costs.budgetScope.companyHelp", "Company-wide monthly policy.", "회사 전체 월간 정책입니다.")
                             : scopeType === "agent"
-                              ? "Recurring monthly spend policies for individual agents."
-                              : "Lifetime spend policies for execution-bound projects."}
+                              ? copy("costs.budgetScope.agentHelp", "Recurring monthly spend policies for individual agents.", "개별 직원의 반복 월간 지출 정책입니다.")
+                              : copy("costs.budgetScope.projectHelp", "Lifetime spend policies for execution-bound projects.", "실행 연결 프로젝트의 누적 지출 정책입니다.")}
                         </p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">
@@ -939,7 +1054,11 @@ export function Costs() {
                 {budgetPolicies.length === 0 ? (
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.
+                      {copy(
+                        "costs.empty.budgetPolicies",
+                        "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.",
+                        "아직 예산 정책이 없습니다. 직원/프로젝트 상세에서 예산을 설정하거나 기존 회사 월간 예산 제어를 사용하세요.",
+                      )}
                     </CardContent>
                   </Card>
                 ) : null}
@@ -950,7 +1069,7 @@ export function Costs() {
 
         <TabsContent value="providers" className="mt-4 space-y-4">
           {showCustomPrompt ? (
-            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+            <p className="text-sm text-muted-foreground">{copy("costs.customPrompt", "Select a start and end date to load data.", "데이터를 불러올 시작일과 종료일을 선택하세요.")}</p>
           ) : (
             <>
               <Tabs value={effectiveProvider} onValueChange={setActiveProvider}>
@@ -958,7 +1077,7 @@ export function Costs() {
 
                 <TabsContent value="all" className="mt-4">
                   {providers.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No cost events in this period.</p>
+                    <p className="text-sm text-muted-foreground">{copy("costs.empty.periodCosts", "No cost events in this period.", "이 기간에는 비용 이벤트가 없습니다.")}</p>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {providers.map((provider) => (
@@ -1005,7 +1124,7 @@ export function Costs() {
 
         <TabsContent value="billers" className="mt-4 space-y-4">
           {showCustomPrompt ? (
-            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+            <p className="text-sm text-muted-foreground">{copy("costs.customPrompt", "Select a start and end date to load data.", "데이터를 불러올 시작일과 종료일을 선택하세요.")}</p>
           ) : (
             <>
               <Tabs value={effectiveBiller} onValueChange={setActiveBiller}>
@@ -1013,7 +1132,7 @@ export function Costs() {
 
                 <TabsContent value="all" className="mt-4">
                   {billers.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No billable events in this period.</p>
+                    <p className="text-sm text-muted-foreground">{copy("costs.empty.billablePeriod", "No billable events in this period.", "이 기간에는 청구 가능 이벤트가 없습니다.")}</p>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {billers.map((biller) => {
@@ -1058,7 +1177,7 @@ export function Costs() {
 
         <TabsContent value="finance" className="mt-4 space-y-4">
           {showCustomPrompt ? (
-            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+            <p className="text-sm text-muted-foreground">{copy("costs.customPrompt", "Select a start and end date to load data.", "데이터를 불러올 시작일과 종료일을 선택하세요.")}</p>
           ) : financeLoading ? (
             <PageSkeleton variant="costs" />
           ) : financeError ? (
@@ -1077,12 +1196,18 @@ export function Costs() {
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
-                      <CardTitle className="text-base">By biller</CardTitle>
-                      <CardDescription>Account-level financial events grouped by who charged or credited them.</CardDescription>
+                      <CardTitle className="text-base">{copy("costs.byBiller", "By biller", "청구자별")}</CardTitle>
+                      <CardDescription>
+                        {copy(
+                          "costs.byBiller.description",
+                          "Account-level financial events grouped by who charged or credited them.",
+                          "비용을 청구하거나 크레딧을 준 주체별 계정 단위 재무 이벤트입니다.",
+                        )}
+                      </CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">
                       {(financeData?.byBiller.length ?? 0) === 0 ? (
-                        <p className="text-sm text-muted-foreground">No finance events yet.</p>
+                        <p className="text-sm text-muted-foreground">{copy("costs.empty.financeEvents", "No finance events yet.", "아직 재무 이벤트가 없습니다.")}</p>
                       ) : (
                         financeData?.byBiller.map((row) => <FinanceBillerCard key={row.biller} row={row} />)
                       )}

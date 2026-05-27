@@ -1,14 +1,15 @@
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 const items = [
-  { value: "general", label: "General", href: "/company/settings" },
-  { value: "environments", label: "Environments", href: "/company/settings/environments" },
-  { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
-  { value: "members", label: "Members", href: "/company/settings/members" },
-  { value: "invites", label: "Invites", href: "/company/settings/invites" },
-  { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
+  { value: "general", labelKey: "general", english: "General", korean: "일반", href: "/company/settings" },
+  { value: "environments", labelKey: "environments", english: "Environments", korean: "환경", href: "/company/settings/environments" },
+  { value: "cloud-upstream", labelKey: "cloudUpstream", english: "Cloud upstream", korean: "클라우드 연동", href: "/company/settings/cloud-upstream" },
+  { value: "members", labelKey: "members", english: "Members", korean: "멤버", href: "/company/settings/members" },
+  { value: "invites", labelKey: "invites", english: "Invites", korean: "초대", href: "/company/settings/invites" },
+  { value: "secrets", labelKey: "secrets", english: "Secrets", korean: "시크릿", href: "/company/settings/secrets" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
@@ -40,6 +41,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
+  const copy = useLocalizedCopy();
   const activeTab = getCompanySettingsTab(location.pathname);
 
   function handleTabChange(value: string) {
@@ -51,7 +53,10 @@ export function CompanySettingsNav() {
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange}>
       <PageTabBar
-        items={items.map(({ value, label }) => ({ value, label }))}
+        items={items.map(({ value, labelKey, english, korean }) => ({
+          value,
+          label: copy(`companySettings.nav.${labelKey}`, english, korean),
+        }))}
         value={activeTab}
         onValueChange={handleTabChange}
         align="start"

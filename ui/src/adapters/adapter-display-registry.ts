@@ -45,18 +45,24 @@ function withSuffix(label: string, suffix: string | null): string {
 export interface AdapterDisplayInfo {
   label: string;
   description: string;
+  koreanLabel?: string;
+  koreanDescription?: string;
   icon: ComponentType<{ className?: string }>;
   recommended?: boolean;
   comingSoon?: boolean;
   disabledLabel?: string;
+  koreanDisabledLabel?: string;
   experimental?: boolean;
   hideFromVisualSelection?: boolean;
 }
+
+type AdapterDisplayCopy = (key: string, english: string, korean: string) => string;
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   acpx_local: {
     label: "ACPX",
     description: "Experimental local ACPX multi-agent adapter",
+    koreanDescription: "실험적 로컬 ACPX 다중 직원 어댑터",
     icon: Bot,
     experimental: true,
     hideFromVisualSelection: true,
@@ -64,67 +70,81 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",
+    koreanDescription: "로컬 Claude 직원",
     icon: Sparkles,
     recommended: true,
   },
   codex_local: {
     label: "Codex",
     description: "Local Codex agent",
+    koreanDescription: "로컬 Codex 직원",
     icon: Code,
     recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
     description: "Local Gemini agent",
+    koreanDescription: "로컬 Gemini 직원",
     icon: Gem,
   },
   grok_local: {
     label: "Grok Build",
     description: "Local Grok Build agent",
+    koreanDescription: "로컬 Grok Build 직원",
     icon: Bot,
   },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
+    koreanDescription: "로컬 다중 제공자 직원",
     icon: OpenCodeLogoIcon,
   },
   hermes_local: {
     label: "Hermes Agent",
     description: "Local Hermes CLI agent",
+    koreanLabel: "Hermes 직원",
+    koreanDescription: "로컬 Hermes CLI 직원",
     icon: HermesIcon,
   },
   pi_local: {
     label: "Pi",
     description: "Local Pi agent",
+    koreanDescription: "로컬 Pi 직원",
     icon: Terminal,
   },
   cursor: {
     label: "Cursor",
     description: "Local Cursor agent",
+    koreanDescription: "로컬 Cursor 직원",
     icon: MousePointer2,
   },
   cursor_cloud: {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
+    koreanDescription: "관리형 원격 Cursor 직원",
     icon: MousePointer2,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
     description: "External gateway adapter",
+    koreanDescription: "외부 게이트웨이 어댑터",
     icon: Bot,
     comingSoon: true,
     disabledLabel: "Invite external agents from the add-agent modal",
+    koreanDisabledLabel: "직원 추가 창에서 외부 직원을 초대하세요",
     hideFromVisualSelection: true,
   },
   process: {
     label: "Process",
     description: "Internal process adapter",
+    koreanDescription: "내부 프로세스 어댑터",
     icon: Cpu,
     comingSoon: true,
   },
   http: {
     label: "HTTP",
     description: "Internal HTTP adapter",
+    koreanDescription: "내부 HTTP 어댑터",
     icon: Cpu,
     comingSoon: true,
   },
@@ -169,6 +189,34 @@ export function getAdapterDisplay(type: string): AdapterDisplayInfo {
     label,
     description: suffix ? `External ${suffix} adapter` : "External adapter",
     icon: Cpu,
+  };
+}
+
+export function getLocalizedAdapterDisplay(type: string, copy: AdapterDisplayCopy): AdapterDisplayInfo {
+  const display = getAdapterDisplay(type);
+  const known = adapterDisplayMap[type];
+  const suffix = getTypeSuffix(type);
+  const fallbackKoreanDescription = suffix ? `외부 ${suffix} 어댑터` : "외부 어댑터";
+
+  return {
+    ...display,
+    label: copy(
+      `adapters.${type}.label`,
+      display.label,
+      known?.koreanLabel ?? display.label,
+    ),
+    description: copy(
+      `adapters.${type}.description`,
+      display.description,
+      known?.koreanDescription ?? fallbackKoreanDescription,
+    ),
+    disabledLabel: display.disabledLabel
+      ? copy(
+        `adapters.${type}.disabledLabel`,
+        display.disabledLabel,
+        known?.koreanDisabledLabel ?? display.disabledLabel,
+      )
+      : undefined,
   };
 }
 

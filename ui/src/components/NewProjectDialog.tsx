@@ -35,22 +35,24 @@ import {
 } from "@/components/ui/tooltip";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
 const projectStatuses = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "backlog", key: "backlog", english: "Backlog", korean: "대기" },
+  { value: "planned", key: "planned", english: "Planned", korean: "계획됨" },
+  { value: "in_progress", key: "inProgress", english: "In Progress", korean: "진행 중" },
+  { value: "completed", key: "completed", english: "Completed", korean: "완료" },
+  { value: "cancelled", key: "cancelled", english: "Cancelled", korean: "취소" },
 ];
 
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const copy = useLocalizedCopy();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -97,7 +99,7 @@ export function NewProjectDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error(copy("newProject.error.noCompany", "No company selected", "선택된 회사가 없습니다."));
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
     },
   });
@@ -130,7 +132,7 @@ export function NewProjectDialog() {
   const deriveWorkspaceNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");
     const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
+    return segments[segments.length - 1] ?? copy("newProject.workspace.localFolder", "Local folder", "로컬 폴더");
   };
 
   const deriveWorkspaceNameFromRepo = (value: string) => {
@@ -138,9 +140,9 @@ export function NewProjectDialog() {
       const parsed = new URL(value);
       const segments = parsed.pathname.split("/").filter(Boolean);
       const repo = segments[segments.length - 1]?.replace(/\.git$/i, "") ?? "";
-      return repo || "GitHub repo";
+      return repo || copy("newProject.workspace.githubRepo", "GitHub repo", "GitHub 저장소");
     } catch {
-      return "GitHub repo";
+      return copy("newProject.workspace.githubRepo", "GitHub repo", "GitHub 저장소");
     }
   };
 
@@ -150,11 +152,19 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError(copy(
+        "newProject.error.localPath",
+        "Local folder must be a full absolute path.",
+        "로컬 폴더는 전체 절대 경로여야 합니다.",
+      ));
       return;
     }
     if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+      setWorkspaceError(copy(
+        "newProject.error.repoUrl",
+        "Repo must use a valid GitHub or GitHub Enterprise repo URL.",
+        "저장소는 유효한 GitHub 또는 GitHub Enterprise 저장소 URL이어야 합니다.",
+      ));
       return;
     }
 
@@ -224,7 +234,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{copy("newProject.title", "New project", "새 프로젝트")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -232,6 +242,9 @@ export function NewProjectDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              aria-label={expanded
+                ? copy("newProject.collapse", "Collapse dialog", "창 축소")
+                : copy("newProject.expand", "Expand dialog", "창 확대")}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -240,6 +253,7 @@ export function NewProjectDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => { reset(); closeNewProject(); }}
+              aria-label={copy("common.close", "Close", "닫기")}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -250,7 +264,7 @@ export function NewProjectDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Project name"
+            placeholder={copy("newProject.name.placeholder", "Project name", "프로젝트 이름")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
@@ -269,7 +283,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={copy("newProject.description.placeholder", "Add description...", "설명 추가...")}
             bordered={false}
             mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -283,14 +297,18 @@ export function NewProjectDialog() {
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <label className="block text-xs text-muted-foreground">{copy("newProject.repoUrl", "Repo URL", "저장소 URL")}</label>
+              <span className="text-xs text-muted-foreground/50">{copy("common.optional", "optional", "선택")}</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
+                  {copy(
+                    "newProject.repoUrl.help",
+                    "Link a GitHub repository so agents can clone, read, and push code for this project.",
+                    "직원이 이 프로젝트의 코드를 clone, 읽기, push할 수 있도록 GitHub 저장소를 연결합니다.",
+                  )}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -304,14 +322,18 @@ export function NewProjectDialog() {
 
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <label className="block text-xs text-muted-foreground">{copy("newProject.localFolder", "Local folder", "로컬 폴더")}</label>
+              <span className="text-xs text-muted-foreground/50">{copy("common.optional", "optional", "선택")}</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
+                  {copy(
+                    "newProject.localFolder.help",
+                    "Set an absolute path on this machine where local agents will read and write files for this project.",
+                    "이 프로젝트에서 로컬 직원이 파일을 읽고 쓸 이 PC의 절대 경로를 지정합니다.",
+                  )}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -350,7 +372,7 @@ export function NewProjectDialog() {
                   )}
                   onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                 >
-                  {s.label}
+                  {copy(`newProject.status.${s.key}`, s.english, s.korean)}
                 </button>
               ))}
             </PopoverContent>
@@ -366,7 +388,7 @@ export function NewProjectDialog() {
               <button
                 className="text-muted-foreground hover:text-foreground"
                 onClick={() => setGoalIds((prev) => prev.filter((id) => id !== goal.id))}
-                aria-label={`Remove goal ${goal.title}`}
+                aria-label={copy("newProject.goal.remove", "Remove goal {{title}}", "{{title}} 목표 제거", { title: goal.title })}
                 type="button"
               >
                 <X className="h-3 w-3" />
@@ -381,7 +403,9 @@ export function NewProjectDialog() {
                 disabled={selectedGoals.length > 0 && availableGoals.length === 0}
               >
                 {selectedGoals.length > 0 ? <Plus className="h-3 w-3 text-muted-foreground" /> : <Target className="h-3 w-3 text-muted-foreground" />}
-                {selectedGoals.length > 0 ? "+ Goal" : "Goal"}
+                {selectedGoals.length > 0
+                  ? copy("newProject.goal.addAnother", "+ Goal", "+ 목표")
+                  : copy("newProject.goal", "Goal", "목표")}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -390,7 +414,7 @@ export function NewProjectDialog() {
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
                   onClick={() => setGoalOpen(false)}
                 >
-                  No goal
+                  {copy("newProject.goal.none", "No goal", "목표 없음")}
                 </button>
               )}
               {availableGoals.map((g) => (
@@ -407,7 +431,7 @@ export function NewProjectDialog() {
               ))}
               {selectedGoals.length > 0 && availableGoals.length === 0 && (
                 <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  All goals already selected.
+                  {copy("newProject.goal.allSelected", "All goals already selected.", "모든 목표가 이미 선택되었습니다.")}
                 </div>
               )}
             </PopoverContent>
@@ -429,7 +453,9 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">
+              {copy("newProject.error.createFailed", "Failed to create project.", "프로젝트를 만들지 못했습니다.")}
+            </p>
           ) : (
             <span />
           )}
@@ -438,7 +464,9 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending
+              ? copy("newProject.creating", "Creating…", "만드는 중...")
+              : copy("newProject.create", "Create project", "프로젝트 만들기")}
           </Button>
         </div>
       </DialogContent>

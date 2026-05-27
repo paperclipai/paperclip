@@ -22,6 +22,7 @@ import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 import {
   Dialog,
   DialogContent,
@@ -180,15 +181,26 @@ function middleTruncate(value: string, maxLength = 72) {
   return `${value.slice(0, edgeLength)}...${value.slice(value.length - edgeLength)}`;
 }
 
-function formatProjectScanSummary(result: CompanySkillProjectScanResult) {
+type LocalizedCopyFn = ReturnType<typeof useLocalizedCopy>;
+
+function formatProjectScanSummary(result: CompanySkillProjectScanResult, copy: LocalizedCopyFn) {
   const parts = [
-    `${result.discovered} found`,
-    `${result.imported.length} imported`,
-    `${result.updated.length} updated`,
+    copy("skills.scan.found", "{{count}} found", "{{count}}개 발견", { count: result.discovered }),
+    copy("skills.scan.imported", "{{count}} imported", "{{count}}개 가져옴", { count: result.imported.length }),
+    copy("skills.scan.updated", "{{count}} updated", "{{count}}개 업데이트", { count: result.updated.length }),
   ];
-  if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
-  if (result.skipped.length > 0) parts.push(`${result.skipped.length} skipped`);
-  return `${parts.join(", ")} across ${result.scannedWorkspaces} workspace${result.scannedWorkspaces === 1 ? "" : "s"}.`;
+  if (result.conflicts.length > 0) {
+    parts.push(copy("skills.scan.conflicts", "{{count}} conflicts", "충돌 {{count}}개", { count: result.conflicts.length }));
+  }
+  if (result.skipped.length > 0) {
+    parts.push(copy("skills.scan.skipped", "{{count}} skipped", "{{count}}개 건너뜀", { count: result.skipped.length }));
+  }
+  return copy(
+    "skills.scan.summary",
+    "{{summary}} across {{count}} workspace.",
+    "작업공간 {{count}}개에서 {{summary}}.",
+    { summary: parts.join(", "), count: result.scannedWorkspaces },
+  );
 }
 
 function fileIcon(kind: CompanySkillFileInventoryEntry["kind"]) {
@@ -262,6 +274,7 @@ function NewSkillForm({
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
+  const copy = useLocalizedCopy();
 
   return (
     <div className="border-b border-border px-4 py-4">
@@ -269,7 +282,7 @@ function NewSkillForm({
         <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          placeholder="Skill name"
+          placeholder={copy("skills.new.name", "Skill name", "스킬 이름")}
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <Input
@@ -281,19 +294,21 @@ function NewSkillForm({
         <Textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Short description"
+          placeholder={copy("skills.new.description", "Short description", "짧은 설명")}
           className="min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onCancel} disabled={isPending}>
-            Cancel
+            {copy("common.cancel", "Cancel", "취소")}
           </Button>
           <Button
             size="sm"
             onClick={() => onCreate({ name, slug: slug || null, description: description || null })}
             disabled={isPending || name.trim().length === 0}
           >
-            {isPending ? "Creating..." : "Create skill"}
+            {isPending
+              ? copy("skills.new.creating", "Creating...", "만드는 중...")
+              : copy("skills.new.create", "Create skill", "스킬 만들기")}
           </Button>
         </div>
       </div>
@@ -412,6 +427,7 @@ function SkillList({
   onSelectSkill: (skillId: string) => void;
   onSelectPath: (skillId: string, path: string) => void;
 }) {
+  const copy = useLocalizedCopy();
   const filteredSkills = skills.filter((skill) => {
     const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
     return haystack.includes(skillFilter.toLowerCase());
@@ -420,7 +436,7 @@ function SkillList({
   if (filteredSkills.length === 0) {
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        No skills match this filter.
+        {copy("skills.list.noMatches", "No skills match this filter.", "이 필터와 일치하는 스킬이 없습니다.")}
       </div>
     );
   }
@@ -465,7 +481,9 @@ function SkillList({
                 type="button"
                 className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
                 onClick={() => onToggleSkill(skill.id)}
-                aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
+                aria-label={expanded
+                  ? copy("skills.list.collapse", "Collapse {{name}}", "{{name}} 접기", { name: skill.name })
+                  : copy("skills.list.expand", "Expand {{name}}", "{{name}} 펼치기", { name: skill.name })}
               >
                 {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               </button>
@@ -539,6 +557,7 @@ function SkillPane({
   onSave: () => void;
   savePending: boolean;
 }) {
+  const copy = useLocalizedCopy();
   if (!detail) {
     if (loading) {
       return <PageSkeleton variant="detail" />;
@@ -546,7 +565,7 @@ function SkillPane({
     return (
       <EmptyState
         icon={Boxes}
-        message="Select a skill to inspect its files."
+        message={copy("skills.detail.empty", "Select a skill to inspect its files.", "파일을 확인할 스킬을 선택하세요.")}
       />
     );
   }
@@ -558,10 +577,24 @@ function SkillPane({
   const currentPin = shortRef(detail.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
   const displaySourcePath = detail.sourcePath ? middleTruncate(detail.sourcePath) : null;
+  const editableReason = detail.editableReason?.includes("Bundled Paperclip skills are read-only")
+    ? copy("skills.detail.bundledReadOnly", "Bundled Paperclip skills are read-only.", "기본 제공 Paperclip 스킬은 읽기 전용입니다.")
+    : detail.editableReason;
   const removeBlocked = usedBy.length > 0;
   const removeDisabledReason = removeBlocked
-    ? "Detach this skill from all agents before removing it."
+    ? copy("skills.detail.removeBlocked", "Detach this skill from all agents before removing it.", "삭제하기 전에 모든 직원에서 이 스킬 연결을 해제하세요.")
     : null;
+  const applicationStatus = detail.editable
+    ? copy("skills.detail.applyEditable", "Editable company skill", "회사 스킬로 편집/적용 가능")
+    : copy("skills.detail.applyReadOnly", "Read-only source skill", "읽기 전용 출처 스킬");
+  const connectionStatus = usedBy.length === 0
+    ? copy("skills.detail.connectionNone", "Not attached to any agent", "연결된 직원 없음")
+    : copy(
+        "skills.detail.connectionCount",
+        usedBy.length === 1 ? "Attached to {{count}} agent" : "Attached to {{count}} agents",
+        "직원 {{count}}명에 연결됨",
+        { count: usedBy.length },
+      );
 
   return (
     <div className="min-w-0">
@@ -585,7 +618,7 @@ function SkillPane({
               title={removeDisabledReason ?? undefined}
             >
               <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-              {deletePending ? "Removing..." : "Remove"}
+              {deletePending ? copy("skills.remove.removing", "Removing...", "삭제 중...") : copy("common.remove", "Remove", "삭제")}
             </Button>
             {detail.editable ? (
               <button
@@ -593,10 +626,12 @@ function SkillPane({
                 onClick={() => setEditMode(!editMode)}
               >
                 <Pencil className="h-3.5 w-3.5" />
-                {editMode ? "Stop editing" : "Edit"}
+                {editMode
+                  ? copy("skills.detail.stopEditing", "Stop editing", "편집 중지")
+                  : copy("common.edit", "Edit", "편집")}
               </button>
             ) : (
-              <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
+              <div className="text-sm text-muted-foreground">{editableReason}</div>
             )}
           </div>
         </div>
@@ -604,7 +639,7 @@ function SkillPane({
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{copy("skills.detail.source", "Source", "출처")}</span>
               <span className="flex min-w-0 items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath && displaySourcePath ? (
@@ -617,9 +652,9 @@ function SkillPane({
                     </span>
                     <CopyText
                       text={detail.sourcePath}
-                      copiedLabel="Copied path"
-                      ariaLabel="Copy source path"
-                      title="Copy source path"
+                      copiedLabel={copy("skills.detail.copiedPath", "Copied path", "경로 복사됨")}
+                      ariaLabel={copy("skills.detail.copySourcePath", "Copy source path", "출처 경로 복사")}
+                      title={copy("skills.detail.copySourcePath", "Copy source path", "출처 경로 복사")}
                       className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
                       <Copy className="h-3.5 w-3.5" />
@@ -632,10 +667,12 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
-                <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
+                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{copy("skills.detail.pin", "Pin", "고정")}</span>
+                <span className="font-mono text-xs">{currentPin ?? copy("skills.detail.untracked", "untracked", "추적 안 함")}</span>
                 {updateStatus?.trackingRef && (
-                  <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {copy("skills.detail.tracking", "tracking {{ref}}", "{{ref}} 추적 중", { ref: updateStatus.trackingRef })}
+                  </span>
                 )}
                 <Button
                   variant="ghost"
@@ -644,7 +681,7 @@ function SkillPane({
                   disabled={checkUpdatesPending || updateStatusLoading}
                 >
                   <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", (checkUpdatesPending || updateStatusLoading) && "animate-spin")} />
-                  Check for updates
+                  {copy("skills.detail.checkUpdates", "Check for updates", "업데이트 확인")}
                 </Button>
                 {updateStatus?.supported && updateStatus.hasUpdate && (
                   <Button
@@ -653,11 +690,11 @@ function SkillPane({
                     disabled={installUpdatePending}
                   >
                     <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", installUpdatePending && "animate-spin")} />
-                    Install update{latestPin ? ` ${latestPin}` : ""}
+                    {copy("skills.detail.installUpdate", "Install update", "업데이트 설치")}{latestPin ? ` ${latestPin}` : ""}
                   </Button>
                 )}
                 {updateStatus?.supported && !updateStatus.hasUpdate && !updateStatusLoading && (
-                  <span className="text-xs text-muted-foreground">Up to date</span>
+                  <span className="text-xs text-muted-foreground">{copy("skills.detail.upToDate", "Up to date", "최신 상태")}</span>
                 )}
                 {!updateStatus?.supported && updateStatus?.reason && (
                   <span className="text-xs text-muted-foreground">{updateStatus.reason}</span>
@@ -665,18 +702,18 @@ function SkillPane({
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Key</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{copy("skills.detail.key", "Key", "키")}</span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</span>
-              <span>{detail.editable ? "Editable" : "Read only"}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{copy("skills.detail.mode", "Mode", "모드")}</span>
+              <span>{detail.editable ? copy("skills.detail.editable", "Editable", "편집 가능") : copy("skills.detail.readOnly", "Read only", "읽기 전용")}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
+            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{copy("skills.detail.usedBy", "Used by", "사용 중인 직원")}</span>
             {usedBy.length === 0 ? (
-              <span className="text-muted-foreground">No agents attached</span>
+              <span className="text-muted-foreground">{copy("skills.detail.noAgents", "No agents attached", "연결된 직원 없음")}</span>
             ) : (
               <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {usedBy.map((agent) => (
@@ -690,6 +727,30 @@ function SkillPane({
                 ))}
               </div>
             )}
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="flex items-start gap-2 border border-border/70 bg-background/70 p-3">
+              <Eye className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="text-xs font-medium">{copy("skills.detail.readState", "Read", "읽기")}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{copy("skills.detail.readAvailable", "SKILL.md and files can be inspected here.", "SKILL.md와 파일 내용을 여기서 확인할 수 있습니다.")}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-2 border border-border/70 bg-background/70 p-3">
+              <Boxes className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="text-xs font-medium">{copy("skills.detail.applyState", "Apply", "적용")}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{applicationStatus}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-2 border border-border/70 bg-background/70 p-3">
+              <Link2 className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="text-xs font-medium">{copy("skills.detail.connectionState", "Connection", "연결")}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{connectionStatus}</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -708,7 +769,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Eye className="h-3.5 w-3.5" />
-                    View
+                    {copy("skills.detail.view", "View", "보기")}
                   </span>
                 </button>
                 <button
@@ -717,7 +778,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Code2 className="h-3.5 w-3.5" />
-                    Code
+                    {copy("skills.detail.code", "Code", "코드")}
                   </span>
                 </button>
               </div>
@@ -725,11 +786,11 @@ function SkillPane({
             {editMode && file?.editable && (
               <>
                 <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>
-                  Cancel
+                  {copy("common.cancel", "Cancel", "취소")}
                 </Button>
                 <Button size="sm" onClick={onSave} disabled={savePending}>
                   <Save className="mr-1.5 h-3.5 w-3.5" />
-                  {savePending ? "Saving..." : "Save"}
+                  {savePending ? copy("common.savingDots", "Saving...", "저장 중...") : copy("common.save", "Save", "저장")}
                 </Button>
               </>
             )}
@@ -741,7 +802,7 @@ function SkillPane({
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
-          <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
+          <div className="text-sm text-muted-foreground">{copy("skills.detail.selectFile", "Select a file to inspect.", "확인할 파일을 선택하세요.")}</div>
         ) : editMode && file.editable ? (
           file.markdown ? (
             <MarkdownEditor
@@ -776,6 +837,7 @@ export function CompanySkills() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
+  const copy = useLocalizedCopy();
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -797,10 +859,10 @@ export function CompanySkills() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
-      ...(routeSkillId ? [{ label: "Detail" }] : []),
+      { label: copy("skills.breadcrumb", "Skills", "스킬"), href: "/skills" },
+      ...(routeSkillId ? [{ label: copy("skills.breadcrumb.detail", "Detail", "상세") }] : []),
     ]);
-  }, [routeSkillId, setBreadcrumbs]);
+  }, [copy, routeSkillId, setBreadcrumbs]);
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
@@ -909,19 +971,24 @@ export function CompanySkills() {
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
       pushToast({
         tone: "success",
-        title: "Skills imported",
-        body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
+        title: copy("skills.toast.imported", "Skills imported", "스킬 가져오기 완료"),
+        body: copy(
+          "skills.toast.importedBody",
+          result.imported.length === 1 ? "{{count}} skill added." : "{{count}} skills added.",
+          "스킬 {{count}}개가 추가되었습니다.",
+          { count: result.imported.length },
+        ),
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
+        pushToast({ tone: "warn", title: copy("skills.toast.importWarnings", "Import warnings", "가져오기 경고"), body: result.warnings[0] });
       }
       setSource("");
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
+        title: copy("skills.toast.importFailed", "Skill import failed", "스킬 가져오기 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.importFailedBody", "Failed to import skill source.", "스킬 출처를 가져오지 못했습니다."),
       });
     },
   });
@@ -934,15 +1001,20 @@ export function CompanySkills() {
       setCreateOpen(false);
       pushToast({
         tone: "success",
-        title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        title: copy("skills.toast.created", "Skill created", "스킬 생성됨"),
+        body: copy(
+          "skills.toast.createdBody",
+          "{{name}} is now editable in the Paperclip workspace.",
+          "{{name}} 스킬을 Paperclip 작업공간에서 편집할 수 있습니다.",
+          { name: skill.name },
+        ),
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill creation failed",
-        body: error instanceof Error ? error.message : "Failed to create skill.",
+        title: copy("skills.toast.createFailed", "Skill creation failed", "스킬 생성 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.createFailedBody", "Failed to create skill.", "스킬을 만들지 못했습니다."),
       });
     },
   });
@@ -950,28 +1022,28 @@ export function CompanySkills() {
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
-      setScanStatusMessage("Scanning project workspaces for skills...");
+      setScanStatusMessage(copy("skills.scan.scanning", "Scanning project workspaces for skills...", "프로젝트 작업공간에서 스킬을 찾는 중..."));
     },
     onSuccess: async (result) => {
-      setScanStatusMessage("Refreshing skills list...");
+      setScanStatusMessage(copy("skills.scan.refreshing", "Refreshing skills list...", "스킬 목록 새로고침 중..."));
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
-      const summary = formatProjectScanSummary(result);
+      const summary = formatProjectScanSummary(result, copy);
       setScanStatusMessage(summary);
       pushToast({
         tone: "success",
-        title: "Project skill scan complete",
+        title: copy("skills.toast.scanComplete", "Project skill scan complete", "프로젝트 스킬 스캔 완료"),
         body: summary,
       });
       if (result.conflicts[0]) {
         pushToast({
           tone: "warn",
-          title: "Skill conflicts found",
+          title: copy("skills.toast.conflicts", "Skill conflicts found", "스킬 충돌 발견"),
           body: result.conflicts[0].reason,
         });
       } else if (result.warnings[0]) {
         pushToast({
           tone: "warn",
-          title: "Scan warnings",
+          title: copy("skills.toast.scanWarnings", "Scan warnings", "스캔 경고"),
           body: result.warnings[0],
         });
       }
@@ -980,8 +1052,8 @@ export function CompanySkills() {
       setScanStatusMessage(null);
       pushToast({
         tone: "error",
-        title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+        title: copy("skills.toast.scanFailed", "Project skill scan failed", "프로젝트 스킬 스캔 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.scanFailedBody", "Failed to scan project workspaces.", "프로젝트 작업공간에서 스킬을 스캔하지 못했습니다."),
       });
     },
   });
@@ -1003,15 +1075,15 @@ export function CompanySkills() {
       setEditMode(false);
       pushToast({
         tone: "success",
-        title: "Skill saved",
+        title: copy("skills.toast.saved", "Skill saved", "스킬 저장됨"),
         body: result.path,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        title: copy("skills.toast.saveFailed", "Save failed", "저장 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.saveFailedBody", "Failed to save skill file.", "스킬 파일을 저장하지 못했습니다."),
       });
     },
   });
@@ -1028,15 +1100,17 @@ export function CompanySkills() {
       navigate(skillRoute(skill.id, selectedPath));
       pushToast({
         tone: "success",
-        title: "Skill updated",
-        body: skill.sourceRef ? `Pinned to ${shortRef(skill.sourceRef)}` : skill.name,
+        title: copy("skills.toast.updated", "Skill updated", "스킬 업데이트됨"),
+        body: skill.sourceRef
+          ? copy("skills.toast.pinnedTo", "Pinned to {{ref}}", "{{ref}}에 고정됨", { ref: shortRef(skill.sourceRef) })
+          : skill.name,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
+        title: copy("skills.toast.updateFailed", "Update failed", "업데이트 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.updateFailedBody", "Failed to install skill update.", "스킬 업데이트를 설치하지 못했습니다."),
       });
     },
   });
@@ -1066,21 +1140,26 @@ export function CompanySkills() {
       navigate("/skills", { replace: true });
       pushToast({
         tone: "success",
-        title: "Skill removed",
-        body: `${skill.name} was removed from the company skill library.`,
+        title: copy("skills.toast.removed", "Skill removed", "스킬 삭제됨"),
+        body: copy(
+          "skills.toast.removedBody",
+          "{{name}} was removed from the company skill library.",
+          "{{name}} 스킬이 회사 스킬 라이브러리에서 삭제되었습니다.",
+          { name: skill.name },
+        ),
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Remove failed",
-        body: error instanceof Error ? error.message : "Failed to remove skill.",
+        title: copy("skills.toast.removeFailed", "Remove failed", "삭제 실패"),
+        body: error instanceof Error ? error.message : copy("skills.toast.removeFailedBody", "Failed to remove skill.", "스킬을 삭제하지 못했습니다."),
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return <EmptyState icon={Boxes} message={copy("skills.noCompany", "Select a company to manage skills.", "스킬을 관리하려면 회사를 선택하세요.")} />;
   }
 
   function handleAddSkillSource() {
@@ -1097,44 +1176,55 @@ export function CompanySkills() {
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Remove skill</DialogTitle>
+            <DialogTitle>{copy("skills.remove.title", "Remove skill", "스킬 삭제")}</DialogTitle>
             <DialogDescription>
-              Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.
+              {copy(
+                "skills.remove.description",
+                "Remove this skill from the company library. If any agents still use it, removal will be blocked until it is detached.",
+                "회사 라이브러리에서 이 스킬을 삭제합니다. 아직 사용하는 직원이 있으면 연결 해제 전까지 삭제가 차단됩니다.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p>
               {deleteTargetDetail
-                ? `You are about to remove ${deleteTargetDetail.name}.`
-                : "You are about to remove this skill."}
+                ? copy("skills.remove.confirmNamed", "You are about to remove {{name}}.", "{{name}} 스킬을 삭제하려고 합니다.", { name: deleteTargetDetail.name })
+                : copy("skills.remove.confirm", "You are about to remove this skill.", "이 스킬을 삭제하려고 합니다.")}
             </p>
             {deleteTargetDetail?.usedByAgents?.length ? (
               <div className="rounded-md border border-border px-3 py-3 text-muted-foreground">
-                Currently used by {deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ")}.
+                {copy(
+                  "skills.remove.currentlyUsedBy",
+                  "Currently used by {{agents}}.",
+                  "현재 {{agents}} 직원이 사용 중입니다.",
+                  { agents: deleteTargetDetail.usedByAgents.map((agent) => agent.name).join(", ") },
+                )}
               </div>
             ) : null}
             {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
               <p className="text-muted-foreground">
-                Detach this skill from all agents to enable removal.
+                {copy("skills.remove.detachFirst", "Detach this skill from all agents to enable removal.", "삭제하려면 먼저 모든 직원에서 이 스킬 연결을 해제하세요.")}
               </p>
             ) : null}
           </div>
           <DialogFooter>
             {(deleteTargetDetail?.usedByAgents.length ?? 0) > 0 ? (
               <Button variant="ghost" onClick={() => closeDeleteDialog(false)}>
-                Close
+                {copy("common.close", "Close", "닫기")}
               </Button>
             ) : (
               <>
                 <Button variant="ghost" onClick={() => closeDeleteDialog(false)} disabled={deleteSkill.isPending}>
-                  Cancel
+                  {copy("common.cancel", "Cancel", "취소")}
                 </Button>
                 <Button
                   variant="destructive"
                   onClick={() => deleteSkill.mutate()}
                   disabled={deleteSkill.isPending || !deleteTargetSkillId}
                 >
-                  {deleteSkill.isPending ? "Removing..." : "Remove skill"}
+                  {deleteSkill.isPending
+                    ? copy("skills.remove.removing", "Removing...", "삭제 중...")
+                    : copy("skills.remove.action", "Remove skill", "스킬 삭제")}
                 </Button>
               </>
             )}
@@ -1145,9 +1235,13 @@ export function CompanySkills() {
       <Dialog open={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add a skill source</DialogTitle>
+            <DialogTitle>{copy("skills.addSource.title", "Add a skill source", "스킬 출처 추가")}</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
+              {copy(
+                "skills.addSource.description",
+                "Paste a local path, GitHub URL, or `skills.sh` command into the field first.",
+                "먼저 로컬 경로, GitHub URL 또는 `skills.sh` 명령을 입력란에 붙여넣으세요.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1158,9 +1252,9 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">Browse skills.sh</span>
+                <span className="block font-medium">{copy("skills.addSource.browseSkillsSh", "Browse skills.sh", "skills.sh 둘러보기")}</span>
                 <span className="mt-1 block text-muted-foreground">
-                  Find install commands and paste one here.
+                  {copy("skills.addSource.browseHelp", "Find install commands and paste one here.", "설치 명령을 찾아 여기에 붙여넣으세요.")}
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1172,9 +1266,13 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">Search GitHub</span>
+                <span className="block font-medium">{copy("skills.addSource.searchGithub", "Search GitHub", "GitHub 검색")}</span>
                 <span className="mt-1 block text-muted-foreground">
-                  Look for repositories with `SKILL.md`, then paste the repo URL here.
+                  {copy(
+                    "skills.addSource.githubHelp",
+                    "Look for repositories with `SKILL.md`, then paste the repo URL here.",
+                    "`SKILL.md`가 있는 저장소를 찾은 뒤 저장소 URL을 여기에 붙여넣으세요.",
+                  )}
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1189,9 +1287,9 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">Skills</h1>
+                <h1 className="text-base font-semibold">{copy("skills.title", "Skills", "스킬")}</h1>
                 <p className="text-xs text-muted-foreground">
-                  {skillsQuery.data?.length ?? 0} available
+                  {copy("skills.available", "{{count}} available", "{{count}}개 사용 가능", { count: skillsQuery.data?.length ?? 0 })}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -1200,11 +1298,18 @@ export function CompanySkills() {
                   size="icon-sm"
                   onClick={() => scanProjects.mutate()}
                   disabled={scanProjects.isPending}
-                  title="Scan project workspaces for skills"
+                  title={copy("skills.scan.action", "Scan project workspaces for skills", "프로젝트 작업공간에서 스킬 찾기")}
+                  aria-label={copy("skills.scan.action", "Scan project workspaces for skills", "프로젝트 작업공간에서 스킬 찾기")}
                 >
                   <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
                 </Button>
-                <Button variant="ghost" size="icon-sm" onClick={() => setCreateOpen((value) => !value)}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setCreateOpen((value) => !value)}
+                  aria-label={copy("skills.new.open", "Create skill", "스킬 만들기")}
+                  title={copy("skills.new.open", "Create skill", "스킬 만들기")}
+                >
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
@@ -1215,7 +1320,7 @@ export function CompanySkills() {
               <input
                 value={skillFilter}
                 onChange={(event) => setSkillFilter(event.target.value)}
-                placeholder="Filter skills"
+                placeholder={copy("skills.filter.placeholder", "Filter skills", "스킬 필터")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
@@ -1224,7 +1329,11 @@ export function CompanySkills() {
               <input
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
-                placeholder="Paste path, GitHub URL, or skills.sh command"
+                placeholder={copy(
+                  "skills.source.placeholder",
+                  "Paste path, GitHub URL, or skills.sh command",
+                  "경로, GitHub URL 또는 skills.sh 명령 붙여넣기",
+                )}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
               <Button
@@ -1233,7 +1342,7 @@ export function CompanySkills() {
                 onClick={handleAddSkillSource}
                 disabled={importSkill.isPending}
               >
-                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
+                {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : copy("common.add", "Add", "추가")}
               </Button>
             </div>
             {scanStatusMessage && (

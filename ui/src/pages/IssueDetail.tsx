@@ -102,6 +102,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
@@ -192,10 +193,43 @@ const LEAF_WORK_CONTROL_MODE_HELP_TEXT: Partial<Record<IssueTreeControlMode, str
   pause: "Pause active execution on this issue until an explicit resume.",
   resume: "Release the active pause hold so this issue can continue.",
 };
+const TREE_CONTROL_MODE_LABEL_KO: Record<IssueTreeControlMode, string> = {
+  pause: "하위 작업 일시정지",
+  resume: "하위 작업 재개",
+  cancel: "하위 작업 취소",
+  restore: "하위 작업 복원",
+};
+const LEAF_WORK_CONTROL_MODE_LABEL_KO: Partial<Record<IssueTreeControlMode, string>> = {
+  pause: "작업 일시정지",
+  resume: "작업 재개",
+};
+const TREE_CONTROL_MODE_HELP_TEXT_KO: Record<IssueTreeControlMode, string> = {
+  pause: "명시적으로 재개할 때까지 이 이슈와 하위 이슈의 실행을 일시정지합니다.",
+  resume: "활성 하위 작업 일시정지 보류를 해제해 보류된 작업을 계속할 수 있게 합니다.",
+  cancel: "이 하위 작업의 미완료 이슈를 취소하고 가능한 경우 대기/실행 중인 작업을 중단합니다.",
+  restore: "이 하위 작업 작업으로 취소된 이슈를 복원해 작업을 다시 진행할 수 있게 합니다.",
+};
+const LEAF_WORK_CONTROL_MODE_HELP_TEXT_KO: Partial<Record<IssueTreeControlMode, string>> = {
+  pause: "명시적으로 재개할 때까지 이 이슈의 실행을 일시정지합니다.",
+  resume: "활성 일시정지 보류를 해제해 이 이슈가 계속 진행될 수 있게 합니다.",
+};
+type LocalizedCopy = ReturnType<typeof useLocalizedCopy>;
 function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_LABEL[mode] ?? TREE_CONTROL_MODE_LABEL[mode]
     : TREE_CONTROL_MODE_LABEL[mode];
+}
+
+function localizedIssueTreeControlLabel(
+  mode: IssueTreeControlMode,
+  scope: "leaf" | "subtree",
+  copy: LocalizedCopy,
+) {
+  const english = issueTreeControlLabel(mode, scope);
+  const korean = scope === "leaf"
+    ? LEAF_WORK_CONTROL_MODE_LABEL_KO[mode] ?? TREE_CONTROL_MODE_LABEL_KO[mode]
+    : TREE_CONTROL_MODE_LABEL_KO[mode];
+  return copy(`issueDetail.treeControl.${scope}.${mode}.label`, english, korean);
 }
 
 function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
@@ -204,13 +238,45 @@ function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "s
     : TREE_CONTROL_MODE_HELP_TEXT[mode];
 }
 
-function treeControlPreviewErrorCopy(error: unknown): string {
+function localizedIssueTreeControlHelpText(
+  mode: IssueTreeControlMode,
+  scope: "leaf" | "subtree",
+  copy: LocalizedCopy,
+) {
+  const english = issueTreeControlHelpText(mode, scope);
+  const korean = scope === "leaf"
+    ? LEAF_WORK_CONTROL_MODE_HELP_TEXT_KO[mode] ?? TREE_CONTROL_MODE_HELP_TEXT_KO[mode]
+    : TREE_CONTROL_MODE_HELP_TEXT_KO[mode];
+  return copy(`issueDetail.treeControl.${scope}.${mode}.help`, english, korean);
+}
+
+function treeControlPreviewErrorCopy(error: unknown, copy: LocalizedCopy): string {
   if (error instanceof ApiError) {
-    if (error.status === 403) return "Only board users can preview subtree controls.";
-    if (error.status === 409) return "Preview is stale because subtree hold state changed. Retry to refresh.";
-    if (error.status === 422) return "This subtree action is currently invalid for the selected issues.";
+    if (error.status === 403) {
+      return copy(
+        "issueDetail.treeControl.previewError.forbidden",
+        "Only board users can preview subtree controls.",
+        "보드 사용자만 하위 작업 제어 미리보기를 볼 수 있습니다.",
+      );
+    }
+    if (error.status === 409) {
+      return copy(
+        "issueDetail.treeControl.previewError.stale",
+        "Preview is stale because subtree hold state changed. Retry to refresh.",
+        "하위 작업 보류 상태가 바뀌어 미리보기가 오래되었습니다. 다시 시도해 새로고침하세요.",
+      );
+    }
+    if (error.status === 422) {
+      return copy(
+        "issueDetail.treeControl.previewError.invalid",
+        "This subtree action is currently invalid for the selected issues.",
+        "선택한 이슈에는 현재 이 하위 작업 제어를 적용할 수 없습니다.",
+      );
+    }
   }
-  return error instanceof Error ? error.message : "Unable to load preview.";
+  return error instanceof Error
+    ? error.message
+    : copy("issueDetail.treeControl.previewError.default", "Unable to load preview.", "미리보기를 불러올 수 없습니다.");
 }
 
 export function canBoardResolveRecoveryAction(
@@ -437,6 +503,7 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
+  const copy = useLocalizedCopy();
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
@@ -468,7 +535,7 @@ function IssueDetailLoadingState({
               ) : (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
                   <Hexagon className="h-3 w-3 shrink-0" />
-                  No project
+                  {copy("issueDetail.project.none", "No project", "프로젝트 없음")}
                 </span>
               )}
             </>
@@ -535,6 +602,7 @@ function InboxMobileToolbar({
   onHide,
 }: InboxMobileToolbarProps) {
   const navigate = useNavigate();
+  const copy = useLocalizedCopy();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -552,7 +620,7 @@ function InboxMobileToolbar({
             navigate(backHref);
           }
         }}
-        aria-label="Back to inbox"
+        aria-label={copy("issueDetail.inboxToolbar.back", "Back to inbox", "받은함으로 돌아가기")}
       >
         <ArrowLeft className="h-5 w-5" />
       </Button>
@@ -564,7 +632,7 @@ function InboxMobileToolbar({
             size="icon-sm"
             onClick={onArchive}
             disabled={archivePending}
-            aria-label="Archive from inbox"
+            aria-label={copy("issueDetail.inboxToolbar.archive", "Archive from inbox", "받은함에서 보관")}
           >
             <Archive className="h-5 w-5" />
           </Button>
@@ -572,7 +640,7 @@ function InboxMobileToolbar({
 
         <Popover open={menuOpen} onOpenChange={setMenuOpen}>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="More actions">
+            <Button variant="ghost" size="icon-sm" aria-label={copy("issueDetail.inboxToolbar.more", "More actions", "더 보기")}>
               <MoreVertical className="h-5 w-5" />
             </Button>
           </PopoverTrigger>
@@ -582,14 +650,14 @@ function InboxMobileToolbar({
               onClick={() => { onCopy(); setMenuOpen(false); }}
             >
               <Copy className="h-3 w-3" />
-              Copy as markdown
+              {copy("issueDetail.inboxToolbar.copyMarkdown", "Copy as markdown", "마크다운으로 복사")}
             </button>
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
               onClick={() => { onProperties(); setMenuOpen(false); }}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Properties
+              {copy("issueDetail.properties", "Properties", "속성")}
             </button>
             {issueIdProp && (
               <button
@@ -597,7 +665,7 @@ function InboxMobileToolbar({
                 onClick={() => { onHide(); setMenuOpen(false); }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this issue
+                {copy("issueDetail.inboxToolbar.hide", "Hide this issue", "이 작업 숨기기")}
               </button>
             )}
           </PopoverContent>
@@ -992,6 +1060,7 @@ function IssueDetailActivityTab({
   checkingMonitorNow,
   handoffFocusSignal = 0,
 }: IssueDetailActivityTabProps) {
+  const copy = useLocalizedCopy();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1103,13 +1172,19 @@ function IssueDetailActivityTab({
     <>
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
+          <div className="text-sm font-medium text-muted-foreground mb-1">
+            {copy("issueDetail.costSummary.title", "Cost Summary", "비용 요약")}
+          </div>
           {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !hasIssueTreeCost ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
+            <div className="text-xs text-muted-foreground">
+              {copy("issueDetail.costSummary.empty", "No cost data yet.", "아직 비용 데이터가 없습니다.")}
+            </div>
           ) : (
             <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
               <div className="flex flex-wrap gap-3">
-                <span className="font-medium text-foreground">This issue</span>
+                <span className="font-medium text-foreground">
+                  {copy("issueDetail.costSummary.thisIssue", "This issue", "이 이슈")}
+                </span>
                 {issueCostSummary.hasCost ? (
                   <span className="font-medium text-foreground">
                     ${issueCostSummary.cost.toFixed(4)}
@@ -1117,26 +1192,28 @@ function IssueDetailActivityTab({
                 ) : null}
                 {issueCostSummary.hasTokens ? (
                   <span>
-                    Tokens {formatTokens(issueCostSummary.totalTokens)}
+                    {copy("issueDetail.costSummary.tokens", "Tokens", "토큰")} {formatTokens(issueCostSummary.totalTokens)}
                     {issueCostSummary.cached > 0
-                      ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                      : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                      ? ` (${copy("issueDetail.costSummary.in", "in", "입력")} ${formatTokens(issueCostSummary.input)}, ${copy("issueDetail.costSummary.out", "out", "출력")} ${formatTokens(issueCostSummary.output)}, ${copy("issueDetail.costSummary.cached", "cached", "캐시")} ${formatTokens(issueCostSummary.cached)})`
+                      : ` (${copy("issueDetail.costSummary.in", "in", "입력")} ${formatTokens(issueCostSummary.input)}, ${copy("issueDetail.costSummary.out", "out", "출력")} ${formatTokens(issueCostSummary.output)})`}
                   </span>
                 ) : null}
                 {issueCostSummary.hasRuntime ? (
                   <span>
-                    Runtime {formatDurationMs(issueCostSummary.runtimeMs)}
-                    {` (${issueCostSummary.runCount} run${issueCostSummary.runCount === 1 ? "" : "s"})`}
+                    {copy("issueDetail.costSummary.runtime", "Runtime", "실행 시간")} {formatDurationMs(issueCostSummary.runtimeMs)}
+                    {` (${issueCostSummary.runCount}${copy("issueDetail.costSummary.runsSuffix", " run", "회 실행")}${issueCostSummary.runCount === 1 ? "" : copy("issueDetail.costSummary.runPluralSuffix", "s", "")})`}
                   </span>
                 ) : null}
                 {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !issueCostSummary.hasRuntime ? (
-                  <span>No direct cost data.</span>
+                  <span>
+                    {copy("issueDetail.costSummary.noDirect", "No direct cost data.", "직접 비용 데이터가 없습니다.")}
+                  </span>
                 ) : null}
               </div>
               {hasIssueTreeCost && issueTreeCostSummary ? (
                 <div className="flex flex-wrap gap-3">
                   <span className="font-medium text-foreground">
-                    Including sub-issues {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
+                    {copy("issueDetail.costSummary.includingSubIssues", "Including sub-issues", "하위 이슈 포함")} {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
                       style: "currency",
                       currency: "USD",
                       minimumFractionDigits: 4,
@@ -1144,18 +1221,20 @@ function IssueDetailActivityTab({
                     })}
                   </span>
                   <span>
-                    Tokens {formatTokens(issueTreeCostTokens)}
+                    {copy("issueDetail.costSummary.tokens", "Tokens", "토큰")} {formatTokens(issueTreeCostTokens)}
                     {issueTreeCostSummary.cachedInputTokens > 0
-                      ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
-                      : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
+                      ? ` (${copy("issueDetail.costSummary.in", "in", "입력")} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${copy("issueDetail.costSummary.out", "out", "출력")} ${formatTokens(issueTreeCostSummary.outputTokens)}, ${copy("issueDetail.costSummary.cached", "cached", "캐시")} ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
+                      : ` (${copy("issueDetail.costSummary.in", "in", "입력")} ${formatTokens(issueTreeCostSummary.inputTokens)}, ${copy("issueDetail.costSummary.out", "out", "출력")} ${formatTokens(issueTreeCostSummary.outputTokens)})`}
                   </span>
                   {issueTreeCostSummary.runCount > 0 ? (
                     <span>
-                      Runtime {formatDurationMs(issueTreeCostSummary.runtimeMs)}
-                      {` (${issueTreeCostSummary.runCount} run${issueTreeCostSummary.runCount === 1 ? "" : "s"})`}
+                      {copy("issueDetail.costSummary.runtime", "Runtime", "실행 시간")} {formatDurationMs(issueTreeCostSummary.runtimeMs)}
+                      {` (${issueTreeCostSummary.runCount}${copy("issueDetail.costSummary.runsSuffix", " run", "회 실행")}${issueTreeCostSummary.runCount === 1 ? "" : copy("issueDetail.costSummary.runPluralSuffix", "s", "")})`}
                     </span>
                   ) : null}
-                  <span>{issueTreeCostSummary.issueCount} issue{issueTreeCostSummary.issueCount === 1 ? "" : "s"}</span>
+                  <span>
+                    {issueTreeCostSummary.issueCount}{copy("issueDetail.costSummary.issueSuffix", " issue", "개 이슈")}{issueTreeCostSummary.issueCount === 1 ? "" : copy("issueDetail.costSummary.issuePluralSuffix", "s", "")}
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -1235,6 +1314,7 @@ export function IssueDetail() {
   const location = useLocation();
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
+  const copy = useLocalizedCopy();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
@@ -1363,8 +1443,9 @@ export function IssueDetail() {
     }
   }, [hasLiveRuns, locallyQueuedCommentRunIds.size]);
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [issueId, location.state, location.search],
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search)
+      ?? { label: copy("issueDetail.breadcrumb.issues", "Issues", "작업"), href: "/issues" },
+    [copy, issueId, location.state, location.search],
   );
 
   const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
@@ -1827,23 +1908,29 @@ export function IssueDetail() {
       return { kind: "create" as const, hold: created.hold, preview: created.preview };
     },
     onSuccess: async (result) => {
-      const modeLabel = issueTreeControlLabel(result.hold.mode, treeControlScope);
+      const modeLabel = localizedIssueTreeControlLabel(result.hold.mode, treeControlScope, copy);
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
         title: result.kind === "release"
-          ? treeControlScope === "leaf" ? "Work resumed" : "Subtree resumed"
-          : result.hold.mode === "pause"
-            ? treeControlScope === "leaf" ? "Work paused" : "Subtree paused"
-            : `${modeLabel} applied`,
-        body: result.kind === "release"
-          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf" ? "Active issue pause released." : "Active subtree pause released."))
+          ? treeControlScope === "leaf"
+            ? copy("issueDetail.treeControl.toast.workResumed", "Work resumed", "작업이 재개되었습니다")
+            : copy("issueDetail.treeControl.toast.subtreeResumed", "Subtree resumed", "하위 작업이 재개되었습니다")
           : result.hold.mode === "pause"
             ? treeControlScope === "leaf"
-              ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
-              : `Subtree paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
+              ? copy("issueDetail.treeControl.toast.workPaused", "Work paused", "작업이 일시정지되었습니다")
+              : copy("issueDetail.treeControl.toast.subtreePaused", "Subtree paused", "하위 작업이 일시정지되었습니다")
+            : `${modeLabel} applied`,
+        body: result.kind === "release"
+          ? (result.hold.releaseReason?.trim() || (treeControlScope === "leaf"
+            ? copy("issueDetail.treeControl.toast.issuePauseReleased", "Active issue pause released.", "활성 이슈 일시정지가 해제되었습니다.")
+            : copy("issueDetail.treeControl.toast.subtreePauseReleased", "Active subtree pause released.", "활성 하위 작업 일시정지가 해제되었습니다.")))
+          : result.hold.mode === "pause"
+            ? treeControlScope === "leaf"
+              ? `${copy("issueDetail.treeControl.toast.workPaused", "Work paused", "작업이 일시정지되었습니다")}. ${cancelCount}${copy("issueDetail.treeControl.toast.cancelledRunsSuffix", " run", "개 실행")} ${copy("issueDetail.treeControl.toast.cancelled", "cancelled", "취소됨")}.`
+              : `${copy("issueDetail.treeControl.toast.subtreePaused", "Subtree paused", "하위 작업이 일시정지되었습니다")}. ${cancelCount}${copy("issueDetail.treeControl.toast.cancelledRunsSuffix", " run", "개 실행")} ${copy("issueDetail.treeControl.toast.cancelled", "cancelled", "취소됨")}.`
             : result.hold.reason?.trim()
               ? result.hold.reason
-              : "Subtree control applied.",
+              : copy("issueDetail.treeControl.toast.applied", "Subtree control applied.", "하위 작업 제어가 적용되었습니다."),
       });
       setTreeControlOpen(false);
       setTreeControlReason("");
@@ -3146,15 +3233,15 @@ export function IssueDetail() {
   const treeControlPrimaryButtonLabel =
     treeControlMode === "pause"
       ? treeControlScope === "leaf"
-        ? "Pause work"
-        : "Pause and stop work"
+        ? copy("issueDetail.treeControl.primary.pauseWork", "Pause work", "작업 일시정지")
+        : copy("issueDetail.treeControl.primary.pauseAndStop", "Pause and stop work", "일시정지하고 실행 중단")
       : treeControlMode === "cancel"
-        ? `Cancel ${previewAffectedIssueCount} issues`
+        ? copy("issueDetail.treeControl.primary.cancelIssues", "Cancel {{count}} issues", "{{count}}개 이슈 취소", { count: previewAffectedIssueCount })
       : treeControlMode === "restore"
-          ? `Restore ${previewAffectedIssueCount} issues`
+          ? copy("issueDetail.treeControl.primary.restoreIssues", "Restore {{count}} issues", "{{count}}개 이슈 복원", { count: previewAffectedIssueCount })
           : treeControlScope === "leaf"
-            ? "Resume work"
-            : "Resume subtree";
+            ? copy("issueDetail.treeControl.primary.resumeWork", "Resume work", "작업 재개")
+            : copy("issueDetail.treeControl.primary.resumeSubtree", "Resume subtree", "하위 작업 재개");
   const treePreviewAffectedIssueRows = treePreviewDisplayIssues.map((candidate) => ({
     candidate,
     issue: {
@@ -3208,10 +3295,10 @@ export function IssueDetail() {
         )}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : (
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? copy("issueDetail.attachments.uploading", "Uploading...", "업로드 중...") : (
           <>
-            <span className="hidden sm:inline">Upload attachment</span>
-            <span className="sm:hidden">Upload</span>
+            <span className="hidden sm:inline">{copy("issueDetail.attachments.upload", "Upload attachment", "첨부파일 업로드")}</span>
+            <span className="sm:hidden">{copy("issueDetail.attachments.uploadShort", "Upload", "업로드")}</span>
           </>
         )}
       </Button>
@@ -3250,7 +3337,7 @@ export function IssueDetail() {
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
-          This issue is hidden
+          {copy("issueDetail.hidden", "This issue is hidden", "이 이슈는 숨김 상태입니다")}
         </div>
       )}
       {activePauseHold && (
@@ -3259,19 +3346,21 @@ export function IssueDetail() {
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">
-                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
+                  {childIssues.length === 0
+                    ? copy("issueDetail.pauseBanner.pausedByBoard", "Paused by board.", "보드가 작업을 일시정지했습니다.")
+                    : copy("issueDetail.pauseBanner.subtreeActive", "Subtree pause is active.", "하위 작업 일시정지가 활성화되었습니다.")}
                 </span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
                   {childIssues.length === 0
-                    ? "Issue execution is held until resume. Human comments can still wake the assignee for triage."
-                    : "Root and descendant execution is held until resume. Human comments can still wake assignees for triage."}
+                    ? copy("issueDetail.pauseBanner.leafHelp", "Issue execution is held until resume. Human comments can still wake the assignee for triage.", "재개할 때까지 이슈 실행이 보류됩니다. 사람 댓글은 분류를 위해 담당자를 깨울 수 있습니다.")
+                    : copy("issueDetail.pauseBanner.subtreeHelp", "Root and descendant execution is held until resume. Human comments can still wake assignees for triage.", "재개할 때까지 루트와 하위 이슈 실행이 보류됩니다. 사람 댓글은 분류를 위해 담당자를 깨울 수 있습니다.")}
                 </span>
               </div>
               <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
                 {childIssues.length === 0
-                  ? "1 issue held"
-                  : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
-                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+                  ? copy("issueDetail.pauseBanner.oneIssueHeld", "1 issue held", "이슈 1개 보류 중")
+                  : copy("issueDetail.pauseBanner.descendantsHeld", "{{count}} descendant{{suffix}} held", "하위 이슈 {{count}}개 보류 중", { count: heldDescendantCount, suffix: heldDescendantCount === 1 ? "" : "s" })}
+                {activeRootPauseHold?.createdAt ? ` · ${copy("issueDetail.pauseBanner.started", "started", "시작")} ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
               </div>
               {canShowSubtreeControls || canResumeLeafWork ? (
                 <div className="flex flex-wrap items-center gap-2">
@@ -3283,7 +3372,9 @@ export function IssueDetail() {
                       setTreeControlOpen(true);
                     }}
                   >
-                    {childIssues.length === 0 ? "Resume work" : "Resume subtree"}
+                    {childIssues.length === 0
+                      ? copy("issueDetail.treeControl.primary.resumeWork", "Resume work", "작업 재개")
+                      : copy("issueDetail.treeControl.primary.resumeSubtree", "Resume subtree", "하위 작업 재개")}
                   </Button>
                   <Button
                     variant="outline"
@@ -3294,7 +3385,7 @@ export function IssueDetail() {
                       setTreeControlOpen(true);
                     }}
                   >
-                    View affected ({childIssues.length === 0 ? 1 : heldDescendantCount})
+                    {copy("issueDetail.treeControl.viewAffected", "View affected", "영향 범위 보기")} ({childIssues.length === 0 ? 1 : heldDescendantCount})
                   </Button>
                   {canShowSubtreeControls ? (
                     <Button
@@ -3307,7 +3398,7 @@ export function IssueDetail() {
                         setTreeControlOpen(true);
                       }}
                     >
-                      Cancel subtree...
+                      {copy("issueDetail.treeControl.cancelSubtreeEllipsis", "Cancel subtree...", "하위 작업 취소...")}
                     </Button>
                   ) : null}
                 </div>
@@ -3315,7 +3406,7 @@ export function IssueDetail() {
             </div>
           ) : (
             <div className="text-xs">
-              This issue is paused by ancestor{" "}
+              {copy("issueDetail.pauseBanner.pausedByAncestor", "This issue is paused by ancestor", "상위 이슈 때문에 이 이슈가 일시정지되었습니다")}{" "}
               {activePauseHoldRoot?.identifier ? (
                 <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
                   {activePauseHoldRoot.identifier}
@@ -3323,7 +3414,7 @@ export function IssueDetail() {
               ) : (
                 activePauseHold.rootIssueId.slice(0, 8)
               )}
-              . Resume from the root issue to deliver deferred work.
+              . {copy("issueDetail.pauseBanner.resumeFromRoot", "Resume from the root issue to deliver deferred work.", "보류된 작업을 전달하려면 루트 이슈에서 재개하세요.")}
             </div>
           )}
         </div>
@@ -3372,16 +3463,16 @@ export function IssueDetail() {
               title="This task is a productivity review."
             >
               <Eye className="h-3 w-3" />
-              Productivity review
+              {copy("issueDetail.badge.productivityReview", "Productivity review", "생산성 리뷰")}
             </span>
           ) : null}
 
           {issue.workMode === "planning" ? (
             <span
               className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
-              title="This issue is in planning mode."
+              title={copy("issueDetail.badge.planningTitle", "This issue is in planning mode.", "이 이슈는 계획 모드입니다.")}
             >
-              Planning
+              {copy("issueDetail.badge.planning", "Planning", "계획")}
             </span>
           ) : null}
 
@@ -3389,10 +3480,10 @@ export function IssueDetail() {
             <span
               data-testid="issue-detail-parked-blocker"
               className="inline-flex items-center gap-1 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0"
-              title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
+              title={copy("issueDetail.badge.parkedBlockerTitle", "Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee.", "보류 작업에 의해 막힘 - 배정된 blocker 중 하나 이상이 backlog에 있어 담당자를 깨우지 않습니다.")}
             >
               <Flag className="h-3 w-3" />
-              Blocked by parked work
+              {copy("issueDetail.badge.parkedBlocker", "Blocked by parked work", "보류 작업에 의해 막힘")}
             </span>
           ) : null}
 
@@ -3407,7 +3498,7 @@ export function IssueDetail() {
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
               <Hexagon className="h-3 w-3 shrink-0" />
-              No project
+              {copy("issueDetail.project.none", "No project", "프로젝트 없음")}
             </span>
           )}
 
@@ -3438,7 +3529,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={copyIssueToClipboard}
-                title="Copy issue as markdown"
+                title={copy("issueDetail.actions.copyMarkdown", "Copy issue as markdown", "작업을 마크다운으로 복사")}
               >
                 {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
               </Button>
@@ -3446,7 +3537,7 @@ export function IssueDetail() {
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => setMobilePropsOpen(true)}
-                title="Properties"
+                title={copy("issueDetail.properties", "Properties", "속성")}
               >
                 <SlidersHorizontal className="h-4 w-4" />
               </Button>
@@ -3462,8 +3553,8 @@ export function IssueDetail() {
                   if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
                 }}
                 disabled={archivePending}
-                title="Archive from inbox"
-                aria-label="Archive from inbox"
+                title={copy("issueDetail.inboxToolbar.archive", "Archive from inbox", "받은함에서 보관")}
+                aria-label={copy("issueDetail.inboxToolbar.archive", "Archive from inbox", "받은함에서 보관")}
               >
                 <Archive className="h-4 w-4" />
               </Button>
@@ -3472,7 +3563,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title={copy("issueDetail.actions.copyMarkdown", "Copy issue as markdown", "작업을 마크다운으로 복사")}
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -3484,7 +3575,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title={copy("issueDetail.actions.showProperties", "Show properties", "속성 보기")}
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -3519,7 +3610,7 @@ export function IssueDetail() {
                   }}
                 >
                   <PauseCircle className="h-3 w-3" />
-                  Pause work...
+                  {copy("issueDetail.treeControl.pauseWorkEllipsis", "Pause work...", "작업 일시정지...")}
                 </button>
               ) : null}
               {canResumeLeafWork ? (
@@ -3533,7 +3624,7 @@ export function IssueDetail() {
                   }}
                 >
                   <PlayCircle className="h-3 w-3" />
-                  Resume work
+                  {copy("issueDetail.treeControl.primary.resumeWork", "Resume work", "작업 재개")}
                 </button>
               ) : null}
               {canShowSubtreeControls ? (
@@ -3548,7 +3639,7 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    {copy("issueDetail.treeControl.pauseSubtreeEllipsis", "Pause subtree...", "하위 작업 일시정지...")}
                   </button>
                   {canResumeSubtree ? (
                     <button
@@ -3561,7 +3652,7 @@ export function IssueDetail() {
                       }}
                     >
                       <PlayCircle className="h-3 w-3" />
-                      Resume subtree
+                      {copy("issueDetail.treeControl.primary.resumeSubtree", "Resume subtree", "하위 작업 재개")}
                     </button>
                   ) : null}
                   <button
@@ -3574,7 +3665,7 @@ export function IssueDetail() {
                     }}
                   >
                     <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    {copy("issueDetail.treeControl.cancelSubtreeEllipsis", "Cancel subtree...", "하위 작업 취소...")}
                   </button>
                   {canRestoreSubtree ? (
                     <button
@@ -3588,7 +3679,7 @@ export function IssueDetail() {
                       }}
                     >
                       <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      {copy("issueDetail.treeControl.restoreSubtreeEllipsis", "Restore subtree...", "하위 작업 복원...")}
                     </button>
                   ) : null}
                 </>
@@ -3604,7 +3695,7 @@ export function IssueDetail() {
                 }}
               >
                 <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                {copy("issueDetail.actions.hideIssue", "Hide this Issue", "이 이슈 숨기기")}
               </button>
             </PopoverContent>
             </Popover>
@@ -3681,7 +3772,9 @@ export function IssueDetail() {
       {showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-issues</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">
+              {copy("issueDetail.subIssues.title", "Sub-issues", "하위 작업")}
+            </h3>
           </div>
           <IssuesList
             issues={childIssues}
@@ -3697,7 +3790,7 @@ export function IssueDetail() {
             searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
             searchWithinLoadedIssues
             baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
-            createIssueLabel="Sub-issue"
+            createIssueLabel={copy("issueDetail.subIssues.createLabel", "Sub-issue", "하위 작업")}
             defaultSortField="workflow"
             showProgressSummary
             parentIssueIdForCostSummary={issue.id}
@@ -3708,7 +3801,7 @@ export function IssueDetail() {
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Sub-issue
+            {copy("issueDetail.subIssues.new", "New Sub-issue", "새 하위 작업")}
           </Button>
         </div>
       )}
@@ -3762,7 +3855,9 @@ export function IssueDetail() {
         onDrop={(evt) => void handleAttachmentDrop(evt)}
       >
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">
+            {copy("issueDetail.attachments.title", "Attachments", "첨부파일")}
+          </h3>
           {attachmentUploadButton}
         </div>
 
@@ -3794,7 +3889,9 @@ export function IssueDetail() {
                     className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <p className="text-xs text-white font-medium">Delete?</p>
+                    <p className="text-xs text-white font-medium">
+                      {copy("issueDetail.attachments.confirmDelete", "Delete?", "삭제할까요?")}
+                    </p>
                     <div className="flex gap-1.5">
                       <button
                         type="button"
@@ -3806,7 +3903,7 @@ export function IssueDetail() {
                         }}
                         disabled={deleteAttachment.isPending}
                       >
-                        Yes
+                        {copy("common.yes", "Yes", "예")}
                       </button>
                       <button
                         type="button"
@@ -3816,7 +3913,7 @@ export function IssueDetail() {
                           setConfirmDeleteId(null);
                         }}
                       >
-                        No
+                        {copy("common.no", "No", "아니요")}
                       </button>
                     </div>
                   </div>
@@ -3828,7 +3925,7 @@ export function IssueDetail() {
                       e.stopPropagation();
                       setConfirmDeleteId(attachment.id);
                     }}
-                    title="Delete attachment"
+                    title={copy("issueDetail.attachments.deleteAttachment", "Delete attachment", "첨부 삭제")}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -3891,15 +3988,15 @@ export function IssueDetail() {
         <TabsList variant="line" className="w-full justify-start gap-1">
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Chat
+            {copy("issueDetail.tabs.chat", "Chat", "채팅")}
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
+            {copy("issueDetail.tabs.activity", "Activity", "활동")}
           </TabsTrigger>
           <TabsTrigger value="related-work" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
-            Related work
+            {copy("issueDetail.tabs.relatedWork", "Related work", "관련 작업")}
           </TabsTrigger>
           {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
@@ -4032,26 +4129,26 @@ export function IssueDetail() {
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>{issueTreeControlLabel(treeControlMode, treeControlScope)}</DialogTitle>
+            <DialogTitle>{localizedIssueTreeControlLabel(treeControlMode, treeControlScope, copy)}</DialogTitle>
             <DialogDescription>
-              {issueTreeControlHelpText(treeControlMode, treeControlScope)}
+              {localizedIssueTreeControlHelpText(treeControlMode, treeControlScope, copy)}
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4">
             {treeControlMode === "cancel" ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.
+                {copy("issueDetail.treeControl.cancelWarning", "Cancelling a subtree is destructive. Non-terminal issues will be marked cancelled, and running or queued work will be interrupted where possible.", "하위 작업 취소는 파괴적 작업입니다. 완료되지 않은 이슈는 취소 상태가 되고, 실행 중이거나 대기 중인 작업은 가능한 경우 중단됩니다.")}
               </div>
             ) : null}
 
             <div className="space-y-1.5">
               <label className="text-xs text-muted-foreground">
-                Reason (optional)
+                {copy("issueDetail.treeControl.reasonLabel", "Reason (optional)", "사유(선택)")}
               </label>
               <Textarea
                 value={treeControlReason}
                 onChange={(event) => setTreeControlReason(event.target.value)}
-                placeholder="Explain why this subtree control is being applied..."
+                placeholder={copy("issueDetail.treeControl.reasonPlaceholder", "Explain why this subtree control is being applied...", "이 하위 작업 제어를 적용하는 이유를 적어주세요...")}
                 className="min-h-[88px]"
               />
             </div>
@@ -4067,11 +4164,13 @@ export function IssueDetail() {
                     onChange={(event) => setTreeControlWakeAgentsOnResume(event.target.checked)}
                   />
                   <span>
-                    <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
+                    <span className="block font-medium">
+                      {copy("issueDetail.treeControl.wakeAgents", "Wake affected agents", "영향받은 직원 깨우기")} ({previewAffectedAgentCount})
+                    </span>
                     <span className="text-xs text-muted-foreground">
                       {previewAffectedAgentCount === 0
-                        ? "No assigned agents are eligible to wake from this preview."
-                        : "Wake assigned agents after this operation completes."}
+                        ? copy("issueDetail.treeControl.noAgentsToWake", "No assigned agents are eligible to wake from this preview.", "이 미리보기에서 깨울 수 있는 배정 직원이 없습니다.")
+                        : copy("issueDetail.treeControl.wakeAgentsHelp", "Wake assigned agents after this operation completes.", "이 작업이 완료되면 배정된 직원을 깨웁니다.")}
                     </span>
                   </span>
                 </label>
@@ -4098,7 +4197,9 @@ export function IssueDetail() {
                   checked={treeControlCancelConfirmed}
                   onChange={(event) => setTreeControlCancelConfirmed(event.target.checked)}
                 />
-                <span>I understand this will cancel {previewAffectedIssueCount} issues.</span>
+                <span>
+                  {copy("issueDetail.treeControl.cancelConfirm", "I understand this will cancel {{count}} issues.", "{{count}}개 이슈가 취소됨을 이해했습니다.", { count: previewAffectedIssueCount })}
+                </span>
               </label>
             ) : null}
 
@@ -4112,7 +4213,7 @@ export function IssueDetail() {
                 </div>
               ) : treeControlPreviewError ? (
                 <div className="space-y-2">
-                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(treeControlPreviewError)}</p>
+                  <p className="text-xs text-destructive">{treeControlPreviewErrorCopy(treeControlPreviewError, copy)}</p>
                   <Button
                     variant="outline"
                     size="sm"
@@ -4120,7 +4221,7 @@ export function IssueDetail() {
                       void refetchTreeControlPreview();
                     }}
                   >
-                    Retry preview
+                    {copy("issueDetail.treeControl.retryPreview", "Retry preview", "미리보기 다시 시도")}
                   </Button>
                 </div>
               ) : treeControlPreview ? (
@@ -4152,7 +4253,9 @@ export function IssueDetail() {
                             </span>
                             <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
                             {candidate.skipped && candidate.skipReason === "terminal_status" ? (
-                              <span className="shrink-0 text-xs text-muted-foreground">Complete</span>
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {copy("issueDetail.treeControl.complete", "Complete", "완료")}
+                              </span>
                             ) : null}
                           </Link>
                         </div>
@@ -4161,20 +4264,24 @@ export function IssueDetail() {
                   ) : null}
                 </div>
               ) : (
-                <p className="text-xs text-muted-foreground">Preview unavailable.</p>
+                <p className="text-xs text-muted-foreground">
+                  {copy("issueDetail.treeControl.previewUnavailable", "Preview unavailable.", "미리보기를 사용할 수 없습니다.")}
+                </p>
               )}
             </div>
           </div>
           <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
             <Button variant="outline" onClick={() => setTreeControlOpen(false)} disabled={executeTreeControl.isPending}>
-              Close
+              {copy("common.close", "Close", "닫기")}
             </Button>
             <Button
               onClick={() => executeTreeControl.mutate()}
               disabled={executeTreeControl.isPending || !canApplyTreeControl}
               variant={treeControlMode === "cancel" ? "destructive" : "default"}
             >
-              {executeTreeControl.isPending ? "Applying..." : treeControlPrimaryButtonLabel}
+              {executeTreeControl.isPending
+                ? copy("issueDetail.treeControl.applying", "Applying...", "적용 중...")
+                : treeControlPrimaryButtonLabel}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4184,7 +4291,7 @@ export function IssueDetail() {
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
+            <SheetTitle className="text-sm">{copy("issueDetail.properties", "Properties", "속성")}</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">

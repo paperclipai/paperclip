@@ -12,6 +12,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -35,6 +36,7 @@ interface MobileNavActionItem {
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
 export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+  const copy = useLocalizedCopy();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -42,19 +44,19 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
 
   const items = useMemo<MobileNavItem[]>(
     () => [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
-      { type: "link", to: "/issues", label: "Issues", icon: CircleDot },
-      { type: "action", label: "Create", icon: SquarePen, onClick: () => openNewIssue() },
-      { type: "link", to: "/agents/all", label: "Agents", icon: Users },
+      { type: "link", to: "/dashboard", label: copy("mobileNav.home", "Home", "홈"), icon: House },
+      { type: "link", to: "/issues", label: copy("mobileNav.issues", "Issues", "작업"), icon: CircleDot },
+      { type: "action", label: copy("mobileNav.create", "Create", "생성"), icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/agents/all", label: copy("mobileNav.agents", "Agents", "직원"), icon: Users },
       {
         type: "link",
         to: "/inbox",
-        label: "Inbox",
+        label: copy("mobileNav.inbox", "Inbox", "받은함"),
         icon: Inbox,
         badge: inboxBadge.inbox,
       },
     ],
-    [openNewIssue, inboxBadge.inbox],
+    [copy, openNewIssue, inboxBadge.inbox],
   );
 
   return (
@@ -63,7 +65,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-[env(safe-area-inset-bottom)]",
         visible ? "translate-y-0" : "translate-y-full",
       )}
-      aria-label="Mobile navigation"
+      aria-label={copy("mobileNav.aria", "Mobile navigation", "모바일 내비게이션")}
     >
       <div className="grid h-16 grid-cols-5 px-1">
         {items.map((item) => {

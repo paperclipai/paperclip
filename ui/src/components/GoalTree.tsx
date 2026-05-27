@@ -4,6 +4,7 @@ import { StatusBadge } from "./StatusBadge";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 
 interface GoalTreeProps {
   goals: Goal[];
@@ -22,8 +23,15 @@ interface GoalNodeProps {
 
 function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
   const [expanded, setExpanded] = useState(true);
+  const copy = useLocalizedCopy();
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
+  const levelLabels: Record<string, string> = {
+    company: copy("goal.level.company", "Company", "회사"),
+    team: copy("goal.level.team", "Team", "팀"),
+    agent: copy("goal.level.agent", "Agent", "직원"),
+    task: copy("goal.level.task", "Task", "작업"),
+  };
 
   const inner = (
     <>
@@ -43,7 +51,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       ) : (
         <span className="w-4" />
       )}
-      <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
+      <span className="text-xs text-muted-foreground">{levelLabels[goal.level] ?? goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
       <StatusBadge status={goal.status} />
     </>
@@ -92,11 +100,12 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
 }
 
 export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
+  const copy = useLocalizedCopy();
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
   if (goals.length === 0) {
-    return <p className="text-sm text-muted-foreground">No goals.</p>;
+    return <p className="text-sm text-muted-foreground">{copy("goalTree.empty", "No goals.", "목표가 없습니다.")}</p>;
   }
 
   return (

@@ -2,6 +2,7 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import { isKoreanLocale } from "@/i18n/locale-utils";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -29,16 +30,20 @@ export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+function dateLocale(locale?: string | null) {
+  return isKoreanLocale(locale) ? "ko-KR" : "en-US";
+}
+
+export function formatDate(date: Date | string, locale?: string | null): string {
+  return new Date(date).toLocaleDateString(dateLocale(locale), {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
 }
 
-export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatDateTime(date: Date | string, locale?: string | null): string {
+  return new Date(date).toLocaleString(dateLocale(locale), {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -47,25 +52,26 @@ export function formatDateTime(date: Date | string): string {
   });
 }
 
-export function formatShortDate(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatShortDate(date: Date | string, locale?: string | null): string {
+  return new Date(date).toLocaleString(dateLocale(locale), {
     month: "short",
     day: "numeric",
   });
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string, locale?: string | null): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  const korean = isKoreanLocale(locale);
+  if (diffSec < 60) return korean ? "방금 전" : "just now";
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return korean ? `${diffMin}분 전` : `${diffMin}m ago`;
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return korean ? `${diffHr}시간 전` : `${diffHr}h ago`;
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
-  return formatDate(date);
+  if (diffDay < 30) return korean ? `${diffDay}일 전` : `${diffDay}d ago`;
+  return formatDate(date, locale);
 }
 
 export function formatTokens(n: number): string {
@@ -76,20 +82,26 @@ export function formatTokens(n: number): string {
 }
 
 /** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
-export function formatDurationMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+export function formatDurationMs(ms: number, locale?: string | null): string {
+  const korean = isKoreanLocale(locale);
+  if (!Number.isFinite(ms) || ms <= 0) return korean ? "0초" : "0s";
   const totalSeconds = Math.round(ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return korean ? `${totalSeconds}초` : `${totalSeconds}s`;
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  if (minutes < 60) {
+    if (korean) return seconds > 0 ? `${minutes}분 ${seconds}초` : `${minutes}분`;
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   if (hours < 24) {
+    if (korean) return remainingMinutes > 0 ? `${hours}시간 ${remainingMinutes}분` : `${hours}시간`;
     return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
   }
   const days = Math.floor(hours / 24);
   const remainingHours = hours % 24;
+  if (korean) return remainingHours > 0 ? `${days}일 ${remainingHours}시간` : `${days}일`;
   return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
 

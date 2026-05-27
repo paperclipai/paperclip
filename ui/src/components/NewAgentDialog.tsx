@@ -24,9 +24,10 @@ import { cn } from "@/lib/utils";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { getLocalizedAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -41,6 +42,7 @@ function isAgentAdapterType(type: string): boolean {
 }
 
 export function NewAgentDialog() {
+  const copy = useLocalizedCopy();
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
@@ -97,7 +99,7 @@ export function NewAgentDialog() {
     // Sort: recommended first, then alphabetical
     return registered
       .map((a) => {
-        const display = getAdapterDisplay(a.type);
+        const display = getLocalizedAdapterDisplay(a.type, copy);
         return {
           value: a.type,
           label: display.label,
@@ -113,14 +115,14 @@ export function NewAgentDialog() {
         if (!a.recommended && b.recommended) return 1;
         return a.label.localeCompare(b.label);
       });
-  }, [disabledTypes, serverAdapters]);
+  }, [copy, disabledTypes, serverAdapters]);
 
   function handleAskCeo() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      title: copy("newAgent.askCeoTitle", "Create a new agent", "새 직원 만들기"),
+      description: copy("newAgent.askCeoDescription", "(type in what kind of agent you want here)", "(원하는 직원 종류를 여기에 입력하세요)"),
     });
   }
 
@@ -149,7 +151,7 @@ export function NewAgentDialog() {
     }
 
     pushToast({
-      title: "Clipboard unavailable",
+      title: copy("newAgent.clipboardUnavailable", "Clipboard unavailable", "클립보드 사용 불가"),
       body: unavailableBody,
       tone: "warn",
     });
@@ -195,19 +197,21 @@ export function NewAgentDialog() {
       setLatestAgentPrompt(prompt);
       setLatestAgentPromptCopied(false);
       setMode("prompt");
-      const copied = await copyText(prompt, "Copy the agent onboarding prompt manually from the field below.");
+      const copied = await copyText(prompt, copy("newAgent.copyPromptManual", "Copy the agent onboarding prompt manually from the field below.", "아래 필드에서 직원 온보딩 프롬프트를 직접 복사하세요."));
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Agent invite created",
-        body: copied ? "Agent onboarding prompt ready below and copied to clipboard." : "Agent onboarding prompt ready below.",
+        title: copy("newAgent.inviteCreated", "Agent invite created", "직원 초대 생성됨"),
+        body: copied
+          ? copy("newAgent.promptReadyCopied", "Agent onboarding prompt ready below and copied to clipboard.", "직원 온보딩 프롬프트가 아래에 준비되었고 클립보드에 복사되었습니다.")
+          : copy("newAgent.promptReady", "Agent onboarding prompt ready below.", "직원 온보딩 프롬프트가 아래에 준비되었습니다."),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to create agent invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: copy("newAgent.inviteFailed", "Failed to create agent invite", "직원 초대 생성 실패"),
+        body: error instanceof Error ? error.message : copy("common.unknownError", "Unknown error", "알 수 없는 오류"),
         tone: "error",
       });
     },
@@ -232,7 +236,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{copy("newAgent.header", "Add a new agent", "새 직원 추가")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -255,28 +259,31 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
+                  {copy(
+                    "newAgent.choiceHelp",
+                    "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent.",
+                    "리더에게 채용 제안을 맡기거나, 런타임을 직접 설정하거나, 외부 직원에게 온보딩 프롬프트를 보냅니다.",
+                  )}
                 </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {copy("newAgent.askCeo", "Ask the CEO to create a new agent", "CEO에게 새 직원 생성을 요청")}
               </Button>
 
               <div className="grid gap-2">
                 <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
                   <Settings2 className="h-4 w-4 mr-2" />
-                  Configure a runtime manually
+                  {copy("newAgent.configureRuntime", "Configure a runtime manually", "런타임 직접 설정")}
                 </Button>
                 <div className="space-y-1">
                   <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
                     <MailPlus className="h-4 w-4 mr-2" />
-                    Invite an external agent
+                    {copy("newAgent.inviteExternal", "Invite an external agent", "외부 직원 초대")}
                   </Button>
                   <p className="text-xs text-muted-foreground text-center">
-                    (OpenClaw, Hermes, or any agent that can call the invite API.)
+                    {copy("newAgent.externalHint", "(OpenClaw, Hermes, or any agent that can call the invite API.)", "(OpenClaw, Hermes 또는 초대 API를 호출할 수 있는 직원)")}
                   </p>
                 </div>
               </div>
@@ -289,10 +296,10 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {copy("common.back", "Back", "뒤로")}
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose the runtime Paperclip should start or resume directly.
+                  {copy("newAgent.runtimeHelp", "Choose the runtime Paperclip should start or resume directly.", "Paperclip이 직접 시작하거나 재개할 런타임을 선택하세요.")}
                 </p>
               </div>
 
@@ -312,7 +319,7 @@ export function NewAgentDialog() {
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                        Recommended
+                        {copy("common.recommended", "Recommended", "추천")}
                       </span>
                     )}
                     <opt.icon className="h-4 w-4" />
@@ -332,29 +339,37 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {copy("common.back", "Back", "뒤로")}
                 </button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
+                  <h2 className="text-sm font-semibold">{copy("newAgent.inviteExternal", "Invite an external agent", "외부 직원 초대")}</h2>
                   <p className="text-sm text-muted-foreground">
-                    Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
+                    {copy(
+                      "newAgent.inviteHelp",
+                      "Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.",
+                      "호환 직원이 접근을 요청하고 승인을 기다린 뒤 Paperclip API 키를 받을 수 있는 일회성 온보딩 프롬프트를 생성합니다.",
+                    )}
                   </p>
                 </div>
               </div>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">Optional message for the agent</span>
+                <span className="text-sm font-medium">{copy("newAgent.optionalMessage", "Optional message for the agent", "직원에게 보낼 선택 메시지")}</span>
                 <Textarea
                   value={agentMessage}
                   onChange={(event) => setAgentMessage(event.target.value)}
                   className="min-h-24 resize-y"
-                  placeholder="Add onboarding context, expected role, or first instructions."
+                  placeholder={copy("newAgent.optionalMessagePlaceholder", "Add onboarding context, expected role, or first instructions.", "온보딩 맥락, 기대 역할, 첫 지시를 입력하세요.")}
                   maxLength={4000}
                 />
               </label>
 
               <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
+                {copy(
+                  "newAgent.inviteApprovalHelp",
+                  "Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.",
+                  "직원 초대는 먼저 가입 요청을 만듭니다. 직원이 API 키를 받기 전 회사 관리자가 요청을 승인해야 합니다.",
+                )}
               </div>
 
               <div>
@@ -362,7 +377,7 @@ export function NewAgentDialog() {
                   onClick={() => createAgentInviteMutation.mutate()}
                   disabled={!selectedCompanyId || createAgentInviteMutation.isPending}
                 >
-                  {createAgentInviteMutation.isPending ? "Generating…" : "Generate onboarding prompt"}
+                  {createAgentInviteMutation.isPending ? copy("newAgent.generating", "Generating...", "생성 중...") : copy("newAgent.generatePrompt", "Generate onboarding prompt", "온보딩 프롬프트 생성")}
                 </Button>
               </div>
             </div>
@@ -374,20 +389,20 @@ export function NewAgentDialog() {
                   onClick={() => setMode("invite")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {copy("common.back", "Back", "뒤로")}
                 </button>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold">Agent onboarding prompt</h2>
+                    <h2 className="text-sm font-semibold">{copy("newAgent.onboardingPrompt", "Agent onboarding prompt", "직원 온보딩 프롬프트")}</h2>
                     {latestAgentPromptCopied ? (
                       <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                         <Check className="h-3.5 w-3.5" />
-                        Copied
+                        {copy("common.copied", "Copied", "복사됨")}
                       </div>
                     ) : null}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this company.
+                    {copy("newAgent.sendPromptHelp", "Send this prompt to the external agent that should join this company.", "이 회사에 합류할 외부 직원에게 이 프롬프트를 보내세요.")}
                   </p>
                 </div>
               </div>
@@ -403,11 +418,11 @@ export function NewAgentDialog() {
                 disabled={!latestAgentPrompt}
                 onClick={async () => {
                   if (!latestAgentPrompt) return;
-                  const copied = await copyText(latestAgentPrompt, "Copy the agent onboarding prompt manually from the field above.");
+                  const copied = await copyText(latestAgentPrompt, copy("newAgent.copyPromptManualAbove", "Copy the agent onboarding prompt manually from the field above.", "위 필드에서 직원 온보딩 프롬프트를 직접 복사하세요."));
                   setLatestAgentPromptCopied(copied);
                 }}
               >
-                {latestAgentPromptCopied ? "Copied prompt" : "Copy prompt"}
+                {latestAgentPromptCopied ? copy("newAgent.copiedPrompt", "Copied prompt", "프롬프트 복사됨") : copy("newAgent.copyPrompt", "Copy prompt", "프롬프트 복사")}
               </Button>
             </div>
           )}

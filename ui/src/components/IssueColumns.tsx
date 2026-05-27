@@ -17,35 +17,44 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { isKoreanLocale } from "@/i18n/locale-utils";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 
-const issueColumnLabels: Record<InboxIssueColumn, string> = {
-  status: "Status",
-  id: "ID",
-  assignee: "Assignee",
-  project: "Project",
-  workspace: "Workspace",
-  parent: "Parent issue",
-  labels: "Tags",
-  updated: "Last updated",
-};
+function issueColumnLabel(column: InboxIssueColumn, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<InboxIssueColumn, string> = {
+    status: copy("issueColumns.status", "Status", "상태"),
+    id: copy("issueColumns.id", "ID", "ID"),
+    assignee: copy("issueColumns.assignee", "Assignee", "담당자"),
+    project: copy("issueColumns.project", "Project", "프로젝트"),
+    workspace: copy("issueColumns.workspace", "Workspace", "작업공간"),
+    parent: copy("issueColumns.parent", "Parent issue", "상위 작업"),
+    labels: copy("issueColumns.labels", "Tags", "태그"),
+    updated: copy("issueColumns.updated", "Last updated", "최근 수정"),
+  };
+  return labels[column];
+}
 
-const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
-  id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
-  project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
-  updated: "Latest visible activity time.",
-};
+function issueColumnDescription(column: InboxIssueColumn, copy: ReturnType<typeof useLocalizedCopy>) {
+  const descriptions: Record<InboxIssueColumn, string> = {
+    status: copy("issueColumns.statusDesc", "Issue state chip on the left edge.", "왼쪽 상태 표시 칩입니다."),
+    id: copy("issueColumns.idDesc", "Ticket identifier like PAP-1009.", "PAP-1009 같은 작업 식별자입니다."),
+    assignee: copy("issueColumns.assigneeDesc", "Assigned agent or board user.", "배정된 직원 또는 보드 사용자입니다."),
+    project: copy("issueColumns.projectDesc", "Linked project pill with its color.", "연결된 프로젝트와 색상 표시입니다."),
+    workspace: copy("issueColumns.workspaceDesc", "Execution or project workspace used for the issue.", "작업에 사용된 실행/프로젝트 작업공간입니다."),
+    parent: copy("issueColumns.parentDesc", "Parent issue identifier and title.", "상위 작업 식별자와 제목입니다."),
+    labels: copy("issueColumns.labelsDesc", "Issue labels and tags.", "작업 라벨과 태그입니다."),
+    updated: copy("issueColumns.updatedDesc", "Latest visible activity time.", "최근 표시 가능한 활동 시간입니다."),
+  };
+  return descriptions[column];
+}
 
-export function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+export function issueActivityText(issue: Issue, locale?: string | null): string {
+  const value = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt, locale);
+  return isKoreanLocale(locale) ? `${value} 수정` : `Updated ${value}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -76,6 +85,8 @@ export function IssueColumnPicker({
   title: string;
   iconOnly?: boolean;
 }) {
+  const copy = useLocalizedCopy();
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -84,17 +95,17 @@ export function IssueColumnPicker({
           variant={iconOnly ? "outline" : "ghost"}
           size={iconOnly ? "icon" : "sm"}
           className={iconOnly ? "h-8 w-8 shrink-0" : "hidden h-8 shrink-0 px-2 text-xs sm:inline-flex"}
-          title="Columns"
+          title={copy("issueColumns.columns", "Columns", "열")}
         >
           <Columns3 className={iconOnly ? "h-3.5 w-3.5" : "mr-1 h-3.5 w-3.5"} />
-          {!iconOnly && "Columns"}
+          {!iconOnly && copy("issueColumns.columns", "Columns", "열")}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              {copy("issueColumns.desktopRows", "Desktop issue rows", "데스크톱 작업 행")}
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -112,10 +123,10 @@ export function IssueColumnPicker({
           >
             <span className="flex flex-col gap-0.5">
               <span className="text-sm font-medium text-foreground">
-                {issueColumnLabels[column]}
+                {issueColumnLabel(column, copy)}
               </span>
               <span className="text-xs leading-relaxed text-muted-foreground">
-                {issueColumnDescriptions[column]}
+                {issueColumnDescription(column, copy)}
               </span>
             </span>
           </DropdownMenuCheckboxItem>
@@ -125,7 +136,7 @@ export function IssueColumnPicker({
           onSelect={onResetColumns}
           className="rounded-lg px-3 py-2 text-sm"
         >
-          Reset defaults
+          {copy("issueColumns.resetDefaults", "Reset defaults", "기본값 복원")}
           <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -148,6 +159,8 @@ export function InboxIssueMetaLeading({
   statusSlot?: ReactNode;
   checklistStepNumber?: number | string | null;
 }) {
+  const copy = useLocalizedCopy();
+
   return (
     <>
       {showStatus ? (
@@ -187,7 +200,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            Live
+            {copy("common.live", "Live", "실행 중")}
           </span>
         </span>
       )}
@@ -226,8 +239,10 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
-  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
+  const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt, locale);
+  const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? copy("common.user", "User", "사용자");
 
   return (
     <span
@@ -267,7 +282,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
+              {copy("issues.group.unassigned", "Unassigned", "미지정")}
             </span>
           );
         }
@@ -292,7 +307,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
+              {copy("issues.group.noProject", "No project", "프로젝트 없음")}
             </span>
           );
         }
@@ -349,7 +364,7 @@ export function InboxIssueTrailingColumns({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top" sideOffset={6}>
-                    Filter by workspace
+                    {copy("issues.workspace.filter", "Filter by workspace", "작업공간으로 필터")}
                   </TooltipContent>
                 </Tooltip>
               ) : (
@@ -369,7 +384,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">{copy("issues.subIssue", "Sub-issue", "하위 작업")}</span>
               )}
             </span>
           );

@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
@@ -386,6 +387,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -394,54 +396,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {copy("agentConfig.choosePath.choose", "Choose", "선택")}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{copy("agentConfig.choosePath.title", "Specify path manually", "경로 직접 입력")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {copy("agentConfig.choosePath.description", "Browser security blocks apps from reading full local paths via a file picker. Copy the absolute path and paste it into the input.", "브라우저 보안 때문에 앱이 파일 선택기에서 전체 로컬 경로를 읽을 수 없습니다. 절대 경로를 복사해서 입력란에 붙여 넣으세요.")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{copy("agentConfig.choosePath.macos", "macOS (Finder)", "macOS(Finder)")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{copy("agentConfig.choosePath.macosStep1", "Find the folder in Finder.", "Finder에서 폴더를 찾습니다.")}</li>
+                <li>{copy("agentConfig.choosePath.macosStep2", "Hold Option and right-click the folder.", "Option 키를 누른 상태에서 폴더를 우클릭합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.macosStep3", "Click Copy <folder name> as Pathname.", "경로명으로 복사 메뉴를 클릭합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.macosStep4", "Paste the result into the path input.", "복사한 값을 경로 입력란에 붙여 넣습니다.")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{copy("agentConfig.choosePath.windows", "Windows (File Explorer)", "Windows(파일 탐색기)")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{copy("agentConfig.choosePath.windowsStep1", "Find the folder in File Explorer.", "파일 탐색기에서 폴더를 찾습니다.")}</li>
+                <li>{copy("agentConfig.choosePath.windowsStep2", "Hold Shift and right-click the folder.", "Shift 키를 누른 상태에서 폴더를 우클릭합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.windowsStep3", "Click Copy as path.", "경로로 복사를 클릭합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.windowsStep4", "Paste the result into the path input.", "복사한 값을 경로 입력란에 붙여 넣습니다.")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{copy("agentConfig.choosePath.terminal", "Terminal fallback (macOS/Linux)", "터미널 대체 방법(macOS/Linux)")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{copy("agentConfig.choosePath.terminalStep1", "Run cd /path/to/folder.", "cd /path/to/folder 명령을 실행합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.terminalStep2", "Run pwd.", "pwd 명령을 실행합니다.")}</li>
+                <li>{copy("agentConfig.choosePath.terminalStep3", "Copy the output and paste it into the path input.", "출력값을 복사해서 경로 입력란에 붙여 넣습니다.")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {copy("common.ok", "OK", "확인")}
             </Button>
           </DialogFooter>
         </DialogContent>

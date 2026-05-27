@@ -12,6 +12,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, projectUrl } from "../lib/utils";
+import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
 import {
   resourceMembershipState,
   useResourceMembershipMutation,
@@ -24,11 +25,11 @@ import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
 
-const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "updated", label: "Updated" },
-  { field: "created", label: "Created" },
-  { field: "targetDate", label: "Target date" },
+const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; key: string; english: string; korean: string }> = [
+  { field: "name", key: "name", english: "Name", korean: "이름" },
+  { field: "updated", key: "updated", english: "Updated", korean: "최근 수정" },
+  { field: "created", key: "created", english: "Created", korean: "생성일" },
+  { field: "targetDate", key: "targetDate", english: "Target date", korean: "목표일" },
 ];
 
 function compareProjectNames(left: Project, right: Project) {
@@ -76,12 +77,14 @@ export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("projects.breadcrumb", "Projects", "프로젝트") }]);
+  }, [copy, setBreadcrumbs]);
 
   const { data: allProjects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -112,10 +115,25 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+  const currentSortOption = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField) ?? {
+    field: "name",
+    key: "name",
+    english: "Name",
+    korean: "이름",
+  };
+  const sortLabel = copy(
+    `projects.sort.${currentSortOption.key}`,
+    currentSortOption.english,
+    currentSortOption.korean,
+  );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return (
+      <EmptyState
+        icon={Hexagon}
+        message={copy("projects.noCompany", "Select a company to view projects.", "프로젝트를 보려면 회사를 선택하세요.")}
+      />
+    );
   }
 
   if (isLoading) {
@@ -127,46 +145,51 @@ export function Projects() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
+            <Button variant="ghost" size="sm" className="w-fit text-xs" title={copy("projects.sort.title", "Sort", "정렬")}>
               <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
+              <span>{copy("projects.sort.prefix", "Sort: {{label}}", "정렬: {{label}}", { label: sortLabel })}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-44 p-0">
             <div className="p-2 space-y-0.5">
-              {PROJECT_SORT_OPTIONS.map((option) => (
-                <button
-                  key={option.field}
-                  type="button"
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
-                    sortField === option.field
-                      ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
-                  }`}
-                  onClick={() => {
-                    if (sortField === option.field) {
-                      setSortDir((current) => (current === "asc" ? "desc" : "asc"));
-                      return;
-                    }
-                    setSortField(option.field);
-                    setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
-                  }}
-                >
-                  <span>{option.label}</span>
-                  {sortField === option.field ? (
-                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
+              {PROJECT_SORT_OPTIONS.map((option) => {
+                const optionLabel = copy(`projects.sort.${option.key}`, option.english, option.korean);
+                return (
+                  <button
+                    key={option.field}
+                    type="button"
+                    className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                      sortField === option.field
+                        ? "bg-accent/50 text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50"
+                    }`}
+                    onClick={() => {
+                      if (sortField === option.field) {
+                        setSortDir((current) => (current === "asc" ? "desc" : "asc"));
+                        return;
+                      }
+                      setSortField(option.field);
+                      setSortDir(option.field === "name" || option.field === "targetDate" ? "asc" : "desc");
+                    }}
+                  >
+                    <span>{optionLabel}</span>
+                    {sortField === option.field ? (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Check className="h-3 w-3" />
+                        {sortDir === "asc"
+                          ? copy("projects.sort.asc", "Asc", "오름차순")
+                          : copy("projects.sort.desc", "Desc", "내림차순")}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
           </PopoverContent>
         </Popover>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Project
+          {copy("projects.add", "Add Project", "프로젝트 추가")}
         </Button>
       </div>
 
@@ -175,8 +198,8 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
+          message={copy("projects.empty", "No projects yet.", "아직 프로젝트가 없습니다.")}
+          action={copy("projects.add", "Add Project", "프로젝트 추가")}
           onAction={openNewProject}
         />
       )}
@@ -184,17 +207,30 @@ export function Projects() {
       {projects.length > 0 && (
         <div className="space-y-6">
           {([
-            ["My Projects", groupedProjects.mine],
-            ["Other Projects", groupedProjects.other],
-          ] as const).map(([label, sectionProjects]) => {
+            [
+              copy("projects.group.mine", "My Projects", "내 프로젝트"),
+              groupedProjects.mine,
+              "mine",
+            ],
+            [
+              copy("projects.group.other", "Other Projects", "다른 프로젝트"),
+              groupedProjects.other,
+              "other",
+            ],
+          ] as const).map(([label, sectionProjects, sectionKey]) => {
             if (sectionProjects.length === 0) return null;
 
             return (
-              <section key={label} className="space-y-2">
+              <section key={sectionKey} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium">{label}</h2>
                   <span className="text-xs text-muted-foreground">
-                    {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
+                    {copy(
+                      "projects.count",
+                      sectionProjects.length === 1 ? "{{count}} project" : "{{count}} projects",
+                      "{{count}}개 프로젝트",
+                      { count: sectionProjects.length },
+                    )}
                   </span>
                 </div>
                 <div className="border border-border">
@@ -215,7 +251,7 @@ export function Projects() {
                           <div className="flex items-center gap-3">
                             {project.targetDate && (
                               <span className="text-xs text-muted-foreground">
-                                {formatDate(project.targetDate)}
+                                {formatDate(project.targetDate, locale)}
                               </span>
                             )}
                             <StatusBadge status={project.status} />

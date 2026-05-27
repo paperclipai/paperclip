@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
@@ -41,6 +42,7 @@ export function buildFullSearchPath(query: string) {
 }
 
 export function CommandPalette() {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
@@ -121,7 +123,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder={copy("commandPalette.placeholder", "Search issues, agents, projects...", "작업, 직원, 프로젝트 검색...")}
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
@@ -135,17 +137,18 @@ export function CommandPalette() {
         <CommandEmpty>
           {showSearchAll ? (
             <span>
-              No quick issue matches. Press{" "}
+              {copy("commandPalette.noQuickMatchesPrefix", "No quick issue matches. Press", "빠른 작업 결과가 없습니다.")}
+              {" "}
               <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
-              to <span className="font-medium">search all</span> or keep typing to refine.
+              {copy("commandPalette.noQuickMatchesSuffix", "to search all or keep typing to refine.", "전체 검색을 열거나 계속 입력해 좁히세요.")}
             </span>
           ) : (
-            "No results found."
+            copy("commandPalette.noResults", "No results found.", "검색 결과가 없습니다.")
           )}
         </CommandEmpty>
 
         {showSearchAll ? (
-          <CommandGroup heading="Search">
+          <CommandGroup heading={copy("commandPalette.group.search", "Search", "검색")}>
             <CommandItem
               value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
               onSelect={goFullSearch}
@@ -154,10 +157,10 @@ export function CommandPalette() {
             >
               <Search className="mr-2 h-4 w-4" />
               <span className="flex-1 truncate">
-                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+                {copy("commandPalette.searchAllFor", "Search all for", "전체 검색")} <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
               </span>
               <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <span>open full search</span>
+                <span>{copy("commandPalette.openFullSearch", "open full search", "전체 검색 열기")}</span>
                 <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
               </span>
             </CommandItem>
@@ -166,7 +169,7 @@ export function CommandPalette() {
 
         {showSearchAll ? <CommandSeparator /> : null}
 
-        <CommandGroup heading="Actions">
+        <CommandGroup heading={copy("commandPalette.group.actions", "Actions", "작업")}>
           <CommandItem
             onSelect={() => {
               setOpen(false);
@@ -174,7 +177,7 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            {copy("commandPalette.createIssue", "Create new issue", "새 작업 만들기")}
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
           <CommandItem
@@ -184,55 +187,55 @@ export function CommandPalette() {
             }}
           >
             <Plus className="mr-2 h-4 w-4" />
-            Create new agent
+            {copy("commandPalette.createAgent", "Create new agent", "새 직원 만들기")}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
-            Create new project
+            {copy("commandPalette.createProject", "Create new project", "새 프로젝트 만들기")}
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator />
 
-        <CommandGroup heading="Pages">
+        <CommandGroup heading={copy("commandPalette.group.pages", "Pages", "페이지")}>
           <CommandItem onSelect={() => go("/dashboard")}>
             <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
+            {copy("sidebar.nav.dashboard", "Dashboard", "대시보드")}
           </CommandItem>
           <CommandItem onSelect={() => go("/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {copy("sidebar.nav.inbox", "Inbox", "받은함")}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            {copy("sidebar.nav.issues", "Issues", "작업")}
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
-            Projects
+            {copy("sidebar.nav.projects", "Projects", "프로젝트")}
           </CommandItem>
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
-            Goals
+            {copy("sidebar.nav.goals", "Goals", "목표")}
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
-            Agents
+            {copy("sidebar.nav.agents", "Agents", "직원")}
           </CommandItem>
           <CommandItem onSelect={() => go("/costs")}>
             <DollarSign className="mr-2 h-4 w-4" />
-            Costs
+            {copy("sidebar.nav.costs", "Costs", "비용")}
           </CommandItem>
           <CommandItem onSelect={() => go("/activity")}>
             <History className="mr-2 h-4 w-4" />
-            Activity
+            {copy("sidebar.nav.activity", "Activity", "활동")}
           </CommandItem>
         </CommandGroup>
 
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading={copy("commandPalette.group.issues", "Issues", "작업")}>
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}
@@ -261,7 +264,7 @@ export function CommandPalette() {
         {agents.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Agents">
+            <CommandGroup heading={copy("commandPalette.group.agents", "Agents", "직원")}>
               {agents.slice(0, 10).map((agent) => (
                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
@@ -276,7 +279,7 @@ export function CommandPalette() {
         {projects.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Projects">
+            <CommandGroup heading={copy("commandPalette.group.projects", "Projects", "프로젝트")}>
               {projects.slice(0, 10).map((project) => (
                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
                   <Hexagon className="mr-2 h-4 w-4" />

@@ -16,6 +16,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
+import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
@@ -54,6 +55,24 @@ function getConfiguredModel(agent: Agent): string | null {
   return model.length > 0 ? model : null;
 }
 
+function agentRoleLabel(role: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    ceo: copy("agentRole.ceo", "CEO", "대표"),
+    cto: copy("agentRole.cto", "CTO", "기술 책임자"),
+    cmo: copy("agentRole.cmo", "CMO", "마케팅 책임자"),
+    cfo: copy("agentRole.cfo", "CFO", "재무 책임자"),
+    security: copy("agentRole.security", "Security", "보안"),
+    engineer: copy("agentRole.engineer", "Engineer", "엔지니어"),
+    designer: copy("agentRole.designer", "Designer", "디자이너"),
+    pm: copy("agentRole.pm", "PM", "PM"),
+    qa: copy("agentRole.qa", "QA", "QA"),
+    devops: copy("agentRole.devops", "DevOps", "DevOps"),
+    researcher: copy("agentRole.researcher", "Researcher", "조사원"),
+    general: copy("agentRole.general", "General", "일반"),
+  };
+  return labels[role] ?? roleLabels[role] ?? role;
+}
+
 function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean): OrgNode[] {
   return nodes
     .reduce<OrgNode[]>((acc, node) => {
@@ -70,6 +89,8 @@ export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
@@ -124,11 +145,11 @@ export function Agents() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("agents.breadcrumb", "Agents", "직원") }]);
+  }, [copy, setBreadcrumbs]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={copy("agents.noCompany", "Select a company to view agents.", "직원을 보려면 회사를 선택하세요.")} />;
   }
 
   if (isLoading) {
@@ -144,10 +165,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: copy("agents.tabs.all", "All", "전체") },
+              { value: "active", label: copy("agents.tabs.active", "Active", "활성") },
+              { value: "paused", label: copy("agents.tabs.paused", "Paused", "일시정지") },
+              { value: "error", label: copy("agents.tabs.error", "Error", "오류") },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -164,7 +185,7 @@ export function Agents() {
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Filters
+              {copy("agents.filters", "Filters", "필터")}
               {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
             </button>
             {filtersOpen && (
@@ -179,7 +200,7 @@ export function Agents() {
                   )}>
                     {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
                   </span>
-                  Show terminated
+                  {copy("agents.showTerminated", "Show terminated", "종료된 직원 표시")}
                 </button>
               </div>
             )}
@@ -192,6 +213,8 @@ export function Agents() {
                   "p-1.5 transition-colors",
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
+                aria-label={copy("agents.view.list", "List view", "목록 보기")}
+                title={copy("agents.view.list", "List view", "목록 보기")}
                 onClick={() => setView("list")}
               >
                 <List className="h-3.5 w-3.5" />
@@ -201,6 +224,8 @@ export function Agents() {
                   "p-1.5 transition-colors",
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
+                aria-label={copy("agents.view.org", "Org chart view", "조직도 보기")}
+                title={copy("agents.view.org", "Org chart view", "조직도 보기")}
                 onClick={() => setView("org")}
               >
                 <GitBranch className="h-3.5 w-3.5" />
@@ -209,13 +234,13 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {copy("agents.newAgent", "New Agent", "새 직원")}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">{copy("agents.count", "{{count}} agent", "{{count}}명", { count: filtered.length })}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -223,8 +248,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={copy("agents.empty", "Create your first agent to get started.", "첫 직원을 만들어 시작하세요.")}
+          action={copy("agents.newAgent", "New Agent", "새 직원")}
           onAction={openNewAgent}
         />
       )}
@@ -237,7 +262,7 @@ export function Agents() {
               <EntityRow
                 key={agent.id}
                 title={agent.name}
-                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+                subtitle={`${agentRoleLabel(agent.role, copy)}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 className={cn(
                   "group",
@@ -282,7 +307,7 @@ export function Agents() {
                         {getConfiguredModel(agent) ?? "—"}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
-                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt, locale) : "—"}
                       </span>
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
@@ -326,7 +351,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {copy("agents.noFilterResults", "No agents match the selected filter.", "선택한 필터와 일치하는 직원이 없습니다.")}
         </p>
       )}
 
@@ -350,13 +375,13 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {copy("agents.noFilterResults", "No agents match the selected filter.", "선택한 필터와 일치하는 직원이 없습니다.")}
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
+          {copy("agents.noOrg", "No organizational hierarchy defined.", "정의된 조직도가 없습니다.")}
         </p>
       )}
     </div>
@@ -380,6 +405,8 @@ function OrgTreeNode({
   memberships: ReturnType<typeof useResourceMemberships>["data"];
   membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
 }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const agent = agentMap.get(node.id);
   const membershipState = resourceMembershipState(memberships, "agent", node.id);
   const pending = membershipMutation.isPending &&
@@ -404,7 +431,7 @@ function OrgTreeNode({
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
-            {roleLabels[node.role] ?? node.role}
+            {agentRoleLabel(node.role, copy)}
             {agent?.title ? ` - ${agent.title}` : ""}
           </span>
         </div>
@@ -440,7 +467,7 @@ function OrgTreeNode({
                   {getConfiguredModel(agent) ?? "—"}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
-                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt, locale) : "—"}
                 </span>
               </>
             )}
@@ -497,6 +524,11 @@ function LiveRunIndicator({
   runId: string;
   liveCount: number;
 }) {
+  const copy = useLocalizedCopy();
+  const label = liveCount > 1
+    ? copy("agents.liveWithCount", "Live ({{count}})", "실행 중 ({{count}})", { count: liveCount })
+    : copy("agents.live", "Live", "실행 중");
+
   return (
     <Link
       to={`/agents/${agentRef}/runs/${runId}`}
@@ -508,7 +540,7 @@ function LiveRunIndicator({
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-        Live{liveCount > 1 ? ` (${liveCount})` : ""}
+        {label}
       </span>
     </Link>
   );

@@ -93,7 +93,8 @@ export const heartbeatsApi = {
     api.get<{ operationId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
       `/workspace-operations/${operationId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
-  cancel: (runId: string) => api.post<void>(`/heartbeat-runs/${runId}/cancel`, {}),
+  cancel: (runId: string, input?: { reason?: string }) =>
+    api.post<void>(`/heartbeat-runs/${runId}/cancel`, input ?? {}),
   recordWatchdogDecision: (input: WatchdogDecisionInput) =>
     api.post(`/heartbeat-runs/${input.runId}/watchdog-decisions`, {
       decision: input.decision,

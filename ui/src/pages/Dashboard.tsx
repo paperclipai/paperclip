@@ -26,6 +26,7 @@ import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRa
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -35,6 +36,8 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 }
 
 export function Dashboard() {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -50,8 +53,8 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("dashboard.title", "Dashboard", "대시보드") }]);
+  }, [copy, setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
@@ -176,14 +179,25 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
-          action="Get Started"
+          message={copy(
+            "dashboard.empty.welcome",
+            "Welcome to Paperclip. Set up your first company and agent to get started.",
+            "Paperclip에 오신 것을 환영합니다. 첫 회사와 직원을 설정해 시작하세요.",
+          )}
+          action={copy("dashboard.empty.getStarted", "Get Started", "시작하기")}
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState
+        icon={LayoutDashboard}
+        message={copy(
+          "dashboard.empty.selectCompany",
+          "Create or select a company to view the dashboard.",
+          "대시보드를 보려면 회사를 만들거나 선택하세요.",
+        )}
+      />
     );
   }
 
@@ -202,14 +216,14 @@ export function Dashboard() {
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
             <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
+              {copy("dashboard.noAgents.message", "You have no agents.", "아직 직원이 없습니다.")}
             </p>
           </div>
           <button
             onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
           >
-            Create one here
+            {copy("dashboard.noAgents.action", "Create one here", "여기서 만들기")}
           </button>
         </div>
       )}
@@ -224,15 +238,29 @@ export function Dashboard() {
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
                   <p className="text-sm font-medium text-red-50">
-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
+                    {copy(
+                      "dashboard.budget.activeIncidents",
+                      data.budgets.activeIncidents === 1 ? "{{count}} active budget incident" : "{{count}} active budget incidents",
+                      "활성 예산 사고 {{count}}건",
+                      { count: data.budgets.activeIncidents },
+                    )}
                   </p>
                   <p className="text-xs text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
+                    {copy(
+                      "dashboard.budget.summary",
+                      "{{agents}} agents paused, {{projects}} projects paused, {{approvals}} pending budget approvals",
+                      "직원 {{agents}}명 일시정지, 프로젝트 {{projects}}개 일시정지, 예산 승인 {{approvals}}건 대기",
+                      {
+                        agents: data.budgets.pausedAgents,
+                        projects: data.budgets.pausedProjects,
+                        approvals: data.budgets.pendingApprovals,
+                      },
+                    )}
                   </p>
                 </div>
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
-                Open budgets
+                {copy("dashboard.budget.open", "Open budgets", "예산 열기")}
               </Link>
             </div>
           ) : null}
@@ -241,67 +269,94 @@ export function Dashboard() {
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
+              label={copy("dashboard.metrics.agentsEnabled", "Agents Enabled", "활성 직원")}
               to="/agents"
               description={
                 <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
+                  {copy(
+                    "dashboard.metrics.agentsDescription",
+                    "{{running}} running, {{paused}} paused, {{errors}} errors",
+                    "실행 {{running}}, 일시정지 {{paused}}, 오류 {{errors}}",
+                    {
+                      running: data.agents.running,
+                      paused: data.agents.paused,
+                      errors: data.agents.error,
+                    },
+                  )}
                 </span>
               }
             />
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}
-              label="Tasks In Progress"
+              label={copy("dashboard.metrics.tasksInProgress", "Tasks In Progress", "진행 중 작업")}
               to="/issues"
               description={
                 <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
+                  {copy(
+                    "dashboard.metrics.tasksDescription",
+                    "{{open}} open, {{blocked}} blocked",
+                    "열림 {{open}}, 막힘 {{blocked}}",
+                    {
+                      open: data.tasks.open,
+                      blocked: data.tasks.blocked,
+                    },
+                  )}
                 </span>
               }
             />
             <MetricCard
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
+              label={copy("dashboard.metrics.monthSpend", "Month Spend", "이번 달 지출")}
               to="/costs"
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                    ? copy(
+                      "dashboard.metrics.monthBudget",
+                      "{{percent}}% of {{budget}} budget",
+                      "예산 {{budget}} 중 {{percent}}%",
+                      {
+                        percent: data.costs.monthUtilizationPercent,
+                        budget: formatCents(data.costs.monthBudgetCents),
+                      },
+                    )
+                    : copy("dashboard.metrics.unlimitedBudget", "Unlimited budget", "무제한 예산")}
                 </span>
               }
             />
             <MetricCard
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
+              label={copy("dashboard.metrics.pendingApprovals", "Pending Approvals", "승인 대기")}
               to="/approvals"
               description={
                 <span>
                   {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                    ? copy(
+                      "dashboard.metrics.budgetApprovals",
+                      "{{count}} budget overrides awaiting board review",
+                      "예산 예외 승인 {{count}}건 대기",
+                      { count: data.budgets.pendingApprovals },
+                    )
+                    : copy("dashboard.metrics.awaitingReview", "Awaiting board review", "검토 대기 중")}
                 </span>
               }
             />
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
+            <ChartCard title={copy("dashboard.charts.runActivity", "Run Activity", "실행 활동")} subtitle={copy("dashboard.charts.last14Days", "Last 14 days", "최근 14일")}>
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title={copy("dashboard.charts.issuesByPriority", "Issues by Priority", "우선순위별 작업")} subtitle={copy("dashboard.charts.last14Days", "Last 14 days", "최근 14일")}>
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title={copy("dashboard.charts.issuesByStatus", "Issues by Status", "상태별 작업")} subtitle={copy("dashboard.charts.last14Days", "Last 14 days", "최근 14일")}>
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
+            <ChartCard title={copy("dashboard.charts.successRate", "Success Rate", "성공률")} subtitle={copy("dashboard.charts.last14Days", "Last 14 days", "최근 14일")}>
               <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
@@ -318,7 +373,7 @@ export function Dashboard() {
             {recentActivity.length > 0 && (
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
+                  {copy("dashboard.recentActivity", "Recent Activity", "최근 활동")}
                 </h3>
                 <div className="border border-border divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
@@ -330,6 +385,7 @@ export function Dashboard() {
                       entityNameMap={entityNameMap}
                       entityTitleMap={entityTitleMap}
                       className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
+                      locale={locale}
                     />
                   ))}
                 </div>
@@ -339,11 +395,13 @@ export function Dashboard() {
             {/* Recent Tasks */}
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
+                {copy("dashboard.recentTasks", "Recent Tasks", "최근 작업")}
               </h3>
               {recentIssues.length === 0 ? (
                 <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                  <p className="text-sm text-muted-foreground">
+                    {copy("dashboard.noTasks", "No tasks yet.", "아직 작업이 없습니다.")}
+                  </p>
                 </div>
               ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">
@@ -377,7 +435,7 @@ export function Dashboard() {
                             })()}
                             <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
                             <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
-                              {timeAgo(issue.updatedAt)}
+                              {timeAgo(issue.updatedAt, locale)}
                             </span>
                           </span>
                         </span>
