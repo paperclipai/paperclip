@@ -69,6 +69,7 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  wakeup: vi.fn(),
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
@@ -312,6 +313,7 @@ describe.sequential("agent permission routes", () => {
     mockApprovalService.create.mockReset();
     mockApprovalService.getById.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
@@ -369,6 +371,11 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.wakeup.mockResolvedValue({
+      id: "run-1",
+      agentId,
+      status: "queued",
+    });
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -487,6 +494,129 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(403);
+  });
+
+  it("allows an agent to wake itself without delegated management authority", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing grant.",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ reason: "manual_self_test" }));
+
+    expect(res.status).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: "manual_self_test",
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      }),
+    );
+  });
+
+  it("allows delegated managers to wake non-upstream agents", async () => {
+    const managerAgentId = "33333333-3333-4333-8333-333333333333";
+    const upstreamAgentId = "44444444-4444-4444-8444-444444444444";
+    const targetAgent = { ...baseAgent, id: agentId, reportsTo: managerAgentId };
+    const managerAgent = {
+      ...baseAgent,
+      id: managerAgentId,
+      role: "vp",
+      reportsTo: upstreamAgentId,
+      permissions: { canCreateAgents: true },
+    };
+    const agents = new Map([
+      [targetAgent.id, targetAgent],
+      [managerAgent.id, managerAgent],
+    ]);
+    mockAgentService.getById.mockImplementation(async (id: string) => agents.get(id) ?? null);
+    mockAgentService.getChainOfCommand.mockResolvedValue([
+      { id: upstreamAgentId, name: "Nox", role: "ceo", title: "CEO" },
+    ]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing grant.",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "manager-run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/wakeup`)
+      .send({ reason: "issue_assigned" }));
+
+    expect(res.status).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+        requestedByActorType: "agent",
+        requestedByActorId: managerAgentId,
+      }),
+    );
+  });
+
+  it("rejects delegated manager wakeups for upstream managers", async () => {
+    const managerAgentId = "33333333-3333-4333-8333-333333333333";
+    const upstreamAgentId = agentId;
+    const upstreamAgent = { ...baseAgent, id: upstreamAgentId, role: "ceo", reportsTo: null };
+    const managerAgent = {
+      ...baseAgent,
+      id: managerAgentId,
+      role: "vp",
+      reportsTo: upstreamAgentId,
+      permissions: { canCreateAgents: true },
+    };
+    const agents = new Map([
+      [upstreamAgent.id, upstreamAgent],
+      [managerAgent.id, managerAgent],
+    ]);
+    mockAgentService.getById.mockImplementation(async (id: string) => agents.get(id) ?? null);
+    mockAgentService.getChainOfCommand.mockResolvedValue([
+      { id: upstreamAgentId, name: "Nox", role: "ceo", title: "CEO" },
+    ]);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed.",
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "manager-run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${upstreamAgentId}/heartbeat/invoke`)
+      .send({ reason: "manual_upstream_test" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot wake upstream manager");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {

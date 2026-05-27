@@ -670,8 +670,10 @@ On server startup:
 
 1. `POST /agents/:agentId/wakeup`
    - enqueue wakeup with source/reason
+   - agent-authenticated callers may wake themselves; delegated managers may wake same-company agents outside their own upstream chain of command; upstream manager wakeups remain forbidden
 2. `POST /agents/:agentId/heartbeat/invoke`
    - backward-compatible alias to wakeup API
+   - uses the same agent wake authorization boundary as `/wakeup`
 3. `GET /agents/:agentId/runtime-state`
    - board-only debug view
 4. `GET /agents/:agentId/task-sessions`

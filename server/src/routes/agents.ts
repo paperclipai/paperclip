@@ -685,6 +685,54 @@ export function agentRoutes(
     throw forbidden(decision.explanation);
   }
 
+  async function assertCanWakeAgent(req: Request, targetAgent: { id: string; companyId: string }) {
+    assertCompanyAccess(req, targetAgent.companyId);
+    if (req.actor.type !== "agent") {
+      await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
+
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      throw forbidden("Agent authentication required");
+    }
+    if (actorAgentId === targetAgent.id) {
+      return;
+    }
+
+    const actorAgent = await svc.getById(actorAgentId);
+    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+
+    const chainOfCommand = await svc.getChainOfCommand(actorAgentId);
+    if (chainOfCommand.some((manager) => manager.id === targetAgent.id)) {
+      throw forbidden("Agent cannot wake upstream manager");
+    }
+
+    const agentAdminDecision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId: targetAgent.companyId },
+    });
+    const hasAgentAdminAuthority =
+      agentAdminDecision.allowed ||
+      actorAgent.role === "ceo" ||
+      Boolean(actorAgent.permissions?.canCreateAgents);
+    const hasTaskManagementAuthority = await access.hasPermission(
+      targetAgent.companyId,
+      "agent",
+      actorAgentId,
+      "tasks:manage_active_checkouts",
+    );
+
+    if (hasAgentAdminAuthority || hasTaskManagementAuthority) {
+      return;
+    }
+
+    throw forbidden(agentAdminDecision.explanation || "Agent cannot wake other agents");
+  }
+
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") {
@@ -2918,16 +2966,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    }
+    await assertCanWakeAgent(req, agent);
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
@@ -2986,16 +3025,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
-    }
+    await assertCanWakeAgent(req, agent);
 
     const body = (req.body ?? {}) as Partial<{
       reason: unknown;
