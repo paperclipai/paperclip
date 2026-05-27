@@ -187,7 +187,7 @@ function formatBackupSize(sizeBytes: number): string {
 
 function formatSqlLiteral(value: string): string {
   const sanitized = value.replace(/\u0000/g, "");
-  let tag = "$valadrien-os$";
+  let tag = "$valadrien_os$";
   while (sanitized.includes(tag)) {
     tag = `$valadrien_os_${Math.random().toString(36).slice(2, 8)}$`;
   }

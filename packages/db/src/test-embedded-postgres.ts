@@ -90,8 +90,8 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "valadrien-os",
-    password: "valadrien-os",
+    user: "valadrien_os",
+    password: "valadrien_os",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -157,9 +157,9 @@ export async function startEmbeddedPostgresTestDatabase(
     await instance.initialise();
     await instance.start();
 
-    const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
-    const connectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`;
+    const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/postgres`;
+    await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
+    const connectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`;
     await applyPendingMigrations(connectionString);
 
     return {

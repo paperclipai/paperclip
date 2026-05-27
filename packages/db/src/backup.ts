@@ -49,7 +49,7 @@ function resolveConnectionString(config: PartialConfig | null): string {
   }
 
   const port = resolveEmbeddedPort(config);
-  return `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`;
+  return `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`;
 }
 
 function resolveBackupDir(config: PartialConfig | null): string {

@@ -99,7 +99,7 @@ async function ensureEmbeddedPostgresConnection(
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
   const runningPort = readPidFilePort(postmasterPidFile);
-  const preferredAdminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${preferredPort}/postgres`;
+  const preferredAdminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${preferredPort}/postgres`;
   const logBuffer = createEmbeddedPostgresLogBuffer();
 
   if (!runningPid && existsSync(pgVersionFile)) {
@@ -111,12 +111,12 @@ async function ensureEmbeddedPostgresConnection(
       if (!matchesDataDir) {
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
-      await ensurePostgresDatabase(preferredAdminConnectionString, "valadrien-os");
+      await ensurePostgresDatabase(preferredAdminConnectionString, "valadrien_os");
       process.emitWarning(
         `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
       );
       return {
-        connectionString: `postgres://valadrien-os:valadrien-os@127.0.0.1:${preferredPort}/valadrien-os`,
+        connectionString: `postgres://valadrien_os:valadrien_os@127.0.0.1:${preferredPort}/valadrien_os`,
         source: `embedded-postgres@${preferredPort}`,
         stop: async () => {},
       };
@@ -127,10 +127,10 @@ async function ensureEmbeddedPostgresConnection(
 
   if (runningPid) {
     const port = runningPort ?? preferredPort;
-    const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
+    const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/postgres`;
+    await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
     return {
-      connectionString: `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`,
+      connectionString: `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`,
       source: `embedded-postgres@${port}`,
       stop: async () => {},
     };
@@ -138,8 +138,8 @@ async function ensureEmbeddedPostgresConnection(
 
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "valadrien-os",
-    password: "valadrien-os",
+    user: "valadrien_os",
+    password: "valadrien_os",
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -170,11 +170,11 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${selectedPort}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
+  const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${selectedPort}/postgres`;
+  await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
 
   return {
-    connectionString: `postgres://valadrien-os:valadrien-os@127.0.0.1:${selectedPort}/valadrien-os`,
+    connectionString: `postgres://valadrien_os:valadrien_os@127.0.0.1:${selectedPort}/valadrien_os`,
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
       await instance.stop();
