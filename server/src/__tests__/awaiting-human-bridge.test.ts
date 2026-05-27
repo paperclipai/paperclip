@@ -23,6 +23,7 @@ import {
   shouldWakeOnReplyIssueStatus,
 } from "../services/awaiting-human-bridge.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { logger } from "../middleware/logger.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -882,6 +883,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
   it("answers ask_user_questions from a ClickUp reply, transitions awaiting_human to todo, and stays idempotent on replay", async () => {
     const seeded = await seedAskUserQuestionsBinaryInteraction();
+    const close = vi.fn(async () => {});
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
       resolveAdapter: () => ({
@@ -904,7 +906,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
             },
           ],
         })),
-        close: vi.fn(async () => {}),
+        close,
       }),
     });
 
@@ -952,6 +954,67 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(bridges[0]).toEqual(expect.objectContaining({
       status: "closed",
       closeOutcome: "superseded",
+    }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({
+      bridgeId: bridge!.id,
+      outcome: "superseded",
+      reason: "Interaction answered via ClickUp reply.",
+    }));
+  });
+
+  it("uses the provider label when closing an answered ask-user bridge", async () => {
+    const seeded = await seedAskUserQuestionsBinaryInteraction();
+    const close = vi.fn(async () => {});
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "slack",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reply",
+              externalEventId: "reply-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "question 1 is yet it got diaplyed",
+              metadata: { clickupReplyId: "reply-1" },
+            },
+          ],
+        })),
+        close,
+      }),
+    });
+
+    const bridge = await service.openForPendingInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+    });
+
+    expect(bridge).not.toBeNull();
+    await service.pollBridge(bridge!.id, new Date("2026-05-22T00:03:00.000Z"));
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toBe("Slack reply received:\n\nquestion 1 is yet it got diaplyed");
+
+    const [updatedBridge] = await db.select().from(awaitingHumanBridges)
+      .where(eq(awaitingHumanBridges.id, bridge!.id));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "closed",
+      closeOutcome: "superseded",
+      closeReason: "Interaction answered via Slack reply.",
+    }));
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({
+      bridgeId: bridge!.id,
+      outcome: "superseded",
+      reason: "Interaction answered via Slack reply.",
     }));
   });
 
@@ -2771,6 +2834,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const first = await seedAwaitingHumanInteraction();
     const second = await seedAwaitingHumanInteraction();
     let pollCalls = 0;
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
       resolveAdapter: () => ({
@@ -2848,6 +2912,13 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const secondComments = await db.select().from(issueComments).where(eq(issueComments.issueId, second.issueId));
     expect(secondComments).toHaveLength(1);
     expect(secondComments[0]?.body).toContain("Second candidate still worked.");
+    expect(warnSpy).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: first.companyId,
+      issueId: first.issueId,
+      interactionId: first.interactionId,
+      bridgeId: expect.any(String),
+      err: expect.any(Error),
+    }), "failed to reconcile delivered awaiting human interaction");
 
     const secondInteraction = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, second.interactionId))

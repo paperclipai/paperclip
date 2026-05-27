@@ -5389,19 +5389,31 @@ export function heartbeatService(db: Db) {
         .orderBy(desc(activityLog.createdAt))
         .limit(200);
 
-      const deliveredCandidates = legacyDeliveredInteractions.filter((candidate) => {
-        if (!candidate.interactionId || candidate.interactionId.trim().length === 0) return false;
+      const seenInteractionIds = new Set<string>();
+      const deliveredCandidates: Array<{
+        companyId: string;
+        issueId: string;
+        interactionId: string;
+        assigneeAgentId: string | null;
+        createdByAgentId: string | null;
+        handoffDetails: unknown;
+      }> = [];
+      for (const candidate of legacyDeliveredInteractions) {
+        const interactionId = readNonEmptyString(candidate.interactionId);
+        if (!interactionId || seenInteractionIds.has(interactionId)) continue;
         const details = parseObject(candidate.handoffDetails);
         const delivery = parseObject(details.notificationDelivery);
-        return delivery.status === "sent" || delivery.status === "enqueued";
-      }).map((candidate) => ({
-        companyId: candidate.companyId,
-        issueId: candidate.issueId,
-        interactionId: candidate.interactionId as string,
-        assigneeAgentId: candidate.assigneeAgentId,
-        createdByAgentId: candidate.createdByAgentId,
-        handoffDetails: candidate.handoffDetails,
-      }));
+        if (delivery.status !== "sent" && delivery.status !== "enqueued") continue;
+        seenInteractionIds.add(interactionId);
+        deliveredCandidates.push({
+          companyId: candidate.companyId,
+          issueId: candidate.issueId,
+          interactionId,
+          assigneeAgentId: candidate.assigneeAgentId,
+          createdByAgentId: candidate.createdByAgentId,
+          handoffDetails: candidate.handoffDetails,
+        });
+      }
 
       legacyResult = deliveredCandidates.length > 0
         ? await awaitingHumanBridge.reconcileDeliveredInteractions(deliveredCandidates)

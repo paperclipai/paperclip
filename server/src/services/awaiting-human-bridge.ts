@@ -1108,52 +1108,61 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       const summary = emptySummary();
       const now = new Date();
 
-      for (const candidate of input) {
-        const details = parseObject(candidate.handoffDetails);
-        const delivery = parseObject(details.notificationDelivery);
-        const messageId = readNonEmptyString(delivery.externalId);
-        if (
-          delivery.channel !== "clickup-chat"
-          || (delivery.status !== "sent" && delivery.status !== "enqueued")
-          || !messageId
-        ) {
-          summary.skipped += 1;
-          continue;
-        }
-
-        const wakeAgentId = candidate.assigneeAgentId ?? candidate.createdByAgentId ?? null;
-        if (!wakeAgentId) {
-          summary.skipped += 1;
-          continue;
-        }
-
-        try {
-          const { bridge, reusedExisting } = await this.attachOrReuseExistingDelivery({
-            companyId: candidate.companyId,
-            issueId: candidate.issueId,
-            interactionId: candidate.interactionId,
-            agentId: wakeAgentId,
-            provider: "clickup",
-            externalMessageId: messageId,
-          });
-          if (reusedExisting && bridge.nextPollAt && bridge.nextPollAt > now) {
-            summary.skipped += 1;
-            continue;
-          }
-          const bridgeResult = await this.pollBridge(bridge.id, now);
-          summary.checked += bridgeResult.checked;
-          summary.approved += bridgeResult.approved;
-          summary.rejected += bridgeResult.rejected;
-          summary.replies += bridgeResult.replies;
-          summary.noSignal += bridgeResult.noSignal;
-          summary.failed += bridgeResult.failed;
-          summary.skipped += bridgeResult.skipped;
-          summary.approvedIssueIds.push(...bridgeResult.approvedIssueIds);
-          summary.approvedInteractionIds.push(...bridgeResult.approvedInteractionIds);
-        } catch {
-          summary.failed += 1;
-        }
+    for (const candidate of input) {
+      const details = parseObject(candidate.handoffDetails);
+      const delivery = parseObject(details.notificationDelivery);
+      const messageId = readNonEmptyString(delivery.externalId);
+      if (
+        delivery.channel !== "clickup-chat"
+        || (delivery.status !== "sent" && delivery.status !== "enqueued")
+        || !messageId
+      ) {
+        summary.skipped += 1;
+        continue;
       }
+
+      const wakeAgentId = candidate.assigneeAgentId ?? candidate.createdByAgentId ?? null;
+      if (!wakeAgentId) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      let bridgeId: string | null = null;
+      try {
+        const { bridge, reusedExisting } = await this.attachOrReuseExistingDelivery({
+          companyId: candidate.companyId,
+          issueId: candidate.issueId,
+          interactionId: candidate.interactionId,
+          agentId: wakeAgentId,
+          provider: "clickup",
+          externalMessageId: messageId,
+        });
+        bridgeId = bridge.id;
+        if (reusedExisting && bridge.nextPollAt && bridge.nextPollAt > now) {
+          summary.skipped += 1;
+          continue;
+        }
+        const bridgeResult = await this.pollBridge(bridge.id, now);
+        summary.checked += bridgeResult.checked;
+        summary.approved += bridgeResult.approved;
+        summary.rejected += bridgeResult.rejected;
+        summary.replies += bridgeResult.replies;
+        summary.noSignal += bridgeResult.noSignal;
+        summary.failed += bridgeResult.failed;
+        summary.skipped += bridgeResult.skipped;
+        summary.approvedIssueIds.push(...bridgeResult.approvedIssueIds);
+        summary.approvedInteractionIds.push(...bridgeResult.approvedInteractionIds);
+      } catch (error) {
+        logger.warn({
+          err: error,
+          companyId: candidate.companyId,
+          issueId: candidate.issueId,
+          interactionId: candidate.interactionId,
+          bridgeId,
+        }, "failed to reconcile delivered awaiting human interaction");
+        summary.failed += 1;
+      }
+    }
 
       return summary;
     },
@@ -1311,6 +1320,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
 
             let resolvedInteraction: IssueThreadInteraction | null = null;
             if (responsePayload) {
+              const providerLabel = formatProviderLabel(row.provider);
               resolvedInteraction = await txInteractionsSvc.answerQuestions({
                 id: row.issueId,
                 companyId: row.companyId,
@@ -1318,7 +1328,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               await txDb.update(awaitingHumanBridges).set({
                 status: "closed",
                 closeOutcome: "superseded",
-                closeReason: "Interaction answered via ClickUp reply.",
+                closeReason: `Interaction answered via ${providerLabel} reply.`,
                 closedAt: new Date(),
                 nextPollAt: null,
                 updatedAt: new Date(),
@@ -1420,7 +1430,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                   externalThreadId: row.externalThreadId ?? null,
                   externalMessageId: row.externalMessageId ?? null,
                   outcome: "superseded",
-                  reason: "Interaction answered via ClickUp reply.",
+                  reason: `Interaction answered via ${formatProviderLabel(row.provider)} reply.`,
                 });
               } catch (error) {
                 logger.warn({
