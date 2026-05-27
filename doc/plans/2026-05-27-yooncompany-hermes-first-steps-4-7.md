@@ -257,6 +257,7 @@ Additional follow-up applied:
 - added a global question panel action that opens the phase 1 Hermes approval package as a Paperclip issue draft, with no assignee and no execution
 - added a dashboard profile roster preview for the planned Hermes profiles across phase 1 and later business/startup/academy/media/TincoLive divisions
 - added a dashboard Hermes Kanban read-only preview and Paperclip/Hermes cross-link template, with no board/task creation and no DB schema change
+- added visible current-screen context preview to the global question panel so users can see what will be auto-attached to Hermes/Codex issue drafts
 - upgraded `hermes-paperclip-adapter` to `0.3.0` in server/ui package files and lockfile
 - did not create Hermes profiles, enable Hermes Kanban, enable heartbeat, or write Paperclip DB state
 

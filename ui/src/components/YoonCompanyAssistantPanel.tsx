@@ -66,7 +66,7 @@ function readVisibleScreenContext() {
   ].filter(Boolean) as string[];
 }
 
-function pageContext(
+function pageContextLines(
   pathname: string,
   search: string,
   hash: string,
@@ -81,7 +81,16 @@ function pageContext(
     ...routeResourceContext(pathname),
     ...readVisibleScreenContext(),
     typeof document === "undefined" ? null : `브라우저 제목: ${document.title}`,
-  ].filter(Boolean).join("\n");
+  ].filter(Boolean) as string[];
+}
+
+function pageContext(
+  pathname: string,
+  search: string,
+  hash: string,
+  company: { id: string; name: string; issuePrefix?: string | null } | null,
+) {
+  return pageContextLines(pathname, search, hash, company).join("\n");
 }
 
 function requestBlock(userRequest: string) {
@@ -281,7 +290,8 @@ export function YoonCompanyAssistantPanel() {
 
   const codexAgent = useMemo(() => findYoonCompanyAgent(agents, "codex"), [agents]);
   const hermesAgent = useMemo(() => findYoonCompanyAgent(agents, "hermes"), [agents]);
-  const context = pageContext(location.pathname, location.search, location.hash, selectedCompany);
+  const contextLines = pageContextLines(location.pathname, location.search, location.hash, selectedCompany);
+  const context = contextLines.join("\n");
   const disabled = !selectedCompanyId;
 
   function openCodex(kind: "ask" | "guide" | "analyze", userRequest = "") {
@@ -391,6 +401,22 @@ export function YoonCompanyAssistantPanel() {
                 placeholder="현재 화면 맥락과 함께 전달할 내용을 입력"
                 className="min-h-24 resize-y border border-border bg-background px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
               />
+              <div className="border border-border bg-background px-3 py-2">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                    <ClipboardList className="h-3.5 w-3.5" />
+                    현재 화면 컨텍스트 자동 첨부
+                  </div>
+                  <div className="text-xs text-muted-foreground">이슈 초안에 포함</div>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {contextLines.slice(0, 5).map((line) => (
+                    <div key={line} className="truncate text-xs leading-5 text-muted-foreground">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              </div>
               <button
                 type="button"
                 disabled={disabled || !requestText.trim()}
