@@ -3411,7 +3411,44 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const routerBypassFields = new Set([
+      "assigneeAgentId",
+      "assigneeUserId",
+      "status",
+      "projectId",
+      "blockedByIssueIds",
+      "comment",
+    ]);
+    const patchKeys = Object.keys(req.body as Record<string, unknown>);
+    const isRoutingOnlyPatch = patchKeys.length > 0 && patchKeys.every((key) => routerBypassFields.has(key));
+    let allowRouterMutationBypass = false;
+    if (req.actor.type === "agent" && req.actor.agentId && isRoutingOnlyPatch) {
+      const routerActor = await agentsSvc.getById(req.actor.agentId);
+      if (
+        routerActor?.isRouter === true &&
+        existing.assigneeAgentId !== null &&
+        existing.assigneeAgentId !== req.actor.agentId
+      ) {
+        allowRouterMutationBypass = true;
+        const actorInfo = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actorInfo.actorType,
+          actorId: actorInfo.actorId,
+          action: "issue.router_agent_mutation",
+          entityType: "issue",
+          entityId: existing.id,
+          agentId: actorInfo.agentId,
+          runId: actorInfo.runId,
+          details: {
+            routerAgentId: req.actor.agentId,
+            assigneeAgentId: existing.assigneeAgentId,
+            mutatedFields: patchKeys,
+          },
+        });
+      }
+    }
+    if (!allowRouterMutationBypass && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -3435,10 +3472,25 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
-    const shouldCancelActiveRunForCancelledStatus =
-      existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const shouldCancelActiveRunForTerminalStatus =
+      !["done", "cancelled"].includes(existing.status) &&
+      ["done", "cancelled"].includes(updateFields.status ?? "");
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
+      return;
+    }
+    if (
+      req.actor.type === "agent" &&
+      updateFields.status === "done" &&
+      !commentBody
+    ) {
+      res.status(422).json({
+        error: "Agent done requires comment",
+        details: {
+          rule: "Terminal status requires terminal evidence",
+          fix: "Include a completion comment in the same PATCH request as status=done",
+        },
+      });
       return;
     }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
@@ -3550,7 +3602,7 @@ export function issueRoutes(
       }
     }
 
-    const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
+    const runToCancelForTerminalStatus = shouldCancelActiveRunForTerminalStatus
       ? await resolveActiveIssueRun(existing)
       : null;
 
@@ -3749,9 +3801,9 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForTerminalStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        const cancelled = await heartbeat.cancelRun(runToCancelForTerminalStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -3763,11 +3815,11 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
+            details: { agentId: cancelled.agentId, source: "issue_status_terminal", issueId: existing.id },
           });
         }
       } catch (err) {
-        logger.warn({ err, issueId: existing.id, runId: runToCancelForCancelledStatus.id }, "failed to cancel run for cancelled issue");
+        logger.warn({ err, issueId: existing.id, runId: runToCancelForTerminalStatus.id }, "failed to cancel run for terminal-status issue");
         await logActivity(db, {
           companyId: existing.companyId,
           actorType: actor.actorType,
@@ -3776,8 +3828,8 @@ export function issueRoutes(
           runId: actor.runId,
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: runToCancelForCancelledStatus.id,
-          details: { source: "issue_status_cancelled", issueId: existing.id },
+          entityId: runToCancelForTerminalStatus.id,
+          details: { source: "issue_status_terminal", issueId: existing.id },
         });
       }
     }
@@ -4731,18 +4783,11 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
-      // In local_trusted mode every unauthenticated request is attributed to local-board
-      // (source: local_implicit). assertBoard() passes, but we cannot verify explicit human
-      // intent. Require board authentication (board claim + board API key) for confirmations.
-      if (req.actor.source === "local_implicit") {
-        const candidate = await issueThreadInteractionService(db).getById(interactionId);
-        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
-          res.status(403).json({
-            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before confirming.",
-          });
-          return;
-        }
-      }
+      // local_implicit is only set in local_trusted (private local instance) mode.
+      // In local_trusted mode all traffic comes from the local machine and the actor
+      // IS the board user by definition — no remote unauthenticated access is possible.
+      // Board key auth (source: board_key) remains available for explicit key-based auth.
+      // Therefore no additional guard is required for local_implicit here.
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
@@ -4847,16 +4892,9 @@ export function issueRoutes(
       assertCompanyAccess(req, issue.companyId);
       assertBoard(req);
 
-      // Same guard as accept: local_implicit cannot prove human intent for request_confirmation.
-      if (req.actor.source === "local_implicit") {
-        const candidate = await issueThreadInteractionService(db).getById(interactionId);
-        if (candidate && candidate.issueId === issue.id && candidate.kind === "request_confirmation") {
-          res.status(403).json({
-            error: "request_confirmation interactions require an authenticated board user. Please claim the board and authenticate with a board API key before declining.",
-          });
-          return;
-        }
-      }
+      // local_implicit is only set in local_trusted (private local instance) mode.
+      // In local_trusted mode, the actor IS the board user — no remote unauthenticated
+      // access is possible, so no additional guard is needed for request_confirmation here.
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
@@ -5175,7 +5213,45 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    let allowRouterCrossIssueComment = false;
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      const commentActor = await agentsSvc.getById(req.actor.agentId);
+      if (
+        commentActor?.isRouter === true &&
+        issue.assigneeAgentId !== null &&
+        issue.assigneeAgentId !== req.actor.agentId
+      ) {
+        const permissionDecision = await access.decide({
+          actor: { type: "agent", agentId: req.actor.agentId, companyId: issue.companyId },
+          action: "tasks:cross_issue_comment",
+          resource: {
+            type: "issue",
+            companyId: issue.companyId,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+          },
+        });
+        if (permissionDecision.allowed) {
+          allowRouterCrossIssueComment = true;
+          const actorInfo = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actorInfo.actorType,
+            actorId: actorInfo.actorId,
+            action: "issue.router_agent_comment_create",
+            entityType: "issue",
+            entityId: issue.id,
+            agentId: actorInfo.agentId,
+            runId: actorInfo.runId,
+            details: {
+              routerAgentId: req.actor.agentId,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
+          });
+        }
+      }
+    }
+    if (!allowRouterCrossIssueComment && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

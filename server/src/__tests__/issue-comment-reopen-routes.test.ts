@@ -1379,14 +1379,14 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         action: "heartbeat.cancelled",
         details: expect.objectContaining({
-          source: "issue_status_cancelled",
+          source: "issue_status_terminal",
           issueId: "11111111-1111-4111-8111-111111111111",
         }),
       }),
     );
   });
 
-  it("does not cancel active runs when an issue is marked done", async () => {
+  it("cancels active runs when an issue is marked done", async () => {
     const issue = {
       ...makeIssue("in_progress"),
       executionRunId: "run-1",
@@ -1402,13 +1402,30 @@ describe.sequential("issue comment reopen routes", () => {
       agentId: "22222222-2222-4222-8222-222222222222",
       status: "running",
     });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancelled",
+        details: expect.objectContaining({
+          source: "issue_status_terminal",
+          issueId: "11111111-1111-4111-8111-111111111111",
+        }),
+      }),
+    );
   });
 
   it("writes decision ids into executionState and inserts the decision inside the transaction", async () => {
