@@ -622,15 +622,28 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+// HUM-196: local_implicit board attribution is the default for any unauthenticated
+// request in local_trusted mode, including agent curls that did not present their
+// API key/JWT. Treating those as human comments silently reopened closed issues
+// every time an agent posted an acknowledgment. We require an authenticated human
+// source (session, board_key, cloud_tenant) for implicit reopen. Local humans and
+// agents can still reopen via explicit `reopen: true` or `status: "todo"` PATCH.
+function isConfirmedHumanActorSource(actorSource: string | null | undefined) {
+  if (typeof actorSource !== "string") return false;
+  return actorSource === "session" || actorSource === "board_key" || actorSource === "cloud_tenant";
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorSource: string | null | undefined;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
+  if (!isConfirmedHumanActorSource(input.actorSource)) return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
@@ -641,9 +654,11 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
+  actorSource: string | null | undefined;
 }) {
   if (!input.hasComment) return false;
   if (input.actorType !== "user") return false;
+  if (!isConfirmedHumanActorSource(input.actorSource)) return false;
   if (input.issueStatus !== "in_progress") return false;
   return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
 }
@@ -3864,6 +3879,7 @@ export function issueRoutes(
         issueStatus: existing.status,
         assigneeAgentId: requestedAssigneeAgentId,
         actorType: actor.actorType,
+        actorSource: actor.actorSource,
       })
         ? await svc.getCurrentScheduledRetry(existing.id)
         : null;
@@ -3878,6 +3894,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorSource: actor.actorSource,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -5559,6 +5576,7 @@ export function issueRoutes(
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
+        actorSource: actor.actorSource,
       })
         ? await svc.getCurrentScheduledRetry(issue.id)
         : null;
@@ -5572,6 +5590,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        actorSource: actor.actorSource,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =
