@@ -6,6 +6,7 @@ import type {
   UpdateCompanyAwaitingHumanSettingsRequest,
 } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
+import { unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
 import {
   normalizeClickUpAwaitingHumanProviderConfig,
@@ -115,6 +116,9 @@ export function awaitingHumanSettingsService(db: Db) {
   ): Promise<CompanyAwaitingHumanSettings> {
     const existing = await getStored(companyId);
     const baseline = existing ?? defaultStoredSettings(companyId);
+    const previousClickUpSecretId = baseline.provider === "clickup"
+      ? baseline.providerConfigJson?.authTokenRef?.secretId ?? null
+      : null;
 
     const nextProvider = patch.provider !== undefined ? patch.provider : baseline.provider;
     const nextEnabled = patch.enabled !== undefined ? patch.enabled : baseline.enabled;
@@ -127,6 +131,9 @@ export function awaitingHumanSettingsService(db: Db) {
     }
 
     if (patch.providerConfig !== undefined) {
+      if (nextProvider !== "clickup" && patch.providerConfig !== null) {
+        throw unprocessable("Provider config can only be set when ClickUp is selected");
+      }
       const normalizedConfig = normalizeClickUpAwaitingHumanProviderConfig(patch.providerConfig);
       nextProviderConfig = nextProvider === "clickup"
         ? {
@@ -135,6 +142,10 @@ export function awaitingHumanSettingsService(db: Db) {
           channelId: normalizedConfig?.channelId ?? null,
         }
         : null;
+    }
+
+    if (nextEnabled && !nextProvider) {
+      throw unprocessable("Cannot enable the awaiting-human bridge without selecting a provider");
     }
 
     if (nextProvider === "clickup") {
@@ -192,6 +203,10 @@ export function awaitingHumanSettingsService(db: Db) {
         target: companyAwaitingHumanSettings.companyId,
         set: values,
       });
+    }
+
+    if (previousClickUpSecretId && nextProvider !== "clickup") {
+      await secrets.remove(previousClickUpSecretId);
     }
 
     return get(companyId);

@@ -7,9 +7,5 @@ CREATE TABLE "company_awaiting_human_settings" (
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
---> statement-breakpoint
-CREATE INDEX "company_awaiting_human_settings_company_idx"
-ON "company_awaiting_human_settings" ("company_id");
---> statement-breakpoint
 CREATE UNIQUE INDEX "company_awaiting_human_settings_company_uq"
 ON "company_awaiting_human_settings" ("company_id");

@@ -72,14 +72,14 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
       enabled: true,
       provider: "clickup",
       providerConfig: {
-        workspaceId: "workspace-123",
-        channelId: null,
+        workspaceId: null,
+        channelId: "channel-123",
       },
       clickupPersonalToken: "new-token",
     }, {
       userId: "user-1",
       agentId: null,
-    })).rejects.toThrow(/channel ID/i);
+    })).rejects.toThrow(/workspace ID/i);
 
     const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
     expect(storedSecret?.latestVersion).toBe(1);
@@ -90,6 +90,65 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
       workspaceId: "workspace-123",
       channelId: "channel-123",
     }));
+  });
+
+  it("allows a blank ClickUp channel ID and still rotates the stored token", async () => {
+    const companyId = randomUUID();
+    const secrets = secretService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const secret = await secrets.create(companyId, {
+      name: "awaiting-human-clickup-token",
+      provider: "local_encrypted",
+      value: "old-token",
+    });
+
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: {
+        authTokenRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+      },
+    });
+
+    const service = awaitingHumanSettingsService(db);
+
+    const updated = await service.update(companyId, {
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: null,
+      },
+      clickupPersonalToken: "new-token",
+    }, {
+      userId: "user-1",
+      agentId: null,
+    });
+
+    expect(updated).toEqual(expect.objectContaining({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: null,
+      },
+      hasStoredAuthToken: true,
+    }));
+
+    const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect(storedSecret?.latestVersion).toBe(2);
+    await expect(secrets.resolveSecretValue(companyId, secret.id, "latest")).resolves.toBe("new-token");
   });
 
   it("uses an upsert when two first-time saves race for the same company", async () => {
@@ -127,6 +186,104 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
         channelId: "channel-123",
       }),
     }));
+  });
+
+  it("rejects enabling the bridge without selecting a provider", async () => {
+    const companyId = randomUUID();
+    const secrets = secretService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const secret = await secrets.create(companyId, {
+      name: "awaiting-human-clickup-token",
+      provider: "local_encrypted",
+      value: "old-token",
+    });
+
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: {
+        authTokenRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+      },
+    });
+
+    const service = awaitingHumanSettingsService(db);
+
+    await expect(service.update(companyId, {
+      provider: null,
+    }, {
+      userId: "user-1",
+      agentId: null,
+    })).rejects.toThrow(/without selecting a provider/i);
+
+    const [settingsRow] = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
+    expect(settingsRow).toEqual(expect.objectContaining({
+      enabled: true,
+      provider: "clickup",
+    }));
+
+    const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect(storedSecret?.latestVersion).toBe(1);
+    await expect(secrets.resolveSecretValue(companyId, secret.id, "latest")).resolves.toBe("old-token");
+  });
+
+  it("deletes the stored ClickUp secret when switching away from ClickUp", async () => {
+    const companyId = randomUUID();
+    const secrets = secretService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const secret = await secrets.create(companyId, {
+      name: "awaiting-human-clickup-token",
+      provider: "local_encrypted",
+      value: "old-token",
+    });
+
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: {
+        authTokenRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+      },
+    });
+
+    const service = awaitingHumanSettingsService(db);
+
+    const updated = await service.update(companyId, {
+      enabled: false,
+      provider: null,
+    }, {
+      userId: "user-1",
+      agentId: null,
+    });
+
+    expect(updated).toEqual(expect.objectContaining({
+      companyId,
+      enabled: false,
+      provider: null,
+      providerConfig: null,
+      hasStoredAuthToken: false,
+    }));
+
+    const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect(storedSecret).toBeUndefined();
   });
 
   it("defaults companies without a settings row to disabled awaiting-human delivery", async () => {

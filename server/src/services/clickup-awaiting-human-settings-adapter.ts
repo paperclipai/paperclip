@@ -28,7 +28,4 @@ export function validateClickUpAwaitingHumanProviderConfig(input: {
   if (!config?.workspaceId) {
     throw unprocessable("ClickUp awaiting-human settings require a workspace ID when enabled");
   }
-  if (!config.channelId) {
-    throw unprocessable("ClickUp awaiting-human settings require a channel ID when enabled");
-  }
 }

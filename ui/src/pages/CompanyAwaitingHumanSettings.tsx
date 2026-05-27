@@ -215,7 +215,7 @@ export function CompanyAwaitingHumanSettings() {
 
             <Field
               label="Channel ID"
-              hint="Deterministic ClickUp target. If set, Bizbox sends awaiting-human messages directly to this chat channel."
+              hint="Optional. Leave blank to use the instance-level ClickUp default channel."
             >
               <input
                 type="text"

@@ -1,4 +1,4 @@
-import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { EnvSecretRefBinding } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 
@@ -26,7 +26,6 @@ export const companyAwaitingHumanSettings = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyIdx: index("company_awaiting_human_settings_company_idx").on(table.companyId),
     companyUq: uniqueIndex("company_awaiting_human_settings_company_uq").on(table.companyId),
   }),
 );

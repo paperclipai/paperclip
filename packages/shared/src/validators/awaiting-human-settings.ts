@@ -22,6 +22,14 @@ export const patchCompanyAwaitingHumanSettingsSchema = z.object({
   provider: awaitingHumanProviderSchema.nullable().optional(),
   providerConfig: clickupAwaitingHumanProviderConfigSchema.nullable().optional(),
   clickupPersonalToken: z.string().min(1).optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (value.provider === null && value.providerConfig != null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["providerConfig"],
+      message: "providerConfig can only be set when provider is clickup",
+    });
+  }
 });
 
 export type CompanyAwaitingHumanSettings = z.infer<typeof companyAwaitingHumanSettingsSchema>;

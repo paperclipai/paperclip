@@ -33,7 +33,7 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
     const body = patchCompanyAwaitingHumanSettingsSchema.parse(req.body);
     const actor = getActorInfo(req);
     const updated = await settings.update(companyId, body, {
-      userId: req.actor.userId ?? actor.actorId,
+      userId: req.actor.userId,
       agentId: actor.agentId,
     });
     const redactedBody = "clickupPersonalToken" in body && body.clickupPersonalToken != null
