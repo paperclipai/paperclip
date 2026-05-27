@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, parseOpenCodeSessionExport, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,43 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+});
+
+describe("parseOpenCodeSessionExport", () => {
+  it("extracts assistant text and usage from opencode export JSON", () => {
+    const exportJson = JSON.stringify({
+      info: {
+        cost: 0.001,
+        tokens: { input: 100, output: 30, reasoning: 5, cache: { read: 10 } },
+      },
+      messages: [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "ignored" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [
+            { type: "text", text: "First paragraph" },
+            { type: "text", text: "Second paragraph" },
+          ],
+        },
+      ],
+    });
+
+    const parsed = parseOpenCodeSessionExport(exportJson);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.summary).toBe("First paragraph\n\nSecond paragraph");
+    expect(parsed!.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 35,
+      cachedInputTokens: 10,
+    });
+    expect(parsed!.costUsd).toBeCloseTo(0.001, 6);
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(parseOpenCodeSessionExport("not json")).toBeNull();
   });
 });
