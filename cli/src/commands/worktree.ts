@@ -997,7 +997,7 @@ function resolveSourceConnectionString(config: ValadrienOsConfig, envEntries: Re
   }
 
   const port = portOverride ?? config.database.embeddedPostgresPort;
-  return `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`;
+  return `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`;
 }
 
 export function copySeededSecretsKey(input: {
@@ -1076,8 +1076,8 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "valadrien-os",
-    password: "valadrien-os",
+    user: "valadrien_os",
+    password: "valadrien_os",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -1300,8 +1300,8 @@ async function seedWorktreeDatabase(input: {
         input.sourceConfig.database.embeddedPostgresDataDir,
         input.sourceConfig.database.embeddedPostgresPort,
       );
-      const sourceAdminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${sourceHandle.port}/postgres`;
-      await ensurePostgresDatabase(sourceAdminConnectionString, "valadrien-os");
+      const sourceAdminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${sourceHandle.port}/postgres`;
+      await ensurePostgresDatabase(sourceAdminConnectionString, "valadrien_os");
     }
     const sourceConnectionString = resolveSourceConnectionString(
       input.sourceConfig,
@@ -1324,9 +1324,9 @@ async function seedWorktreeDatabase(input: {
       input.targetConfig.database.embeddedPostgresPort,
     );
 
-    const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${targetHandle.port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
-    const targetConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${targetHandle.port}/valadrien-os`;
+    const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${targetHandle.port}/postgres`;
+    await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
+    const targetConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${targetHandle.port}/valadrien_os`;
     await runDatabaseRestore({
       connectionString: targetConnectionString,
       backupFile: backup.backupFile,

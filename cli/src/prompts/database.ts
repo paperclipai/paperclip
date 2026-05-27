@@ -44,7 +44,7 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
     const value = await p.text({
       message: "PostgreSQL connection string",
       defaultValue: base.connectionString ?? "",
-      placeholder: "postgres://user:pass@localhost:5432/valadrien-os",
+      placeholder: "postgres://user:pass@localhost:5432/valadrien_os",
       validate: (val) => {
         if (!val) return "Connection string is required for PostgreSQL mode";
         if (!val.startsWith("postgres")) return "Must be a postgres:// or postgresql:// URL";

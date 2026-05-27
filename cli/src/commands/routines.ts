@@ -133,8 +133,8 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "valadrien-os",
-    password: "valadrien-os",
+    user: "valadrien_os",
+    password: "valadrien_os",
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -195,9 +195,9 @@ async function openConfiguredDb(configPath: string): Promise<{
         config.database.embeddedPostgresDataDir,
         config.database.embeddedPostgresPort,
       );
-      const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
-      const connectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${embeddedHandle.port}/valadrien-os`;
+      const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${embeddedHandle.port}/postgres`;
+      await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
+      const connectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${embeddedHandle.port}/valadrien_os`;
       await applyPendingMigrations(connectionString);
       const db = createDb(connectionString) as ClosableDb;
       return {
@@ -258,9 +258,9 @@ export async function disableAllRoutinesInConfig(
         config.database.embeddedPostgresDataDir,
         config.database.embeddedPostgresPort,
       );
-      const adminConnectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${embeddedHandle.port}/postgres`;
-      await ensurePostgresDatabase(adminConnectionString, "valadrien-os");
-      const connectionString = `postgres://valadrien-os:valadrien-os@127.0.0.1:${embeddedHandle.port}/valadrien-os`;
+      const adminConnectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${embeddedHandle.port}/postgres`;
+      await ensurePostgresDatabase(adminConnectionString, "valadrien_os");
+      const connectionString = `postgres://valadrien_os:valadrien_os@127.0.0.1:${embeddedHandle.port}/valadrien_os`;
       await applyPendingMigrations(connectionString);
       db = createDb(connectionString) as ClosableDb;
     } else {

@@ -30,13 +30,13 @@ afterEach(() => {
 
 describe("resolveDatabaseTarget", () => {
   it("uses DATABASE_URL from process env first", () => {
-    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/valadrien-os";
+    process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/valadrien_os";
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://env-user:env-pass@db.example.com:5432/valadrien-os",
+      connectionString: "postgres://env-user:env-pass@db.example.com:5432/valadrien_os",
       source: "DATABASE_URL",
     });
   });
@@ -52,14 +52,14 @@ describe("resolveDatabaseTarget", () => {
     });
     writeText(
       path.join(projectDir, ".valadrien-os", ".env"),
-      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/valadrien-os"\n',
+      'DATABASE_URL="postgres://file-user:file-pass@db.example.com:6543/valadrien_os"\n',
     );
 
     const target = resolveDatabaseTarget();
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://file-user:file-pass@db.example.com:6543/valadrien-os",
+      connectionString: "postgres://file-user:file-pass@db.example.com:6543/valadrien_os",
       source: "valadrien-os-env",
     });
   });
@@ -71,7 +71,7 @@ describe("resolveDatabaseTarget", () => {
     writeJson(configPath, {
       database: {
         mode: "postgres",
-        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien-os",
+        connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien_os",
       },
     });
 
@@ -79,7 +79,7 @@ describe("resolveDatabaseTarget", () => {
 
     expect(target).toMatchObject({
       mode: "postgres",
-      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien-os",
+      connectionString: "postgres://cfg-user:cfg-pass@db.example.com:5432/valadrien_os",
       source: "config.database.connectionString",
     });
   });

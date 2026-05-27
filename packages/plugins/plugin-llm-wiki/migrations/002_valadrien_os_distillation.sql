@@ -1,4 +1,4 @@
-CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_cursors (
+CREATE TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_cursors (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_cursors (
   UNIQUE (company_id, wiki_id, source_scope, scope_key, source_kind)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_work_items (
+CREATE TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_work_items (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -35,12 +35,12 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_work_items (
   UNIQUE (company_id, wiki_id, idempotency_key)
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_runs (
+CREATE TABLE plugin_llm_wiki_3656981cf2.valadrien_os_distillation_runs (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
-  cursor_id uuid REFERENCES plugin_llm_wiki_8f50da974f.valadrien_os_distillation_cursors(id) ON DELETE SET NULL,
-  work_item_id uuid REFERENCES plugin_llm_wiki_8f50da974f.valadrien_os_distillation_work_items(id) ON DELETE SET NULL,
+  cursor_id uuid REFERENCES plugin_llm_wiki_3656981cf2.valadrien_os_distillation_cursors(id) ON DELETE SET NULL,
+  work_item_id uuid REFERENCES plugin_llm_wiki_3656981cf2.valadrien_os_distillation_work_items(id) ON DELETE SET NULL,
   project_id uuid REFERENCES public.projects(id) ON DELETE SET NULL,
   root_issue_id uuid REFERENCES public.issues(id) ON DELETE SET NULL,
   source_window_start timestamptz,
@@ -56,11 +56,11 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_distillation_runs (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_source_snapshots (
+CREATE TABLE plugin_llm_wiki_3656981cf2.valadrien_os_source_snapshots (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
-  distillation_run_id uuid REFERENCES plugin_llm_wiki_8f50da974f.valadrien_os_distillation_runs(id) ON DELETE CASCADE,
+  distillation_run_id uuid REFERENCES plugin_llm_wiki_3656981cf2.valadrien_os_distillation_runs(id) ON DELETE CASCADE,
   project_id uuid REFERENCES public.projects(id) ON DELETE SET NULL,
   root_issue_id uuid REFERENCES public.issues(id) ON DELETE SET NULL,
   source_hash text NOT NULL,
@@ -72,7 +72,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_source_snapshots (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_page_bindings (
+CREATE TABLE plugin_llm_wiki_3656981cf2.valadrien_os_page_bindings (
   id uuid PRIMARY KEY,
   company_id uuid NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
   wiki_id text NOT NULL,
@@ -80,7 +80,7 @@ CREATE TABLE plugin_llm_wiki_8f50da974f.valadrien_os_page_bindings (
   root_issue_id uuid REFERENCES public.issues(id) ON DELETE CASCADE,
   page_path text NOT NULL,
   last_applied_source_hash text,
-  last_distillation_run_id uuid REFERENCES plugin_llm_wiki_8f50da974f.valadrien_os_distillation_runs(id) ON DELETE SET NULL,
+  last_distillation_run_id uuid REFERENCES plugin_llm_wiki_3656981cf2.valadrien_os_distillation_runs(id) ON DELETE SET NULL,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),

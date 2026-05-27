@@ -1,4 +1,4 @@
-CREATE TABLE plugin_orchestration_smoke_1e8c264c64.smoke_runs (
+CREATE TABLE plugin_orchestration_smoke_04cd6cb34f.smoke_runs (
   id uuid PRIMARY KEY,
   root_issue_id uuid NOT NULL REFERENCES public.issues(id) ON DELETE CASCADE,
   child_issue_id uuid REFERENCES public.issues(id) ON DELETE SET NULL,

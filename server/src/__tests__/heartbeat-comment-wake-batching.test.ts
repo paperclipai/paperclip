@@ -448,7 +448,7 @@ describe("heartbeat comment wake batching", () => {
       }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.valadrien-os).toMatchObject({
+      expect((secondPayload as { valadrienOs?: unknown }).valadrienOs).toMatchObject({
         wake: {
           commentIds: [comment2.id, comment3.id],
           latestCommentId: comment3.id,
@@ -587,7 +587,7 @@ describe("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(promotedPayload.valadrien-os).toMatchObject({
+      expect((promotedPayload as { valadrienOs?: unknown }).valadrienOs).toMatchObject({
         wake: {
           commentIds: [queuedComment.id],
           latestCommentId: queuedComment.id,
@@ -796,7 +796,7 @@ describe("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.valadrien-os).toMatchObject({
+      expect((secondPayload as { valadrienOs?: unknown }).valadrienOs).toMatchObject({
         wake: {
           reason: "issue_commented",
           commentIds: [comment2.id],
@@ -996,7 +996,7 @@ describe("heartbeat comment wake batching", () => {
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.valadrien-os).toMatchObject({
+      expect((secondPayload as { valadrienOs?: unknown }).valadrienOs).toMatchObject({
         wake: {
           reason: "issue_comment_mentioned",
           commentIds: [comment.id],
@@ -1082,7 +1082,7 @@ describe("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.valadrien-os).toMatchObject({
+      expect((firstPayload as { valadrienOs?: unknown }).valadrienOs).toMatchObject({
         wake: {
           reason: "issue_assigned",
           issue: {

@@ -163,7 +163,7 @@ RDS_ENDPOINT=$(aws rds describe-db-instances \
   --db-instance-identifier valadrien-os-db \
   --query 'DBInstances[0].Endpoint.Address' --output text)
 
-DATABASE_URL="postgresql://valadrien-os:${DB_PASSWORD}@${RDS_ENDPOINT}:5432/valadrien-os"
+DATABASE_URL="postgresql://valadrien-os:${DB_PASSWORD}@${RDS_ENDPOINT}:5432/valadrien_os"
 ```
 
 ## 5. Create EFS Filesystem

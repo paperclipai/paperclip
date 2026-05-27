@@ -177,10 +177,10 @@ The `docker/quadlet/` directory contains unit files to run ValAdrien OS + Postgr
    ```sh
    cat > ~/.config/containers/systemd/valadrien-os.env <<EOL
    BETTER_AUTH_SECRET=$(openssl rand -hex 32)
-   POSTGRES_USER=valadrien-os
-   POSTGRES_PASSWORD=valadrien-os
-   POSTGRES_DB=valadrien-os
-   DATABASE_URL=postgres://valadrien-os:valadrien-os@127.0.0.1:5432/valadrien-os
+   POSTGRES_USER=valadrien_os
+   POSTGRES_PASSWORD=valadrien_os
+   POSTGRES_DB=valadrien_os
+   DATABASE_URL=postgres://valadrien_os:valadrien_os@127.0.0.1:5432/valadrien_os
    # OPENAI_API_KEY=sk-...
    # ANTHROPIC_API_KEY=sk-...
    EOL

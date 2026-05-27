@@ -1113,8 +1113,9 @@ async function buildAgentContext(
       .select()
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId));
-  const matchedSkills = availableSkills
-    .filter((skill) => desiredSkillRefs.some((reference) => matchesSkillReference(skill, reference)))
+  const matchedSkills = desiredSkillRefs
+    .map((reference) => availableSkills.find((skill) => matchesSkillReference(skill, reference)))
+    .filter((skill): skill is typeof companySkills.$inferSelect => Boolean(skill))
     .slice(0, MAX_SKILLS);
   const unresolvedSkillRefs = desiredSkillRefs.filter(
     (reference) => !matchedSkills.some((skill) => matchesSkillReference(skill, reference)),

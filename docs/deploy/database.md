@@ -36,13 +36,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Set the connection string:
 
 ```sh
 cp .env.example .env
-# DATABASE_URL=postgres://valadrien-os:valadrien-os@localhost:5432/valadrien-os
+# DATABASE_URL=postgres://valadrien_os:valadrien_os@localhost:5432/valadrien_os
 ```
 
 Push the schema:
 
 ```sh
-DATABASE_URL=postgres://valadrien-os:valadrien-os@localhost:5432/valadrien-os \
+DATABASE_URL=postgres://valadrien_os:valadrien_os@localhost:5432/valadrien_os \
   npx drizzle-kit push
 ```
 

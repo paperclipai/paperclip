@@ -614,8 +614,8 @@ describe("worktree helpers", () => {
         const { default: EmbeddedPostgres } = await import("embedded-postgres");
         const targetPg = new EmbeddedPostgres({
           databaseDir: targetConfig.database.embeddedPostgresDataDir,
-          user: "valadrien-os",
-          password: "valadrien-os",
+          user: "valadrien_os",
+          password: "valadrien_os",
           port: targetConfig.database.embeddedPostgresPort,
           persistent: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -626,7 +626,7 @@ describe("worktree helpers", () => {
         await targetPg.start();
         try {
           const targetDb = createDb(
-            `postgres://valadrien-os:valadrien-os@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/valadrien-os`,
+            `postgres://valadrien_os:valadrien_os@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/valadrien_os`,
           );
           const seededUsers = await targetDb.select().from(authUsers);
           expect(seededUsers.some((row) => row.email === "existing@TODO_DOMAIN")).toBe(true);

@@ -2,11 +2,11 @@ services:
   db:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: valadrien-os
-      POSTGRES_PASSWORD: valadrien-os
-      POSTGRES_DB: valadrien-os
+      POSTGRES_USER: valadrien_os
+      POSTGRES_PASSWORD: valadrien_os
+      POSTGRES_DB: valadrien_os
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U valadrien-os -d valadrien-os"]
+      test: ["CMD-SHELL", "pg_isready -U valadrien_os -d valadrien_os"]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -22,7 +22,7 @@ services:
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: postgres://valadrien-os:valadrien-os@db:5432/valadrien-os
+      DATABASE_URL: postgres://valadrien_os:valadrien_os@db:5432/valadrien_os
       PORT: "3100"
       SERVE_UI: "true"
       VALADRIEN_OS_DEPLOYMENT_MODE: "authenticated"

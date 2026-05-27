@@ -14,7 +14,7 @@ async function main() {
   const dbUrl =
     process.env.DATABASE_URL?.trim()
     || config.databaseUrl
-    || `postgres://valadrien-os:valadrien-os@127.0.0.1:${config.embeddedPostgresPort}/valadrien-os`;
+    || `postgres://valadrien_os:valadrien_os@127.0.0.1:${config.embeddedPostgresPort}/valadrien_os`;
 
   const db = createDb(dbUrl);
   const refs = issueReferenceService(db);

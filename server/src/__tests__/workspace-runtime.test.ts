@@ -892,7 +892,7 @@ describe("realizeExecutionWorkspace", () => {
       ) + "\n",
       "utf8",
     );
-    await fs.writeFile(sharedEnvPath, 'DATABASE_URL="postgres://worktree:test@db.example.com:6543/valadrien-os"\n', "utf8");
+    await fs.writeFile(sharedEnvPath, 'DATABASE_URL="postgres://worktree:test@db.example.com:6543/valadrien_os"\n', "utf8");
 
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.copyFile(

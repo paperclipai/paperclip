@@ -37,7 +37,7 @@ async function main() {
   const dbUrl =
     config.database?.mode === "postgres"
       ? config.database.connectionString
-      : `postgres://valadrien-os:valadrien-os@127.0.0.1:${config.database?.embeddedPostgresPort ?? 54329}/valadrien-os`;
+      : `postgres://valadrien_os:valadrien_os@127.0.0.1:${config.database?.embeddedPostgresPort ?? 54329}/valadrien_os`;
   if (!dbUrl) {
     throw new Error(`Could not resolve database connection from ${configPath}`);
   }

@@ -24,7 +24,7 @@ function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
   }
   if (config?.database.mode === "embedded-postgres") {
     const port = config.database.embeddedPostgresPort ?? 54329;
-    return `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`;
+    return `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`;
   }
   return null;
 }

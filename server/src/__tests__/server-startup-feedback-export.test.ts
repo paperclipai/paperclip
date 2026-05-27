@@ -63,7 +63,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     authPublicBaseUrl: undefined,
     authDisableSignUp: false,
     databaseMode: "postgres",
-    databaseUrl: "postgres://valadrien-os:valadrien-os@127.0.0.1:5432/valadrien-os",
+    databaseUrl: "postgres://valadrien_os:valadrien_os@127.0.0.1:5432/valadrien_os",
     embeddedPostgresDataDir: "/tmp/valadrien-os-test-db",
     embeddedPostgresPort: 54329,
     databaseBackupEnabled: false,

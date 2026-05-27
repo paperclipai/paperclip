@@ -29,7 +29,7 @@ function resolveConnectionString(configPath?: string): { value: string; source: 
 
   const port = config?.database.embeddedPostgresPort ?? 54329;
   return {
-    value: `postgres://valadrien-os:valadrien-os@127.0.0.1:${port}/valadrien-os`,
+    value: `postgres://valadrien_os:valadrien_os@127.0.0.1:${port}/valadrien_os`,
     source: `embedded-postgres@${port}`,
   };
 }
