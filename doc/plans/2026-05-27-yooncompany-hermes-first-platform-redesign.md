@@ -551,7 +551,7 @@ Do not continue the old Next Improvement Plan as-is. Replace it with:
 | 3. Read-only Hermes status console | Eighth slice complete | Global YoonCompany panel and dashboard now expose current Hermes role/toolset/session/safety mismatch, the 1단계 approval package preview, blocked dangerous actions, a no-execution issue draft action, the planned Hermes profile roster, read-only Kanban/cross-link previews, visible screen-context auto-attach, and Koreanized YoonCompany-specific copy. |
 | 4. Hermes profile design | Phase 1 approved/applied | See `2026-05-27-yooncompany-hermes-first-steps-4-7.md`; actual profile names are `yoonorchestrator`, `yoonresearch`, and `yoondocs`. Profile descriptions were reinforced under approval `655db324-ee53-4d0b-9540-64a210847356`. Use `C:\yooncompany\bin\hermes.exe`, not PATH `hermes.exe`. |
 | 5. Paperclip-Hermes mapping | Preview implemented | Textual cross-link format is now visible in the dashboard; no DB schema change. |
-| 6. Hermes capability enablement | Partially applied under approval | YOO-50 / approval `66898bbb-0301-44b7-b914-78b24902fdf3` approved the first profile/Kanban gate. Paperclip agent config migration is still a separate approved follow-up. |
+| 6. Hermes capability enablement | Partially applied under approval | YOO-50 / approval `66898bbb-0301-44b7-b914-78b24902fdf3` approved the first profile/Kanban gate. `Hermes Orchestrator` was added under approval `29a1d242-417f-4fec-9a14-1db1bb17fb9c` with `--profile yoonorchestrator`, no heartbeat, and no repo write permission. |
 | 7. UI polish reorder | Complete | UI order now starts with Hermes runtime/profile/Kanban visibility, then Koreanization/question panel/screen context. |
 
 ## Open Questions For PM

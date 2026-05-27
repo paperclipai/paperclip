@@ -66,7 +66,7 @@ describe("YoonCompany command worker", () => {
     expect(issue?.description).toContain("Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고한다.");
   });
 
-  it("keeps Hermes quick-action issues in backlog even when an assignee is found", async () => {
+  it("keeps Hermes quick-action issues in backlog and targets the orchestrator when present", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({
       agents: [
@@ -74,6 +74,12 @@ describe("YoonCompany command worker", () => {
           id: "hermes-1",
           name: "Hermes Research Worker",
           title: "Research worker",
+          adapterType: "hermes_local",
+        }),
+        agent({
+          id: "hermes-orchestrator-1",
+          name: "Hermes Orchestrator",
+          title: "Operations orchestrator",
           adapterType: "hermes_local",
         }),
       ] as never,
@@ -85,12 +91,12 @@ describe("YoonCompany command worker", () => {
       kind: "ask_hermes",
     });
 
-    expect(result.assigneeAgentId).toBe("hermes-1");
+    expect(result.assigneeAgentId).toBe("hermes-orchestrator-1");
     const issue = await harness.ctx.issues.get(result.id, "company-1");
     expect(issue).toMatchObject({
       title: "Hermes 조사 요청",
       status: "backlog",
-      assigneeAgentId: "hermes-1",
+      assigneeAgentId: "hermes-orchestrator-1",
       priority: "medium",
     });
     expect(issue?.description).toContain("모드: 조사/보고 전용.");

@@ -37,6 +37,10 @@ function matchesCodex(agent: AgentCandidate): boolean {
   return haystack.includes("codex");
 }
 
+function isSelectableAgent(agent: AgentCandidate): boolean {
+  return agent.status !== "terminated" && agent.status !== "pending_approval";
+}
+
 function matchesHermes(agent: AgentCandidate): boolean {
   const haystack = `${agent.name} ${agent.title ?? ""} ${agent.adapterType ?? ""}`.toLowerCase();
   return haystack.includes("hermes");
@@ -45,7 +49,13 @@ function matchesHermes(agent: AgentCandidate): boolean {
 async function findTargetAgent(ctx: PluginContext, companyId: string, kind: GuidedIssueKind) {
   const agents = await ctx.agents.list({ companyId, limit: 100, offset: 0 });
   const matcher = kind === "ask_hermes" ? matchesHermes : matchesCodex;
-  return agents.find(matcher) ?? null;
+  const matches = agents.filter((agent) => isSelectableAgent(agent) && matcher(agent));
+  if (kind === "ask_hermes") {
+    return matches.find((agent) =>
+      `${agent.name} ${agent.title ?? ""}`.toLowerCase().includes("orchestrator")
+    ) ?? matches[0] ?? null;
+  }
+  return matches[0] ?? null;
 }
 
 function getIssueTemplate(kind: GuidedIssueKind): {

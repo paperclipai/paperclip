@@ -111,11 +111,25 @@ export const HERMES_PAPERCLIP_CROSSLINK_FIELDS = [
   { key: "codex_run_or_pr", label: "Codex 증거", example: "PR #2 / 명령 로그" },
 ];
 
+function agentSearchText(agent: Agent) {
+  return `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();
+}
+
+function isSelectableAgent(agent: Agent) {
+  return agent.status !== "terminated" && agent.status !== "pending_approval";
+}
+
 export function findYoonCompanyAgent(agents: Agent[] | undefined, keyword: "codex" | "hermes") {
-  return agents?.find((agent) => {
-    const haystack = `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();
-    return haystack.includes(keyword);
-  }) ?? null;
+  const matches = agents?.filter((agent) => {
+    if (!isSelectableAgent(agent)) return false;
+    return agentSearchText(agent).includes(keyword);
+  }) ?? [];
+
+  if (keyword === "hermes") {
+    return matches.find((agent) => agentSearchText(agent).includes("orchestrator")) ?? matches[0] ?? null;
+  }
+
+  return matches[0] ?? null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

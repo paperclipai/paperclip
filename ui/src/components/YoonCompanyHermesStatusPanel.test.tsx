@@ -78,22 +78,35 @@ describe("YoonCompanyHermesStatusPanel", () => {
               },
               permissions: { canCreateAgents: true },
             }),
+            makeAgent({
+              id: "hermes-orchestrator-1",
+              name: "Hermes Orchestrator",
+              title: "Hermes-first operations orchestrator - approval gated, no repo writes",
+              adapterType: "hermes_local",
+              adapterConfig: {
+                command: "C:\\yooncompany\\bin\\hermes.exe",
+                hermesCommand: "C:\\yooncompany\\bin\\hermes.exe",
+                toolsets: "terminal,memory,session_search,skills,web,browser,kanban",
+                extraArgs: ["--profile", "yoonorchestrator", "--max-turns", "12"],
+                persistSession: true,
+              },
+              permissions: { canCreateAgents: false },
+            }),
           ]}
         />,
       );
     });
 
     expect(container.textContent).toContain("Hermes-first 운영 상태");
-    expect(container.textContent).toContain("Hermes Research Worker · hermes_local");
-    expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe 필요");
+    expect(container.textContent).toContain("Hermes Orchestrator · hermes_local");
+    expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe");
     expect(container.textContent).toContain("Codex Lead Engineer · codex_local");
-    expect(container.textContent).toContain("terminal, memory, session_search, skills, web");
-    expect(container.textContent).toContain("막힘: file, browser, mcp, delegation, kanban");
+    expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
+    expect(container.textContent).toContain("막힘: file, mcp, delegation");
     expect(container.textContent).toContain("hermes-paperclip-adapter 0.3.0");
-    expect(container.textContent).toContain("비지속 세션");
-    expect(container.textContent).toContain("--yolo 중복 위험, agent 생성권한 있음");
-    expect(container.textContent).toContain("8 · extraArgs 이전 필요");
-    expect(container.textContent).toContain("adapter 0.3.0은 --yolo를 내부에서 추가");
+    expect(container.textContent).toContain("지속 세션");
+    expect(container.textContent).toContain("--yolo 활성, agent 생성권한 없음");
+    expect(container.textContent).toContain("12 · extraArgs 이전 필요");
     expect(container.textContent).toContain("승인 패키지 초안");
     expect(container.textContent).toContain("Hermes-first 1단계 지속 설정 승인");
     expect(container.textContent).toContain("yoonorchestrator");

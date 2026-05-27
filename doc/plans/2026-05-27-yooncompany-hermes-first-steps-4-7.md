@@ -7,6 +7,7 @@
 - Persistent Hermes/Paperclip config changes executed by this document: none.
 - Actual phase 1 approval: `YOO-50`, approval `66898bbb-0301-44b7-b914-78b24902fdf3`.
 - Profile rule reinforcement approval: `655db324-ee53-4d0b-9540-64a210847356`.
+- Paperclip Orchestrator agent approval: `29a1d242-417f-4fec-9a14-1db1bb17fb9c`; hire approval `9c6adaa5-10c8-440c-baa8-5f4177fa4e78`.
 - Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
 - Git commit/push/PR/merge evidence: tracked by the scoped follow-up PR for each repo documentation update.
@@ -87,6 +88,21 @@ No profile creation should occur from this document alone.
 ## Step 5: Paperclip-Hermes Mapping
 
 Paperclip and Hermes should not compete for the same meaning.
+
+### Applied Paperclip Orchestrator agent
+
+Applied on 2026-05-27 with approval `29a1d242-417f-4fec-9a14-1db1bb17fb9c`.
+
+- Agent: `Hermes Orchestrator`
+- Agent id: `f4423b9a-f109-41a6-8052-48151cc67a12`
+- URL key: `hermes-orchestrator`
+- Adapter: `hermes_local`
+- Command: `C:\yooncompany\bin\hermes.exe`
+- Extra args: `--profile yoonorchestrator --max-turns 12`
+- Toolsets: `terminal,memory,session_search,skills,web,browser,kanban`
+- Session: `persistSession: true`
+- Permission baseline: `canCreateAgents: false`
+- Not enabled: heartbeat invocation, Hermes dispatch, repo write permission, direct DB write, deploy, delete, send, external publish.
 
 ### Object ownership
 

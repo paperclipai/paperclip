@@ -283,7 +283,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       </div>
       {status.missingToolsets.length > 0 ? (
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          현재 설정은 Hermes 오케스트레이터가 아니라 제한된 조사 직원에 가깝습니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
+          현재 설정은 아직 제한된 Hermes 오케스트레이션 상태입니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
           {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
           {status.commandMatchesLocal ? "" : ` Hermes 실행은 ${status.requiredCommand} 명시 경로를 기준으로 해야 합니다.`}
         </p>
