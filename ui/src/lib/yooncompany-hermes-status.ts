@@ -4,95 +4,95 @@ export const HERMES_ORCHESTRATION_TOOLSETS = ["file", "browser", "mcp", "delegat
 export const HERMES_PAPERCLIP_ADAPTER_VERSION = "0.3.0";
 export const HERMES_ADAPTER_MANAGED_YOLO = true;
 export const HERMES_PHASE1_APPROVAL_PACKAGE = {
-  title: "Approve Hermes-first phase 1 persistent configuration",
-  action: "Hermes orchestrator profile proposal and read-only Paperclip visibility only",
+  title: "Hermes-first 1단계 지속 설정 승인",
+  action: "Hermes 오케스트레이터 profile 제안 및 Paperclip 읽기 전용 표시만 허용",
   targets: ["yoon-orchestrator", "yoon-research", "yoon-docs"],
-  allowed: ["profile templates", "display/draft agent only", "heartbeat disabled", "repo write prohibited"],
-  blocked: ["autonomous heartbeat", "Hermes repo write", "direct DB writes", "deploy/send/publish"],
+  allowed: ["profile 템플릿", "표시/초안 agent만", "heartbeat 비활성", "repo 쓰기 금지"],
+  blocked: ["자율 heartbeat", "Hermes repo 쓰기", "직접 DB 쓰기", "배포/발송/외부 공개"],
 };
 
 export const HERMES_PROFILE_ROSTER = [
   {
     name: "yoon-orchestrator",
-    role: "Routes work, decomposes tasks, owns Hermes Kanban",
+    role: "작업 라우팅, 하위 작업 분해, Hermes Kanban 소유",
     toolsets: ["kanban", "memory", "skills", "session_search", "web", "browser"],
-    phase: "phase 1",
+    phase: "1단계",
   },
   {
     name: "yoon-research",
-    role: "Public research, market scans, source summaries",
+    role: "공개 자료 조사, 시장 조사, 출처 요약",
     toolsets: ["web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 1",
+    phase: "1단계",
   },
   {
     name: "yoon-docs",
-    role: "Internal docs, handoffs, summaries, procedure drafts",
+    role: "내부 문서, 인수인계, 요약, 절차 초안",
     toolsets: ["file", "memory", "skills", "session_search"],
-    phase: "phase 1",
+    phase: "1단계",
   },
   {
     name: "yoon-business",
-    role: "Business division planning and KPI work",
+    role: "비즈니스 사업부 기획 및 KPI 작업",
     toolsets: ["web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
   {
     name: "yoon-startup",
-    role: "Everyone's Startup division planning",
+    role: "모두의 창업 사업부 기획",
     toolsets: ["web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
   {
     name: "yoon-academy",
-    role: "Academy/Tinker operations",
+    role: "아카데미/팅커 운영",
     toolsets: ["web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
   {
     name: "yoon-media",
-    role: "YouTube/content production pipeline planning",
+    role: "유튜브/콘텐츠 제작 파이프라인 기획",
     toolsets: ["kanban", "web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
   {
     name: "yoon-tincolive",
-    role: "TincoLive product/development planning",
+    role: "TincoLive 제품/개발 기획",
     toolsets: ["kanban", "web", "browser", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
   {
     name: "yoon-codex-bridge",
-    role: "Creates and audits Paperclip issues for Codex implementation",
+    role: "Codex 구현용 Paperclip 작업 생성 및 감사",
     toolsets: ["kanban", "web", "memory", "skills", "session_search"],
-    phase: "phase 2",
+    phase: "2단계",
   },
 ];
 
 export const HERMES_KANBAN_PREVIEW_COLUMNS = [
   {
     key: "intake",
-    label: "Intake",
-    purpose: "Paperclip issue/approval 요청을 Hermes 작업 후보로 정리",
+    label: "접수",
+    purpose: "Paperclip 작업/승인 요청을 Hermes 작업 후보로 정리",
     owner: "yoon-orchestrator",
-    gate: "L3/L4는 Paperclip approval 필요",
+    gate: "L3/L4는 Paperclip 승인 필요",
   },
   {
     key: "research_docs",
-    label: "Research/Docs",
+    label: "조사/문서",
     purpose: "조사, 문서화, 로그 요약, 운영 메모를 profile별로 처리",
     owner: "yoon-research · yoon-docs",
     gate: "repo/DB 변경 없음",
   },
   {
     key: "codex_handoff",
-    label: "Codex Handoff",
-    purpose: "구현이 필요한 항목을 Paperclip issue로 넘겨 Codex가 처리",
+    label: "Codex 이관",
+    purpose: "구현이 필요한 항목을 Paperclip 작업으로 넘겨 Codex가 처리",
     owner: "yoon-codex-bridge · Codex Lead Engineer",
     gate: "커밋/PR 증거 필요",
   },
   {
     key: "evidence_done",
-    label: "Evidence/Done",
+    label: "증거/완료",
     purpose: "검증 명령, 브라우저 확인, 남은 위험을 Paperclip에 남김",
     owner: "yoon-orchestrator",
     gate: "evidence 없으면 완료 아님",
@@ -100,12 +100,12 @@ export const HERMES_KANBAN_PREVIEW_COLUMNS = [
 ];
 
 export const HERMES_PAPERCLIP_CROSSLINK_FIELDS = [
-  { key: "paperclip_issue_id", label: "Paperclip issue", example: "YOO-101" },
-  { key: "paperclip_approval_id", label: "Paperclip approval", example: "approval_id: none" },
-  { key: "hermes_board", label: "Hermes board", example: "yooncompany" },
-  { key: "hermes_task_id", label: "Hermes task", example: "hk_abc123" },
+  { key: "paperclip_issue_id", label: "Paperclip 작업", example: "YOO-101" },
+  { key: "paperclip_approval_id", label: "Paperclip 승인", example: "approval_id: none" },
+  { key: "hermes_board", label: "Hermes 보드", example: "yooncompany" },
+  { key: "hermes_task_id", label: "Hermes 작업", example: "hk_abc123" },
   { key: "hermes_profile", label: "Hermes profile", example: "yoon-research" },
-  { key: "codex_run_or_pr", label: "Codex evidence", example: "PR #2 / command log" },
+  { key: "codex_run_or_pr", label: "Codex 증거", example: "PR #2 / 명령 로그" },
 ];
 
 export function findYoonCompanyAgent(agents: Agent[] | undefined, keyword: "codex" | "hermes") {

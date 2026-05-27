@@ -143,7 +143,7 @@ export function YoonCompanyHermesStatusPanel({
 
       {!status.orchestrationReady ? (
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          현재 Hermes는 설치된 런타임 능력보다 Paperclip agent 설정이 좁습니다. 이 패널은 상태만 드러내며, profile 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
+          현재 Hermes는 설치된 런타임 능력보다 Paperclip 직원 설정이 좁습니다. 이 패널은 상태만 드러내며, profile 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
           {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
         </p>
       ) : null}
@@ -183,9 +183,9 @@ export function YoonCompanyHermesStatusPanel({
         <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
             <Workflow className="h-3.5 w-3.5" />
-            Hermes profile roster 미리보기
+            Hermes profile 구성 미리보기
           </div>
-          <div className="text-xs text-muted-foreground">읽기 전용 · profile 생성 안 됨</div>
+          <div className="text-xs text-muted-foreground">읽기 전용 · profile 미생성</div>
         </div>
         <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {HERMES_PROFILE_ROSTER.map((profile) => (

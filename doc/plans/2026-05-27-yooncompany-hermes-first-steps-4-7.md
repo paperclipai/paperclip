@@ -258,6 +258,7 @@ Additional follow-up applied:
 - added a dashboard profile roster preview for the planned Hermes profiles across phase 1 and later business/startup/academy/media/TincoLive divisions
 - added a dashboard Hermes Kanban read-only preview and Paperclip/Hermes cross-link template, with no board/task creation and no DB schema change
 - added visible current-screen context preview to the global question panel so users can see what will be auto-attached to Hermes/Codex issue drafts
+- Koreanized remaining YoonCompany-specific dashboard/question-panel role descriptions, approval labels, profile phases, Kanban labels, and cross-link labels while preserving technical identifiers
 - upgraded `hermes-paperclip-adapter` to `0.3.0` in server/ui package files and lockfile
 - did not create Hermes profiles, enable Hermes Kanban, enable heartbeat, or write Paperclip DB state
 
