@@ -33,6 +33,17 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type GenerateIssueTechnicalSpecRequest = {
+  language?: "en" | "pt-BR";
+};
+
+export type GenerateIssueTechnicalSpecResponse = {
+  key: "technical-spec";
+  language: "en" | "pt-BR";
+  markdown: string;
+  generatedAt: string;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -273,6 +284,16 @@ export const issuesApi = {
     api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
   deleteDocument: (id: string, key: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
+  generateTechnicalSpec: (
+    id: string,
+    payload: GenerateIssueTechnicalSpecRequest,
+    options?: { signal?: AbortSignal },
+  ) =>
+    api.post<GenerateIssueTechnicalSpecResponse>(
+      `/issues/${id}/technical-spec/generate`,
+      payload,
+      options,
+    ),
   listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,

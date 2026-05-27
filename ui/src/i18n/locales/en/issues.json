@@ -17,5 +17,37 @@
       "completedBody": "{{projectCount}} project(s) synced, {{issuesUpserted}} issue(s) and {{goalsUpserted}} goal(s) updated.",
       "failedTitle": "Failed to sync issues from Brabrix"
     }
+  },
+  "technicalSpec": {
+    "title": "Technical Spec",
+    "description": "Generate, review, and save a structured technical spec without replacing the issue description.",
+    "documentTitle": "Technical Spec",
+    "lastSaved": "Last saved {{timeAgo}}",
+    "loading": "Generating technical spec from the current issue context...",
+    "loadingSaved": "Loading saved technical spec...",
+    "empty": "No technical spec yet. Generate one to start with a structured implementation plan.",
+    "editorAriaLabel": "Technical spec editor",
+    "unsavedNotice": "You have unsaved changes. Switch to edit mode and save to persist this spec on the issue.",
+    "actions": {
+      "generate": "Generate technical spec",
+      "regenerate": "Regenerate spec",
+      "cancelGeneration": "Cancel generation",
+      "copy": "Copy spec",
+      "edit": "Edit spec",
+      "cancelEdit": "Cancel edit",
+      "save": "Save spec"
+    },
+    "errors": {
+      "generate": "Failed to generate technical spec. Please try again.",
+      "unexpected": "Unexpected error."
+    },
+    "toasts": {
+      "generatedTitle": "Technical spec generated",
+      "generatedErrorTitle": "Failed to generate technical spec",
+      "generationCanceledTitle": "Generation canceled",
+      "savedTitle": "Technical spec saved",
+      "savedErrorTitle": "Failed to save technical spec",
+      "copiedTitle": "Technical spec copied"
+    }
   }
 }
