@@ -90,7 +90,7 @@ describe("GET /health dev-server supervisor access", () => {
 
       const res = await request(app)
         .get("/health")
-        .set("X-ValadrienOs-Dev-Server-Status-Token", "dev-runner-token");
+        .set("X-ValAdrien-OS-Dev-Server-Status-Token", "dev-runner-token");
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({

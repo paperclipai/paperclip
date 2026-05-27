@@ -194,7 +194,7 @@ function deriveManifestSkillKey(
     return `${owner}/${repo}/${slug}`;
   }
   if (sourceKind === "valadrien_os_bundled") {
-    return `ValDola-stack/valadrien-os/${slug}`;
+    return `valdola-stack/valadrien-os/${slug}`;
   }
   if (sourceType === "url" || sourceKind === "url") {
     try {
