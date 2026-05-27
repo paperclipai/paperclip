@@ -159,7 +159,9 @@ describe("YoonCompanyAssistantPanel", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("현재 화면 컨텍스트 자동 첨부");
+    expect(container.textContent).toContain("현재 화면 컨텍스트");
+    expect(container.textContent).toContain("현재 화면 컨텍스트 포함");
+    expect(container.textContent).toContain("작업 유형");
     expect(container.textContent).toContain("이슈 초안에 포함");
     expect(container.textContent).toContain("Hermes 연결 필드 미리보기");
     expect(container.textContent).toContain("hermes_board: yooncompany");
@@ -232,6 +234,13 @@ describe("YoonCompanyAssistantPanel", () => {
     });
     await flush();
 
+    const analyzeTarget = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("6002 분석"));
+    await act(async () => {
+      analyzeTarget?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
     const textarea = container.querySelector("textarea");
     expect(textarea).not.toBeNull();
     await act(async () => {
@@ -253,12 +262,59 @@ describe("YoonCompanyAssistantPanel", () => {
       title: "Codex 질문: 이 화면의 다음 개발 작업을 작은 단위로 진행해줘",
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
+    expect(defaults.description).toContain("현재 화면의 상태, 위험, 다음 개선 후보를 6002 기준으로 분석하라.");
     expect(defaults.description).toContain("6002 실행 순서: observe -> plan -> implement -> verify -> risk-report.");
     expect(defaults.description).toContain("Observe: 실제 문서, git status, 코드, 로그, 화면 상태를 먼저 확인하라.");
     expect(defaults.description).toContain("Verify: typecheck/test/browser/log/API 중 실제 근거를 남겨라.");
     expect(defaults.description).toContain("Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고하라.");
     expect(defaults.description).toContain("승인 게이트:");
     expect(defaults.description).toContain("L3-L4: DB/config/agent rule/자동화/배포/삭제/발송/외부 공개/비용 변경은 Paperclip 승인 id가 있어야 실행.");
+  });
+
+  it("can create a draft without attaching current screen context", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <YoonCompanyAssistantPanel />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="YoonCompany 질문 패널"]')?.click();
+    });
+    await flush();
+
+    const contextToggle = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(contextToggle).not.toBeNull();
+    await act(async () => {
+      contextToggle!.click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("첨부 안 함");
+
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    await act(async () => {
+      setTextareaValue(textarea!, "화면 정보 없이 일반 조사만 해줘");
+    });
+    await flush();
+
+    const createButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("오케스트레이션 이슈 초안 만들기"));
+    expect(createButton).toBeDefined();
+    await act(async () => {
+      (createButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
+    expect(defaults.description).toContain("현재 화면 컨텍스트: 사용자가 첨부하지 않음.");
+    expect(defaults.description).not.toContain("경로: /YOO/agents/hermes-research-worker?tab=runs#latest");
+    expect(defaults.description).not.toContain("화면 제목: 직원 상세");
   });
 
   it("shows the Hermes-first read-only status mismatch", async () => {

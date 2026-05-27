@@ -337,6 +337,8 @@ export function YoonCompanyAssistantPanel() {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<"codex" | "hermes">("hermes");
+  const [codexKind, setCodexKind] = useState<"ask" | "guide" | "analyze">("ask");
+  const [includeScreenContext, setIncludeScreenContext] = useState(true);
   const [requestText, setRequestText] = useState("");
 
   const { data: agents } = useQuery({
@@ -350,6 +352,8 @@ export function YoonCompanyAssistantPanel() {
   const hermesAgent = useMemo(() => findYoonCompanyAgent(agents, "hermes"), [agents]);
   const contextLines = pageContextLines(location.pathname, location.search, location.hash, selectedCompany);
   const context = contextLines.join("\n");
+  const draftContext = includeScreenContext ? context : "현재 화면 컨텍스트: 사용자가 첨부하지 않음.";
+  const visibleContextLines = includeScreenContext ? contextLines.slice(0, 5) : ["현재 화면 컨텍스트: 첨부 안 함"];
   const disabled = !selectedCompanyId;
 
   function openCodex(kind: "ask" | "guide" | "analyze", userRequest = "") {
@@ -359,7 +363,7 @@ export function YoonCompanyAssistantPanel() {
         kind === "guide" ? "현재 화면 사용법 질문" : kind === "analyze" ? "현재 화면 6002 분석" : "Codex에게 질문",
         userRequest,
       ),
-      description: codexDescription(kind, context, userRequest),
+      description: codexDescription(kind, draftContext, userRequest),
       priority: "high",
       status: "backlog",
       assigneeAgentId: codexAgent?.id,
@@ -370,7 +374,7 @@ export function YoonCompanyAssistantPanel() {
   function openHermes(userRequest = "") {
     openNewIssue({
       title: titleFromInput("Hermes 오케스트레이션", "Hermes 오케스트레이션 요청", userRequest),
-      description: hermesDescription(context, userRequest),
+      description: hermesDescription(draftContext, userRequest),
       priority: "medium",
       status: "backlog",
       assigneeAgentId: hermesAgent?.id,
@@ -381,7 +385,7 @@ export function YoonCompanyAssistantPanel() {
   function openHermesApprovalDraft() {
     openNewIssue({
       title: HERMES_PHASE1_APPROVAL_PACKAGE.title,
-      description: hermesApprovalDescription(context),
+      description: hermesApprovalDescription(draftContext),
       priority: "high",
       status: "backlog",
     });
@@ -392,7 +396,7 @@ export function YoonCompanyAssistantPanel() {
     if (target === "hermes") {
       openHermes(requestText);
     } else {
-      openCodex("ask", requestText);
+      openCodex(codexKind, requestText);
     }
   }
 
@@ -452,6 +456,34 @@ export function YoonCompanyAssistantPanel() {
                   Hermes 오케스트레이션
                 </button>
               </div>
+              <div className="grid gap-1">
+                <div className="text-xs font-medium text-muted-foreground">작업 유형</div>
+                {target === "codex" ? (
+                  <div className="grid grid-cols-3 gap-1" aria-label="Codex 작업 유형">
+                    {[
+                      { value: "ask", label: "질문" },
+                      { value: "guide", label: "사용법" },
+                      { value: "analyze", label: "6002 분석" },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={cn(
+                          "border border-border px-2.5 py-2 text-xs font-medium transition-colors hover:bg-accent",
+                          codexKind === option.value && "bg-accent text-foreground",
+                        )}
+                        onClick={() => setCodexKind(option.value as typeof codexKind)}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="border border-border bg-background px-2.5 py-2 text-xs font-medium text-muted-foreground">
+                    조사/오케스트레이션 접수
+                  </div>
+                )}
+              </div>
               <textarea
                 value={requestText}
                 onChange={(event) => setRequestText(event.target.value)}
@@ -459,16 +491,25 @@ export function YoonCompanyAssistantPanel() {
                 placeholder="현재 화면 맥락과 함께 전달할 내용을 입력"
                 className="min-h-24 resize-y border border-border bg-background px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground"
               />
+              <label className="flex items-center gap-2 border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={includeScreenContext}
+                  onChange={(event) => setIncludeScreenContext(event.target.checked)}
+                  className="h-3.5 w-3.5 accent-foreground"
+                />
+                <span>현재 화면 컨텍스트 포함</span>
+              </label>
               <div className="border border-border bg-background px-3 py-2">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
                     <ClipboardList className="h-3.5 w-3.5" />
-                    현재 화면 컨텍스트 자동 첨부
+                    현재 화면 컨텍스트
                   </div>
-                  <div className="text-xs text-muted-foreground">이슈 초안에 포함</div>
+                  <div className="text-xs text-muted-foreground">{includeScreenContext ? "이슈 초안에 포함" : "첨부 안 함"}</div>
                 </div>
                 <div className="mt-2 space-y-1">
-                  {contextLines.slice(0, 5).map((line) => (
+                  {visibleContextLines.map((line) => (
                     <div key={line} className="truncate text-xs leading-5 text-muted-foreground">
                       {line}
                     </div>
