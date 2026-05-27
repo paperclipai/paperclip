@@ -47,6 +47,7 @@ import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
+import { useTranslation } from "@/i18n";
 
 /* ---- Mention types ---- */
 
@@ -216,25 +217,27 @@ const MAX_AUTOCOMPLETE_OPTIONS = 50;
 /** Roughly one space-width of breathing room between the caret and the menu. */
 const MENTION_MENU_CARET_GAP = 10;
 
-const CODE_BLOCK_LANGUAGES: Record<string, string> = {
-  txt: "Text",
-  md: "Markdown",
-  js: "JavaScript",
-  jsx: "JavaScript (JSX)",
-  ts: "TypeScript",
-  tsx: "TypeScript (TSX)",
-  json: "JSON",
-  bash: "Bash",
-  sh: "Shell",
-  python: "Python",
-  go: "Go",
-  rust: "Rust",
-  sql: "SQL",
-  html: "HTML",
-  css: "CSS",
-  yaml: "YAML",
-  yml: "YAML",
-};
+function createCodeBlockLanguages(t: ReturnType<typeof useTranslation>["t"]): Record<string, string> {
+  return {
+    txt: t("component.markdownEditor.codeLanguageTxt"),
+    md: t("component.markdownEditor.codeLanguageMd"),
+    js: t("component.markdownEditor.codeLanguageJs"),
+    jsx: t("component.markdownEditor.codeLanguageJsx"),
+    ts: t("component.markdownEditor.codeLanguageTs"),
+    tsx: t("component.markdownEditor.codeLanguageTsx"),
+    json: t("component.markdownEditor.codeLanguageJson"),
+    bash: t("component.markdownEditor.codeLanguageBash"),
+    sh: t("component.markdownEditor.codeLanguageSh"),
+    python: t("component.markdownEditor.codeLanguagePython"),
+    go: t("component.markdownEditor.codeLanguageGo"),
+    rust: t("component.markdownEditor.codeLanguageRust"),
+    sql: t("component.markdownEditor.codeLanguageSql"),
+    html: t("component.markdownEditor.codeLanguageHtml"),
+    css: t("component.markdownEditor.codeLanguageCss"),
+    yaml: t("component.markdownEditor.codeLanguageYaml"),
+    yml: t("component.markdownEditor.codeLanguageYml"),
+  };
+}
 
 const FALLBACK_CODE_BLOCK_DESCRIPTOR: CodeBlockEditorDescriptor = {
   // Keep this lower than codeMirrorPlugin's descriptor priority so known languages
@@ -576,6 +579,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
+  const { t } = useTranslation();
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
   const { slashCommands } = useEditorAutocomplete();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -693,7 +697,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         const activeElement = document.activeElement;
         if (activeElement === editable || editable.contains(activeElement)) return;
         if (isRichEditorDomEmpty(editable, editorValue, placeholder)) {
-          setRichEditorError("Rich editor failed to load content");
+          setRichEditorError(t("component.markdownEditor.richEditorFailed"));
         }
       }, 0);
     };
@@ -722,7 +726,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const imageHandler = hasImageUpload
       ? async (file: File) => {
           const handler = imageUploadHandlerRef.current;
-          if (!handler) throw new Error("No image upload handler");
+          if (!handler) throw new Error(t("component.markdownEditor.noImageUploadHandler"));
           try {
             const src = await handler(file);
             setUploadError(null);
@@ -747,7 +751,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : t("component.markdownEditor.imageUploadFailed");
             setUploadError(message);
             throw err;
           }
@@ -767,14 +771,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         defaultCodeBlockLanguage: "txt",
         codeBlockEditorDescriptors: [FALLBACK_CODE_BLOCK_DESCRIPTOR],
       }),
-      codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
+      codeMirrorPlugin({ codeBlockLanguages: createCodeBlockLanguages(t) }),
       markdownShortcutPlugin(),
     ];
     if (imageHandler) {
       all.push(imagePlugin({ imageUploadHandler: imageHandler }));
     }
     return all;
-  }, [hasImageUpload]);
+  }, [hasImageUpload, t]);
 
   useEffect(() => {
     if (editorValue !== latestValueRef.current) {
@@ -1064,7 +1068,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>{t("component.markdownEditor.richEditorUnavailable")}</p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
@@ -1072,7 +1076,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
+            {t("component.markdownEditor.retryRichEditor")}
           </button>
         </div>
         <textarea
@@ -1320,22 +1324,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 </span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Project
+                    {t("component.markdownEditor.projectLabel")}
                   </span>
                 )}
                 {option.kind === "user" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    User
+                    {t("component.markdownEditor.userLabel")}
                   </span>
                 )}
                 {option.kind === "skill" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Skill
+                    {t("component.markdownEditor.skillLabel")}
                   </span>
                 )}
                 {option.kind === "routine" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Routine
+                    {t("component.markdownEditor.routineLabel")}
                   </span>
                 )}
               </button>
@@ -1351,7 +1355,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          {onDropFile ? t("component.markdownEditor.dropFileToUpload") : t("component.markdownEditor.dropImageToUpload")}
         </div>
       )}
       {uploadError && (

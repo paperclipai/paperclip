@@ -54,6 +54,7 @@
     "cmdk": "^1.1.1",
     "hermes-paperclip-adapter": "^0.2.0",
     "i18next": "^26.1.0",
+    "i18next-browser-languagedetector": "^8.2.1",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.12.0",
@@ -67,17 +68,17 @@
     "tailwind-merge": "^3.4.1"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.0.7",
     "@storybook/addon-a11y": "10.3.5",
     "@storybook/addon-docs": "10.3.5",
     "@storybook/react-vite": "10.3.5",
+    "@tailwindcss/vite": "^4.0.7",
     "@types/node": "^25.2.3",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "storybook": "10.3.5",
     "tailwindcss": "^4.0.7",
     "typescript": "^5.7.3",
-    "storybook": "10.3.5",
     "vite": "^6.1.0",
     "vitest": "^3.0.5"
   }

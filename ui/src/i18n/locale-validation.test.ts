@@ -1,10 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { t, i18n } from ".";
 import en from "./locales/en.json";
 import { localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
+  beforeEach(() => {
+    void i18n.changeLanguage("en");
+    localStorage.removeItem("paperclip_locale");
+  });
+
+  afterEach(() => {
+    localStorage.removeItem("paperclip_locale");
+  });
+
   it("resolves English messages with key and default fallbacks", () => {
     expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
     expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");

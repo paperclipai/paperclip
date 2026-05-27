@@ -3425,6 +3425,68 @@ export function issueRoutes(
     res.json(removed ?? { ok: true });
   });
 
+  router.post("/issues/clear-all", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const companyId = req.query.companyId as string | undefined;
+    if (!companyId) {
+      res.status(400).json({ error: "companyId query parameter required" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const result = await svc.batchArchiveClearAll(companyId, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.batch_archived_clear_all",
+      entityType: "issue",
+      entityId: companyId,
+      details: { userId: req.actor.userId, archivedCount: result.archived },
+    });
+    res.json(result);
+  });
+
+  router.post("/issues/restore-all", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const companyId = req.query.companyId as string | undefined;
+    if (!companyId) {
+      res.status(400).json({ error: "companyId query parameter required" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const result = await svc.batchUnarchiveAll(companyId, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.batch_restored_all",
+      entityType: "issue",
+      entityId: companyId,
+      details: { userId: req.actor.userId, restoredCount: result.unarchived },
+    });
+    res.json(result);
+  });
+
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

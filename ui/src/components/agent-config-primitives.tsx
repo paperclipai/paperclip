@@ -17,8 +17,61 @@ import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
 
 /* ---- Help text for (?) tooltips ---- */
+export const helpKeys: Record<string, string> = {
+  name: "component.agent.config.help.name",
+  title: "component.agent.config.help.title",
+  role: "component.agent.config.help.role",
+  reportsTo: "component.agent.config.help.reportsTo",
+  capabilities: "component.agent.config.help.capabilities",
+  adapterType: "component.agent.config.help.adapterType",
+  cwd: "component.agent.config.help.cwd",
+  promptTemplate: "component.agent.config.help.promptTemplate",
+  model: "component.agent.config.help.model",
+  thinkingEffort: "component.agent.config.help.thinkingEffort",
+  chrome: "component.agent.config.help.chrome",
+  dangerouslySkipPermissions: "component.agent.config.help.dangerouslySkipPermissions",
+  dangerouslyBypassSandbox: "component.agent.config.help.dangerouslyBypassSandbox",
+  search: "component.agent.config.help.search",
+  fastMode: "component.agent.config.help.fastMode",
+  workspaceStrategy: "component.agent.config.help.workspaceStrategy",
+  workspaceBaseRef: "component.agent.config.help.workspaceBaseRef",
+  workspaceBranchTemplate: "component.agent.config.help.workspaceBranchTemplate",
+  worktreeParentDir: "component.agent.config.help.worktreeParentDir",
+  runtimeServicesJson: "component.agent.config.help.runtimeServicesJson",
+  maxTurnsPerRun: "component.agent.config.help.maxTurnsPerRun",
+  command: "component.agent.config.help.command",
+  localCommand: "component.agent.config.help.localCommand",
+  args: "component.agent.config.help.args",
+  extraArgs: "component.agent.config.help.extraArgs",
+  envVars: "component.agent.config.help.envVars",
+  bootstrapPrompt: "component.agent.config.help.bootstrapPrompt",
+  payloadTemplateJson: "component.agent.config.help.payloadTemplateJson",
+  webhookUrl: "component.agent.config.help.webhookUrl",
+  heartbeatInterval: "component.agent.config.help.heartbeatInterval",
+  intervalSec: "component.agent.config.help.intervalSec",
+  timeoutSec: "component.agent.config.help.timeoutSec",
+  graceSec: "component.agent.config.help.graceSec",
+  wakeOnDemand: "component.agent.config.help.wakeOnDemand",
+  cooldownSec: "component.agent.config.help.cooldownSec",
+  maxConcurrentRuns: "component.agent.config.help.maxConcurrentRuns",
+  maxTurnContinuationEnabled: "component.agent.config.help.maxTurnContinuationEnabled",
+  maxTurnContinuationMaxAttempts: "component.agent.config.help.maxTurnContinuationMaxAttempts",
+  maxTurnContinuationDelaySec: "component.agent.config.help.maxTurnContinuationDelaySec",
+  budgetMonthlyCents: "component.agent.config.help.budgetMonthlyCents",
+};
+
+export function useHelp() {
+  const { t } = useTranslation();
+  const help: Record<string, string> = {};
+  for (const [key, translationKey] of Object.entries(helpKeys)) {
+    help[key] = t(translationKey);
+  }
+  return help;
+}
+
 export const help: Record<string, string> = {
   name: "Display name for this agent.",
   title: "Job title shown in the org chart.",
@@ -386,6 +439,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -394,54 +448,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("component.agent.config.choosePath")}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("component.agent.config.choosePathDialog.title")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("component.agent.config.choosePathDialog.description")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{t("component.agent.config.choosePathDialog.macosTitle")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("component.agent.config.choosePathDialog.macosStep1")}</li>
+                <li>{t("component.agent.config.choosePathDialog.macosStep2")}</li>
+                <li>{t("component.agent.config.choosePathDialog.macosStep3")}</li>
+                <li>{t("component.agent.config.choosePathDialog.macosStep4")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("component.agent.config.choosePathDialog.windowsTitle")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("component.agent.config.choosePathDialog.windowsStep1")}</li>
+                <li>{t("component.agent.config.choosePathDialog.windowsStep2")}</li>
+                <li>{t("component.agent.config.choosePathDialog.windowsStep3")}</li>
+                <li>{t("component.agent.config.choosePathDialog.windowsStep4")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("component.agent.config.choosePathDialog.terminalTitle")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{t("component.agent.config.choosePathDialog.terminalStep1")}</li>
+                <li>{t("component.agent.config.choosePathDialog.terminalStep2")}</li>
+                <li>{t("component.agent.config.choosePathDialog.terminalStep3")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("common.actions.confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { buildExecutionPolicy } from "@/lib/issue-execution-policy";
 import { createIssue, storybookAgents } from "../fixtures/paperclipData";
+import { useTranslation } from "@/i18n";
 
 function Section({
   eyebrow,
@@ -485,6 +486,7 @@ function EnvVarEditorGallery() {
 }
 
 function ScheduleEditorGallery() {
+  const { t } = useTranslation();
   const [emptyCron, setEmptyCron] = useState("");
   const [weeklyCron, setWeeklyCron] = useState("30 9 * * 1");
   const [customCron, setCustomCron] = useState("15 16 1 * *");
@@ -492,13 +494,13 @@ function ScheduleEditorGallery() {
   return (
     <Section eyebrow="ScheduleEditor" title="Cron picker with human-readable previews">
       <div className="grid gap-4 lg:grid-cols-3">
-        <StatePanel label="Empty default" detail={describeSchedule(emptyCron)}>
+        <StatePanel label="Empty default" detail={describeSchedule(emptyCron, t)}>
           <ScheduleEditor value={emptyCron} onChange={setEmptyCron} />
         </StatePanel>
-        <StatePanel label="Weekly filled" detail={describeSchedule(weeklyCron)}>
+        <StatePanel label="Weekly filled" detail={describeSchedule(weeklyCron, t)}>
           <ScheduleEditor value={weeklyCron} onChange={setWeeklyCron} />
         </StatePanel>
-        <StatePanel label="Custom disabled preview" detail={describeSchedule(customCron)} disabled>
+        <StatePanel label="Custom disabled preview" detail={describeSchedule(customCron, t)} disabled>
           <ScheduleEditor value={customCron} onChange={setCustomCron} />
         </StatePanel>
       </div>

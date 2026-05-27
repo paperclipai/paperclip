@@ -7,6 +7,12 @@ export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
   "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_I18N_KEY = "component.systemNotice.successfulRunHandoff.required";
+export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_I18N_KEY = "component.systemNotice.successfulRunHandoff.exhausted";
+export const MISSING_ISSUE_DISPOSITION_TITLE = "Missing issue disposition";
+export const MISSING_ISSUE_DISPOSITION_TITLE_I18N_KEY = "component.systemNotice.successfulRunHandoff.missingDispositionTitle";
+export const EXHAUSTED_NOTICE_TITLE = "Missing disposition recovery blocked";
+export const EXHAUSTED_NOTICE_TITLE_I18N_KEY = "component.systemNotice.successfulRunHandoff.exhaustedTitle";
 
 export function isSuccessfulRunHandoffActivity(action: string) {
   return action === SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION

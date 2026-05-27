@@ -719,6 +719,28 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 });
 
 describe("LiveUpdatesProvider run lifecycle toasts", () => {
+  const translations: Record<string, string> = {
+    "liveUpdates.actor.agent": "Agent",
+    "liveUpdates.runStatus.succeeded": "succeeded",
+    "liveUpdates.runStatus.failed": "failed",
+    "liveUpdates.runStatus.timedOut": "timed out",
+    "liveUpdates.runStatus.cancelled": "cancelled",
+    "liveUpdates.runStatus.trigger": "Trigger:",
+    "liveUpdates.toast.agentStarted": "{{name}} started",
+    "liveUpdates.toast.agentErrored": "{{name}} errored",
+    "liveUpdates.toast.runStatus.title": "{{name}} run {{statusLabel}}",
+    "liveUpdates.toast.action.viewAgent": "View agent",
+    "liveUpdates.toast.action.viewRun": "View run",
+  };
+  const t = (key: string, options?: Record<string, unknown>) => {
+    const template = translations[key] ?? key;
+    if (!options) return template;
+    return template.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (_, name: string) => {
+      const value = options[name];
+      return value === undefined || value === null ? "" : String(value);
+    });
+  };
+
   it("does not build start or success toasts for agent runs", () => {
     const queryClient = {
       getQueryData: () => [],
@@ -733,6 +755,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         () => "CodexCoder",
         queryClient as never,
         "company-1",
+        t,
       ),
     ).toBeNull();
 
@@ -744,6 +767,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
           status: "succeeded",
         },
         () => "CodexCoder",
+        t,
       ),
     ).toBeNull();
   });
@@ -767,6 +791,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         () => "CodexCoder",
         queryClient as never,
         "company-1",
+        t,
       ),
     ).toMatchObject({
       title: "CodexCoder errored",
@@ -783,6 +808,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
           error: "boom",
         },
         () => "CodexCoder",
+        t,
       ),
     ).toMatchObject({
       title: "CodexCoder run failed",

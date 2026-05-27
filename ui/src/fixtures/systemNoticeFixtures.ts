@@ -2,6 +2,10 @@ import type {
   SystemNoticeMetadataSection,
   SystemNoticeProps,
 } from "../components/SystemNotice";
+import {
+  SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+} from "@/lib/successful-run-handoff";
 
 export type SystemNoticeFixture = {
   id: string;
@@ -133,7 +137,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System warning",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:32:00.000Z",
-    body: "Paperclip needs a disposition before this issue can continue.",
+    body: SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
     metadata: REQUIRED_METADATA,
     detailsDefaultOpen: false,
   },
@@ -144,7 +148,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System warning",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:32:00.000Z",
-    body: "Paperclip needs a disposition before this issue can continue.",
+    body: SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
     metadata: REQUIRED_METADATA,
     detailsDefaultOpen: true,
   },
@@ -155,7 +159,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System alert",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:48:00.000Z",
-    body: "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.",
+    body: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
     metadata: HANDOFF_METADATA,
     detailsDefaultOpen: false,
   },
@@ -166,7 +170,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System alert",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:48:00.000Z",
-    body: "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.",
+    body: SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
     metadata: HANDOFF_METADATA,
     detailsDefaultOpen: true,
   },

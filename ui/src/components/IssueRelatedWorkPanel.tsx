@@ -1,4 +1,5 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import { useTranslation } from "@/i18n";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {
@@ -25,25 +26,27 @@ function groupSourcesByLabel(sources: IssueRelatedWorkItem["sources"]): GroupedS
 }
 
 function Section({
-  title,
-  description,
+  titleKey,
+  descriptionKey,
   items,
-  emptyLabel,
+  emptyLabelKey,
 }: {
-  title: string;
-  description: string;
+  titleKey: string;
+  descriptionKey: string;
   items: IssueRelatedWorkItem[];
-  emptyLabel: string;
+  emptyLabelKey: string;
 }) {
+  const { t } = useTranslation();
+
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <h3 className="text-sm font-semibold">{t(titleKey)}</h3>
+        <p className="text-xs text-muted-foreground">{t(descriptionKey)}</p>
       </div>
 
       {items.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{emptyLabel}</p>
+        <p className="text-xs text-muted-foreground">{t(emptyLabelKey)}</p>
       ) : (
         <ul className="-mx-1 flex flex-col">
           {items.map((item) => {
@@ -88,22 +91,23 @@ export function IssueRelatedWorkPanel({
 }: {
   relatedWork?: IssueRelatedWorkSummary | null;
 }) {
+  const { t } = useTranslation();
   const outbound = relatedWork?.outbound ?? [];
   const inbound = relatedWork?.inbound ?? [];
 
   return (
     <div className="space-y-3">
       <Section
-        title="References"
-        description="Other tasks this issue currently points at in its title, description, comments, or documents."
+        titleKey="issue.relatedWork.references"
+        descriptionKey="issue.relatedWork.referencesDescription"
         items={outbound}
-        emptyLabel="This issue does not reference any other tasks yet."
+        emptyLabelKey="issue.relatedWork.noReferences"
       />
       <Section
-        title="Referenced by"
-        description="Other tasks that currently point at this issue."
+        titleKey="issue.relatedWork.referencedBy"
+        descriptionKey="issue.relatedWork.referencedByDescription"
         items={inbound}
-        emptyLabel="No other tasks reference this issue yet."
+        emptyLabelKey="issue.relatedWork.noReferencedBy"
       />
     </div>
   );

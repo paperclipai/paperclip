@@ -299,4 +299,6 @@ export const issuesApi = {
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  clearAllTasks: (companyId: string) =>
+    api.post<{ archived: number }>(`/issues/clear-all?companyId=${encodeURIComponent(companyId)}`, {}),
 };

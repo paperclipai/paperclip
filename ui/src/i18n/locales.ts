@@ -4,7 +4,7 @@ import { assertValidLocaleMessages } from "./locale-validation";
 
 export const DEFAULT_LOCALE = "en" as const;
 
-const localeModules = import.meta.glob("./locales/*.json", {
+const localeModules = import.meta.glob("./locales/{en,zh-CN}.json", {
   eager: true,
   import: "default",
 }) as Record<string, unknown>;
