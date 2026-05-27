@@ -164,6 +164,18 @@ function resolveCodexSkillsDir(codexHome: string): string {
   return path.join(codexHome, "skills");
 }
 
+async function linkCodexSkill(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32") {
+      await fs.cp(source, target, { recursive: true });
+      return;
+    }
+    throw error;
+  }
+}
+
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Array<{ key: string; runtimeName: string; source: string }>;
@@ -230,7 +242,7 @@ export async function ensureCodexSkillsInjected(
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
   await fs.mkdir(skillsHome, { recursive: true });
-  const linkSkill = options.linkSkill;
+  const linkSkill = options.linkSkill ?? linkCodexSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
@@ -247,11 +259,7 @@ export async function ensureCodexSkillsInjected(
           (await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.runtimeName))
         ) {
           await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
+          await linkSkill(entry.source, target);
           await onLog(
             "stdout",
             `[paperclip] Repaired Codex skill "${entry.runtimeName}" into ${skillsHome}\n`,
