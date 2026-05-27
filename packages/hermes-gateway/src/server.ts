@@ -227,10 +227,25 @@ app.post<{
   return { bound: true, existing: false, bindingId: binding.id };
 });
 
+async function registerWebhookSubscription() {
+  const callbackUrl = `${config.gatewayBaseUrl}/api/v1/paperclip-events`;
+  try {
+    const result = await paperclip.registerWebhook({
+      url: callbackUrl,
+      events: ["issue.status_changed", "issue.comment_added", "issue.completed"],
+      secret: config.webhookSecret,
+    });
+    app.log.info({ webhookId: result.id, callbackUrl }, "Webhook subscription registered");
+  } catch (err) {
+    app.log.warn({ err, callbackUrl }, "Failed to register webhook subscription (will retry on next restart)");
+  }
+}
+
 async function start() {
   try {
     await app.listen({ port: config.port, host: "0.0.0.0" });
     app.log.info(`Hermes Gateway listening on port ${config.port}`);
+    await registerWebhookSubscription();
   } catch (err) {
     app.log.fatal(err);
     process.exit(1);

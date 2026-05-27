@@ -80,7 +80,11 @@ export class PaperclipClient {
       {
         method: "POST",
         headers: this.headers,
-        body: JSON.stringify(params),
+        body: JSON.stringify({
+          url: params.url,
+          eventTypes: params.events,
+          secret: params.secret,
+        }),
       },
     );
 

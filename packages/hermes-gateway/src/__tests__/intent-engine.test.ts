@@ -6,6 +6,7 @@ import type { InboundPayload } from "../types.js";
 
 const TEST_CONFIG: GatewayConfig = {
   port: 3200,
+  gatewayBaseUrl: "http://localhost:3200",
   bridgeSharedSecret: "test-secret",
   paperclipApiUrl: "http://localhost:3000",
   paperclipApiKey: "test-key",

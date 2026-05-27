@@ -1,5 +1,6 @@
 export interface GatewayConfig {
   port: number;
+  gatewayBaseUrl: string;
   bridgeSharedSecret: string;
   paperclipApiUrl: string;
   paperclipApiKey: string;
@@ -15,8 +16,11 @@ export function loadConfig(): GatewayConfig {
     return val;
   };
 
+  const port = parseInt(process.env["PORT"] || "3200", 10);
+
   return {
-    port: parseInt(process.env["PORT"] || "3200", 10),
+    port,
+    gatewayBaseUrl: process.env["GATEWAY_BASE_URL"] || `http://localhost:${port}`,
     bridgeSharedSecret: required("BRIDGE_SHARED_SECRET"),
     paperclipApiUrl: required("PAPERCLIP_API_URL"),
     paperclipApiKey: required("PAPERCLIP_API_KEY"),
