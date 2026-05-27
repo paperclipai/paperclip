@@ -36,7 +36,12 @@ export { heartbeatService } from "./heartbeat.js";
 export { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 export { awaitingHumanBridgeService, type AwaitingHumanBridgeAdapter, type AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge.js";
 export { awaitingHumanBridgeRuntime } from "./awaiting-human-bridge-runtime.js";
-export { registerAwaitingHumanBridgeAdapter, resolveAwaitingHumanBridgeAdapter } from "./awaiting-human-bridge-registry.js";
+export {
+  hasAnyAwaitingHumanBridgeAdapter,
+  hasAwaitingHumanBridgeAdapter,
+  registerAwaitingHumanBridgeAdapter,
+  resolveAwaitingHumanBridgeAdapter,
+} from "./awaiting-human-bridge-registry.js";
 export { clickupBridgeService } from "./clickup-bridge.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./issue-liveness.js";
 export { dashboardService } from "./dashboard.js";

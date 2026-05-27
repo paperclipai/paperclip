@@ -17,4 +17,18 @@ describe("awaiting-human-bridge-registry", () => {
       "Unknown awaiting human bridge provider: unknown",
     );
   });
+
+  it("tracks whether any adapter is registered in a fresh module instance", async () => {
+    vi.resetModules();
+    const registry = await import("../services/awaiting-human-bridge-registry.js");
+
+    expect(registry.hasAnyAwaitingHumanBridgeAdapter()).toBe(false);
+
+    const mockAdapter = { send: vi.fn(), poll: vi.fn(), close: vi.fn() };
+    registry.registerAwaitingHumanBridgeAdapter("mock", () => mockAdapter as any);
+
+    expect(registry.hasAwaitingHumanBridgeAdapter("mock")).toBe(true);
+    expect(registry.hasAnyAwaitingHumanBridgeAdapter()).toBe(true);
+    expect(registry.resolveAwaitingHumanBridgeAdapter("mock", {} as any)).toBe(mockAdapter);
+  });
 });

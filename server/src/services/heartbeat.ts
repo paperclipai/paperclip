@@ -99,7 +99,10 @@ import { documentService } from "./documents.js";
 import { workProductService } from "./work-products.js";
 import { awaitingHumanBridgeService } from "./awaiting-human-bridge.js";
 import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
-import { resolveAwaitingHumanBridgeAdapter } from "./awaiting-human-bridge-registry.js";
+import {
+  hasAnyAwaitingHumanBridgeAdapter,
+  resolveAwaitingHumanBridgeAdapter,
+} from "./awaiting-human-bridge-registry.js";
 import { recordComment, recordRunStatus } from "../otel.js";
 import {
   getIssueContinuationSummaryDocument,
@@ -5326,7 +5329,18 @@ export function heartbeatService(db: Db) {
 
   async function reconcileAwaitingHumanApprovals() {
     await awaitingHumanBridge.expireWaitingBridges();
-    await awaitingHumanBridge.retryFailedBridgeOpenings();
+    if (!hasAnyAwaitingHumanBridgeAdapter()) {
+      return {
+        checked: 0,
+        approved: 0,
+        rejected: 0,
+        failed: 0,
+        skipped: 0,
+        noApproval: 0,
+        issueIds: [] as string[],
+        interactionIds: [] as string[],
+      };
+    }
     const legacyDeliveredInteractions = await db
       .select({
         companyId: activityLog.companyId,

@@ -53,6 +53,14 @@ export function registerAwaitingHumanBridgeAdapter(
   registry.set(type, factory);
 }
 
+export function hasAwaitingHumanBridgeAdapter(type: string): boolean {
+  return registry.has(type);
+}
+
+export function hasAnyAwaitingHumanBridgeAdapter(): boolean {
+  return registry.size > 0;
+}
+
 export function resolveAwaitingHumanBridgeAdapter(
   type: string,
   db: Db,

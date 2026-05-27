@@ -33,6 +33,12 @@ const mockReconcilePendingConfirmations = vi.hoisted(() => vi.fn(async () => ({
   issueIds: [],
   interactionIds: [],
 })));
+const mockHasAnyAwaitingHumanBridgeAdapter = vi.hoisted(() => vi.fn(() => true));
+const mockResolveAwaitingHumanBridgeAdapter = vi.hoisted(() => vi.fn(() => ({
+  send: vi.fn(),
+  poll: vi.fn(),
+  close: vi.fn(),
+})));
 
 vi.mock("../services/awaiting-human-bridge.js", () => ({
   awaitingHumanBridgeService: vi.fn(() => ({
@@ -41,6 +47,12 @@ vi.mock("../services/awaiting-human-bridge.js", () => ({
     reconcileDeliveredInteractions: mockReconcileDeliveredInteractions,
     reconcilePendingConfirmations: mockReconcilePendingConfirmations,
   })),
+}));
+vi.mock("../services/awaiting-human-bridge-registry.js", () => ({
+  hasAnyAwaitingHumanBridgeAdapter: mockHasAnyAwaitingHumanBridgeAdapter,
+  hasAwaitingHumanBridgeAdapter: vi.fn(() => true),
+  registerAwaitingHumanBridgeAdapter: vi.fn(),
+  resolveAwaitingHumanBridgeAdapter: mockResolveAwaitingHumanBridgeAdapter,
 }));
 
 import { heartbeatService } from "../services/heartbeat.js";
@@ -121,7 +133,6 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
     expect(mockExpireWaitingBridges).toHaveBeenCalledTimes(1);
-    expect(mockRetryFailedBridgeOpenings).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledWith([
       expect.objectContaining({
@@ -195,7 +206,6 @@ describeEmbeddedPostgres("heartbeat legacy awaiting_human delivery reconciliatio
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileAwaitingHumanApprovals();
 
-    expect(mockRetryFailedBridgeOpenings).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledTimes(1);
     expect(mockReconcileDeliveredInteractions).toHaveBeenCalledWith([
       expect.objectContaining({
