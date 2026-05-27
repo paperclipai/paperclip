@@ -3,6 +3,10 @@ export interface SessionCompactionPolicy {
   maxSessionRuns: number;
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
+  // ADR-0044 additions
+  maxCachedInputTokens: number;        // T1: threshold on cache_read_input_tokens (0 = disabled)
+  rotateOnZeroOpenIssues: boolean;     // T3: rotate when openIssuesCount == 0
+  rotateOnNewIssueWake: boolean;       // T4: rotate when wakeReason == "issue_assigned"
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -25,6 +29,9 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 200,
   maxRawInputTokens: 2_000_000,
   maxSessionAgeHours: 72,
+  maxCachedInputTokens: 0,
+  rotateOnZeroOpenIssues: false,
+  rotateOnNewIssueWake: false,
 };
 
 // Adapters with native context management still participate in session resume,
@@ -34,6 +41,21 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
   maxSessionAgeHours: 0,
+  maxCachedInputTokens: 0,
+  rotateOnZeroOpenIssues: false,
+  rotateOnNewIssueWake: false,
+};
+
+// ADR-0044 «Heartbeat session lifecycle» — fresh-session policy applied to claude_local by default.
+// Per-agent overrides (e.g. CEO/CoS/Analyst T1=1M / T2=12h) are configured via runtimeConfig.heartbeat.sessionCompaction.
+const CLAUDE_LOCAL_ADR_0044_POLICY: SessionCompactionPolicy = {
+  enabled: true,
+  maxSessionRuns: 0,                    // not used (variant D rejected by ADR-0044)
+  maxRawInputTokens: 0,                 // not used (cached_input is the meaningful signal)
+  maxSessionAgeHours: 6,                // T2 default for execution agents
+  maxCachedInputTokens: 500_000,        // T1 default for execution agents
+  rotateOnZeroOpenIssues: true,         // T3
+  rotateOnNewIssueWake: true,           // T4
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -57,7 +79,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   claude_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+    defaultSessionCompaction: CLAUDE_LOCAL_ADR_0044_POLICY,
   },
   codex_local: {
     supportsSessionResume: true,
@@ -146,11 +168,17 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
+  const maxCachedInputTokens = readNumber(compaction.maxCachedInputTokens);
+  const rotateOnZeroOpenIssues = readBoolean(compaction.rotateOnZeroOpenIssues);
+  const rotateOnNewIssueWake = readBoolean(compaction.rotateOnNewIssueWake);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
+  if (maxCachedInputTokens !== undefined) explicit.maxCachedInputTokens = maxCachedInputTokens;
+  if (rotateOnZeroOpenIssues !== undefined) explicit.rotateOnZeroOpenIssues = rotateOnZeroOpenIssues;
+  if (rotateOnNewIssueWake !== undefined) explicit.rotateOnNewIssueWake = rotateOnNewIssueWake;
 
   return explicit;
 }
@@ -174,6 +202,9 @@ export function resolveSessionCompactionPolicy(
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
+      maxCachedInputTokens: explicitOverride.maxCachedInputTokens ?? basePolicy.maxCachedInputTokens,
+      rotateOnZeroOpenIssues: explicitOverride.rotateOnZeroOpenIssues ?? basePolicy.rotateOnZeroOpenIssues,
+      rotateOnNewIssueWake: explicitOverride.rotateOnNewIssueWake ?? basePolicy.rotateOnNewIssueWake,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -187,7 +218,19 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  | "maxSessionRuns"
+  | "maxRawInputTokens"
+  | "maxSessionAgeHours"
+  | "maxCachedInputTokens"
+  | "rotateOnZeroOpenIssues"
+  | "rotateOnNewIssueWake"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return (
+    policy.maxSessionRuns > 0 ||
+    policy.maxRawInputTokens > 0 ||
+    policy.maxSessionAgeHours > 0 ||
+    policy.maxCachedInputTokens > 0 ||
+    policy.rotateOnZeroOpenIssues === true ||
+    policy.rotateOnNewIssueWake === true
+  );
 }
