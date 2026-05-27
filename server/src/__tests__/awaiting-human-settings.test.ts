@@ -18,6 +18,38 @@ import { secretService } from "../services/secrets.js";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+function createFailingAwaitingHumanSettingsDb(baseDb: ReturnType<typeof createDb>) {
+  const wrap = (value: unknown): any => new Proxy(value as object, {
+    get(target, prop, receiver) {
+      if (prop === "insert" || prop === "update") {
+        return (table: unknown, ...args: unknown[]) => {
+          if (table === companyAwaitingHumanSettings) {
+            throw new Error("forced awaiting-human settings write failure");
+          }
+          const method = Reflect.get(target, prop, receiver);
+          return typeof method === "function"
+            ? method.call(target, table, ...args)
+            : method;
+        };
+      }
+
+      if (prop === "transaction") {
+        return (action: (tx: unknown) => Promise<unknown>) => {
+          const method = Reflect.get(target, prop, receiver);
+          return typeof method === "function"
+            ? method.call(target, async (tx: unknown) => action(wrap(tx)))
+            : method;
+        };
+      }
+
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  return wrap(baseDb) as ReturnType<typeof createDb>;
+}
+
 describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -180,6 +212,42 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
 
     const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
     expect(secretRows).toHaveLength(0);
+  });
+
+  it("rolls back a newly created ClickUp secret if the settings write fails", async () => {
+    const companyId = randomUUID();
+    const failingDb = createFailingAwaitingHumanSettingsDb(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const service = awaitingHumanSettingsService(failingDb);
+
+    await expect(service.update(companyId, {
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+      },
+      clickupPersonalToken: "token-to-roll-back",
+    }, {
+      userId: "user-1",
+      agentId: null,
+    })).rejects.toThrow(/forced awaiting-human settings write failure/i);
+
+    const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
+    expect(secretRows).toHaveLength(0);
+
+    const secretVersionRows = await db.select().from(companySecretVersions);
+    expect(secretVersionRows).toHaveLength(0);
+
+    const settingsRows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
+    expect(settingsRows).toHaveLength(0);
   });
 
   it("uses an upsert when two first-time saves race for the same company", async () => {

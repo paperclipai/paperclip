@@ -157,61 +157,65 @@ export function awaitingHumanSettingsService(db: Db) {
       });
     }
 
-    const nextToken = trimToken(patch.clickupPersonalToken);
-    if (nextProvider === "clickup" && nextToken) {
-      if (nextProviderConfig?.authTokenRef?.secretId) {
-        await secrets.rotate(nextProviderConfig.authTokenRef.secretId, { value: nextToken }, actor);
-      } else {
-        const created = await secrets.create(
-          companyId,
-          {
-            name: `awaiting-human-clickup-token-${randomUUID().slice(0, 8)}`,
-            provider: "local_encrypted",
-            value: nextToken,
-            description: "ClickUp personal token for Awaiting Human bridge",
-          },
-          actor,
-        );
-        nextProviderConfig = {
-          authTokenRef: { type: "secret_ref", secretId: created.id, version: "latest" },
-          workspaceId: nextProviderConfig?.workspaceId ?? null,
-          channelId: nextProviderConfig?.channelId ?? null,
-        };
+    await db.transaction(async (tx) => {
+      const txSecrets = secretService(tx);
+
+      const nextToken = trimToken(patch.clickupPersonalToken);
+      if (nextProvider === "clickup" && nextToken) {
+        if (nextProviderConfig?.authTokenRef?.secretId) {
+          await txSecrets.rotate(nextProviderConfig.authTokenRef.secretId, { value: nextToken }, actor);
+        } else {
+          const created = await txSecrets.create(
+            companyId,
+            {
+              name: `awaiting-human-clickup-token-${randomUUID().slice(0, 8)}`,
+              provider: "local_encrypted",
+              value: nextToken,
+              description: "ClickUp personal token for Awaiting Human bridge",
+            },
+            actor,
+          );
+          nextProviderConfig = {
+            authTokenRef: { type: "secret_ref", secretId: created.id, version: "latest" },
+            workspaceId: nextProviderConfig?.workspaceId ?? null,
+            channelId: nextProviderConfig?.channelId ?? null,
+          };
+        }
       }
-    }
 
-    if (nextProvider === "clickup" && nextEnabled && !nextProviderConfig?.authTokenRef?.secretId) {
-      throw unprocessable("A ClickUp personal token is required when enabling the ClickUp bridge");
-    }
+      if (nextProvider === "clickup" && nextEnabled && !nextProviderConfig?.authTokenRef?.secretId) {
+        throw unprocessable("A ClickUp personal token is required when enabling the ClickUp bridge");
+      }
 
-    const values = {
-      enabled: nextEnabled,
-      provider: nextProvider,
-      providerConfigJson: nextProvider === "clickup" ? nextProviderConfig : null,
-      updatedAt: new Date(),
-    };
+      const values = {
+        enabled: nextEnabled,
+        provider: nextProvider,
+        providerConfigJson: nextProvider === "clickup" ? nextProviderConfig : null,
+        updatedAt: new Date(),
+      };
 
-    if (existing) {
-      await db
-        .update(companyAwaitingHumanSettings)
-        .set(values)
-        .where(and(
-          eq(companyAwaitingHumanSettings.id, existing.id),
-          eq(companyAwaitingHumanSettings.companyId, companyId),
-        ));
-    } else {
-      await db.insert(companyAwaitingHumanSettings).values({
-        companyId,
-        ...values,
-      }).onConflictDoUpdate({
-        target: companyAwaitingHumanSettings.companyId,
-        set: values,
-      });
-    }
+      if (existing) {
+        await tx
+          .update(companyAwaitingHumanSettings)
+          .set(values)
+          .where(and(
+            eq(companyAwaitingHumanSettings.id, existing.id),
+            eq(companyAwaitingHumanSettings.companyId, companyId),
+          ));
+      } else {
+        await tx.insert(companyAwaitingHumanSettings).values({
+          companyId,
+          ...values,
+        }).onConflictDoUpdate({
+          target: companyAwaitingHumanSettings.companyId,
+          set: values,
+        });
+      }
 
-    if (previousClickUpSecretId && nextProvider !== "clickup") {
-      await secrets.remove(previousClickUpSecretId);
-    }
+      if (previousClickUpSecretId && nextProvider !== "clickup") {
+        await txSecrets.remove(previousClickUpSecretId);
+      }
+    });
 
     return get(companyId);
   }
