@@ -149,7 +149,7 @@ function hermesDescription(context: string, userRequest = "") {
     "YoonCompany 전역 질문 패널 v2에서 생성됨.",
     "생성 방식: Paperclip 이슈 초안/보류 생성. 직접 실행 아님.",
     "",
-    "대상: Hermes Orchestrator / Research Worker.",
+    "대상: Hermes 오케스트레이터 / 조사 직원.",
     "모드: 오케스트레이션 접수/조사/보고 전용.",
     "",
     context,
@@ -164,7 +164,7 @@ function hermesDescription(context: string, userRequest = "") {
 
 function hermesApprovalDescription(context: string) {
   return [
-    "YoonCompany Hermes-first phase 1 승인 요청 초안.",
+    "YoonCompany Hermes-first 1단계 승인 요청 초안.",
     "생성 방식: Paperclip 이슈 초안/보류 생성. 직접 실행 아님.",
     "",
     context,
@@ -187,7 +187,7 @@ function hermesApprovalDescription(context: string) {
     "검증 조건:",
     "- Hermes profile list/show 결과를 남긴다.",
     "- Paperclip agent 표시/설정 diff를 남긴다.",
-    "- heartbeat, repo write, direct DB write, deploy/send/publish가 실행되지 않았음을 보고한다.",
+    "- heartbeat, repo 쓰기, 직접 DB 쓰기, 배포/발송/외부 공개가 실행되지 않았음을 보고한다.",
     "",
     "approval_id: none",
     "dangerous_actions_executed: none",
@@ -457,7 +457,7 @@ export function YoonCompanyAssistantPanel() {
             />
             <ActionButton
               icon={ShieldCheck}
-              title="Hermes phase 1 승인"
+              title="Hermes 1단계 승인"
               body="profile/toolset/Kanban 활성화 전 승인 요청 초안을 만듭니다."
               disabled={disabled}
               onClick={openHermesApprovalDraft}

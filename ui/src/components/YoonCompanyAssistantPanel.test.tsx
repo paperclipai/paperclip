@@ -274,7 +274,7 @@ describe("YoonCompanyAssistantPanel", () => {
     await flush();
 
     const approvalButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Hermes phase 1 승인"));
+      .find((button) => button.textContent?.includes("Hermes 1단계 승인"));
     expect(approvalButton).toBeDefined();
 
     await act(async () => {
@@ -285,7 +285,7 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(mockOpenNewIssue).toHaveBeenCalledWith(expect.objectContaining({
       status: "backlog",
       priority: "high",
-      title: "Approve Hermes-first phase 1 persistent configuration",
+      title: "Hermes-first 1단계 지속 설정 승인",
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { assigneeAgentId?: string; description?: string };
     expect(defaults.assigneeAgentId).toBeUndefined();
@@ -294,8 +294,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("yoon-research");
     expect(defaults.description).toContain("yoon-docs");
     expect(defaults.description).toContain("승인 전 금지");
-    expect(defaults.description).toContain("Hermes repo write");
-    expect(defaults.description).toContain("direct DB write");
+    expect(defaults.description).toContain("Hermes repo 쓰기");
+    expect(defaults.description).toContain("직접 DB 쓰기");
     expect(defaults.description).toContain("approval_id: none");
     expect(defaults.description).toContain("dangerous_actions_executed: none");
   });
