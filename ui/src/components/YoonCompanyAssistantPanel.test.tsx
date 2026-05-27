@@ -165,6 +165,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(container.textContent).toContain("hermes_board: yooncompany");
     expect(container.textContent).toContain("hermes_task_id: pending");
     expect(container.textContent).toContain("hermes_profile: yoonorchestrator");
+    expect(container.textContent).toContain("실행 승인 게이트");
+    expect(container.textContent).toContain("L3/L4는 Paperclip 승인 id 없으면 실행 금지");
     expect(container.textContent).toContain("회사: YoonCompany (YOO)");
     expect(container.textContent).toContain("경로: /YOO/agents/hermes-research-worker?tab=runs#latest");
 
@@ -198,6 +200,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("Paperclip ↔ Hermes 연결 필드");
     expect(defaults.description).toContain("hermes_task_id: pending");
     expect(defaults.description).toContain("hermes_profile: yoonorchestrator");
+    expect(defaults.description).toContain("승인 게이트:");
+    expect(defaults.description).toContain("L3-L4: DB/config/agent rule/자동화/배포/삭제/발송/외부 공개/비용 변경은 Paperclip 승인 id가 있어야 실행.");
     expect(defaults.description).toContain("dangerous_actions_executed: none");
     expect(defaults.description).toContain("회사: YoonCompany (YOO)");
     expect(defaults.description).toContain("현재 직원: hermes-research-worker");
@@ -253,6 +257,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("Observe: 실제 문서, git status, 코드, 로그, 화면 상태를 먼저 확인하라.");
     expect(defaults.description).toContain("Verify: typecheck/test/browser/log/API 중 실제 근거를 남겨라.");
     expect(defaults.description).toContain("Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고하라.");
+    expect(defaults.description).toContain("승인 게이트:");
+    expect(defaults.description).toContain("L3-L4: DB/config/agent rule/자동화/배포/삭제/발송/외부 공개/비용 변경은 Paperclip 승인 id가 있어야 실행.");
   });
 
   it("shows the Hermes-first read-only status mismatch", async () => {
@@ -319,6 +325,8 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("명령: C:\\yooncompany\\bin\\hermes.exe");
     expect(defaults.description).toContain("Paperclip ↔ Hermes 연결 필드");
     expect(defaults.description).toContain("paperclip_approval_id: approval_id: none");
+    expect(defaults.description).toContain("승인 게이트:");
+    expect(defaults.description).toContain("승인 전 상태값: approval_id: none, dangerous_actions_executed: none.");
     expect(defaults.description).toContain("yoonorchestrator");
     expect(defaults.description).toContain("yoonresearch");
     expect(defaults.description).toContain("yoondocs");
