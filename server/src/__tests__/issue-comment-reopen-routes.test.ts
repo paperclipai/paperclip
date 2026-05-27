@@ -1295,7 +1295,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "please resume", resume: true });
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Cancelled issues must be restored through the dedicated restore flow");
+    expect(res.body.error).toMatch(/Cancelled issues can only be restored by a board user via direct status PATCH/);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
