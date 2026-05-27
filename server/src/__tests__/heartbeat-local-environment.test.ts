@@ -1,18 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
-  agentRuntimeState,
-  agentWakeupRequests,
-  activityLog,
   companies,
-  companySkills,
   createDb,
   environmentLeases,
   environments,
-  heartbeatRunEvents,
-  heartbeatRuns,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -73,16 +67,20 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(environmentLeases);
-    await db.delete(environments);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(companySkills);
-    await db.delete(agents);
-    await db.delete(companies);
+    await db.execute(sql.raw(`
+      TRUNCATE TABLE
+        "environment_leases",
+        "environments",
+        "activity_log",
+        "heartbeat_run_events",
+        "heartbeat_runs",
+        "agent_wakeup_requests",
+        "agent_runtime_state",
+        "company_skills",
+        "agents",
+        "companies"
+      RESTART IDENTITY CASCADE
+    `));
   });
 
   afterAll(async () => {

@@ -52,6 +52,11 @@ export {
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
 export {
+  resourceMembershipStateSchema,
+  updateResourceMembershipSchema,
+  type UpdateResourceMembership,
+} from "./resource-memberships.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -146,6 +151,21 @@ export {
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
 } from "./project.js";
+
+export {
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  documentAnnotationAnchorConfidenceSchema,
+  documentAnnotationAnchorSelectorSchema,
+  documentAnnotationAnchorStateSchema,
+  documentAnnotationTextPositionSelectorSchema,
+  documentAnnotationTextQuoteSelectorSchema,
+  documentAnnotationThreadStatusSchema,
+  updateDocumentAnnotationThreadSchema,
+  type CreateDocumentAnnotationComment,
+  type CreateDocumentAnnotationThread,
+  type UpdateDocumentAnnotationThread,
+} from "./document-annotation.js";
 
 export {
   createIssueSchema,

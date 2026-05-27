@@ -45,6 +45,9 @@ export {
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   isSystemIssueDocumentKey,
   ISSUE_REFERENCE_SOURCE_KINDS,
+  DOCUMENT_ANNOTATION_THREAD_STATUSES,
+  DOCUMENT_ANNOTATION_ANCHOR_STATES,
+  DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES,
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_MONITOR_SCHEDULED_BY,
@@ -164,6 +167,9 @@ export {
   type IssueTreeHoldStatus,
   type SystemIssueDocumentKey,
   type IssueReferenceSourceKind,
+  type DocumentAnnotationThreadStatus,
+  type DocumentAnnotationAnchorState,
+  type DocumentAnnotationAnchorConfidence,
   type IssueExecutionPolicyMode,
   type IssueExecutionStageType,
   type IssueMonitorScheduledBy,
@@ -376,6 +382,20 @@ export type {
   IssueWorkProductProvider,
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
+  CreateDocumentAnnotationCommentRequest,
+  CreateDocumentAnnotationThreadRequest,
+  DocumentAnnotationAnchorRemapSnapshot,
+  DocumentAnnotationAnchorSelector,
+  DocumentAnnotationAnchorSnapshot,
+  DocumentAnnotationComment,
+  DocumentAnnotationTextPositionSelector,
+  DocumentAnnotationTextQuoteSelector,
+  DocumentAnnotationThread,
+  DocumentAnnotationThreadWithComments,
+  DocumentTextPosition,
+  DocumentTextProjection,
+  DocumentTextRange,
+  UpdateDocumentAnnotationThreadRequest,
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
@@ -655,10 +675,38 @@ export {
 } from "./issue-references.js";
 
 export {
+  anchorSnapshotToSelector,
+  createDocumentAnchorSelector,
+  normalizeAnchorText,
+  projectMarkdownToText,
+  remapDocumentAnchor,
+  resolveProjectionRange,
+  selectorToAnchorSnapshot,
+  verifyDocumentAnchorSelector,
+  type CreateDocumentAnchorSelectorOptions,
+  type RemapDocumentAnchorInput,
+  type RemapDocumentAnchorResult,
+  type VerifyDocumentAnchorSelectorInput,
+  type VerifyDocumentAnchorSelectorResult,
+} from "./document-anchors.js";
+
+export {
   sidebarOrderPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+export {
+  resourceMembershipStateSchema,
+  updateResourceMembershipSchema,
+  type UpdateResourceMembership,
+} from "./validators/resource-memberships.js";
+export {
+  RESOURCE_MEMBERSHIP_STATES,
+  type ResourceMembershipResourceType,
+  type ResourceMembershipState,
+  type ResourceMemberships,
+  type ResourceMembershipUpdateResult,
+} from "./types/resource-memberships.js";
 
 export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
 export {
@@ -783,6 +831,18 @@ export {
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   projectExecutionWorkspacePolicySchema,
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  documentAnnotationAnchorConfidenceSchema,
+  documentAnnotationAnchorSelectorSchema,
+  documentAnnotationAnchorStateSchema,
+  documentAnnotationTextPositionSelectorSchema,
+  documentAnnotationTextQuoteSelectorSchema,
+  documentAnnotationThreadStatusSchema,
+  updateDocumentAnnotationThreadSchema,
+  type CreateDocumentAnnotationComment,
+  type CreateDocumentAnnotationThread,
+  type UpdateDocumentAnnotationThread,
   companySearchQuerySchema,
   COMPANY_SEARCH_DEFAULT_LIMIT,
   COMPANY_SEARCH_MAX_LIMIT,

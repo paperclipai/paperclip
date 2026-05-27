@@ -628,6 +628,68 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
+  it("auto-resolves an active recovery action when PATCH moves the source issue to done", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const action = await seedActiveRecoveryAction({
+      companyId,
+      sourceIssueId,
+      ownerAgentId: managerId,
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "done" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Source issue moved to valid disposition: done",
+    });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("auto-resolves an active recovery action when PATCH moves the source issue to cancelled", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const action = await seedActiveRecoveryAction({
+      companyId,
+      sourceIssueId,
+      ownerAgentId: managerId,
+    });
+    const app = createApp();
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "cancelled" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "cancelled",
+      activeRecoveryAction: null,
+    });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "Source issue moved to valid disposition: cancelled",
+    });
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
   it("does not auto-resolve an active recovery action when PATCH moves the source issue to blocked without blockers", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const action = await seedActiveRecoveryAction({
