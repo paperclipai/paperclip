@@ -103,7 +103,7 @@ describe("YoonCompanyHermesStatusPanel", () => {
     expect(container.textContent).toContain("Codex Lead Engineer · codex_local");
     expect(container.textContent).toContain("터미널, 메모리, 세션 검색, 스킬, 웹 조사, 브라우저, Kanban");
     expect(container.textContent).toContain("막힘: 파일 읽기, MCP, 하위 직원 위임");
-    expect(container.textContent).toContain("hermes-paperclip-adapter 0.3.0");
+    expect(container.textContent).toContain("hermes-paperclip-adapter 0.2.0");
     expect(container.textContent).toContain("프로필");
     expect(container.textContent).toContain("yoonorchestrator");
     expect(container.textContent).toContain("지속 세션");

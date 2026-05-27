@@ -4,7 +4,7 @@ export const YOONCOMPANY_HERMES_COMMAND = "C:\\yooncompany\\bin\\hermes.exe";
 export const YOONCOMPANY_HERMES_COMMAND_NOTE = "PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행";
 export const YOONCOMPANY_HERMES_BOARD = "yooncompany";
 export const HERMES_ORCHESTRATION_TOOLSETS = ["file", "browser", "mcp", "delegation", "kanban"];
-export const HERMES_PAPERCLIP_ADAPTER_VERSION = "0.3.0";
+export const HERMES_PAPERCLIP_ADAPTER_VERSION = "0.2.0";
 export const HERMES_ADAPTER_MANAGED_YOLO = false;
 export const HERMES_PHASE1_APPROVAL_PACKAGE = {
   title: "Hermes 중심 1단계 지속 설정 승인",
