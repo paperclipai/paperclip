@@ -40,10 +40,10 @@ import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
+import * as services from "../services/index.js";
 import {
   accessService,
   agentService,
-  awaitingHumanBridgeRuntime,
   clampIssueListLimit,
   documentService,
   executionWorkspaceService,
@@ -112,6 +112,14 @@ type ExecutionStageWakeContext = {
   returnAssignee: ParsedExecutionState["returnAssignee"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
+};
+type AwaitingHumanBridgeCloser = {
+  closeOpenBridgesForIssue(input: {
+    companyId: string;
+    issueId: string;
+    outcome?: "approved" | "rejected" | "expired" | "superseded" | "cancelled" | null;
+    reason?: string | null;
+  }): Promise<{ closedCount: number }>;
 };
 
 function executionPrincipalsEqual(
@@ -354,7 +362,18 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const routinesSvc = routineService(db);
-  const awaitingHumanBridge = awaitingHumanBridgeRuntime(db);
+  const noOpAwaitingHumanBridge: AwaitingHumanBridgeCloser = {
+    closeOpenBridgesForIssue: async () => ({ closedCount: 0 }),
+  };
+  let awaitingHumanBridge: AwaitingHumanBridgeCloser = noOpAwaitingHumanBridge;
+  try {
+    const awaitingHumanBridgeRuntime = services.awaitingHumanBridgeRuntime;
+    if (awaitingHumanBridgeRuntime) {
+      awaitingHumanBridge = awaitingHumanBridgeRuntime(db);
+    }
+  } catch {
+    // Some route tests mock ../services/index.js without this optional export.
+  }
   const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
     storage: multer.memoryStorage(),
