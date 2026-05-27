@@ -8,6 +8,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@valadrien-os/adapter-utils";
+import type { AdapterSkillSnapshot } from "@valadrien-os/adapter-utils";
 import {
   execute as acpxExecute,
   testEnvironment as acpxTestEnvironment,
@@ -210,6 +211,26 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   }
 
   return ctx;
+}
+
+// `hermes-paperclip-adapter` is the upstream-published external dependency and
+// still ships pre-rebrand type values — specifically the `paperclip_required`
+// `AdapterSkillOrigin`. Our local types and zod validators only accept
+// `valadrien_os_required`, so we translate at the boundary instead of polluting
+// the rebranded union with the legacy string. The cast to our local
+// `AdapterSkillSnapshot` is safe because we've just mapped every legacy origin
+// value to its rebranded equivalent.
+function rebrandHermesSkillSnapshot(snapshot: unknown): AdapterSkillSnapshot {
+  const typed = snapshot as {
+    entries?: ReadonlyArray<{ origin?: string }>;
+  } & Record<string, unknown>;
+  const entries = typed.entries ?? [];
+  const rebrandedEntries = entries.map((entry) =>
+    entry.origin === "paperclip_required"
+      ? { ...entry, origin: "valadrien_os_required" }
+      : entry,
+  );
+  return { ...typed, entries: rebrandedEntries } as unknown as AdapterSkillSnapshot;
 }
 
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
@@ -487,8 +508,9 @@ const hermesLocalAdapter: ServerAdapterModule = {
   },
   testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
-  listSkills: hermesListSkills,
-  syncSkills: hermesSyncSkills,
+  listSkills: async (ctx) => rebrandHermesSkillSnapshot(await hermesListSkills(ctx)),
+  syncSkills: async (ctx, desiredSkills) =>
+    rebrandHermesSkillSnapshot(await hermesSyncSkills(ctx, desiredSkills)),
   models: hermesModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: false,
