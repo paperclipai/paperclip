@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, principalPermissionGrants } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -15,6 +15,9 @@ import {
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
+  resetInfrastructureStatusSchema,
+  putAgentGrantsSchema,
+  deleteAgentGrantSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
@@ -25,6 +28,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
+  type PermissionKey,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -1945,6 +1949,259 @@ export function agentRoutes(
     });
 
     res.json(state);
+  });
+
+  // POST /agents/:id/reset-infrastructure-status
+  // Resets an agent that is stuck in `error` or `paused` (host_unstable) due to an
+  // infrastructure failure (processLossCauseClass = "infrastructure" = "Class B").
+  // Requires the `agents.status.reset_infrastructure` grant (SoD: not granted to Aegis).
+  router.post("/agents/:id/reset-infrastructure-status", validate(resetInfrastructureStatusSchema), async (req, res) => {
+    const targetId = req.params.id as string;
+    const targetAgent = await svc.getById(targetId);
+    if (!targetAgent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    // Determine actor identity — board users and agents are both valid callers.
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    const actorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+
+    // actor != target invariant
+    if (actorAgentId && actorAgentId === targetId) {
+      throw forbidden("An agent cannot reset its own infrastructure status");
+    }
+
+    // Permission check: caller must have agents.status.reset_infrastructure grant.
+    // Board users with the grant are allowed; agents with the grant are allowed.
+    const companyId = targetAgent.companyId;
+    assertCompanyAccess(req, companyId);
+
+    let callerHasGrant = false;
+    if (actorAgentId) {
+      callerHasGrant = await accessService(db).hasPermission(companyId, "agent", actorAgentId, "agents.status.reset_infrastructure");
+    } else if (actorUserId) {
+      callerHasGrant = await accessService(db).canUser(companyId, actorUserId, "agents.status.reset_infrastructure");
+    }
+    if (!callerHasGrant) {
+      throw forbidden("Missing grant: agents.status.reset_infrastructure");
+    }
+
+    // Status check: only `error` or `paused` with pauseReason = 'host_unstable'
+    const isEligibleStatus =
+      targetAgent.status === "error" ||
+      (targetAgent.status === "paused" && (targetAgent as any).pauseReason === "host_unstable");
+    if (!isEligibleStatus) {
+      throw unprocessable(
+        `Agent status '${targetAgent.status}' is not eligible for infrastructure reset (must be 'error' or 'paused' with pauseReason='host_unstable')`,
+      );
+    }
+
+    // Class B check: most recent failed run must have processLossCauseClass = 'infrastructure'
+    const lastFailedRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        processLossCauseClass: heartbeatRuns.processLossCauseClass,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, targetId),
+          eq(heartbeatRuns.status, "failed"),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!lastFailedRun || lastFailedRun.processLossCauseClass !== "infrastructure") {
+      throw unprocessable(
+        "Infrastructure reset requires the most recent failure to be classified as infrastructure (Class B). " +
+        `Current classification: ${lastFailedRun?.processLossCauseClass ?? "none"}.`,
+      );
+    }
+
+    // Write audit comment on the agent's most recent active issue.
+    const auditComment = req.body.comment as string;
+    const activeIssue = await db
+      .select({ id: issuesTable.id })
+      .from(issuesTable)
+      .where(
+        and(
+          eq(issuesTable.assigneeAgentId, targetId),
+          inArray(issuesTable.status, ["in_progress", "in_review", "blocked"]),
+        ),
+      )
+      .orderBy(desc(issuesTable.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const prevState = targetAgent.status;
+    const prevPauseReason = (targetAgent as any).pauseReason ?? null;
+
+    // Reset agent to idle.
+    const updated = await db
+      .update(agentsTable)
+      .set({
+        status: "idle",
+        pauseReason: null,
+        pausedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(agentsTable.id, targetId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (!updated) {
+      res.status(500).json({ error: "Failed to update agent status" });
+      return;
+    }
+
+    const auditBody = [
+      `## Infrastructure Status Reset`,
+      ``,
+      `- **actor**: ${actorAgentId ? `agent:${actorAgentId}` : `user:${actorUserId}`}`,
+      `- **target_agent**: ${targetId}`,
+      `- **prev_state**: ${prevState}${prevPauseReason ? ` (pauseReason: ${prevPauseReason})` : ""}`,
+      `- **prev_failure_reason**: ${lastFailedRun.processLossCauseClass} (run: ${lastFailedRun.id})`,
+      `- **new_state**: idle`,
+      `- **run_id**: ${req.headers["x-paperclip-run-id"] ?? "n/a"}`,
+      `- **timestamp**: ${new Date().toISOString()}`,
+      ``,
+      auditComment,
+    ].join("\n");
+
+    if (activeIssue) {
+      const issueSvc = issueService(db);
+      await issueSvc.addComment(activeIssue.id, auditBody, {
+        agentId: actorAgentId ?? undefined,
+        userId: actorUserId ?? undefined,
+      });
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actorAgentId ? "agent" : "user",
+      actorId: actorAgentId ?? actorUserId ?? "board",
+      action: "agent.infrastructure_status_reset",
+      entityType: "agent",
+      entityId: targetId,
+      details: {
+        prevState,
+        prevFailedRunId: lastFailedRun.id,
+        auditIssueId: activeIssue?.id ?? null,
+      },
+    });
+
+    res.json(updated);
+  });
+
+  // GET /agents/:id/grants — list permission grants for an agent
+  router.get("/agents/:id/grants", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
+
+    const grants = await accessService(db).listPrincipalGrants(agent.companyId, "agent", id);
+    res.json(grants);
+  });
+
+  // PUT /agents/:id/grants — replace all grants for an agent (board only)
+  router.put("/agents/:id/grants", validate(putAgentGrantsSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
+
+    const companyId = agent.companyId;
+    const grants = (req.body.grants ?? []) as Array<{ permissionKey: string; scope?: Record<string, unknown> | null }>;
+    const now = new Date();
+
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.principalId, id),
+          ),
+        );
+      if (grants.length > 0) {
+        await tx.insert(principalPermissionGrants).values(
+          grants.map((grant) => ({
+            companyId,
+            principalType: "agent" as const,
+            principalId: id,
+            permissionKey: grant.permissionKey as PermissionKey,
+            scope: grant.scope ?? null,
+            grantedByUserId: req.actor.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        );
+      }
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.grants_updated",
+      entityType: "agent",
+      entityId: id,
+      details: { grantCount: grants.length },
+    });
+
+    const updated = await accessService(db).listPrincipalGrants(companyId, "agent", id);
+    res.json(updated);
+  });
+
+  // DELETE /agents/:id/grants — remove a specific grant from an agent (board only)
+  router.delete("/agents/:id/grants", validate(deleteAgentGrantSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    assertCompanyAccess(req, agent.companyId);
+
+    const permissionKey = req.body.permissionKey as PermissionKey;
+
+    await accessService(db).setPrincipalPermission(
+      agent.companyId,
+      "agent",
+      id,
+      permissionKey,
+      false,
+      req.actor.userId ?? null,
+    );
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.grant_revoked",
+      entityType: "agent",
+      entityId: id,
+      details: { permissionKey },
+    });
+
+    res.status(204).send();
   });
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {

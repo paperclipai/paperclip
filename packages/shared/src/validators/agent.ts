@@ -142,6 +142,31 @@ export const resetAgentSessionSchema = z.object({
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
+export const resetInfrastructureStatusSchema = z.object({
+  comment: z.string().min(1),
+});
+
+export type ResetInfrastructureStatus = z.infer<typeof resetInfrastructureStatusSchema>;
+
+export const agentGrantPayloadSchema = z.object({
+  permissionKey: z.string().min(1),
+  scope: z.record(z.unknown()).nullable().optional(),
+});
+
+export type AgentGrantPayload = z.infer<typeof agentGrantPayloadSchema>;
+
+export const putAgentGrantsSchema = z.object({
+  grants: z.array(agentGrantPayloadSchema),
+});
+
+export type PutAgentGrants = z.infer<typeof putAgentGrantsSchema>;
+
+export const deleteAgentGrantSchema = z.object({
+  permissionKey: z.string().min(1),
+});
+
+export type DeleteAgentGrant = z.infer<typeof deleteAgentGrantSchema>;
+
 export const testAdapterEnvironmentSchema = z.object({
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**
