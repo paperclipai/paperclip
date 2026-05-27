@@ -18,6 +18,15 @@
   <a href="https://github.com/ValDola-stack/valadrien-os/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
   <a href="https://github.com/ValDola-stack/valadrien-os/stargazers"><img src="https://img.shields.io/github/stars/ValDola-stack/valadrien-os?style=flat" alt="Stars" /></a>
   <a href="https://TODO_DISCORD"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
+  <a href="https://github.com/ValDola-stack/valadrien-os/network/dependencies"><img src="https://img.shields.io/badge/fork%20of-paperclipai%2Fpaperclip-7c3aed" alt="Fork of paperclipai/paperclip" /></a>
+</p>
+
+<p align="center">
+  <sub>
+    <strong>ValAdrien OS</strong> is a maintained fork of <a href="https://github.com/paperclipai/paperclip">paperclipai/paperclip</a>,
+    rebranded under <a href="https://valadrien.dev">ValAdrien.DEV</a>. See
+    <a href="#about-this-fork">About this fork</a> for what changed and how upstream sync works.
+  </sub>
 </p>
 
 <br/>
@@ -283,6 +292,111 @@ ValAdrien OS is a full control plane, not a wrapper. Before you build any of thi
 
 <br/>
 
+<a id="about-this-fork"></a>
+
+## About this fork
+
+ValAdrien OS is a maintained fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip),
+rebranded and operated under the **ValAdrien.DEV** brand. We track upstream and pull
+improvements forward, while keeping the product surface, naming, and packaging
+under the `ValDola-stack` org.
+
+### Origin & attribution
+
+| Attribute             | Value                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------- |
+| **Upstream**          | [paperclipai/paperclip](https://github.com/paperclipai/paperclip) (default branch: `master`)       |
+| **This fork**         | [ValDola-stack/valadrien-os](https://github.com/ValDola-stack/valadrien-os)                        |
+| **Brand owner**       | [ValAdrien.DEV](https://valadrien.dev)                                                             |
+| **License**           | MIT (preserved from upstream, see [LICENSE](LICENSE))                                              |
+| **Rebrand branch**    | `rebrand/valadrien-os`                                                                             |
+| **Active maintainer** | `ValDola-stack` org                                                                                |
+
+Upstream copyright and credits are preserved. ValAdrien OS would not exist
+without the original work by the Paperclip authors — thank you.
+
+### Why fork
+
+1. **Independent brand & release cadence.** ValAdrien OS ships as part of the
+   ValAdrien.DEV product family with its own roadmap, telemetry domain, and
+   support channels.
+2. **Scope rename across the workspace.** All npm package names moved from
+   `@paperclipai/*` to `@valadrien-os/*` so the published surface is unambiguous
+   for downstream consumers.
+3. **Future OpenClaw integration.** A planned deeper integration with the
+   OpenClaw agent (see [ROADMAP.md](ROADMAP.md)) is easier to land in a fork we
+   control end-to-end.
+
+### What changed vs upstream
+
+- **Product name & branding** — `Paperclip` / `PaperclipAI` → **`ValAdrien OS`**
+  across docs, UI strings, CLI banners, and config keys (e.g.
+  `VALADRIEN_OS_TELEMETRY_DISABLED`).
+- **npm scope** — `@paperclipai/*` → **`@valadrien-os/*`** across all 24
+  workspace packages.
+- **CLI binary** — published as `valadrien-os` (`npx valadrien-os onboard --yes`).
+- **Repository identity** — `paperclipai/paperclip` → `ValDola-stack/valadrien-os`
+  in every git/manifest/badge reference.
+- **Brand assets** — new VA wordmark and mark SVGs under
+  [`doc/assets/brand/`](doc/assets/brand/), light + dark variants.
+- **Release pipeline** — `@valadrien-os/*` packages are currently
+  **un-enrolled from CI publishing** pending the npm-scope bootstrap decision.
+  See [PRD.md](PRD.md) §7 and [Architecture.md](Architecture.md) §9.
+
+### What is the same
+
+- **Core architecture, data model, and APIs** are unchanged. See
+  [Architecture.md](Architecture.md) for the full breakdown.
+- **All upstream features** — agents, org charts, heartbeats, tasks, budgets,
+  approvals, plugins, routines, companies-portability — work identically.
+- **MIT license** and contribution model.
+
+### Upstream sync model
+
+The fork ships with the upstream repo configured as a read-only `upstream`
+remote so it is easy to pull future Paperclip improvements forward without
+accidentally pushing fork-only commits back:
+
+```bash
+git remote -v
+# origin    git@github.com:ValDola-stack/valadrien-os.git (fetch)
+# origin    git@github.com:ValDola-stack/valadrien-os.git (push)
+# upstream  https://github.com/paperclipai/paperclip.git  (fetch)
+# upstream  no_push                                       (push)
+```
+
+To pull in upstream changes:
+
+```bash
+git fetch upstream
+git checkout -b sync/upstream-$(date +%Y%m%d) origin/master
+git merge upstream/master       # resolve conflicts in renamed paths
+pnpm install                    # regenerate the @valadrien-os/* lockfile
+pnpm typecheck && pnpm test
+```
+
+Open a PR against `master` and run the standard policy/verify gates. Conflict
+hotspots are predictable: `package.json` names, README/badge URLs, CLI banner
+strings, and `doc/` references — anything touched by the rebrand pass.
+
+### Current status
+
+- ✅ Full rebrand pass landed on `rebrand/valadrien-os`.
+- ✅ Brand SVG assets (wordmark + mark, light/dark) in
+  [`doc/assets/brand/`](doc/assets/brand/).
+- ✅ Upstream remote wired with `no_push`.
+- ✅ CI policy & verify gates green on the rebrand PR.
+- ⚪ npm publishing for `@valadrien-os/*` is **deferred** — packages are valid
+  workspace targets but `publishFromCi: false` until the scope is bootstrapped
+  on npm. Re-enable per-package after the first publish lands.
+- ⚪ Brand-owner-controlled placeholders (`TODO_DOMAIN`, `TODO_DISCORD`,
+  `TODO_TWITTER`) are intentionally left as tokens — replace at brand launch.
+
+For the full requirements view, see [PRD.md](PRD.md). For the architectural
+breakdown of what was forked, see [Architecture.md](Architecture.md).
+
+<br/>
+
 ## Quickstart
 
 Open source. Self-hosted. No ValAdrien OS account required.
@@ -321,7 +435,7 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
-If you're a solo-entreprenuer you can use Tailscale to access ValAdrien OS on the go. Then later you can deploy to e.g. Vercel when you need it.
+If you're a solo entrepreneur you can use Tailscale to access ValAdrien OS on the go. Then later you can deploy to e.g. Vercel when you need it.
 
 **Can I run multiple companies?**
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
@@ -426,7 +540,7 @@ MIT &copy; 2026 ValAdrien OS
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=ValDola-stack/valadrien-os&type=date&legend=top-left)](https://www.star-history.com/?repos=valadrien-os%2Fvaladrien-os&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/image?repos=ValDola-stack/valadrien-os&type=date&legend=top-left)](https://www.star-history.com/#ValDola-stack/valadrien-os&Date)
 
 <br/>
 
