@@ -204,6 +204,7 @@ vi.mock("@/components/ui/dialog", () => ({
     dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
     return <div {...props}>{children}</div>;
   },
+  DialogTitle: ({ children, ...props }: ComponentProps<"h2">) => <h2 {...props}>{children}</h2>,
 }));
 
 vi.mock("@/components/ui/button", () => ({
