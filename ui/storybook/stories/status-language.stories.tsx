@@ -1,7 +1,11 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AGENT_STATUSES, ISSUE_PRIORITIES, ISSUE_STATUSES } from "@paperclipai/shared";
-import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
+import type {
+  IssueBlockerAttention,
+  IssueProductivityReview,
+  IssueRelationIssueSummary,
+} from "@paperclipai/shared";
 import { Bot, CheckCircle2, Clock3, DollarSign, FolderKanban, Inbox, MessageSquare, Users } from "lucide-react";
 import { CopyText } from "@/components/CopyText";
 import { EmptyState } from "@/components/EmptyState";
@@ -10,6 +14,7 @@ import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
 import { IssueRow } from "@/components/IssueRow";
 import { MetricCard } from "@/components/MetricCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
+import { ProductivityReviewBadge } from "@/components/ProductivityReviewBadge";
 import { QuotaBar } from "@/components/QuotaBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
@@ -370,6 +375,114 @@ function CoveredBlockedSurface({ mode, size }: { mode: "light" | "dark"; size: "
   );
 }
 
+type ProductivityReviewFixture = {
+  label: string;
+  description: string;
+  review: IssueProductivityReview;
+};
+
+const productivityReviewFixtures: ProductivityReviewFixture[] = [
+  {
+    label: "No-comment streak",
+    description: "Source issue has had 12 completed runs without a run-created comment.",
+    review: {
+      reviewIssueId: "review-issue-1",
+      reviewIdentifier: "PAP-2702",
+      status: "todo",
+      priority: "high",
+      trigger: "no_comment_streak",
+      noCommentStreak: 12,
+      createdAt: new Date("2026-04-28T13:30:00.000Z"),
+      updatedAt: new Date("2026-04-28T13:55:00.000Z"),
+    },
+  },
+  {
+    label: "Long active duration",
+    description: "Source issue has been actively running for over 6 hours.",
+    review: {
+      reviewIssueId: "review-issue-2",
+      reviewIdentifier: "PAP-2703",
+      status: "in_progress",
+      priority: "medium",
+      trigger: "long_active_duration",
+      noCommentStreak: null,
+      createdAt: new Date("2026-04-28T08:30:00.000Z"),
+      updatedAt: new Date("2026-04-28T13:00:00.000Z"),
+    },
+  },
+  {
+    label: "High churn",
+    description: "Source issue is producing >10 runs/comments per hour.",
+    review: {
+      reviewIssueId: "review-issue-3",
+      reviewIdentifier: "PAP-2704",
+      status: "todo",
+      priority: "high",
+      trigger: "high_churn",
+      noCommentStreak: 4,
+      createdAt: new Date("2026-04-28T13:45:00.000Z"),
+      updatedAt: new Date("2026-04-28T13:55:00.000Z"),
+    },
+  },
+];
+
+const productivityReviewIssueRowFixtures = productivityReviewFixtures.map((fixture, index) =>
+  createIssue({
+    id: `issue-productivity-source-${index + 1}`,
+    identifier: `PAP-${2710 + index}`,
+    issueNumber: 2710 + index,
+    title: `Source issue under review · ${fixture.label}`,
+    status: index === 1 ? "in_progress" : "in_progress",
+    priority: fixture.review.priority,
+    productivityReview: fixture.review,
+    lastActivityAt: fixture.review.updatedAt,
+    updatedAt: fixture.review.updatedAt,
+  }),
+);
+
+function ProductivityReviewMatrix() {
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3 md:grid-cols-3">
+        {productivityReviewFixtures.map((fixture) => (
+          <div
+            key={fixture.label}
+            className="flex flex-col gap-3 rounded-lg border border-border bg-background/70 p-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">{fixture.label}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{fixture.description}</div>
+              </div>
+              <ProductivityReviewBadge review={fixture.review} />
+            </div>
+            <div className="rounded-md bg-muted/45 px-2.5 py-2 font-mono text-[11px] leading-5 text-muted-foreground">
+              Trigger {fixture.review.trigger ?? "unknown"} · review {fixture.review.reviewIdentifier}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="rounded-lg border border-border">
+        <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+          IssueRow with productivity-review indicator
+        </div>
+        <div>
+          {productivityReviewIssueRowFixtures.map((issue) => (
+            <IssueRow key={issue.id} issue={issue} mobileMeta={<StatusBadge status={issue.status} />} />
+          ))}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        On the source issue header the amber pill reads <strong>Under review</strong> and links to the open
+        productivity-review child — describing the state the task is in. The productivity-review issue itself
+        carries a static <strong>Productivity review</strong> pill identifying what kind of issue it is.
+        List rows get a smaller eye glyph next to the status icon so operators can spot yellow tasks without
+        the clickable label.
+      </p>
+    </div>
+  );
+}
+
 function StatusLanguage() {
   const [priority, setPriority] = useState("high");
 
@@ -464,6 +577,10 @@ function StatusLanguage() {
             chip strip beneath the regular blocker chips. The trailing imperative pluralizes when multiple stalled
             leaves are surfaced ("reviews"/"them") to match the chip strip.
           </p>
+        </Section>
+
+        <Section eyebrow="Productivity review" title="Yellow accountability state on source issues">
+          <ProductivityReviewMatrix />
         </Section>
 
         <Section eyebrow="Priority" title="Static labels and editable popover trigger">

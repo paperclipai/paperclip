@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -13,6 +13,7 @@ import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
+  CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
@@ -26,6 +27,7 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
+  cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
@@ -154,6 +156,20 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
   return true;
+}
+
+function shouldSupersedeRequestConfirmationOnUserComment(interaction: RequestConfirmationInteraction) {
+  return interaction.payload.supersedeOnUserComment === true;
+}
+
+function isCommentAtOrAfterInteraction(args: {
+  commentCreatedAt: Date | string;
+  interactionCreatedAt: Date | string;
+}) {
+  const commentCreatedAtMs = new Date(args.commentCreatedAt).getTime();
+  const interactionCreatedAtMs = new Date(args.interactionCreatedAt).getTime();
+  if (!Number.isFinite(commentCreatedAtMs) || !Number.isFinite(interactionCreatedAtMs)) return false;
+  return commentCreatedAtMs >= interactionCreatedAtMs;
 }
 
 function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>) {
@@ -837,6 +853,7 @@ export function issueThreadInteractionService(db: Db) {
             title: task.title,
             description: task.description ?? null,
             status: "todo",
+            workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
             assigneeAgentId: task.assigneeAgentId ?? null,
             assigneeUserId: task.assigneeUserId ?? null,
@@ -964,7 +981,7 @@ export function issueThreadInteractionService(db: Db) {
 
     expireRequestConfirmationsSupersededByComment: async (
       issue: { id: string; companyId: string },
-      comment: { id: string; authorUserId?: string | null },
+      comment: { id: string; createdAt: Date | string; authorUserId?: string | null },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
@@ -981,7 +998,13 @@ export function issueThreadInteractionService(db: Db) {
 
       const superseded = rows.filter((row) => {
         const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
-        return interaction.payload.supersedeOnUserComment === true;
+        return (
+          shouldSupersedeRequestConfirmationOnUserComment(interaction)
+          && isCommentAtOrAfterInteraction({
+            commentCreatedAt: comment.createdAt,
+            interactionCreatedAt: row.createdAt,
+          })
+        );
       });
 
       if (superseded.length === 0) return [];
@@ -1009,6 +1032,91 @@ export function issueThreadInteractionService(db: Db) {
           ))
           .returning();
         if (updated) expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+      }
+      return expired;
+    },
+
+    expireRequestConfirmationsSupersededByHistoricalComments: async (
+      issue: { id: string; companyId: string },
+    ) => {
+      const [rows, comments] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+            eq(issueThreadInteractions.status, "pending"),
+          )),
+        db
+          .select()
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.companyId, issue.companyId),
+            eq(issueComments.issueId, issue.id),
+            isNotNull(issueComments.authorUserId),
+          ))
+          .orderBy(asc(issueComments.createdAt)),
+      ]);
+
+      if (rows.length === 0 || comments.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      const supersededByComment = new Map<
+        string,
+        {
+          comment: (typeof comments)[number];
+          rowIds: string[];
+        }
+      >();
+      for (const row of rows) {
+        const interaction = hydrateInteraction(row) as RequestConfirmationInteraction;
+        if (!shouldSupersedeRequestConfirmationOnUserComment(interaction)) continue;
+
+        const supersedingComment = comments.find((comment) => isCommentAtOrAfterInteraction({
+          commentCreatedAt: comment.createdAt,
+          interactionCreatedAt: row.createdAt,
+        }));
+        if (!supersedingComment) continue;
+
+        const group = supersededByComment.get(supersedingComment.id);
+        if (group) {
+          group.rowIds.push(row.id);
+        } else {
+          supersededByComment.set(supersedingComment.id, {
+            comment: supersedingComment,
+            rowIds: [row.id],
+          });
+        }
+      }
+
+      for (const { comment, rowIds } of supersededByComment.values()) {
+        const updatedRows = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "superseded_by_comment",
+              commentId: comment.id,
+            },
+            resolvedByAgentId: null,
+            resolvedByUserId: comment.authorUserId,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            inArray(issueThreadInteractions.id, rowIds),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        expired.push(...updatedRows.map(hydrateInteraction));
       }
 
       if (expired.length > 0) {
@@ -1129,6 +1237,61 @@ export function issueThreadInteractionService(db: Db) {
             version: 1,
             answers: normalizedAnswers,
             summaryMarkdown: input.summaryMarkdown ?? null,
+          },
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      return hydrateInteraction(updated);
+    },
+
+    cancelQuestions: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: CancelIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = cancelIssueThreadInteractionSchema.parse(input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+      if (current.kind !== "ask_user_questions") {
+        throw unprocessable("Only ask_user_questions interactions can be cancelled");
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const reason = data.reason?.trim() || null;
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "cancelled",
+          result: {
+            version: 1,
+            answers: [],
+            cancelled: true,
+            cancellationReason: reason,
+            summaryMarkdown: null,
           },
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,

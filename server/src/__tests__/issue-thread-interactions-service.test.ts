@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -8,6 +9,7 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  issueComments,
   issueDocuments,
   instanceSettings,
   issueRelations,
@@ -40,6 +42,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -55,6 +58,37 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  async function seedConfirmationIssue(title = "Comment supersede") {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title,
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    return { companyId, goalId, issueId };
+  }
 
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
@@ -110,6 +144,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           {
             clientKey: "root",
             title: "Create the root follow-up",
+            workMode: "planning",
             assigneeAgentId,
           },
           {
@@ -153,6 +188,19 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "todo",
       }),
     ]);
+    const createdIssueRows = await db
+      .select({
+        title: issues.title,
+        workMode: issues.workMode,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(createdIssueRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Create the root follow-up", workMode: "planning" }),
+        expect.objectContaining({ title: "Create the nested follow-up", workMode: "standard" }),
+      ]),
+    );
 
     const children = await issuesSvc.list(companyId, { parentId: issueId });
     expect(children).toHaveLength(1);
@@ -427,6 +475,85 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("persists cancelled ask_user_questions interactions without answer data", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Cancel question answers",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Question parent",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "phase-1", label: "Phase 1" },
+            { id: "phase-2", label: "Phase 2" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const cancelled = await interactionsSvc.cancelQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Not needed anymore",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.result).toEqual({
+      version: 1,
+      answers: [],
+      cancelled: true,
+      cancellationReason: "Not needed anymore",
+      summaryMarkdown: null,
+    });
+
+    await expect(interactionsSvc.answerQuestions({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+    }, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction has already been resolved");
+  });
+
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
@@ -689,34 +816,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("expires supersedable request confirmations when a user comments", async () => {
-    const companyId = randomUUID();
-    const goalId = randomUUID();
-    const issueId = randomUUID();
+  it("expires request confirmations opted into user-comment supersede after creation", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
-    await db.insert(goals).values({
-      id: goalId,
-      companyId,
-      title: "Comment supersede",
-      level: "task",
-      status: "active",
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      goalId,
-      title: "Parent issue",
-      status: "in_progress",
-      priority: "medium",
-    });
 
     const created = await interactionsSvc.create({
       id: issueId,
@@ -737,6 +839,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
       authorUserId: "local-board",
     }, {
       userId: "local-board",
@@ -753,6 +856,160 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
       resolvedByUserId: "local-board",
     });
+  });
+
+  it("keeps request confirmations pending unless user-comment supersede is explicitly enabled", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Comment supersede opt-out");
+
+    await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(Date.now() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("does not supersede request confirmations for agent, system, or older user comments", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Comment supersede exclusions");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: true,
+      },
+    }, {
+      userId: "local-board",
+    });
+    const createdAtMs = new Date(created.createdAt).getTime();
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs + 1_000),
+      authorUserId: null,
+    }, {
+      agentId: randomUUID(),
+    })).resolves.toHaveLength(0);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs + 1_000),
+      authorUserId: null,
+    }, {})).resolves.toHaveLength(0);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(createdAtMs - 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    })).resolves.toHaveLength(0);
+
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("repairs historical request confirmations superseded by later user comments idempotently", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical comment supersede");
+    const commentId = randomUUID();
+    const createdAt = new Date("2026-05-18T12:00:00.000Z");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+        supersedeOnUserComment: true,
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdAt, updatedAt: createdAt })
+      .where(eq(issueThreadInteractions.id, created.id));
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorType: "system",
+      body: "System-side progress note.",
+      createdAt: new Date("2026-05-18T12:00:30.000Z"),
+      updatedAt: new Date("2026-05-18T12:00:30.000Z"),
+    });
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "Please revise this first.",
+      createdAt: new Date("2026-05-18T12:01:00.000Z"),
+      updatedAt: new Date("2026-05-18T12:01:00.000Z"),
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId,
+      },
+      resolvedByAgentId: null,
+      resolvedByUserId: "local-board",
+    });
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    })).resolves.toEqual([]);
   });
 
   it("expires request confirmations when the watched issue document revision changes", async () => {

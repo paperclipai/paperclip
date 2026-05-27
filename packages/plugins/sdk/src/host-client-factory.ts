@@ -49,7 +49,7 @@
  */
 
 import type { PluginCapability } from "@paperclipai/shared";
-import type { WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
+import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
 import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,19 @@ export class CapabilityDeniedError extends Error {
   }
 }
 
+/**
+ * Thrown when a worker→host call asks for company-scoped data outside the
+ * company authorized for the current top-level plugin invocation.
+ */
+export class InvocationScopeDeniedError extends Error {
+  override readonly name = "InvocationScopeDeniedError";
+  readonly code = PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED;
+
+  constructor(pluginId: string, method: string, message: string) {
+    super(`Plugin "${pluginId}" is not allowed to perform "${method}": ${message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Host service interfaces
 // ---------------------------------------------------------------------------
@@ -88,6 +101,17 @@ export interface HostServices {
   /** Provides `config.get`. */
   config: {
     get(): Promise<Record<string, unknown>>;
+  };
+
+  /** Provides trusted company-scoped local folder helpers. */
+  localFolders: {
+    declarations(params: WorkerToHostMethods["localFolders.declarations"][0]): Promise<WorkerToHostMethods["localFolders.declarations"][1]>;
+    configure(params: WorkerToHostMethods["localFolders.configure"][0]): Promise<WorkerToHostMethods["localFolders.configure"][1]>;
+    status(params: WorkerToHostMethods["localFolders.status"][0]): Promise<WorkerToHostMethods["localFolders.status"][1]>;
+    list(params: WorkerToHostMethods["localFolders.list"][0]): Promise<WorkerToHostMethods["localFolders.list"][1]>;
+    readText(params: WorkerToHostMethods["localFolders.readText"][0]): Promise<WorkerToHostMethods["localFolders.readText"][1]>;
+    writeTextAtomic(params: WorkerToHostMethods["localFolders.writeTextAtomic"][0]): Promise<WorkerToHostMethods["localFolders.writeTextAtomic"][1]>;
+    deleteFile(params: WorkerToHostMethods["localFolders.deleteFile"][0]): Promise<WorkerToHostMethods["localFolders.deleteFile"][1]>;
   };
 
   /** Provides `state.get`, `state.set`, `state.delete`. */
@@ -165,6 +189,30 @@ export interface HostServices {
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
+    getManaged(params: WorkerToHostMethods["projects.managed.get"][0]): Promise<WorkerToHostMethods["projects.managed.get"][1]>;
+    reconcileManaged(params: WorkerToHostMethods["projects.managed.reconcile"][0]): Promise<WorkerToHostMethods["projects.managed.reconcile"][1]>;
+    resetManaged(params: WorkerToHostMethods["projects.managed.reset"][0]): Promise<WorkerToHostMethods["projects.managed.reset"][1]>;
+  };
+
+  /** Provides `executionWorkspaces.get`. */
+  executionWorkspaces: {
+    get(params: WorkerToHostMethods["executionWorkspaces.get"][0]): Promise<WorkerToHostMethods["executionWorkspaces.get"][1]>;
+  };
+
+  /** Provides `routines.managed.*`. */
+  routines: {
+    managedGet(params: WorkerToHostMethods["routines.managed.get"][0]): Promise<WorkerToHostMethods["routines.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["routines.managed.reconcile"][0]): Promise<WorkerToHostMethods["routines.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["routines.managed.reset"][0]): Promise<WorkerToHostMethods["routines.managed.reset"][1]>;
+    managedUpdate(params: WorkerToHostMethods["routines.managed.update"][0]): Promise<WorkerToHostMethods["routines.managed.update"][1]>;
+    managedRun(params: WorkerToHostMethods["routines.managed.run"][0]): Promise<WorkerToHostMethods["routines.managed.run"][1]>;
+  };
+
+  /** Provides `skills.managed.*`. */
+  skills: {
+    managedGet(params: WorkerToHostMethods["skills.managed.get"][0]): Promise<WorkerToHostMethods["skills.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["skills.managed.reconcile"][0]): Promise<WorkerToHostMethods["skills.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["skills.managed.reset"][0]): Promise<WorkerToHostMethods["skills.managed.reset"][1]>;
   };
 
   /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
@@ -202,6 +250,9 @@ export interface HostServices {
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
     invoke(params: WorkerToHostMethods["agents.invoke"][0]): Promise<WorkerToHostMethods["agents.invoke"][1]>;
+    managedGet(params: WorkerToHostMethods["agents.managed.get"][0]): Promise<WorkerToHostMethods["agents.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["agents.managed.reconcile"][0]): Promise<WorkerToHostMethods["agents.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["agents.managed.reset"][0]): Promise<WorkerToHostMethods["agents.managed.reset"][1]>;
   };
 
   /** Provides `agents.sessions.create`, `agents.sessions.list`, `agents.sessions.sendMessage`, `agents.sessions.close`. */
@@ -218,6 +269,28 @@ export interface HostServices {
     get(params: WorkerToHostMethods["goals.get"][0]): Promise<WorkerToHostMethods["goals.get"][1]>;
     create(params: WorkerToHostMethods["goals.create"][0]): Promise<WorkerToHostMethods["goals.create"][1]>;
     update(params: WorkerToHostMethods["goals.update"][0]): Promise<WorkerToHostMethods["goals.update"][1]>;
+  };
+
+  /** Provides `access.members.*` and `access.invites.*`. */
+  access: {
+    listMembers(params: WorkerToHostMethods["access.members.list"][0]): Promise<WorkerToHostMethods["access.members.list"][1]>;
+    getMember(params: WorkerToHostMethods["access.members.get"][0]): Promise<WorkerToHostMethods["access.members.get"][1]>;
+    updateMember(params: WorkerToHostMethods["access.members.update"][0]): Promise<WorkerToHostMethods["access.members.update"][1]>;
+    listInvites(params: WorkerToHostMethods["access.invites.list"][0]): Promise<WorkerToHostMethods["access.invites.list"][1]>;
+    createInvite(params: WorkerToHostMethods["access.invites.create"][0]): Promise<WorkerToHostMethods["access.invites.create"][1]>;
+    revokeInvite(params: WorkerToHostMethods["access.invites.revoke"][0]): Promise<WorkerToHostMethods["access.invites.revoke"][1]>;
+  };
+
+  /** Provides authorization grant, policy, preview, and audit helpers. */
+  authorization: {
+    listGrants(params: WorkerToHostMethods["authorization.grants.list"][0]): Promise<WorkerToHostMethods["authorization.grants.list"][1]>;
+    setGrants(params: WorkerToHostMethods["authorization.grants.set"][0]): Promise<WorkerToHostMethods["authorization.grants.set"][1]>;
+    policySummary(params: WorkerToHostMethods["authorization.policies.summary"][0]): Promise<WorkerToHostMethods["authorization.policies.summary"][1]>;
+    getPolicy(params: WorkerToHostMethods["authorization.policies.get"][0]): Promise<WorkerToHostMethods["authorization.policies.get"][1]>;
+    updatePolicy(params: WorkerToHostMethods["authorization.policies.update"][0]): Promise<WorkerToHostMethods["authorization.policies.update"][1]>;
+    previewAssignment(params: WorkerToHostMethods["authorization.policies.previewAssignment"][0]): Promise<WorkerToHostMethods["authorization.policies.previewAssignment"][1]>;
+    explainAssignment(params: WorkerToHostMethods["authorization.policies.explainAssignment"][0]): Promise<WorkerToHostMethods["authorization.policies.explainAssignment"][1]>;
+    searchAudit(params: WorkerToHostMethods["authorization.audit.search"][0]): Promise<WorkerToHostMethods["authorization.audit.search"][1]>;
   };
 }
 
@@ -254,6 +327,7 @@ export interface HostClientFactoryOptions {
  */
 type HostHandler<M extends WorkerToHostMethodName> = (
   params: WorkerToHostMethods[M][0],
+  context?: WorkerHostCallContext,
 ) => Promise<WorkerToHostMethods[M][1]>;
 
 /**
@@ -280,6 +354,15 @@ export type HostClientHandlers = {
 const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | null> = {
   // Config — always allowed
   "config.get": null,
+
+  // Trusted local folders
+  "localFolders.declarations": null,
+  "localFolders.configure": "local.folders",
+  "localFolders.status": "local.folders",
+  "localFolders.list": "local.folders",
+  "localFolders.readText": "local.folders",
+  "localFolders.writeTextAtomic": "local.folders",
+  "localFolders.deleteFile": "local.folders",
 
   // State
   "state.get": "plugin.state.read",
@@ -326,6 +409,18 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
+  "executionWorkspaces.get": "execution.workspaces.read",
+  "projects.managed.get": "projects.managed",
+  "projects.managed.reconcile": "projects.managed",
+    "projects.managed.reset": "projects.managed",
+    "routines.managed.get": "routines.managed",
+    "routines.managed.reconcile": "routines.managed",
+    "routines.managed.reset": "routines.managed",
+    "routines.managed.update": "routines.managed",
+    "routines.managed.run": "routines.managed",
+    "skills.managed.get": "skills.managed",
+    "skills.managed.reconcile": "skills.managed",
+    "skills.managed.reset": "skills.managed",
 
   // Issues
   "issues.list": "issues.read",
@@ -357,6 +452,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
+  "agents.managed.get": "agents.managed",
+  "agents.managed.reconcile": "agents.managed",
+  "agents.managed.reset": "agents.managed",
 
   // Agent Sessions
   "agents.sessions.create": "agent.sessions.create",
@@ -369,6 +467,24 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "goals.get": "goals.read",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
+
+  // Access
+  "access.members.list": "access.members.read",
+  "access.members.get": "access.members.read",
+  "access.members.update": "access.members.write",
+  "access.invites.list": "access.invites.read",
+  "access.invites.create": "access.invites.write",
+  "access.invites.revoke": "access.invites.write",
+
+  // Authorization
+  "authorization.grants.list": "authorization.grants.read",
+  "authorization.grants.set": "authorization.grants.write",
+  "authorization.policies.summary": "authorization.policies.read",
+  "authorization.policies.get": "authorization.policies.read",
+  "authorization.policies.update": "authorization.policies.write",
+  "authorization.policies.previewAssignment": "authorization.policies.read",
+  "authorization.policies.explainAssignment": "authorization.policies.read",
+  "authorization.audit.search": "authorization.audit.read",
 };
 
 // ---------------------------------------------------------------------------
@@ -399,6 +515,81 @@ export function createHostClientHandlers(
   const { pluginId, services } = options;
   const capabilitySet = new Set<PluginCapability>(options.capabilities);
 
+  type CompanyScopeRequest =
+    | { kind: "none" }
+    | { kind: "single"; companyId: string }
+    | { kind: "all" };
+
+  const noCompanyScope: CompanyScopeRequest = { kind: "none" };
+
+  function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  function readNonEmptyString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  function requestedCompanyScope(
+    method: WorkerToHostMethodName,
+    params: unknown,
+  ): CompanyScopeRequest {
+    if (method === "companies.list") return { kind: "all" };
+    if (!isRecord(params)) return noCompanyScope;
+
+    const companyId = readNonEmptyString(params.companyId);
+    if (companyId) return { kind: "single", companyId };
+
+    if (params.scopeKind === "company") {
+      const scopeId = readNonEmptyString(params.scopeId);
+      return scopeId ? { kind: "single", companyId: scopeId } : { kind: "all" };
+    }
+
+    if (method === "events.subscribe" && isRecord(params.filter)) {
+      const filterCompanyId = readNonEmptyString(params.filter.companyId);
+      if (filterCompanyId) return { kind: "single", companyId: filterCompanyId };
+    }
+
+    return noCompanyScope;
+  }
+
+  function requireInvocationCompanyScope(
+    method: WorkerToHostMethodName,
+    params: unknown,
+    context?: WorkerHostCallContext,
+  ): void {
+    const requested = requestedCompanyScope(method, params);
+    if (requested.kind === "none") return;
+
+    if (context?.invalidInvocationScope) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        "the worker referenced a missing, expired, or unknown invocation scope",
+      );
+    }
+
+    const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+    if (!allowedCompanyId) return;
+
+    if (requested.kind === "all") {
+      if (method === "companies.list") return;
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        `the current invocation is scoped to company "${allowedCompanyId}"`,
+      );
+    }
+
+    if (requested.companyId !== allowedCompanyId) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
+      );
+    }
+  }
+
   /**
    * Assert that the plugin has the required capability for a method.
    * Throws `CapabilityDeniedError` if the capability is missing.
@@ -423,9 +614,10 @@ export function createHostClientHandlers(
     method: M,
     handler: HostHandler<M>,
   ): HostHandler<M> {
-    return async (params: WorkerToHostMethods[M][0]) => {
+    return async (params: WorkerToHostMethods[M][0], context?: WorkerHostCallContext) => {
       requireCapability(method);
-      return handler(params);
+      requireInvocationCompanyScope(method, params, context);
+      return handler(params, context);
     };
   }
 
@@ -437,6 +629,28 @@ export function createHostClientHandlers(
     // Config
     "config.get": gated("config.get", async () => {
       return services.config.get();
+    }),
+
+    "localFolders.declarations": gated("localFolders.declarations", async (params) => {
+      return services.localFolders.declarations(params);
+    }),
+    "localFolders.configure": gated("localFolders.configure", async (params) => {
+      return services.localFolders.configure(params);
+    }),
+    "localFolders.status": gated("localFolders.status", async (params) => {
+      return services.localFolders.status(params);
+    }),
+    "localFolders.list": gated("localFolders.list", async (params) => {
+      return services.localFolders.list(params);
+    }),
+    "localFolders.readText": gated("localFolders.readText", async (params) => {
+      return services.localFolders.readText(params);
+    }),
+    "localFolders.writeTextAtomic": gated("localFolders.writeTextAtomic", async (params) => {
+      return services.localFolders.writeTextAtomic(params);
+    }),
+    "localFolders.deleteFile": gated("localFolders.deleteFile", async (params) => {
+      return services.localFolders.deleteFile(params);
     }),
 
     // State
@@ -507,8 +721,13 @@ export function createHostClientHandlers(
     }),
 
     // Companies
-    "companies.list": gated("companies.list", async (params) => {
-      return services.companies.list(params);
+    "companies.list": gated("companies.list", async (params, context) => {
+      const rows = await services.companies.list(params);
+      const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+      if (!allowedCompanyId) return rows;
+      return rows.filter((company) =>
+        isRecord(company) && company.id === allowedCompanyId,
+      ) as WorkerToHostMethods["companies.list"][1];
     }),
     "companies.get": gated("companies.get", async (params) => {
       return services.companies.get(params);
@@ -529,6 +748,46 @@ export function createHostClientHandlers(
     }),
     "projects.getWorkspaceForIssue": gated("projects.getWorkspaceForIssue", async (params) => {
       return services.projects.getWorkspaceForIssue(params);
+    }),
+    "executionWorkspaces.get": gated("executionWorkspaces.get", async (params) => {
+      return services.executionWorkspaces.get(params);
+    }),
+    "projects.managed.get": gated("projects.managed.get", async (params) => {
+      return services.projects.getManaged(params);
+    }),
+    "projects.managed.reconcile": gated("projects.managed.reconcile", async (params) => {
+      return services.projects.reconcileManaged(params);
+    }),
+    "projects.managed.reset": gated("projects.managed.reset", async (params) => {
+      return services.projects.resetManaged(params);
+    }),
+
+    // Routines
+    "routines.managed.get": gated("routines.managed.get", async (params) => {
+      return services.routines.managedGet(params);
+    }),
+    "routines.managed.reconcile": gated("routines.managed.reconcile", async (params) => {
+      return services.routines.managedReconcile(params);
+    }),
+    "routines.managed.reset": gated("routines.managed.reset", async (params) => {
+      return services.routines.managedReset(params);
+    }),
+    "routines.managed.update": gated("routines.managed.update", async (params) => {
+      return services.routines.managedUpdate(params);
+    }),
+    "routines.managed.run": gated("routines.managed.run", async (params) => {
+      return services.routines.managedRun(params);
+    }),
+
+    // Skills
+    "skills.managed.get": gated("skills.managed.get", async (params) => {
+      return services.skills.managedGet(params);
+    }),
+    "skills.managed.reconcile": gated("skills.managed.reconcile", async (params) => {
+      return services.skills.managedReconcile(params);
+    }),
+    "skills.managed.reset": gated("skills.managed.reset", async (params) => {
+      return services.skills.managedReset(params);
     }),
 
     // Issues
@@ -611,6 +870,15 @@ export function createHostClientHandlers(
     "agents.invoke": gated("agents.invoke", async (params) => {
       return services.agents.invoke(params);
     }),
+    "agents.managed.get": gated("agents.managed.get", async (params) => {
+      return services.agents.managedGet(params);
+    }),
+    "agents.managed.reconcile": gated("agents.managed.reconcile", async (params) => {
+      return services.agents.managedReconcile(params);
+    }),
+    "agents.managed.reset": gated("agents.managed.reset", async (params) => {
+      return services.agents.managedReset(params);
+    }),
 
     // Agent Sessions
     "agents.sessions.create": gated("agents.sessions.create", async (params) => {
@@ -638,6 +906,52 @@ export function createHostClientHandlers(
     }),
     "goals.update": gated("goals.update", async (params) => {
       return services.goals.update(params);
+    }),
+
+    // Access
+    "access.members.list": gated("access.members.list", async (params) => {
+      return services.access.listMembers(params);
+    }),
+    "access.members.get": gated("access.members.get", async (params) => {
+      return services.access.getMember(params);
+    }),
+    "access.members.update": gated("access.members.update", async (params) => {
+      return services.access.updateMember(params);
+    }),
+    "access.invites.list": gated("access.invites.list", async (params) => {
+      return services.access.listInvites(params);
+    }),
+    "access.invites.create": gated("access.invites.create", async (params) => {
+      return services.access.createInvite(params);
+    }),
+    "access.invites.revoke": gated("access.invites.revoke", async (params) => {
+      return services.access.revokeInvite(params);
+    }),
+
+    // Authorization
+    "authorization.grants.list": gated("authorization.grants.list", async (params) => {
+      return services.authorization.listGrants(params);
+    }),
+    "authorization.grants.set": gated("authorization.grants.set", async (params) => {
+      return services.authorization.setGrants(params);
+    }),
+    "authorization.policies.summary": gated("authorization.policies.summary", async (params) => {
+      return services.authorization.policySummary(params);
+    }),
+    "authorization.policies.get": gated("authorization.policies.get", async (params) => {
+      return services.authorization.getPolicy(params);
+    }),
+    "authorization.policies.update": gated("authorization.policies.update", async (params) => {
+      return services.authorization.updatePolicy(params);
+    }),
+    "authorization.policies.previewAssignment": gated("authorization.policies.previewAssignment", async (params) => {
+      return services.authorization.previewAssignment(params);
+    }),
+    "authorization.policies.explainAssignment": gated("authorization.policies.explainAssignment", async (params) => {
+      return services.authorization.explainAssignment(params);
+    }),
+    "authorization.audit.search": gated("authorization.audit.search", async (params) => {
+      return services.authorization.searchAudit(params);
     }),
   };
 }

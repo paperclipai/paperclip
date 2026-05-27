@@ -55,7 +55,9 @@ tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
+.superpowers/
 .claude/worktrees/
 
 # Internal Documents
 # internal-docs
+.herenow

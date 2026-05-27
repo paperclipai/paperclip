@@ -36,10 +36,13 @@ const mockProbeEnvironment = vi.hoisted(() => vi.fn());
 const mockSecretService = vi.hoisted(() => ({
   create: vi.fn(),
   resolveSecretValue: vi.fn(),
+  syncSecretRefsForTarget: vi.fn(),
+  remove: vi.fn(),
 }));
 const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
 const mockValidatePluginSandboxProviderConfig = vi.hoisted(() => vi.fn());
 const mockListReadyPluginEnvironmentDrivers = vi.hoisted(() => vi.fn());
+const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
 
 vi.mock("../services/index.js", () => ({
@@ -69,6 +72,7 @@ vi.mock("../services/execution-workspaces.js", () => ({
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
+  resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
   validatePluginEnvironmentDriverConfig: mockValidatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig: mockValidatePluginSandboxProviderConfig,
 }));
@@ -96,6 +100,7 @@ let currentActor: Record<string, unknown> = {
   source: "local_implicit",
 };
 const routeOptions: Record<string, unknown> = {};
+const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 
 function createApp(actor: Record<string, unknown>, options: Record<string, unknown> = {}) {
   currentActor = actor;
@@ -119,6 +124,11 @@ function createApp(actor: Record<string, unknown>, options: Record<string, unkno
 
 describe("environment routes", () => {
   afterAll(async () => {
+    if (originalSecretsProviderEnv === undefined) {
+      delete process.env.PAPERCLIP_SECRETS_PROVIDER;
+    } else {
+      process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
+    }
     if (!server) return;
     await new Promise<void>((resolve, reject) => {
       server?.close((err) => {
@@ -145,9 +155,14 @@ describe("environment routes", () => {
     mockProbeEnvironment.mockReset();
     mockSecretService.create.mockReset();
     mockSecretService.resolveSecretValue.mockReset();
+    mockSecretService.syncSecretRefsForTarget.mockReset();
+    mockSecretService.remove.mockReset();
     mockSecretService.create.mockResolvedValue({
       id: "11111111-1111-1111-1111-111111111111",
     });
+    mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
+    mockSecretService.remove.mockResolvedValue(null);
+    delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     mockValidatePluginEnvironmentDriverConfig.mockReset();
     mockValidatePluginEnvironmentDriverConfig.mockImplementation(async ({ config }) => config);
     mockValidatePluginSandboxProviderConfig.mockReset();
@@ -162,6 +177,29 @@ describe("environment routes", () => {
         configSchema: { type: "object" },
       },
     }));
+    mockResolvePluginSandboxProviderDriverByKey.mockReset();
+    mockResolvePluginSandboxProviderDriverByKey.mockImplementation(async ({ driverKey }) => (
+      driverKey === "secure-plugin"
+        ? {
+            pluginId: "plugin-secure",
+            pluginKey: "acme.secure-sandbox-provider",
+            driver: {
+              driverKey: "secure-plugin",
+              kind: "sandbox_provider",
+              displayName: "Secure Sandbox",
+              configSchema: {
+                type: "object",
+                properties: {
+                  template: { type: "string" },
+                  apiKey: { type: "string", format: "secret-ref" },
+                  timeoutMs: { type: "number" },
+                  reuseLease: { type: "boolean" },
+                },
+              },
+            },
+          }
+        : null
+    ));
     mockListReadyPluginEnvironmentDrivers.mockReset();
     mockListReadyPluginEnvironmentDrivers.mockResolvedValue([]);
   });
@@ -555,6 +593,59 @@ describe("environment routes", () => {
     );
   });
 
+  it("uses the configured provider for SSH private key secret materialization", async () => {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    const environment = {
+      ...createEnvironment(),
+      id: "env-ssh",
+      name: "SSH Fixture",
+      driver: "ssh" as const,
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: {
+          type: "secret_ref",
+          secretId: "11111111-1111-1111-1111-111111111111",
+          version: "latest",
+        },
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "SSH Fixture",
+        driver: "ssh",
+        config: {
+          host: "ssh.example.test",
+          username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: "super-secret-key",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        provider: "aws_secrets_manager",
+        value: "super-secret-key",
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("rejects persisted fake sandbox environments", async () => {
     const app = createApp({
       type: "board",
@@ -726,6 +817,78 @@ describe("environment routes", () => {
       "company-1",
       expect.objectContaining({
         provider: "local_encrypted",
+        value: "test-provider-key",
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("uses the configured provider for schema-driven sandbox secret fields", async () => {
+    process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox-secure-plugin",
+      name: "Secure Sandbox",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "11111111-1111-1111-1111-111111111111",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    mockValidatePluginSandboxProviderConfig.mockResolvedValue({
+      normalizedConfig: {
+        template: "base",
+        apiKey: "test-provider-key",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            timeoutMs: { type: "number" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    });
+    const pluginWorkerManager = {};
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/environments")
+      .send({
+        name: "Secure Sandbox",
+        driver: "sandbox",
+        config: {
+          provider: "secure-plugin",
+          template: "base",
+          apiKey: "test-provider-key",
+          timeoutMs: "450000",
+          reuseLease: true,
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        provider: "aws_secrets_manager",
         value: "test-provider-key",
       }),
       expect.any(Object),

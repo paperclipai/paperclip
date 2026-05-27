@@ -124,6 +124,7 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { MembershipAction } from "@/components/MembershipAction";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -896,6 +897,66 @@ export function DesignGuide() {
             selected
           />
         </div>
+        <SubSection title="Membership action">
+          <div className="border border-border rounded-md">
+            <EntityRow
+              title="Joined resource"
+              subtitle="Hover or focus the row to reveal the reserved action slot."
+              className="group"
+              trailing={
+                <MembershipAction
+                  state="joined"
+                  resourceName="Joined resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Left resource"
+              subtitle="Persistent action with dimmed row content."
+              className="group text-foreground/55"
+              trailing={
+                <MembershipAction
+                  state="left"
+                  resourceName="Left resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Leaving resource"
+              subtitle="Disabled while the optimistic mutation is pending."
+              className="group text-foreground/55"
+              trailing={
+                <MembershipAction
+                  state="left"
+                  pending
+                  pendingState="left"
+                  resourceName="Leaving resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+            <EntityRow
+              title="Joining resource"
+              subtitle="The target state is visible immediately while the server confirms."
+              className="group"
+              trailing={
+                <MembershipAction
+                  state="joined"
+                  pending
+                  pendingState="joined"
+                  resourceName="Joining resource"
+                  onJoin={() => {}}
+                  onLeave={() => {}}
+                />
+              }
+            />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}

@@ -14,7 +14,7 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
-import { conflict } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -36,6 +36,7 @@ import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -141,6 +142,13 @@ export function projectRoutes(db: Db) {
       );
     }
     const project = await svc.create(companyId, projectData);
+    if (project.env) {
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        companyId,
+        { targetType: "project", targetId: project.id },
+        project.env,
+      );
+    }
     let createdWorkspaceId: string | null = null;
     if (workspace) {
       const createdWorkspace = await svc.createWorkspace(project.id, workspace);
@@ -205,6 +213,13 @@ export function projectRoutes(db: Db) {
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
+    }
+    if (body.env !== undefined) {
+      await secretsSvc.syncEnvBindingsForTarget?.(
+        project.companyId,
+        { targetType: "project", targetId: project.id },
+        project.env,
+      );
     }
 
     const actor = getActorInfo(req);
@@ -344,6 +359,15 @@ export function projectRoutes(db: Db) {
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
+    }
+
+    const isSharedWorkspace = Boolean(workspace.sharedWorkspaceKey);
+    if (
+      req.actor.type === "agent"
+      && isSharedWorkspace
+      && SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS.has(action)
+    ) {
+      throw forbidden("Missing permission to manage workspace runtime services");
     }
 
     await assertCanManageProjectWorkspaceRuntimeServices(db, req, {
@@ -549,9 +573,9 @@ export function projectRoutes(db: Db) {
           stderr,
           system:
             action === "stop"
-              ? "Stopped project workspace runtime services.\n"
+              ? "Stopped project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
               : action === "restart"
-                ? "Restarted project workspace runtime services.\n"
+                ? "Restarted project workspace runtime services.\nThis does not pause issue work or held wake scheduling."
                 : "Started project workspace runtime services.\n",
           metadata: {
             runtimeServiceCount,

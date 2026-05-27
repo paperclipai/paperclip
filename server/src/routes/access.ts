@@ -55,6 +55,7 @@ import {
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import { collectReachableInterfaceHosts } from "../runtime-api.js";
 import {
   accessService,
   agentService,
@@ -141,6 +142,7 @@ function readSkillMarkdown(skillName: string): string | null {
     normalized !== "paperclip" &&
     normalized !== "paperclip-create-agent" &&
     normalized !== "paperclip-create-plugin" &&
+    normalized !== "paperclip-converting-plans-to-tasks" &&
     normalized !== "para-memory-files"
   )
     return null;
@@ -1499,6 +1501,11 @@ function buildOnboardingConnectionCandidates(input: {
     candidates.add(`${protocol}//host.docker.internal${port}`);
   }
 
+  for (const host of collectReachableInterfaceHosts()) {
+    const formattedHost = host.includes(":") && !host.startsWith("[") && !host.endsWith("]") ? `[${host}]` : host;
+    candidates.add(`${protocol}//${formattedHost}${port}`);
+  }
+
   return Array.from(candidates);
 }
 
@@ -1547,16 +1554,17 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw_gateway",
+      recommendedAdapterType: null,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
+        adapterType:
+          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1593,7 +1601,7 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: "runtime-specific Paperclip skill location"
       }
     }
   };
@@ -1644,7 +1652,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Gateway Onboarding
+    # Paperclip Agent Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1668,62 +1676,30 @@ export function buildInviteOnboardingTextDocument(
   appendBlock(`
     ## Step 0
 
-    Get the OpenClaw gateway auth token (THIS MUST BE SENT)
-    Token lives in:
+    Decide which Paperclip adapter type matches your runtime.
 
-    ~/.openclaw/openclaw.json -> gateway.auth.token
-    Extract:
-
-    TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
-    test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
-    test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
-
-    3) IMPORTANT: Don't accidentally drop the token when generating JSON
-    If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
-
-    Safe payload build looks sort of like this (substitute where necessary):
-
-    BODY="$(node -e '
-      const token = process.argv[1];
-      if (!token) process.exit(2);
-      const body = {
-        requestType: "agent",
-        agentName: "OpenClaw",
-        adapterType: "openclaw_gateway",
-        capabilities: "OpenClaw agent adapter",
-        agentDefaultsPayload: {
-          url: "ws://127.0.0.1:18789",
-          paperclipApiUrl: "http://host.docker.internal:3100",
-          headers: { "x-openclaw-token": token },
-          waitTimeoutMs: 120000,
-          sessionKeyStrategy: "issue",
-          role: "operator",
-          scopes: ["operator.admin"]
-        }
-      };
-      process.stdout.write(JSON.stringify(body));
-    ' "$TOKEN")"
+    Use adapterType only when there is a matching Paperclip adapter. Put runtime-specific settings in agentDefaultsPayload.
 
     ## Step 1: Submit agent join request
     ${onboarding.registrationEndpoint.method} ${
     onboarding.registrationEndpoint.url
   }
 
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
-    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
-    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
-    Pairing mode requirement:
-    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
-    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
-    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
-    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
-
     Body (JSON):
+    {
+      "requestType": "agent",
+      "agentName": "My Agent",
+      "adapterType": "adapter_type_for_this_runtime",
+      "capabilities": "Short summary of what this agent can do",
+      "agentDefaultsPayload": {}
+    }
+
+    OpenClaw Gateway payload example:
     {
       "requestType": "agent",
       "agentName": "My OpenClaw Agent",
       "adapterType": "openclaw_gateway",
-      "capabilities": "Optional summary",
+      "capabilities": "OpenClaw gateway agent",
       "agentDefaultsPayload": {
         "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
@@ -1734,6 +1710,8 @@ export function buildInviteOnboardingTextDocument(
         "scopes": ["operator.admin"]
       }
     }
+
+    For OpenClaw Gateway, include agentDefaultsPayload.headers.x-openclaw-token with your gateway token. Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred. Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Expected response includes:
     - request id
@@ -1753,35 +1731,18 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
-
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
-
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
-    https://docs.openclaw.ai/help/environment
-
-    e.g. 
-
-    {
-      env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
-      },
-    }
-
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Paperclip API calls.
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill in OpenClaw
+    ## Step 4: Install Paperclip skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+    Use your runtime's normal skill or instruction installation path.
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -2760,6 +2721,83 @@ export function accessRoutes(
     return { token, created, normalizedAgentMessage };
   }
 
+  async function approveHumanJoinRequestFromInvite(input: {
+    req: Request;
+    invite: typeof invites.$inferSelect;
+    joinRequest: typeof joinRequests.$inferSelect;
+    companyId: string;
+  }) {
+    if (input.joinRequest.requestType !== "human") {
+      throw badRequest("Only human join requests can be approved through a human invite");
+    }
+    if (!input.joinRequest.requestingUserId) {
+      throw conflict("Join request missing user identity");
+    }
+
+    const membershipRole = resolveHumanInviteRole(
+      input.invite.defaultsPayload as Record<string, unknown> | null,
+    );
+    await access.ensureMembership(
+      input.companyId,
+      "user",
+      input.joinRequest.requestingUserId,
+      membershipRole,
+      "active",
+    );
+    const grants = humanJoinGrantsFromDefaults(
+      input.invite.defaultsPayload as Record<string, unknown> | null,
+      membershipRole,
+    );
+    await access.setPrincipalGrants(
+      input.companyId,
+      "user",
+      input.joinRequest.requestingUserId,
+      grants,
+      input.invite.invitedByUserId ?? null,
+    );
+
+    if (input.joinRequest.status === "approved") {
+      return input.joinRequest;
+    }
+
+    const approvedAt = new Date();
+    const approvedByUserId =
+      input.invite.invitedByUserId ?? (isLocalImplicit(input.req) ? "local-board" : null);
+    const approved = await db
+      .update(joinRequests)
+      .set({
+        status: "approved",
+        approvedByUserId,
+        approvedAt,
+        updatedAt: approvedAt,
+      })
+      .where(eq(joinRequests.id, input.joinRequest.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: approvedByUserId ?? "board",
+      action: "join.approved",
+      entityType: "join_request",
+      entityId: input.joinRequest.id,
+      details: {
+        requestType: "human",
+        inviteId: input.invite.id,
+        source: "human_invite_accept",
+      },
+    });
+
+    return approved ?? {
+      ...input.joinRequest,
+      status: "approved",
+      approvedByUserId,
+      approvedAt,
+      updatedAt: approvedAt,
+    };
+  }
+
   async function getInviteCompanyBranding(
     companyId: string | null,
     inviteToken: string | null = null,
@@ -2862,6 +2900,10 @@ export function accessRoutes(
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
+        },
+        {
+          name: "paperclip-converting-plans-to-tasks",
+          path: "/api/skills/paperclip-converting-plans-to-tasks"
         }
       ]
     });
@@ -3290,9 +3332,26 @@ export function accessRoutes(
         }
       }
 
+      const actorEmail =
+        requestType === "human" ? await resolveActorEmail(db, req) : null;
+      const actorRequestingUserId =
+        requestType === "human"
+          ? req.actor.userId ?? "local-board"
+          : null;
+      const canReplayHumanInviteAccept =
+        inviteAlreadyAccepted &&
+        requestType === "human" &&
+        existingJoinRequestForInvite?.requestType === "human" &&
+        Boolean(
+          findReusableHumanJoinRequest([existingJoinRequestForInvite], {
+            requestingUserId: actorRequestingUserId,
+            requestEmailSnapshot: actorEmail,
+          })
+        );
       const adapterType = req.body.adapterType ?? null;
       if (
         inviteAlreadyAccepted &&
+        !canReplayHumanInviteAccept &&
         !canReplayOpenClawGatewayInviteAccept({
           requestType,
           adapterType,
@@ -3371,8 +3430,6 @@ export function accessRoutes(
         ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
         : null;
 
-      const actorEmail =
-        requestType === "human" ? await resolveActorEmail(db, req) : null;
       const existingHumanJoinRequest =
         requestType === "human"
           ? findReusableHumanJoinRequest(
@@ -3387,12 +3444,12 @@ export function accessRoutes(
                 )
                 .orderBy(desc(joinRequests.createdAt)),
               {
-                requestingUserId: req.actor.userId ?? "local-board",
+                requestingUserId: actorRequestingUserId,
                 requestEmailSnapshot: actorEmail
               }
             )
           : null;
-      const created = !inviteAlreadyAccepted
+      let created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
               await tx
@@ -3600,6 +3657,15 @@ export function accessRoutes(
             Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
         }
       });
+
+      if (requestType === "human") {
+        created = await approveHumanJoinRequestFromInvite({
+          req,
+          invite,
+          joinRequest: created,
+          companyId,
+        });
+      }
 
       const response = toJoinRequestResponse(created);
       if (claimSecret) {

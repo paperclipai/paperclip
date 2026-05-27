@@ -114,6 +114,33 @@ export interface EnvironmentReleaseResult {
   errors: Array<{ leaseId: string; error: unknown }>;
 }
 
+function firstNonEmptyLine(text: string | null | undefined): string | null {
+  if (!text) return null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line) return line;
+  }
+  return null;
+}
+
+function formatProvisionFailureDetail(result: {
+  exitCode: number | null;
+  signal?: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}): string {
+  if (result.timedOut) {
+    return "provision command timed out";
+  }
+  const signal = typeof result.signal === "string" && result.signal.trim().length > 0
+    ? ` (signal ${result.signal.trim()})`
+    : "";
+  const detail = firstNonEmptyLine(result.stderr) ?? firstNonEmptyLine(result.stdout);
+  const status = `exit code ${result.exitCode ?? "null"}${signal}`;
+  return detail ? `${status}: ${detail}` : status;
+}
+
 // ---------------------------------------------------------------------------
 // Service factory
 // ---------------------------------------------------------------------------
@@ -342,6 +369,7 @@ export function environmentRunOrchestrator(
 
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
+    let realizedWorkspaceCwd: string | null = null;
     if (
       environment.driver === "local" ||
       environment.driver === "ssh" ||
@@ -364,11 +392,50 @@ export function environmentRunOrchestrator(
             },
           },
         });
+        realizedWorkspaceCwd =
+          typeof workspaceRealizationResult.cwd === "string" && workspaceRealizationResult.cwd.trim().length > 0
+            ? workspaceRealizationResult.cwd.trim()
+            : null;
         workspaceRealization = parseObject(workspaceRealizationResult.metadata?.workspaceRealization);
       } catch (err) {
         throw new EnvironmentRunError(
           "workspace_realization_failed",
           `Failed to realize workspace for environment "${environment.name}" (${environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
+          {
+            environmentId: environment.id,
+            driver: environment.driver,
+            cause: err,
+          },
+        );
+      }
+    }
+
+    const provisionCommand = workspaceRealizationRequest.runtimeOverlay.provisionCommand?.trim() ?? "";
+    const realizedCwd =
+      realizedWorkspaceCwd ??
+      (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
+        ? lease.metadata.remoteCwd.trim()
+        : executionWorkspace.cwd);
+    if (provisionCommand && environment.driver !== "local") {
+      try {
+        const provisionResult = await environmentRuntime.execute({
+          environment,
+          lease,
+          command: "bash",
+          args: ["-lc", provisionCommand],
+          cwd: realizedCwd,
+          env: {
+            SHELL: "/bin/bash",
+          },
+          timeoutMs: 300_000,
+        });
+        if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
+          throw new Error(formatProvisionFailureDetail(provisionResult));
+        }
+      } catch (err) {
+        throw new EnvironmentRunError(
+          "workspace_realization_failed",
+          `Failed to provision workspace for environment "${environment.name}" (${environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
           {
             environmentId: environment.id,
             driver: environment.driver,

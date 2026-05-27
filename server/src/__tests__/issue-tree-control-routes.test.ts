@@ -355,4 +355,44 @@ describe("issue tree control routes", () => {
       }),
     );
   });
+
+  it("returns resume operations as released holds and avoids cancellation side effects", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockTreeControlService.createHold.mockResolvedValue({
+      hold: {
+        id: "77777777-7777-4777-8777-777777777777",
+        mode: "resume",
+        status: "released",
+        reason: "resume subtree",
+      },
+      preview: {
+        mode: "resume",
+        totals: {
+          affectedIssues: 1,
+        },
+        warnings: [],
+        activeRuns: [],
+      },
+      resumedPauseHoldIds: ["33333333-3333-4333-8333-333333333333"],
+    });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-holds")
+      .send({ mode: "resume", reason: "resume subtree" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.hold.mode).toBe("resume");
+    expect(res.body.hold.status).toBe("released");
+    expect(res.body.resumedPauseHoldIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockTreeControlService.cancelUnclaimedWakeupsForTree).not.toHaveBeenCalled();
+    expect(mockTreeControlService.cancelIssueStatusesForHold).not.toHaveBeenCalled();
+    expect(mockTreeControlService.restoreIssueStatusesForHold).not.toHaveBeenCalled();
+  });
 });

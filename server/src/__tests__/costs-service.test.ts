@@ -3,7 +3,17 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createDb, companies, agents, costEvents, financeEvents, projects } from "@paperclipai/db";
+import {
+  createDb,
+  companies,
+  agents,
+  activityLog,
+  costEvents,
+  financeEvents,
+  heartbeatRuns,
+  issues,
+  projects,
+} from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
 import {
@@ -45,6 +55,10 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
 }));
+const mockIssueService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  getByIdentifier: vi.fn(),
+}));
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelBudgetScopeWork: vi.fn().mockResolvedValue(undefined),
 }));
@@ -57,6 +71,17 @@ const mockCostService = vi.hoisted(() => ({
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
   byBiller: vi.fn().mockResolvedValue([]),
+  issueTreeSummary: vi.fn().mockResolvedValue({
+    issueId: "issue-1",
+    issueCount: 1,
+    includeDescendants: true,
+    costCents: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    runCount: 0,
+    runtimeMs: 0,
+  }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
@@ -87,6 +112,7 @@ function registerModuleMocks() {
     financeService: () => mockFinanceService,
     companyService: () => mockCompanyService,
     agentService: () => mockAgentService,
+    issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
     logActivity: mockLogActivity,
   }));
@@ -161,6 +187,16 @@ beforeEach(() => {
     budgetMonthlyCents: 100,
     spentMonthlyCents: 0,
   });
+  mockIssueService.getById.mockResolvedValue({
+    id: "issue-1",
+    companyId: "company-1",
+    identifier: "PC1A2-1",
+  });
+  mockIssueService.getByIdentifier.mockResolvedValue({
+    id: "issue-1",
+    companyId: "company-1",
+    identifier: "PC1A2-1",
+  });
   mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
 });
 
@@ -198,6 +234,28 @@ describe("cost routes", () => {
       netCents: 0,
       estimatedDebitCents: 0,
       eventCount: 0,
+    });
+  });
+
+  it("returns issue subtree cost summaries for issue refs", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/pc1a2-1/cost-summary");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1");
+    expect(mockCostService.issueTreeSummary).toHaveBeenCalledWith("company-1", "issue-1", {
+      excludeRoot: false,
+    });
+    expect(res.body).toEqual({
+      issueId: "issue-1",
+      issueCount: 1,
+      includeDescendants: true,
+      costCents: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      runCount: 0,
+      runtimeMs: 0,
     });
   });
 
@@ -351,6 +409,9 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
   afterEach(async () => {
     await db.delete(financeEvents);
     await db.delete(costEvents);
+    await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -433,6 +494,307 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  it("aggregates issue costs across recursive descendants only", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const grandchildIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Root",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Child",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+      {
+        id: grandchildIssueId,
+        companyId,
+        parentId: childIssueId,
+        title: "Grandchild",
+        status: "done",
+        priority: "medium",
+        issueNumber: 3,
+        identifier: "TST-3",
+      },
+      {
+        id: siblingIssueId,
+        companyId,
+        title: "Sibling",
+        status: "done",
+        priority: "medium",
+        issueNumber: 4,
+        identifier: "TST-4",
+      },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId: rootIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 10,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        costCents: 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: childIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 20,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        costCents: 200,
+        occurredAt: new Date("2026-04-10T00:01:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: grandchildIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 30,
+        cachedInputTokens: 3,
+        outputTokens: 6,
+        costCents: 300,
+        occurredAt: new Date("2026-04-10T00:02:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: siblingIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 40,
+        cachedInputTokens: 4,
+        outputTokens: 8,
+        costCents: 400,
+        occurredAt: new Date("2026-04-10T00:03:00.000Z"),
+      },
+    ]);
+
+    const summary = await costs.issueTreeSummary(companyId, rootIssueId);
+
+    expect(summary).toEqual({
+      issueId: rootIssueId,
+      issueCount: 3,
+      includeDescendants: true,
+      costCents: 600,
+      inputTokens: 60,
+      cachedInputTokens: 6,
+      outputTokens: 12,
+      runCount: 0,
+      runtimeMs: 0,
+    });
+  });
+
+  it("aggregates run wall-clock duration across the recursive issue tree", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const grandchildIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Run Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Root",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Child",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+      {
+        id: grandchildIssueId,
+        companyId,
+        parentId: childIssueId,
+        title: "Grandchild",
+        status: "done",
+        priority: "medium",
+        issueNumber: 3,
+        identifier: "TST-3",
+      },
+      {
+        id: siblingIssueId,
+        companyId,
+        title: "Sibling",
+        status: "done",
+        priority: "medium",
+        issueNumber: 4,
+        identifier: "TST-4",
+      },
+    ]);
+
+    const linkedViaContextRunId = randomUUID();
+    const linkedViaActivityRunId = randomUUID();
+    const grandchildRunId = randomUUID();
+    const siblingRunId = randomUUID();
+    const livePartialRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      // 60s run linked to root via contextSnapshot.issueId
+      {
+        id: linkedViaContextRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+        contextSnapshot: { issueId: rootIssueId },
+      },
+      // 120s run linked to child via activity_log
+      {
+        id: linkedViaActivityRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:05:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:07:00.000Z"),
+      },
+      // 30s run linked to grandchild
+      {
+        id: grandchildRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:10:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:10:30.000Z"),
+        contextSnapshot: { issueId: grandchildIssueId },
+      },
+      // sibling run NOT under root – should be excluded
+      {
+        id: siblingRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:20:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:21:00.000Z"),
+        contextSnapshot: { issueId: siblingIssueId },
+      },
+      // Still-running run on child (no finishedAt) – should contribute (now - startedAt)
+      {
+        id: livePartialRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "running",
+        startedAt: new Date(Date.now() - 5_000),
+        contextSnapshot: { issueId: childIssueId },
+      },
+    ]);
+
+    await db.insert(activityLog).values({
+      companyId,
+      runId: linkedViaActivityRunId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      action: "issue.checked_out",
+      entityType: "issue",
+      entityId: childIssueId,
+      details: {},
+    });
+
+    const summary = await costs.issueTreeSummary(companyId, rootIssueId);
+
+    expect(summary.issueCount).toBe(3);
+    // 3 finished runs in tree (root, child via activity, grandchild) + 1 live run
+    expect(summary.runCount).toBe(4);
+    // 60s + 120s + 30s = 210s = 210_000ms from finished runs.
+    // Live run adds ~5_000ms; allow some slack so the assertion isn't flaky.
+    expect(summary.runtimeMs).toBeGreaterThanOrEqual(210_000 + 4_000);
+    expect(summary.runtimeMs).toBeLessThan(210_000 + 60_000);
+
+    // excludeRoot drops the root issue's own runs (the 60s contextSnapshot run)
+    // while keeping the child + grandchild runs and any live child run.
+    const descendantsOnly = await costs.issueTreeSummary(companyId, rootIssueId, {
+      excludeRoot: true,
+    });
+    expect(descendantsOnly.issueCount).toBe(2);
+    expect(descendantsOnly.runCount).toBe(3);
+    // 120s + 30s = 150s + ~5s live run
+    expect(descendantsOnly.runtimeMs).toBeGreaterThanOrEqual(150_000 + 4_000);
+    expect(descendantsOnly.runtimeMs).toBeLessThan(150_000 + 60_000);
   });
 
   it("aggregates finance event sums above int32 without raising Postgres integer overflow", async () => {
