@@ -12,6 +12,19 @@ const HEALTH_MESSAGE = "YoonCompany command plugin ready";
 const YOONCOMPANY_HERMES_COMMAND = "C:\\yooncompany\\bin\\hermes.exe";
 const YOONCOMPANY_HERMES_BOARD = "yooncompany";
 
+const HERMES_CROSSLINK_TEMPLATE = [
+  "Paperclip ↔ Hermes 연결 필드:",
+  "- paperclip_issue_id: generated_after_issue_creation",
+  "- paperclip_issue_identifier: generated_after_issue_creation",
+  "- paperclip_approval_id: approval_id: none",
+  `- hermes_board: ${YOONCOMPANY_HERMES_BOARD}`,
+  "- hermes_task_id: pending",
+  "- hermes_profile: yoonorchestrator",
+  "- codex_agent_id: pending_if_code_change_required",
+  "- risk_level: L0-L1 until approval states otherwise",
+  "- dangerous_actions_executed: none",
+];
+
 const CODEX_6002_SEQUENCE = [
   "6002 실행 순서: observe -> plan -> implement -> verify -> risk-report.",
   "- Observe: 문서, git status, 실제 코드, 로그, 화면 상태를 먼저 확인한다.",
@@ -97,6 +110,8 @@ function getIssueTemplate(kind: GuidedIssueKind): {
         `Hermes 명령: ${YOONCOMPANY_HERMES_COMMAND}`,
         `Hermes 보드: ${YOONCOMPANY_HERMES_BOARD}`,
         "주의: PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행.",
+        "",
+        ...HERMES_CROSSLINK_TEMPLATE,
         "",
         "조사 요청:",
         "- 조사 주제, 비교 대상, 필요한 근거를 여기에 적으세요.",
