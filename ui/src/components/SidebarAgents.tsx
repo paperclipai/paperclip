@@ -43,12 +43,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
-
-const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
-];
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
   const raw = agent[field];
@@ -211,6 +206,7 @@ function SidebarAgentItem({
 }
 
 export function SidebarAgents() {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
@@ -275,6 +271,14 @@ export function SidebarAgents() {
   const sortedAgents = useMemo(
     () => sortAgents(orderedAgents, sortMode),
     [orderedAgents, sortMode],
+  );
+  const agentSortChoices = useMemo<SidebarSectionRadioChoice[]>(
+    () => [
+      { value: "top", label: copy("sidebar.sort.top", "Top", "상단 고정") },
+      { value: "alphabetical", label: copy("sidebar.sort.alphabetical", "Alphabetical", "가나다순") },
+      { value: "recent", label: copy("sidebar.sort.recent", "Recent", "최근순") },
+    ],
+    [copy],
   );
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
@@ -387,21 +391,21 @@ export function SidebarAgents() {
 
   return (
     <SidebarSection
-      label="Agents"
+      label={copy("sidebar.section.agents", "Agents", "직원")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New agent",
+        ariaLabel: copy("sidebar.agents.new", "New agent", "새 직원"),
         icon: Plus,
         onClick: openNewAgent,
       }}
       menu={{
-        ariaLabel: "Agents section actions",
+        ariaLabel: copy("sidebar.agents.actions", "Agents section actions", "직원 섹션 작업"),
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "item", label: copy("sidebar.agents.browse", "Browse agents", "직원 둘러보기"), icon: Users, href: "/agents/all" },
           { type: "separator" },
         ],
-        radioLabel: "Agent sort",
-        radioChoices: AGENT_SORT_CHOICES,
+        radioLabel: copy("sidebar.agents.sort", "Agent sort", "직원 정렬"),
+        radioChoices: agentSortChoices,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
       }}

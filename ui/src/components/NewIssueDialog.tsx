@@ -67,6 +67,7 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -251,6 +252,65 @@ const EXECUTION_WORKSPACE_MODES = [
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
 
+function executionWorkspaceModeLabel(mode: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  if (mode === "shared_workspace") return copy("newIssue.workspace.projectDefault", "Project default", "프로젝트 기본값");
+  if (mode === "isolated_workspace") return copy("newIssue.workspace.newIsolated", "New isolated workspace", "새 격리 작업공간");
+  if (mode === "reuse_existing") return copy("newIssue.workspace.reuseExisting", "Reuse existing workspace", "기존 작업공간 재사용");
+  return mode;
+}
+
+function issueModelLaneLabel(lane: IssueModelLane, copy: ReturnType<typeof useLocalizedCopy>) {
+  if (lane === "primary") return copy("newIssue.modelLane.primary", "Primary", "기본");
+  if (lane === "cheap") return copy("newIssue.modelLane.cheap", "Cheap", "저비용");
+  return copy("newIssue.modelLane.custom", "Custom", "직접 설정");
+}
+
+function thinkingEffortLabel(value: string, fallback: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    "": copy("common.default", "Default", "기본값"),
+    minimal: copy("thinkingEffort.minimal", "Minimal", "최소"),
+    low: copy("thinkingEffort.low", "Low", "낮음"),
+    medium: copy("thinkingEffort.medium", "Medium", "보통"),
+    high: copy("thinkingEffort.high", "High", "높음"),
+    xhigh: copy("thinkingEffort.xhigh", "X-High", "매우 높음"),
+    max: copy("thinkingEffort.max", "Max", "최대"),
+  };
+  return labels[value] ?? fallback;
+}
+
+function issueStatusLabel(value: string, fallback: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    backlog: copy("status.backlog", "Backlog", "대기"),
+    todo: copy("status.todo", "Todo", "할 일"),
+    in_progress: copy("status.inProgress", "In Progress", "진행 중"),
+    in_review: copy("status.inReview", "In Review", "검토 중"),
+    done: copy("status.done", "Done", "완료"),
+  };
+  return labels[value] ?? fallback;
+}
+
+function issueStatusDescription(value: string, description: string | undefined, copy: ReturnType<typeof useLocalizedCopy>) {
+  if (value === "backlog") return copy("newIssue.status.backlogDesc", "Parked - assignee will not be woken", "보류 - 담당자를 깨우지 않습니다.");
+  if (value === "todo") return copy("newIssue.status.todoDesc", "Executable - assignee will be woken", "실행 가능 - 담당자를 깨웁니다.");
+  return description;
+}
+
+function priorityLabel(value: string, fallback: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    critical: copy("priority.critical", "Critical", "긴급"),
+    high: copy("priority.high", "High", "높음"),
+    medium: copy("priority.medium", "Medium", "보통"),
+    low: copy("priority.low", "Low", "낮음"),
+  };
+  return labels[value] ?? fallback;
+}
+
+function workModeLabel(value: IssueWorkMode, fallback: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  if (value === "standard") return copy("newIssue.workMode.standard", "Standard", "표준");
+  if (value === "planning") return copy("newIssue.workMode.planning", "Planning", "계획");
+  return fallback;
+}
+
 function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
   if (!project) return "";
   return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
@@ -305,6 +365,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   projectSelectorRef: RefObject<HTMLButtonElement | null>;
   onChange: (value: string) => void;
 }) {
+  const copy = useLocalizedCopy();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -314,7 +375,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Issue title"
+      placeholder={copy("newIssue.titlePlaceholder", "Issue title", "작업 제목")}
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -368,6 +429,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   imageUploadHandler: (file: File) => Promise<string>;
   onChange: (value: string) => void;
 }) {
+  const copy = useLocalizedCopy();
   const [draftValue, setDraftValue] = useState(value);
 
   useEffect(() => {
@@ -382,7 +444,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
-      placeholder="Add description..."
+      placeholder={copy("newIssue.descriptionPlaceholder", "Add description...", "설명을 입력하세요...")}
       bordered={false}
       mentions={mentions}
       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -402,6 +464,7 @@ function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | u
 }
 
 export function NewIssueDialog() {
+  const copy = useLocalizedCopy();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -1096,12 +1159,12 @@ export function NewIssueDialog() {
     && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
-      ? "Claude options"
+      ? copy("newIssue.options.claude", "Claude options", "Claude 옵션")
       : assigneeAdapterType === "codex_local"
-        ? "Codex options"
+        ? copy("newIssue.options.codex", "Codex options", "Codex 옵션")
         : assigneeAdapterType === "opencode_local"
-          ? "OpenCode options"
-        : "Agent options";
+          ? copy("newIssue.options.opencode", "OpenCode options", "OpenCode 옵션")
+        : copy("newIssue.options.agent", "Agent options", "직원 옵션");
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
@@ -1142,7 +1205,9 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+    createIssue.error instanceof Error
+      ? createIssue.error.message
+      : copy("newIssue.createFailed", "Failed to create issue. Try again.", "작업 생성에 실패했습니다. 다시 시도하세요.");
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1291,7 +1356,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? copy("newIssue.header.subIssue", "New sub-issue", "새 하위 작업") : copy("newIssue.header.issue", "New issue", "새 작업")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1333,17 +1398,17 @@ export function NewIssueDialog() {
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">
               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
-              <span className="w-6 shrink-0 text-center">For</span>
+              <span className="w-6 shrink-0 text-center">{copy("newIssue.for", "For", "대상")}</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
+                placeholder={copy("newIssue.assignee", "Assignee", "담당자")}
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel={copy("newIssue.noAssignee", "No assignee", "담당자 없음")}
+                searchPlaceholder={copy("newIssue.searchAssignees", "Search assignees...", "담당자 검색...")}
+                emptyMessage={copy("newIssue.noAssigneesFound", "No assignees found.", "담당자를 찾을 수 없습니다.")}
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1373,7 +1438,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">{copy("newIssue.assignee", "Assignee", "담당자")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1389,17 +1454,17 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+              <span>{copy("newIssue.inProject", "in", "프로젝트")}</span>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={copy("newIssue.project", "Project", "프로젝트")}
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={copy("newIssue.noProject", "No project", "프로젝트 없음")}
+                searchPlaceholder={copy("newIssue.searchProjects", "Search projects...", "프로젝트 검색...")}
+                emptyMessage={copy("newIssue.noProjectsFound", "No projects found.", "프로젝트를 찾을 수 없습니다.")}
                 onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
@@ -1414,7 +1479,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{copy("newIssue.project", "Project", "프로젝트")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1438,7 +1503,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title="Add reviewer or approver"
+                    title={copy("newIssue.addReviewerApprover", "Add reviewer or approver", "검토자 또는 승인자 추가")}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1456,7 +1521,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <Eye className="h-3 w-3" />
-                    Reviewer
+                    {copy("newIssue.reviewer", "Reviewer", "검토자")}
                   </button>
                   <button
                     className={cn(
@@ -1470,7 +1535,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <ShieldCheck className="h-3 w-3" />
-                    Approver
+                    {copy("newIssue.approver", "Approver", "승인자")}
                   </button>
                 </PopoverContent>
               </Popover>
@@ -1485,11 +1550,11 @@ export function NewIssueDialog() {
                 value={reviewerValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Reviewer"
+                placeholder={copy("newIssue.reviewer", "Reviewer", "검토자")}
                 disablePortal
-                noneLabel="No reviewer"
-                searchPlaceholder="Search reviewers..."
-                emptyMessage="No reviewers found."
+                noneLabel={copy("newIssue.noReviewer", "No reviewer", "검토자 없음")}
+                searchPlaceholder={copy("newIssue.searchReviewers", "Search reviewers...", "검토자 검색...")}
+                emptyMessage={copy("newIssue.noReviewersFound", "No reviewers found.", "검토자를 찾을 수 없습니다.")}
                 onChange={setReviewerValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1503,7 +1568,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Reviewer</span>
+                    <span className="text-muted-foreground">{copy("newIssue.reviewer", "Reviewer", "검토자")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1530,11 +1595,11 @@ export function NewIssueDialog() {
                 value={approverValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Approver"
+                placeholder={copy("newIssue.approver", "Approver", "승인자")}
                 disablePortal
-                noneLabel="No approver"
-                searchPlaceholder="Search approvers..."
-                emptyMessage="No approvers found."
+                noneLabel={copy("newIssue.noApprover", "No approver", "승인자 없음")}
+                searchPlaceholder={copy("newIssue.searchApprovers", "Search approvers...", "승인자 검색...")}
+                emptyMessage={copy("newIssue.noApproversFound", "No approvers found.", "승인자를 찾을 수 없습니다.")}
                 onChange={setApproverValue}
                 renderTriggerValue={(option) =>
                   option ? (
@@ -1548,7 +1613,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Approver</span>
+                    <span className="text-muted-foreground">{copy("newIssue.approver", "Approver", "승인자")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1573,7 +1638,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">{copy("newIssue.subIssueOf", "Sub-issue of", "상위 작업")}</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1588,9 +1653,13 @@ export function NewIssueDialog() {
           {currentProject && currentProjectSupportsExecutionWorkspace && (
             <div className="px-4 py-3 space-y-2">
             <div className="space-y-1.5">
-              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-xs font-medium">{copy("newIssue.executionWorkspace", "Execution workspace", "실행 작업공간")}</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+                {copy(
+                  "newIssue.executionWorkspaceHelp",
+                  "Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.",
+                  "이 작업을 공유 작업공간, 새 격리 작업공간, 기존 작업공간 중 어디서 실행할지 정합니다.",
+                )}
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1604,7 +1673,7 @@ export function NewIssueDialog() {
               >
                 {EXECUTION_WORKSPACE_MODES.map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {executionWorkspaceModeLabel(option.value, copy)}
                   </option>
                 ))}
               </select>
@@ -1614,7 +1683,7 @@ export function NewIssueDialog() {
                   value={selectedExecutionWorkspaceId}
                   onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
                 >
-                  <option value="">Choose an existing workspace</option>
+                  <option value="">{copy("newIssue.chooseExistingWorkspace", "Choose an existing workspace", "기존 작업공간 선택")}</option>
                   {deduplicatedReusableWorkspaces.map((workspace) => (
                     <option key={workspace.id} value={workspace.id}>
                       {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
@@ -1624,12 +1693,20 @@ export function NewIssueDialog() {
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">
-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
+                  {copy("newIssue.reusingWorkspace", "Reusing {{name}} from {{source}}.", "{{source}}의 {{name}} 재사용.", {
+                    name: selectedReusableExecutionWorkspace.name,
+                    source: selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? copy("newIssue.existingExecutionWorkspace", "existing execution workspace", "기존 실행 작업공간"),
+                  })}
                 </div>
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  {copy(
+                    "newIssue.parentWorkspaceWarning",
+                    "Warning: this sub-issue will no longer use the parent issue workspace{{workspace}}.",
+                    "경고: 이 하위 작업은 더 이상 상위 작업공간{{workspace}}을 사용하지 않습니다.",
+                    { workspace: parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : "" },
+                  )}
                 </div>
               ) : null}
             </div>
@@ -1648,11 +1725,11 @@ export function NewIssueDialog() {
             {assigneeOptionsOpen && (
               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model lane</div>
+                  <div className="text-xs text-muted-foreground">{copy("newIssue.modelLane", "Model lane", "모델 경로")}</div>
                   <div
                     className="flex w-full overflow-hidden rounded-md border border-border"
                     role="radiogroup"
-                    aria-label="Model lane"
+                    aria-label={copy("newIssue.modelLane", "Model lane", "모델 경로")}
                   >
                     {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
                       <button
@@ -1666,49 +1743,45 @@ export function NewIssueDialog() {
                         )}
                         onClick={() => setAssigneeModelLane(lane)}
                       >
-                        {lane === "primary"
-                          ? "Primary"
-                          : lane === "cheap"
-                            ? "Cheap"
-                            : "Custom"}
+                        {issueModelLaneLabel(lane, copy)}
                       </button>
                     ))}
                   </div>
                   {assigneeModelLane === "cheap" && (
                     <p className="text-[11px] text-muted-foreground">
-                      Sends <code>modelProfile: "cheap"</code>{" "}
+                      {copy("newIssue.cheapLaneSends", "Sends", "전송")} <code>modelProfile: "cheap"</code>{" "}
                       {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-                        ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
+                          ? <>· {copy("newIssue.adapterDefault", "adapter default", "어댑터 기본값")} <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
                         : assigneeCheapProfile
-                          ? <>· uses the agent's configured cheap profile</>
-                          : <>· falls back to the primary model if no cheap profile is configured</>}
+                          ? <>· {copy("newIssue.cheapProfileConfigured", "uses the agent's configured cheap profile", "직원에 설정된 저비용 프로필 사용")}</>
+                          : <>· {copy("newIssue.cheapProfileFallback", "falls back to the primary model if no cheap profile is configured", "저비용 프로필이 없으면 기본 모델로 실행")}</>}
                     </p>
                   )}
                   {assigneeModelLane === "primary" && (
-                    <p className="text-[11px] text-muted-foreground">Runs on the agent's primary model.</p>
+                    <p className="text-[11px] text-muted-foreground">{copy("newIssue.primaryLaneHelp", "Runs on the agent's primary model.", "직원의 기본 모델로 실행합니다.")}</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this issue only.</p>
+                    <p className="text-[11px] text-muted-foreground">{copy("newIssue.customLaneHelp", "Override the model and effort for this issue only.", "이 작업에만 모델과 추론 강도를 덮어씁니다.")}</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Model</div>
+                    <div className="text-xs text-muted-foreground">{copy("newIssue.model", "Model", "모델")}</div>
                     <InlineEntitySelector
                       value={assigneeModelOverride}
                       options={modelOverrideOptions}
-                      placeholder="Default model"
+                      placeholder={copy("newIssue.defaultModel", "Default model", "기본 모델")}
                       disablePortal
-                      noneLabel="Default model"
-                      searchPlaceholder="Search models..."
-                      emptyMessage="No models found."
+                      noneLabel={copy("newIssue.defaultModel", "Default model", "기본 모델")}
+                      searchPlaceholder={copy("newIssue.searchModels", "Search models...", "모델 검색...")}
+                      emptyMessage={copy("newIssue.noModelsFound", "No models found.", "모델을 찾을 수 없습니다.")}
                       onChange={setAssigneeModelOverride}
                     />
                   </div>
                 )}
                 {assigneeModelLane === "custom" && (
                   <div className="space-y-1.5">
-                    <div className="text-xs text-muted-foreground">Thinking effort</div>
+                    <div className="text-xs text-muted-foreground">{copy("newIssue.thinkingEffort", "Thinking effort", "추론 강도")}</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {thinkingEffortOptions.map((option) => (
                         <button
@@ -1719,7 +1792,7 @@ export function NewIssueDialog() {
                           )}
                           onClick={() => setAssigneeThinkingEffort(option.value)}
                         >
-                          {option.label}
+                          {thinkingEffortLabel(option.value, option.label, copy)}
                         </button>
                       ))}
                     </div>
@@ -1727,7 +1800,7 @@ export function NewIssueDialog() {
                 )}
                 {assigneeAdapterType === "claude_local" && assigneeModelLane === "custom" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                    <div className="text-xs text-muted-foreground">{copy("newIssue.enableChrome", "Enable Chrome (--chrome)", "Chrome 사용 (--chrome)")}</div>
                     <ToggleSwitch
                       checked={assigneeChrome}
                       onCheckedChange={() => setAssigneeChrome((value) => !value)}
@@ -1766,7 +1839,7 @@ export function NewIssueDialog() {
               <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="text-xs font-medium text-muted-foreground">{copy("newIssue.documents", "Documents", "문서")}</div>
                   <div className="space-y-2">
                     {stagedDocuments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -1790,7 +1863,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove document"
+                          title={copy("newIssue.removeDocument", "Remove document", "문서 제거")}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1802,7 +1875,7 @@ export function NewIssueDialog() {
 
               {stagedAttachments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="text-xs font-medium text-muted-foreground">{copy("newIssue.attachments", "Attachments", "첨부파일")}</div>
                   <div className="space-y-2">
                     {stagedAttachments.map((file) => (
                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
@@ -1821,7 +1894,7 @@ export function NewIssueDialog() {
                           className="shrink-0 text-muted-foreground"
                           onClick={() => removeStagedFile(file.id)}
                           disabled={createIssue.isPending}
-                          title="Remove attachment"
+                          title={copy("newIssue.removeAttachment", "Remove attachment", "첨부파일 제거")}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1842,7 +1915,7 @@ export function NewIssueDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
-                {currentStatus.label}
+                {issueStatusLabel(currentStatus.value, currentStatus.label, copy)}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -1857,9 +1930,9 @@ export function NewIssueDialog() {
                 >
                   <CircleDot className={cn("h-3 w-3 mt-0.5 shrink-0", s.color)} />
                   <span className="flex flex-col text-left leading-tight">
-                    <span>{s.label}</span>
-                    {s.description ? (
-                      <span className="text-[10px] text-muted-foreground">{s.description}</span>
+                    <span>{issueStatusLabel(s.value, s.label, copy)}</span>
+                    {issueStatusDescription(s.value, s.description, copy) ? (
+                      <span className="text-[10px] text-muted-foreground">{issueStatusDescription(s.value, s.description, copy)}</span>
                     ) : null}
                   </span>
                 </button>
@@ -1878,12 +1951,12 @@ export function NewIssueDialog() {
                 {currentPriority ? (
                   <>
                     <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
-                    {currentPriority.label}
+                    {priorityLabel(currentPriority.value, currentPriority.label, copy)}
                   </>
                 ) : (
                   <>
                     <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
+                    {copy("newIssue.priority", "Priority", "우선순위")}
                   </>
                 )}
               </button>
@@ -1899,7 +1972,7 @@ export function NewIssueDialog() {
                   onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
                 >
                   <p.icon className={cn("h-3 w-3", p.color)} />
-                  {p.label}
+                  {priorityLabel(p.value, p.label, copy)}
                 </button>
               ))}
             </PopoverContent>
@@ -1925,7 +1998,7 @@ export function NewIssueDialog() {
             disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            Upload
+            {copy("newIssue.upload", "Upload", "업로드")}
           </button>
 
           {/* Work mode chip */}
@@ -1942,7 +2015,7 @@ export function NewIssueDialog() {
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
-                {currentWorkMode.label}
+                {workModeLabel(currentWorkMode.value, currentWorkMode.label, copy)}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
@@ -1963,7 +2036,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <Icon className="h-3 w-3" />
-                    {option.label}
+                    {workModeLabel(option.value, option.label, copy)}
                   </button>
                 );
               })}
@@ -1984,7 +2057,7 @@ export function NewIssueDialog() {
             <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
               <div className="sm:hidden">
                 <div className="px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                  Priority
+                  {copy("newIssue.priority", "Priority", "우선순위")}
                 </div>
                 {priorities.map((p) => (
                   <button
@@ -2001,18 +2074,18 @@ export function NewIssueDialog() {
                     }}
                   >
                     <p.icon className={cn("h-3 w-3", p.color)} />
-                    {p.label}
+                    {priorityLabel(p.value, p.label, copy)}
                   </button>
                 ))}
                 <div className="my-1 border-t border-border" />
               </div>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Start date
+                {copy("newIssue.startDate", "Start date", "시작일")}
               </button>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
-                Due date
+                {copy("newIssue.dueDate", "Due date", "마감일")}
               </button>
             </PopoverContent>
           </Popover>
@@ -2025,7 +2098,13 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              {copy("newIssue.assignedBacklogNotePrefix", "Assigning implies executable intent - leave status as", "담당자 배정은 실행 의도를 뜻합니다. 일부러 보류하려면 상태를")}
+              {" "}<span className="font-medium">{copy("status.backlog", "Backlog", "대기")}</span>{" "}
+              {copy("newIssue.assignedBacklogNoteMiddle", "only to deliberately park this. The assignee will not be woken until status moves to", "로 유지하세요. 상태가")}
+              {" "}<span className="font-medium">{copy("status.todo", "Todo", "할 일")}</span>{" "}
+              {copy("newIssue.assignedBacklogNoteOr", "or", "또는")}
+              {" "}<span className="font-medium">{copy("status.inProgress", "In Progress", "진행 중")}</span>{" "}
+              {copy("newIssue.assignedBacklogNoteSuffix", "before the assignee is woken.", "으로 바뀌기 전까지 담당자는 깨워지지 않습니다.")}
             </span>
           </div>
         ) : null}
@@ -2039,14 +2118,14 @@ export function NewIssueDialog() {
             onClick={discardDraft}
             disabled={createIssue.isPending || !canDiscardDraft}
           >
-            Discard Draft
+            {copy("newIssue.discardDraft", "Discard Draft", "초안 버리기")}
           </Button>
           <div className="flex items-center gap-3">
             <div className="min-h-5 text-right">
               {createIssue.isPending ? (
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Creating issue...
+                  {copy("newIssue.creatingIssue", "Creating issue...", "작업 생성 중...")}
                 </span>
               ) : createIssue.isError ? (
                 <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
@@ -2061,7 +2140,13 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                <span>
+                  {createIssue.isPending
+                    ? copy("newIssue.creating", "Creating...", "생성 중...")
+                    : isSubIssueMode
+                      ? copy("newIssue.createSubIssue", "Create Sub-Issue", "하위 작업 생성")
+                      : copy("newIssue.createIssue", "Create Issue", "작업 생성")}
+                </span>
               </span>
             </Button>
           </div>

@@ -27,6 +27,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -72,6 +73,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const copy = useLocalizedCopy();
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -80,21 +82,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={copy("projectDetail.overview.addDescription", "Add a description...", "설명 추가...")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{copy("projectDetail.overview.status", "Status", "상태")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{copy("projectDetail.overview.targetDate", "Target Date", "목표일")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -112,6 +114,7 @@ function ColorPicker({
   currentColor: string;
   onSelect: (color: string) => void;
 }) {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -132,7 +135,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={copy("projectDetail.color.change", "Change project color", "프로젝트 색상 변경")}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -150,7 +153,7 @@ function ColorPicker({
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
                 style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                aria-label={copy("projectDetail.color.select", "Select color {{color}}", "{{color}} 색상 선택", { color })}
               />
             ))}
           </div>
@@ -288,6 +291,7 @@ export function ProjectDetail() {
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -404,20 +408,28 @@ export function ProjectDetail() {
         projectLookupRef,
         { archivedAt: archived ? new Date().toISOString() : null },
         resolvedCompanyId ?? lookupCompanyId,
-      ),
+    ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? copy("common.project", "Project", "프로젝트");
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({
+          title: copy("projectDetail.toast.archived", "\"{{name}}\" has been archived", "\"{{name}}\" 프로젝트가 보관되었습니다.", { name }),
+          tone: "success",
+        });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({
+          title: copy("projectDetail.toast.unarchived", "\"{{name}}\" has been unarchived", "\"{{name}}\" 프로젝트 보관이 해제되었습니다.", { name }),
+          tone: "success",
+        });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived
+          ? copy("projectDetail.toast.archiveFailed", "Failed to archive project", "프로젝트를 보관하지 못했습니다.")
+          : copy("projectDetail.toast.unarchiveFailed", "Failed to unarchive project", "프로젝트 보관 해제를 실패했습니다."),
         tone: "error",
       });
     },
@@ -425,7 +437,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error(copy("projectDetail.error.noCompany", "No company selected", "선택된 회사가 없습니다."));
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -440,10 +452,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: copy("projects.breadcrumb", "Projects", "프로젝트"), href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? copy("common.project", "Project", "프로젝트") },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [copy, setBreadcrumbs, project, routeProjectRef]);
 
   useEffect(() => {
     if (!project) return;
@@ -551,7 +563,7 @@ export function ProjectDetail() {
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
       scopeId: project?.id ?? routeProjectRef,
-      scopeName: project?.name ?? "Project",
+      scopeName: project?.name ?? copy("common.project", "Project", "프로젝트"),
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
@@ -568,7 +580,7 @@ export function ProjectDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+  }, [budgetOverview?.policies, copy, project, resolvedCompanyId, routeProjectRef]);
 
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
@@ -665,7 +677,7 @@ export function ProjectDetail() {
       {showLeftProjectNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
           <p className="min-w-0 flex-1">
-            You left this project. It no longer appears in your sidebar.
+            {copy("projectDetail.leftNotice", "You left this project. It no longer appears in your sidebar.", "이 프로젝트에서 나갔습니다. 더 이상 사이드바에 표시되지 않습니다.")}
           </p>
           <MembershipAction
             compact
@@ -689,7 +701,7 @@ export function ProjectDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
-            aria-label="Dismiss project membership notice"
+            aria-label={copy("projectDetail.leftNotice.dismiss", "Dismiss project membership notice", "프로젝트 참여 알림 닫기")}
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
             ×
@@ -713,13 +725,13 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {copy("projectDetail.pausedByBudget", "Paused by budget hard stop", "예산 강제 중지로 일시정지")}
             </div>
           ) : null}
           {project.managedByPlugin ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
-              Managed by {project.managedByPlugin.pluginDisplayName}
+              {copy("projectDetail.managedBy", "Managed by {{name}}", "{{name}}에서 관리", { name: project.managedByPlugin.pluginDisplayName })}
             </div>
           ) : null}
         </div>
@@ -759,12 +771,12 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: copy("projectDetail.tabs.issues", "Issues", "작업") },
+            { value: "overview", label: copy("projectDetail.tabs.overview", "Overview", "개요") },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: copy("projectDetail.tabs.pluginOperations", "Plugin operations", "플러그인 작업") }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: copy("projectDetail.tabs.workspaces", "Workspaces", "작업공간") }] : []),
+            { value: "configuration", label: copy("projectDetail.tabs.configuration", "Configuration", "설정") },
+            { value: "budget", label: copy("projectDetail.tabs.budget", "Budget", "예산") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -812,7 +824,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{copy("projectDetail.workspaces.loading", "Loading workspaces...", "작업공간 불러오는 중...")}</p>
         )
       ) : null}
 

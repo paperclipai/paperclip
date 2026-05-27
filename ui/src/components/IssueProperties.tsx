@@ -52,6 +52,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -382,6 +383,8 @@ export function IssueProperties({
   onUpdate,
   inline,
 }: IssuePropertiesProps) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -495,7 +498,7 @@ export function IssueProperties({
   };
 
   const projectName = (id: string | null) => {
-    if (!id) return id?.slice(0, 8) ?? "None";
+    if (!id) return id?.slice(0, 8) ?? copy("common.none", "None", "없음");
     const project = orderedProjects.find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
@@ -812,16 +815,16 @@ export function IssueProperties({
       return agentName(value.slice("agent:".length)) ?? value.slice("agent:".length, "agent:".length + 8);
     }
     if (value.startsWith("user:")) {
-      return userLabel(value.slice("user:".length)) ?? "User";
+      return userLabel(value.slice("user:".length)) ?? copy("issueProperties.user", "User", "사용자");
     }
     return value;
   };
   const reviewerTrigger = reviewerValues.length > 0
     ? <span className="text-sm break-words min-w-0">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{copy("common.none", "None", "없음")}</span>;
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
-    : <span className="text-sm text-muted-foreground">None</span>;
+    : <span className="text-sm text-muted-foreground">{copy("common.none", "None", "없음")}</span>;
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
       return issue.executionState.currentStageType;
@@ -910,15 +913,19 @@ export function IssueProperties({
   };
   const currentMonitorLabel = (() => {
     if (issue.executionPolicy?.monitor?.nextCheckAt) {
-      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
+      return copy("issueProperties.monitor.nextCheckAt", "Next check {{date}}", "{{date}} 확인 예정", {
+        date: formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt), locale),
+      });
     }
     if (issue.executionState?.monitor?.status === "cleared") {
-      return "Cleared";
+      return copy("issueProperties.monitor.cleared", "Cleared", "해제됨");
     }
     if (issue.monitorLastTriggeredAt) {
-      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
+      return copy("issueProperties.monitor.lastTriggered", "Last triggered {{time}}", "{{time}} 마지막 실행", {
+        time: timeAgo(issue.monitorLastTriggeredAt, locale),
+      });
     }
-    return "Not scheduled";
+    return copy("issueProperties.monitor.notScheduled", "Not scheduled", "예약 없음");
   })();
   const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorTrigger = (
@@ -933,11 +940,15 @@ export function IssueProperties({
         )}
         title={monitorNextCheckAt ? currentMonitorLabel : undefined}
       >
-        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
+        {monitorNextCheckAt
+          ? copy("issueProperties.monitor.nextCheckRelative", "Next check {{time}}", "{{time}} 후 확인", {
+            time: formatMonitorOffset(monitorNextCheckAt),
+          })
+          : currentMonitorLabel}
       </span>
       {monitorNextCheckAt ? (
         <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
-          {formatDate(new Date(monitorNextCheckAt))}
+          {formatDate(new Date(monitorNextCheckAt), locale)}
         </span>
       ) : null}
     </span>
@@ -1193,7 +1204,7 @@ export function IssueProperties({
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No labels</span>
+      <span className="text-sm text-muted-foreground">{copy("issueProperties.labels.none", "No labels", "태그 없음")}</span>
     </>
   );
   const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
@@ -1201,8 +1212,8 @@ export function IssueProperties({
       type="button"
       className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
-      aria-label="Add label"
-      title="Add label"
+      aria-label={copy("issueProperties.labels.add", "Add label", "태그 추가")}
+      title={copy("issueProperties.labels.add", "Add label", "태그 추가")}
     >
       <Plus className="h-3 w-3" />
     </button>
@@ -1212,7 +1223,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
+        placeholder={copy("issueProperties.labels.search", "Search labels...", "태그 검색...")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -1251,7 +1262,7 @@ export function IssueProperties({
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
+            placeholder={copy("issueProperties.labels.new", "New label", "새 태그")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -1267,7 +1278,9 @@ export function IssueProperties({
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
+          {createLabel.isPending
+            ? copy("issueProperties.labels.creating", "Creating...", "생성 중...")
+            : copy("issueProperties.labels.create", "Create label", "태그 만들기")}
         </button>
       </div>
     </>
@@ -1283,19 +1296,19 @@ export function IssueProperties({
   ) : (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">Unassigned</span>
+      <span className="text-sm text-muted-foreground">{copy("issueProperties.assignee.unassigned", "Unassigned", "미지정")}</span>
     </>
   );
 
   const assigneePickerOptions = orderItemsBySelectedAndRecent(
     [
-      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
+      { id: "", kind: "none" as const, label: copy("issueProperties.assignee.none", "No assignee", "담당자 없음"), searchText: "" },
       ...(currentUserId
         ? [{
             id: `user:${currentUserId}`,
             kind: "user" as const,
             userId: currentUserId,
-            label: "Assign to me",
+            label: copy("issueProperties.assignee.assignMe", "Assign to me", "나에게 배정"),
             searchText: userLabel(currentUserId) ?? "",
           }]
         : []),
@@ -1304,7 +1317,9 @@ export function IssueProperties({
             id: `user:${issue.createdByUserId}`,
             kind: "user" as const,
             userId: issue.createdByUserId,
-            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+            label: creatorUserLabel
+              ? copy("issueProperties.assignee.assignUser", "Assign to {{name}}", "{{name}}에게 배정", { name: creatorUserLabel })
+              : copy("issueProperties.assignee.assignRequester", "Assign to requester", "요청자에게 배정"),
             searchText: creatorUserLabel ?? "requester",
           }]
         : []),
@@ -1331,7 +1346,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder={copy("issueProperties.assignee.search", "Search assignees...", "담당자 검색...")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
@@ -1385,7 +1400,9 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        placeholder={stageType === "review"
+          ? copy("issueProperties.reviewers.search", "Search reviewers...", "검토자 검색...")
+          : copy("issueProperties.approvers.search", "Search approvers...", "승인자 검색...")}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         autoFocus={!inline}
@@ -1398,7 +1415,9 @@ export function IssueProperties({
           )}
           onClick={onClear}
         >
-          No {stageType === "review" ? "reviewers" : "approvers"}
+          {stageType === "review"
+            ? copy("issueProperties.reviewers.none", "No reviewers", "검토자 없음")
+            : copy("issueProperties.approvers.none", "No approvers", "승인자 없음")}
         </button>
         {currentUserId && (
           <button
@@ -1409,7 +1428,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
+            {copy("issueProperties.assignee.assignMe", "Assign to me", "나에게 배정")}
           </button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
@@ -1421,7 +1440,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${issue.createdByUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? creatorUserLabel : "Requester"}
+            {creatorUserLabel ?? copy("issueProperties.assignee.requester", "Requester", "요청자")}
           </button>
         )}
         {otherUserOptions
@@ -1478,12 +1497,12 @@ export function IssueProperties({
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No project</span>
+      <span className="text-sm text-muted-foreground">{copy("issueProperties.project.none", "No project", "프로젝트 없음")}</span>
     </>
   );
   const projectPickerOptions = orderItemsBySelectedAndRecent(
     [
-      { id: "", kind: "none" as const, name: "No project", color: null as string | null },
+      { id: "", kind: "none" as const, name: copy("issueProperties.project.none", "No project", "프로젝트 없음"), color: null as string | null },
       ...orderedProjects.map((project) => ({
         id: project.id,
         kind: "project" as const,
@@ -1500,7 +1519,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search projects..."
+        placeholder={copy("issueProperties.project.search", "Search projects...", "프로젝트 검색...")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -1590,7 +1609,7 @@ export function IssueProperties({
       {parentTitle}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">{copy("issueProperties.parent.none", "No parent", "상위 작업 없음")}</span>
   );
   const parentLink = issue.parentId ? (
     <Link
@@ -1621,7 +1640,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={copy("issueProperties.issues.search", "Search issues...", "작업 검색...")}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1637,7 +1656,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
+          {copy("issueProperties.parent.none", "No parent", "상위 작업 없음")}
         </button>
         {parentOptions.map((candidate) => (
           <button
@@ -1693,11 +1712,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={copy("issueProperties.issues.search", "Search issues...", "작업 검색...")}
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search issues to add as blockers"
+        aria-label={copy("issueProperties.blockers.searchAria", "Search issues to add as blockers", "차단 작업으로 추가할 작업 검색")}
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1711,7 +1730,7 @@ export function IssueProperties({
             setBlockedBySearch("");
           }}
         >
-          No blockers
+          {copy("issueProperties.blockers.none", "No blockers", "차단 작업 없음")}
         </button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
@@ -1734,9 +1753,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{copy("issueProperties.issues.searching", "Searching issues...", "작업 검색 중...")}</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">{copy("issueProperties.issues.noMatches", "No matching issues.", "일치하는 작업이 없습니다.")}</div>
         ) : null}
       </div>
     </>
@@ -1748,14 +1767,14 @@ export function IssueProperties({
       onClick={onClick}
     >
       <Plus className="h-3 w-3" />
-      Add blocker
+      {copy("issueProperties.blockers.add", "Add blocker", "차단 작업 추가")}
     </button>
   );
 
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={copy("issueProperties.status", "Status", "상태")}>
           <StatusIcon
             status={issue.status}
             blockerAttention={issue.blockerAttention}
@@ -1764,7 +1783,7 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
+        <PropertyRow label={copy("issueProperties.priority", "Priority", "우선순위")}>
           <PriorityIcon
             priority={issue.priority}
             onChange={(priority) => onUpdate({ priority })}
@@ -1774,7 +1793,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Labels"
+          label={copy("issueProperties.labels", "Labels", "태그")}
           open={labelsOpen}
           onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
           triggerContent={labelsTrigger}
@@ -1787,7 +1806,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Assignee"
+          label={copy("issueProperties.assignee", "Assignee", "담당자")}
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
           triggerContent={assigneeTrigger}
@@ -1808,7 +1827,7 @@ export function IssueProperties({
         {showAssigneeAdapterOptions ? (
           <PropertyPicker
             inline={inline}
-            label="Model"
+            label={copy("issueProperties.model", "Model", "모델")}
             open={assigneeOptionsOpen}
             onOpenChange={setAssigneeOptionsOpen}
             triggerContent={assigneeOptionsTrigger}
@@ -1832,7 +1851,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Project"
+          label={copy("issueProperties.project", "Project", "프로젝트")}
           open={projectOpen}
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
@@ -1853,7 +1872,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Parent"
+          label={copy("issueProperties.parent", "Parent", "상위 작업")}
           open={parentOpen}
           onOpenChange={(open) => {
             setParentOpen(open);
@@ -1869,7 +1888,7 @@ export function IssueProperties({
 
         {inline ? (
           <div>
-            <PropertyRow label="Blocked by">
+            <PropertyRow label={copy("issueProperties.blockedBy", "Blocked by", "막고 있는 작업")}>
               {(issue.blockedBy ?? []).map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
@@ -1882,7 +1901,7 @@ export function IssueProperties({
             )}
           </div>
         ) : (
-          <PropertyRow label="Blocked by">
+          <PropertyRow label={copy("issueProperties.blockedBy", "Blocked by", "막고 있는 작업")}>
             {(issue.blockedBy ?? []).map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}
@@ -1903,7 +1922,7 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        <PropertyRow label="Blocking">
+        <PropertyRow label={copy("issueProperties.blocking", "Blocking", "막는 작업")}>
           {blockingIssues.length > 0 ? (
             <div className="flex flex-wrap gap-1">
               {blockingIssues.map((relation) => (
@@ -1913,7 +1932,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label={copy("issueProperties.subIssues", "Sub-issues", "하위 작업")}>
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1927,14 +1946,14 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-issue
+                {copy("issueProperties.subIssues.add", "Add sub-issue", "하위 작업 추가")}
               </button>
             ) : null}
           </div>
         </PropertyRow>
 
         {relatedTasks.length > 0 ? (
-          <PropertyRow label="Related Tasks">
+          <PropertyRow label={copy("issueProperties.relatedTasks", "Related Tasks", "관련 작업")}>
             <div className="flex flex-wrap gap-1">
               {relatedTasks.map((related) => (
                 <IssueReferencePill key={related.id} issue={related} />
@@ -1945,7 +1964,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Reviewers"
+          label={copy("issueProperties.reviewers", "Reviewers", "검토자")}
           open={reviewersOpen}
           onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
           triggerContent={reviewerTrigger}
@@ -1964,7 +1983,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Approvers"
+          label={copy("issueProperties.approvers", "Approvers", "승인자")}
           open={approversOpen}
           onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
           triggerContent={approverTrigger}
@@ -1982,7 +2001,7 @@ export function IssueProperties({
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
         {currentExecutionLabel && (
-          <PropertyRow label="Execution">
+          <PropertyRow label={copy("issueProperties.execution", "Execution", "실행")}>
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
@@ -1990,7 +2009,7 @@ export function IssueProperties({
         {showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
             inline={inline}
-            label="Scheduled retry"
+            label={copy("issueProperties.scheduledRetry", "Scheduled retry", "예약 재시도")}
             open={scheduledRetryOpen}
             onOpenChange={setScheduledRetryOpen}
             triggerContent={scheduledRetryTrigger}
@@ -2004,7 +2023,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Monitor"
+          label={copy("issueProperties.monitor", "Monitor", "모니터")}
           open={monitorOpen}
           onOpenChange={setMonitorOpen}
           triggerContent={monitorTrigger}
@@ -2016,7 +2035,7 @@ export function IssueProperties({
         </PropertyPicker>
 
         {issue.requestDepth > 0 && (
-          <PropertyRow label="Depth">
+          <PropertyRow label={copy("issueProperties.depth", "Depth", "깊이")}>
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
@@ -2027,7 +2046,7 @@ export function IssueProperties({
           <Separator />
           <div className="space-y-1">
             {liveWorkspaceService?.url && (
-              <PropertyRow label="Service">
+              <PropertyRow label={copy("issueProperties.service", "Service", "서비스")}>
                 <a
                   href={liveWorkspaceService.url}
                   target="_blank"
@@ -2040,18 +2059,18 @@ export function IssueProperties({
               </PropertyRow>
             )}
             {showWorkspaceDetailLink && issue.executionWorkspaceId && (
-              <PropertyRow label="Workspace">
+              <PropertyRow label={copy("issueProperties.workspace", "Workspace", "작업공간")}>
                 <Link
                   to={`/execution-workspaces/${issue.executionWorkspaceId}`}
                   className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                 >
-                  View workspace
+                  {copy("issueProperties.workspace.view", "View workspace", "작업공간 보기")}
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               </PropertyRow>
             )}
             {issue.currentExecutionWorkspace?.branchName && (
-              <PropertyRow label="Branch">
+              <PropertyRow label={copy("issueProperties.branch", "Branch", "브랜치")}>
                 <TruncatedCopyable
                   value={issue.currentExecutionWorkspace.branchName}
                   icon={GitBranch}
@@ -2059,7 +2078,7 @@ export function IssueProperties({
               </PropertyRow>
             )}
             {issue.currentExecutionWorkspace?.cwd && (
-              <PropertyRow label="Folder">
+              <PropertyRow label={copy("issueProperties.folder", "Folder", "폴더")}>
                 <TruncatedCopyable
                   value={issue.currentExecutionWorkspace.cwd}
                   icon={FolderOpen}
@@ -2074,7 +2093,7 @@ export function IssueProperties({
 
       <div className="space-y-1">
         {(issue.createdByAgentId || issue.createdByUserId) && (
-          <PropertyRow label="Created by">
+          <PropertyRow label={copy("issueProperties.createdBy", "Created by", "생성자")}>
             {issue.createdByAgentId ? (
               <Link
                 to={`/agents/${issue.createdByAgentId}`}
@@ -2085,26 +2104,26 @@ export function IssueProperties({
             ) : (
               <>
                 <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
+                <span className="text-sm">{creatorUserLabel ?? copy("issueProperties.user", "User", "사용자")}</span>
               </>
             )}
           </PropertyRow>
         )}
         {issue.startedAt && (
-          <PropertyRow label="Started">
-            <span className="text-sm">{formatDateTime(issue.startedAt)}</span>
+          <PropertyRow label={copy("issueProperties.started", "Started", "시작")}>
+            <span className="text-sm">{formatDateTime(issue.startedAt, locale)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
-          <PropertyRow label="Completed">
-            <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
+          <PropertyRow label={copy("issueProperties.completed", "Completed", "완료")}>
+            <span className="text-sm">{formatDateTime(issue.completedAt, locale)}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
-          <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
+        <PropertyRow label={copy("issueProperties.created", "Created", "생성")}>
+          <span className="text-sm">{formatDateTime(issue.createdAt, locale)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
-          <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
+        <PropertyRow label={copy("issueProperties.updated", "Updated", "수정")}>
+          <span className="text-sm">{timeAgo(issue.updatedAt, locale)}</span>
         </PropertyRow>
       </div>
     </div>

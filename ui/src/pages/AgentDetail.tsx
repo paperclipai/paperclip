@@ -47,7 +47,7 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatCents, formatDate, formatDurationMs, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { buildDuplicateAgentPayload, duplicateAgentName, type DuplicateInstructionsBundle } from "../lib/duplicate-agent-payload";
@@ -113,6 +113,7 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
 
 async function loadDuplicateInstructionsBundle(
   agentId: string,
@@ -215,12 +216,15 @@ function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): 
     .join("\n");
 }
 
-const sourceLabels: Record<string, string> = {
-  timer: "Timer",
-  assignment: "Assignment",
-  on_demand: "On-demand",
-  automation: "Automation",
-};
+function sourceLabel(source: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    timer: copy("agentDetail.source.timer", "Timer", "예약"),
+    assignment: copy("agentDetail.source.assignment", "Assignment", "배정"),
+    on_demand: copy("agentDetail.source.onDemand", "On-demand", "수동 실행"),
+    automation: copy("agentDetail.source.automation", "Automation", "자동화"),
+  };
+  return labels[source] ?? source;
+}
 
 const LIVE_SCROLL_BOTTOM_TOLERANCE_PX = 32;
 type ScrollContainer = Window | HTMLElement;
@@ -350,6 +354,7 @@ export function RunInvocationCard({
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
 }) {
+  const copy = useLocalizedCopy();
   const rawCommandLine = [
     typeof payload.command === "string" ? payload.command : null,
     ...(Array.isArray(payload.commandArgs)
@@ -369,29 +374,29 @@ export function RunInvocationCard({
 
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
-      <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+      <div className="text-xs font-medium text-muted-foreground">{copy("agentDetail.invocation.title", "Invocation", "실행 호출")}</div>
       {typeof payload.adapterType === "string" && (
-        <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{payload.adapterType}</div>
+        <div className="text-xs"><span className="text-muted-foreground">{copy("agentDetail.invocation.adapter", "Adapter", "어댑터")}: </span>{payload.adapterType}</div>
       )}
       {typeof payload.cwd === "string" && (
-        <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
+        <div className="text-xs break-all"><span className="text-muted-foreground">{copy("agentDetail.invocation.workingDir", "Working dir", "작업 폴더")}: </span><span className="font-mono">{payload.cwd}</span></div>
       )}
       {hasAdvancedDetails && (
         <Collapsible>
           <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
             <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-            Details
+            {copy("agentDetail.invocation.details", "Details", "상세")}
           </CollapsibleTrigger>
           <CollapsibleContent className="pt-2 space-y-2">
             {commandLine && (
               <div className="text-xs break-all">
-                <span className="text-muted-foreground">Command: </span>
+                <span className="text-muted-foreground">{copy("agentDetail.invocation.command", "Command", "명령")}: </span>
                 <span className="font-mono">{commandLine}</span>
               </div>
             )}
             {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+                <div className="text-xs text-muted-foreground mb-1">{copy("agentDetail.invocation.commandNotes", "Command notes", "명령 메모")}</div>
                 <ul className="list-disc pl-5 space-y-1">
                   {payload.commandNotes
                     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -405,7 +410,7 @@ export function RunInvocationCard({
             )}
             {payload.prompt !== undefined && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+                <div className="text-xs text-muted-foreground mb-1">{copy("agentDetail.invocation.prompt", "Prompt", "프롬프트")}</div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
                   {typeof payload.prompt === "string"
                     ? redactPathText(payload.prompt, censorUsernameInLogs)
@@ -415,7 +420,7 @@ export function RunInvocationCard({
             )}
             {payload.context !== undefined && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Context</div>
+                <div className="text-xs text-muted-foreground mb-1">{copy("agentDetail.invocation.context", "Context", "컨텍스트")}</div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
                   {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
                 </pre>
@@ -423,7 +428,7 @@ export function RunInvocationCard({
             )}
             {payload.env !== undefined && (
               <div>
-                <div className="text-xs text-muted-foreground mb-1">Environment</div>
+                <div className="text-xs text-muted-foreground mb-1">{copy("agentDetail.invocation.environment", "Environment", "환경 변수")}</div>
                 <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
                   {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
                 </pre>
@@ -456,16 +461,16 @@ function parseStoredLogContent(content: string): RunLogChunk[] {
   return parsed;
 }
 
-function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
+function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"], copy: ReturnType<typeof useLocalizedCopy>) {
   switch (phase) {
     case "worktree_prepare":
-      return "Worktree setup";
+      return copy("agentDetail.workspace.phase.worktreePrepare", "Worktree setup", "작업트리 준비");
     case "workspace_provision":
-      return "Provision";
+      return copy("agentDetail.workspace.phase.provision", "Provision", "작업공간 준비");
     case "workspace_teardown":
-      return "Teardown";
+      return copy("agentDetail.workspace.phase.teardown", "Teardown", "작업공간 정리");
     case "worktree_cleanup":
-      return "Worktree cleanup";
+      return copy("agentDetail.workspace.phase.worktreeCleanup", "Worktree cleanup", "작업트리 정리");
     default:
       return phase;
   }
@@ -487,6 +492,14 @@ function workspaceOperationStatusTone(status: WorkspaceOperation["status"]) {
 }
 
 function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation["status"] }) {
+  const copy = useLocalizedCopy();
+  const labels: Record<string, string> = {
+    succeeded: copy("status.succeeded", "succeeded", "성공"),
+    failed: copy("status.failed", "failed", "실패"),
+    running: copy("status.running", "running", "실행 중"),
+    skipped: copy("status.skipped", "skipped", "건너뜀"),
+  };
+
   return (
     <span
       className={cn(
@@ -494,7 +507,7 @@ function WorkspaceOperationStatusBadge({ status }: { status: WorkspaceOperation[
         workspaceOperationStatusTone(status),
       )}
     >
-      {status.replace("_", " ")}
+      {labels[status] ?? status.replace("_", " ")}
     </span>
   );
 }
@@ -506,6 +519,8 @@ function WorkspaceOperationLogViewer({
   operation: WorkspaceOperation;
   censorUsernameInLogs: boolean;
 }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const [open, setOpen] = useState(false);
   const { data: logData, isLoading, error } = useQuery({
     queryKey: ["workspace-operation-log", operation.id],
@@ -526,25 +541,27 @@ function WorkspaceOperationLogViewer({
         className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
         onClick={() => setOpen((value) => !value)}
       >
-        {open ? "Hide full log" : "Show full log"}
+        {open
+          ? copy("agentDetail.workspace.hideFullLog", "Hide full log", "전체 로그 숨기기")
+          : copy("agentDetail.workspace.showFullLog", "Show full log", "전체 로그 보기")}
       </button>
       {open && (
         <div className="rounded-md border border-border bg-background/70 p-2">
-          {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
+          {isLoading && <div className="text-xs text-muted-foreground">{copy("agentDetail.workspace.loadingLog", "Loading log...", "로그 불러오는 중...")}</div>}
           {error && (
             <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
+              {error instanceof Error ? error.message : copy("agentDetail.workspace.loadLogFailed", "Failed to load workspace operation log", "작업공간 작업 로그를 불러오지 못했습니다.")}
             </div>
           )}
           {!isLoading && !error && chunks.length === 0 && (
-            <div className="text-xs text-muted-foreground">No persisted log lines.</div>
+            <div className="text-xs text-muted-foreground">{copy("agentDetail.workspace.noLogLines", "No persisted log lines.", "저장된 로그 줄이 없습니다.")}</div>
           )}
           {chunks.length > 0 && (
             <div className="max-h-64 overflow-y-auto rounded bg-neutral-100 p-2 font-mono text-xs dark:bg-neutral-950">
               {chunks.map((chunk, index) => (
                 <div key={`${chunk.ts}-${index}`} className="flex gap-2">
                   <span className="shrink-0 text-neutral-500">
-                    {new Date(chunk.ts).toLocaleTimeString("en-US", { hour12: false })}
+                    {new Date(chunk.ts).toLocaleTimeString(locale, { hour12: false })}
                   </span>
                   <span
                     className={cn(
@@ -576,12 +593,14 @@ function WorkspaceOperationsSection({
   operations: WorkspaceOperation[];
   censorUsernameInLogs: boolean;
 }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   if (operations.length === 0) return null;
 
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
       <div className="text-xs font-medium text-muted-foreground">
-        Workspace ({operations.length})
+        {copy("agentDetail.workspace.title", "Workspace", "작업공간")} ({operations.length})
       </div>
       <div className="space-y-3">
         {operations.map((operation) => {
@@ -589,22 +608,22 @@ function WorkspaceOperationsSection({
           return (
             <div key={operation.id} className="rounded-md border border-border/70 bg-background/70 p-3 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase)}</div>
+                <div className="text-sm font-medium">{workspaceOperationPhaseLabel(operation.phase, copy)}</div>
                 <WorkspaceOperationStatusBadge status={operation.status} />
                 <div className="text-[11px] text-muted-foreground">
-                  {relativeTime(operation.startedAt)}
-                  {operation.finishedAt && ` to ${relativeTime(operation.finishedAt)}`}
+                  {relativeTime(operation.startedAt, locale)}
+                  {operation.finishedAt && <> &rarr; {relativeTime(operation.finishedAt, locale)}</>}
                 </div>
               </div>
               {operation.command && (
                 <div className="text-xs break-all">
-                  <span className="text-muted-foreground">Command: </span>
+                  <span className="text-muted-foreground">{copy("agentDetail.invocation.command", "Command", "명령")}: </span>
                   <span className="font-mono">{operation.command}</span>
                 </div>
               )}
               {operation.cwd && (
                 <div className="text-xs break-all">
-                  <span className="text-muted-foreground">Working dir: </span>
+                  <span className="text-muted-foreground">{copy("agentDetail.invocation.workingDir", "Working dir", "작업 폴더")}: </span>
                   <span className="font-mono">{operation.cwd}</span>
                 </div>
               )}
@@ -615,30 +634,32 @@ function WorkspaceOperationsSection({
                 || asNonEmptyString(metadata?.cleanupAction)) && (
                 <div className="grid gap-1 text-xs sm:grid-cols-2">
                   {asNonEmptyString(metadata?.branchName) && (
-                    <div><span className="text-muted-foreground">Branch: </span><span className="font-mono">{metadata?.branchName as string}</span></div>
+                    <div><span className="text-muted-foreground">{copy("agentDetail.workspace.branch", "Branch", "브랜치")}: </span><span className="font-mono">{metadata?.branchName as string}</span></div>
                   )}
                   {asNonEmptyString(metadata?.baseRef) && (
-                    <div><span className="text-muted-foreground">Base ref: </span><span className="font-mono">{metadata?.baseRef as string}</span></div>
+                    <div><span className="text-muted-foreground">{copy("agentDetail.workspace.baseRef", "Base ref", "기준 ref")}: </span><span className="font-mono">{metadata?.baseRef as string}</span></div>
                   )}
                   {asNonEmptyString(metadata?.worktreePath) && (
-                    <div className="break-all"><span className="text-muted-foreground">Worktree: </span><span className="font-mono">{metadata?.worktreePath as string}</span></div>
+                    <div className="break-all"><span className="text-muted-foreground">{copy("agentDetail.workspace.worktree", "Worktree", "작업트리")}: </span><span className="font-mono">{metadata?.worktreePath as string}</span></div>
                   )}
                   {asNonEmptyString(metadata?.repoRoot) && (
-                    <div className="break-all"><span className="text-muted-foreground">Repo root: </span><span className="font-mono">{metadata?.repoRoot as string}</span></div>
+                    <div className="break-all"><span className="text-muted-foreground">{copy("agentDetail.workspace.repoRoot", "Repo root", "저장소 루트")}: </span><span className="font-mono">{metadata?.repoRoot as string}</span></div>
                   )}
                   {asNonEmptyString(metadata?.cleanupAction) && (
-                    <div><span className="text-muted-foreground">Cleanup: </span><span className="font-mono">{metadata?.cleanupAction as string}</span></div>
+                    <div><span className="text-muted-foreground">{copy("agentDetail.workspace.cleanup", "Cleanup", "정리")}: </span><span className="font-mono">{metadata?.cleanupAction as string}</span></div>
                   )}
                 </div>
               )}
               {typeof metadata?.created === "boolean" && (
                 <div className="text-xs text-muted-foreground">
-                  {metadata.created ? "Created by this run" : "Reused existing workspace"}
+                  {metadata.created
+                    ? copy("agentDetail.workspace.createdByRun", "Created by this run", "이 실행에서 생성됨")
+                    : copy("agentDetail.workspace.reusedExisting", "Reused existing workspace", "기존 작업공간 재사용")}
                 </div>
               )}
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">stderr excerpt</div>
+                  <div className="mb-1 text-xs text-red-700 dark:text-red-300">{copy("agentDetail.run.stderrExcerpt", "stderr excerpt", "stderr 발췌")}</div>
                   <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
                     {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
                   </pre>
@@ -646,7 +667,7 @@ function WorkspaceOperationsSection({
               )}
               {operation.stdoutExcerpt && operation.stdoutExcerpt.trim() && (
                 <div>
-                  <div className="mb-1 text-xs text-muted-foreground">stdout excerpt</div>
+                  <div className="mb-1 text-xs text-muted-foreground">{copy("agentDetail.run.stdoutExcerpt", "stdout excerpt", "stdout 발췌")}</div>
                   <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
                     {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
                   </pre>
@@ -678,6 +699,7 @@ export function AgentDetail() {
   const { openNewIssue } = useDialogActions();
   const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -964,7 +986,7 @@ export function AgentDetail() {
 
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
-      { label: "Agents", href: "/agents" },
+      { label: copy("agentDetail.breadcrumb.agents", "Agents", "직원"), href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
     if (activeView === "dashboard" && !urlRunId) {
@@ -972,24 +994,24 @@ export function AgentDetail() {
     } else {
       crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
-        crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.runs", "Runs", "실행 기록"), href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.run", `Run ${urlRunId.slice(0, 8)}`, `실행 ${urlRunId.slice(0, 8)}`) });
       } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.instructions", "Instructions", "지침") });
       } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.configuration", "Configuration", "설정") });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
       } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.runs", "Runs", "실행 기록") });
       } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.budget", "Budget", "예산") });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        crumbs.push({ label: copy("agentDetail.breadcrumb.dashboard", "Dashboard", "대시보드") });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, copy]);
 
   useEffect(() => {
     closePanel();
@@ -1033,7 +1055,7 @@ export function AgentDetail() {
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
           <p className="min-w-0 flex-1">
-            You left this agent. It no longer appears in your sidebar.
+            {copy("agentDetail.leftNotice.body", "You left this agent. It no longer appears in your sidebar.", "이 직원을 떠났습니다. 이제 사이드바에 표시되지 않습니다.")}
           </p>
           <MembershipAction
             compact
@@ -1057,7 +1079,7 @@ export function AgentDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
-            aria-label="Dismiss agent membership notice"
+            aria-label={copy("agentDetail.leftNotice.dismiss", "Dismiss agent membership notice", "직원 멤버십 알림 닫기")}
             onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
           >
             ×
@@ -1090,12 +1112,12 @@ export function AgentDetail() {
             onClick={() => openNewIssue({ assigneeAgentId: agent.id })}
           >
             <Plus className="h-3.5 w-3.5 sm:mr-1" />
-            <span className="hidden sm:inline">Assign Task</span>
+            <span className="hidden sm:inline">{copy("agentDetail.actions.assignTask", "Assign Task", "작업 배정")}</span>
           </Button>
           <RunButton
             onClick={() => agentAction.mutate("invoke")}
             disabled={agentAction.isPending || isPendingApproval}
-            label="Run Heartbeat"
+            label={copy("agentDetail.actions.runHeartbeat", "Run Heartbeat", "상태 점검 실행")}
           />
           <PauseResumeButton
             isPaused={agent.status === "paused"}
@@ -1113,7 +1135,9 @@ export function AgentDetail() {
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                {copy("agentDetail.live", "Live", "실행 중")}
+              </span>
             </Link>
           )}
 
@@ -1135,7 +1159,7 @@ export function AgentDetail() {
                 ) : (
                   <Copy className="h-3 w-3" />
                 )}
-                Duplicate Agent
+                {copy("agentDetail.menu.duplicateAgent", "Duplicate Agent", "직원 복제")}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -1145,7 +1169,7 @@ export function AgentDetail() {
                 }}
               >
                 <Copy className="h-3 w-3" />
-                Copy Agent ID
+                {copy("agentDetail.menu.copyAgentId", "Copy Agent ID", "직원 ID 복사")}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
@@ -1155,7 +1179,7 @@ export function AgentDetail() {
                 }}
               >
                 <RotateCcw className="h-3 w-3" />
-                Reset Sessions
+                {copy("agentDetail.menu.resetSessions", "Reset Sessions", "세션 초기화")}
               </button>
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
@@ -1165,7 +1189,7 @@ export function AgentDetail() {
                 }}
               >
                 <Trash2 className="h-3 w-3" />
-                Terminate
+                {copy("agentDetail.menu.terminate", "Terminate", "종료")}
               </button>
             </PopoverContent>
           </Popover>
@@ -1179,12 +1203,12 @@ export function AgentDetail() {
         >
           <PageTabBar
             items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
-              { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
-              { value: "runs", label: "Runs" },
-              { value: "budget", label: "Budget" },
+              { value: "dashboard", label: copy("agentDetail.tabs.dashboard", "Dashboard", "대시보드") },
+              { value: "instructions", label: copy("agentDetail.tabs.instructions", "Instructions", "지침") },
+              { value: "skills", label: copy("agentDetail.tabs.skills", "Skills", "스킬") },
+              { value: "configuration", label: copy("agentDetail.tabs.configuration", "Configuration", "설정") },
+              { value: "runs", label: copy("agentDetail.tabs.runs", "Runs", "실행 기록") },
+              { value: "budget", label: copy("agentDetail.tabs.budget", "Budget", "예산") },
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1195,7 +1219,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
-          <span>This agent is pending board approval and cannot be invoked yet.</span>
+          <span>{copy("agentDetail.pending.body", "This agent is pending board approval and cannot be invoked yet.", "이 직원은 보드 승인을 기다리는 중이라 아직 실행할 수 없습니다.")}</span>
           <Button
             variant="outline"
             size="sm"
@@ -1203,7 +1227,7 @@ export function AgentDetail() {
             disabled={agentAction.isPending}
           >
             <CheckCircle2 className="h-3.5 w-3.5 sm:mr-1" />
-            <span>Approve agent</span>
+            <span>{copy("agentDetail.pending.approve", "Approve agent", "직원 승인")}</span>
           </Button>
         </div>
       )}
@@ -1218,14 +1242,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {copy("common.cancel", "Cancel", "취소")}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? copy("common.saving", "Saving…", "저장 중…") : copy("common.save", "Save", "저장")}
             </Button>
           </div>
         </div>
@@ -1244,14 +1268,14 @@ export function AgentDetail() {
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              {copy("common.cancel", "Cancel", "취소")}
             </Button>
             <Button
               size="sm"
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? copy("common.saving", "Saving…", "저장 중…") : copy("common.save", "Save", "저장")}
             </Button>
           </div>
         </div>
@@ -1338,20 +1362,22 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
 }
 
 function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: string }) {
-  if (runs.length === 0) return null;
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
+  const run = useMemo(() => {
+    if (runs.length === 0) return null;
+    const sorted = [...runs].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
+    return liveRun ?? sorted[0] ?? null;
+  }, [runs]);
 
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-
-  const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
-  const run = liveRun ?? sorted[0];
-  const isLive = run.status === "running" || run.status === "queued";
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
-  const StatusIcon = statusInfo.icon;
-  const summaryRaw = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+  const summaryRaw = run
+    ? run.resultJson
+      ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+      : run.error ?? ""
+    : "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = useMemo(() => {
@@ -1371,6 +1397,12 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
     return excerpt.join(" ");
   }, [summaryRaw]);
 
+  if (!run) return null;
+
+  const isLive = run.status === "running" || run.status === "queued";
+  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+  const StatusIcon = statusInfo.icon;
+
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
@@ -1381,13 +1413,15 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
               <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
             </span>
           )}
-          {isLive ? "Live Run" : "Latest Run"}
+          {isLive
+            ? copy("agentDetail.latestRun.live", "Live Run", "실행 중")
+            : copy("agentDetail.latestRun.latest", "Latest Run", "최근 실행")}
         </h3>
         <Link
           to={`/agents/${agentId}/runs/${run.id}`}
           className="shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors no-underline"
         >
-          View details &rarr;
+          {copy("agentDetail.latestRun.viewDetails", "View details", "자세히 보기")} &rarr;
         </Link>
       </div>
 
@@ -1409,9 +1443,9 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
               : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
               : "bg-muted text-muted-foreground"
           )}>
-            {sourceLabels[run.invocationSource] ?? run.invocationSource}
+            {sourceLabel(run.invocationSource, copy)}
           </span>
-          <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt)}</span>
+          <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt, locale)}</span>
         </div>
 
         {summary && (
@@ -1441,6 +1475,7 @@ function AgentOverview({
   agentId: string;
   agentRouteId: string;
 }) {
+  const copy = useLocalizedCopy();
   return (
     <div className="space-y-8">
       {/* Latest Run */}
@@ -1448,16 +1483,16 @@ function AgentOverview({
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
+        <ChartCard title={copy("agentDetail.overview.runActivity", "Run Activity", "실행 활동")} subtitle={copy("agentDetail.overview.last14Days", "Last 14 days", "최근 14일")}>
           <RunActivityChart runs={runs} />
         </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <ChartCard title={copy("agentDetail.overview.issuesByPriority", "Issues by Priority", "우선순위별 작업")} subtitle={copy("agentDetail.overview.last14Days", "Last 14 days", "최근 14일")}>
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title={copy("agentDetail.overview.issuesByStatus", "Issues by Status", "상태별 작업")} subtitle={copy("agentDetail.overview.last14Days", "Last 14 days", "최근 14일")}>
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
+        <ChartCard title={copy("agentDetail.overview.successRate", "Success Rate", "성공률")} subtitle={copy("agentDetail.overview.last14Days", "Last 14 days", "최근 14일")}>
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
@@ -1465,16 +1500,18 @@ function AgentOverview({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Issues</h3>
+          <h3 className="text-sm font-medium">{copy("agentDetail.overview.recentIssues", "Recent Issues", "최근 작업")}</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            See All &rarr;
+            {copy("agentDetail.overview.seeAll", "See All", "전체 보기")} &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent issues.</p>
+          <p className="text-sm text-muted-foreground">
+            {copy("agentDetail.overview.noRecentIssues", "No recent issues.", "최근 작업이 없습니다.")}
+          </p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1488,7 +1525,7 @@ function AgentOverview({
             ))}
             {assignedIssues.length > 10 && (
               <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more issues
+                +{assignedIssues.length - 10} {copy("agentDetail.overview.moreIssues", "more issues", "개 작업 더 있음")}
               </div>
             )}
           </div>
@@ -1497,7 +1534,7 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="text-sm font-medium">{copy("agentDetail.overview.costs", "Costs", "비용")}</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
@@ -1513,6 +1550,8 @@ function CostsSection({
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const runsWithCost = runs
     .filter((r) => {
       const metrics = runMetrics(r);
@@ -1526,19 +1565,19 @@ function CostsSection({
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
+              <span className="text-xs text-muted-foreground block">{copy("agentDetail.costs.inputTokens", "Input tokens", "입력 토큰")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
+              <span className="text-xs text-muted-foreground block">{copy("agentDetail.costs.outputTokens", "Output tokens", "출력 토큰")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
+              <span className="text-xs text-muted-foreground block">{copy("agentDetail.costs.cachedTokens", "Cached tokens", "캐시 토큰")}</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
+              <span className="text-xs text-muted-foreground block">{copy("agentDetail.costs.totalCost", "Total cost", "총 비용")}</span>
               <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
             </div>
           </div>
@@ -1549,11 +1588,11 @@ function CostsSection({
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{copy("agentDetail.costs.date", "Date", "날짜")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{copy("agentDetail.costs.run", "Run", "실행")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{copy("agentDetail.costs.input", "Input", "입력")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{copy("agentDetail.costs.output", "Output", "출력")}</th>
+                <th className="text-right px-3 py-2 font-medium text-muted-foreground">{copy("agentDetail.costs.cost", "Cost", "비용")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1561,7 +1600,7 @@ function CostsSection({
                 const metrics = runMetrics(run);
                 return (
                   <tr key={run.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
+                    <td className="px-3 py-2">{formatDate(run.createdAt, locale)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
@@ -1603,6 +1642,7 @@ function AgentConfigurePage({
   onSavingChange: (saving: boolean) => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
@@ -1634,7 +1674,7 @@ function AgentConfigurePage({
         hideInstructionsFile
       />
       <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
+        <h3 className="text-sm font-medium mb-3">{copy("agentDetail.configuration.apiKeys", "API Keys", "API 키")}</h3>
         <KeysTab agentId={agentId} companyId={companyId} />
       </div>
 
@@ -1648,13 +1688,15 @@ function AgentConfigurePage({
             ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
           }
-          Configuration Revisions
+          {copy("agentDetail.configuration.revisions", "Configuration Revisions", "설정 변경 이력")}
           <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
         </button>
         {revisionsOpen && (
           <div className="mt-3">
             {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+              <p className="text-sm text-muted-foreground">
+                {copy("agentDetail.configuration.noRevisions", "No configuration revisions yet.", "아직 설정 변경 이력이 없습니다.")}
+              </p>
             ) : (
               <div className="space-y-2">
                 {(configRevisions ?? []).slice(0, 10).map((revision) => (
@@ -1674,12 +1716,12 @@ function AgentConfigurePage({
                         onClick={() => rollbackConfig.mutate(revision.id)}
                         disabled={rollbackConfig.isPending}
                       >
-                        Restore
+                        {copy("agentDetail.configuration.restore", "Restore", "복원")}
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+                      {copy("agentDetail.configuration.changed", "Changed", "변경")}:{ " "}
+                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : copy("agentDetail.configuration.noTrackedChanges", "no tracked changes", "추적된 변경 없음")}
                     </p>
                   </div>
                 ))}
@@ -1715,6 +1757,7 @@ function ConfigurationTab({
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
 }) {
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
@@ -1747,8 +1790,8 @@ function ConfigurationTab({
           ? err.message
           : err instanceof Error
             ? err.message
-            : "Could not save agent";
-      pushToast({ title: "Save failed", body: message, tone: "error" });
+            : copy("agentDetail.configuration.couldNotSave", "Could not save agent", "직원 설정을 저장하지 못했습니다.");
+      pushToast({ title: copy("agentDetail.configuration.saveFailed", "Save failed", "저장 실패"), body: message, tone: "error" });
     },
   });
 
@@ -1770,14 +1813,14 @@ function ConfigurationTab({
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
+      ? copy("agentDetail.permissions.hintCeo", "Enabled automatically for CEO agents.", "CEO 직원은 자동으로 활성화됩니다.")
       : taskAssignSource === "agent_creator"
-        ? "Enabled automatically while this agent can create new agents."
+        ? copy("agentDetail.permissions.hintCreator", "Enabled automatically while this agent can create new agents.", "이 직원이 새 직원을 만들 수 있는 동안 자동으로 활성화됩니다.")
         : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
+          ? copy("agentDetail.permissions.hintExplicit", "Enabled via explicit company permission grant.", "명시적인 회사 권한 부여로 활성화되었습니다.")
           : taskAssignSource === "simple_default"
-            ? "Enabled by simple company-wide task assignment defaults."
-            : "Disabled unless explicitly granted.";
+            ? copy("agentDetail.permissions.hintDefault", "Enabled by simple company-wide task assignment defaults.", "회사 전체 기본 작업 배정 규칙으로 활성화되었습니다.")
+            : copy("agentDetail.permissions.hintDisabled", "Disabled unless explicitly granted.", "명시적으로 허용하지 않으면 비활성화됩니다.");
 
   return (
     <div className="space-y-6">
@@ -1797,13 +1840,13 @@ function ConfigurationTab({
       />
 
       <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
+        <h3 className="text-sm font-medium mb-3">{copy("agentDetail.permissions.title", "Permissions", "권한")}</h3>
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>Can create new agents</div>
+              <div>{copy("agentDetail.permissions.canCreateAgents", "Can create new agents", "새 직원 생성 가능")}</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents and implicitly assign tasks.
+                {copy("agentDetail.permissions.canCreateAgentsHint", "Lets this agent create or hire agents and implicitly assign tasks.", "이 직원이 새 직원을 만들거나 고용하고 작업을 자동으로 배정할 수 있게 합니다.")}
               </p>
             </div>
             <ToggleSwitch
@@ -1819,7 +1862,7 @@ function ConfigurationTab({
           </div>
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
-              <div>Can assign tasks</div>
+              <div>{copy("agentDetail.permissions.canAssignTasks", "Can assign tasks", "작업 배정 가능")}</div>
               <p className="text-xs text-muted-foreground">
                 {taskAssignHint}
               </p>
@@ -1858,6 +1901,7 @@ function PromptsTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -2363,7 +2407,7 @@ function PromptsTab({
           isMobile && !showFilePanel && "hidden",
         )}>
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">Files</h4>
+            <h4 className="text-sm font-medium">{copy("agentDetail.instructions.files", "Files", "파일")}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
@@ -2421,7 +2465,7 @@ function PromptsTab({
                     setShowNewFileInput(false);
                   }}
                 >
-                  Create
+                  {copy("common.create", "Create", "생성")}
                 </Button>
                 <Button
                   type="button"
@@ -2433,7 +2477,7 @@ function PromptsTab({
                     setNewFilePath("");
                   }}
                 >
-                  Cancel
+                  {copy("common.cancel", "Cancel", "취소")}
                 </Button>
               </div>
             </div>
@@ -2465,18 +2509,18 @@ function PromptsTab({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="ml-3 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200 px-1.5 py-0.5 text-[10px] uppercase tracking-wide cursor-help">
-                        virtual file
+                        {copy("agentDetail.instructions.virtualFile", "virtual file", "가상 파일")}
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="right" sideOffset={4}>
-                      Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content
+                      {copy("agentDetail.instructions.virtualFileTooltip", "Legacy inline prompt — this deprecated virtual file preserves the old promptTemplate content", "레거시 인라인 프롬프트 - 이 deprecated 가상 파일은 이전 promptTemplate 내용을 보존합니다.")}
                     </TooltipContent>
                   </Tooltip>
                 );
               }
               return (
                 <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
-                  {file.isEntryFile ? "entry" : `${file.size}b`}
+                  {file.isEntryFile ? copy("agentDetail.instructions.entryFile", "entry", "진입점") : `${file.size}b`}
                 </span>
               );
             }}
@@ -2510,9 +2554,9 @@ function PromptsTab({
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
-                      ? "Deprecated virtual file"
-                      : `${selectedFileDetail?.language ?? "text"} file`
-                    : "New file in this bundle"}
+                      ? copy("agentDetail.instructions.deprecatedVirtualFile", "Deprecated virtual file", "Deprecated 가상 파일")
+                      : copy("agentDetail.instructions.languageFile", "{{language}} file", "{{language}} 파일", { language: selectedFileDetail?.language ?? "text" })
+                    : copy("agentDetail.instructions.newFile", "New file in this bundle", "이 번들의 새 파일")}
                 </p>
               </div>
             </div>
@@ -2520,9 +2564,9 @@ function PromptsTab({
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
-                  ariaLabel="Copy instructions file as markdown"
-                  title="Copy as markdown"
-                  copiedLabel="Copied"
+                  ariaLabel={copy("agentDetail.instructions.copyMarkdownAria", "Copy instructions file as markdown", "지침 파일을 마크다운으로 복사")}
+                  title={copy("agentDetail.instructions.copyMarkdown", "Copy as markdown", "마크다운으로 복사")}
+                  copiedLabel={copy("common.copied", "Copied", "복사됨")}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   <Copy className="h-3.5 w-3.5" />
@@ -2534,7 +2578,7 @@ function PromptsTab({
                   size="sm"
                   variant="outline"
                   onClick={() => {
-                    if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                    if (confirm(copy("agentDetail.instructions.deleteFileConfirm", "Delete {{file}}?", "{{file}} 파일을 삭제할까요?", { file: selectedOrEntryFile }))) {
                       deleteFile.mutate(selectedOrEntryFile, {
                         onSuccess: () => {
                           setSelectedFile(currentEntryFile);
@@ -2545,7 +2589,7 @@ function PromptsTab({
                   }}
                   disabled={deleteFile.isPending}
                 >
-                  Delete
+                  {copy("common.delete", "Delete", "삭제")}
                 </Button>
               )}
             </div>
@@ -2657,6 +2701,7 @@ export function AgentSkillsTab({
   };
 
   const queryClient = useQueryClient();
+  const copy = useLocalizedCopy();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
   const [unmanagedOpen, setUnmanagedOpen] = useState(false);
@@ -2808,15 +2853,15 @@ export function AgentSkillsTab({
   const skillApplicationLabel = useMemo(() => {
     switch (skillSnapshot?.mode) {
       case "persistent":
-        return "Kept in the workspace";
+        return copy("agentSkills.mode.persistent", "Kept in the workspace", "작업공간에 유지");
       case "ephemeral":
-        return "Applied when the agent runs";
+        return copy("agentSkills.mode.ephemeral", "Applied when the agent runs", "직원 실행 시 적용");
       case "unsupported":
-        return "Tracked only";
+        return copy("agentSkills.mode.unsupported", "Tracked only", "추적만 가능");
       default:
-        return "Unknown";
+        return copy("common.unknown", "Unknown", "알 수 없음");
     }
-  }, [skillSnapshot?.mode]);
+  }, [copy, skillSnapshot?.mode]);
   const unsupportedSkillMessage = useMemo(() => {
     if (skillSnapshot?.mode !== "unsupported") return null;
     if (
@@ -2824,18 +2869,30 @@ export function AgentSkillsTab({
       typeof agent.adapterConfig.agent === "string" &&
       agent.adapterConfig.agent === "custom"
     ) {
-      return "Paperclip cannot manage skills for custom ACP commands yet.";
+      return copy(
+        "agentSkills.unsupported.customAcp",
+        "Paperclip cannot manage skills for custom ACP commands yet.",
+        "아직 Paperclip은 사용자 지정 ACP 명령의 스킬을 관리할 수 없습니다.",
+      );
     }
     if (agent.adapterType === "openclaw_gateway") {
-      return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
+      return copy(
+        "agentSkills.unsupported.openclaw",
+        "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.",
+        "여기서는 OpenClaw 스킬을 관리할 수 없습니다. OpenClaw 인스턴스에서 이 직원의 스킬을 관리하세요.",
+      );
     }
-    return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
-  }, [agent.adapterConfig.agent, agent.adapterType, skillSnapshot?.mode]);
+    return copy(
+      "agentSkills.unsupported.default",
+      "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.",
+      "아직 이 어댑터의 스킬은 Paperclip에서 관리할 수 없습니다. 어댑터에서 직접 관리하세요.",
+    );
+  }, [agent.adapterConfig.agent, agent.adapterType, copy, skillSnapshot?.mode]);
   const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
   const saveStatusLabel = syncSkills.isPending
-    ? "Saving changes..."
+    ? copy("agentSkills.savingChanges", "Saving changes...", "변경 저장 중...")
     : hasUnsavedChanges
-      ? "Saving soon..."
+      ? copy("agentSkills.savingSoon", "Saving soon...", "곧 저장...")
       : null;
 
   return (
@@ -2845,7 +2902,7 @@ export function AgentSkillsTab({
           to="/skills"
           className="text-sm font-medium text-foreground underline-offset-4 no-underline transition-colors hover:text-foreground/70 hover:underline"
         >
-          View company skills library
+          {copy("agentSkills.viewLibrary", "View company skills library", "회사 스킬 라이브러리 보기")}
         </Link>
         {saveStatusLabel ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -2892,7 +2949,7 @@ export function AgentSkillsTab({
                         to={skill.linkTo}
                         className="shrink-0 text-xs text-muted-foreground no-underline hover:text-foreground"
                       >
-                        View
+                        {copy("common.view", "View", "보기")}
                       </Link>
                     ) : null}
                   </div>
@@ -2905,7 +2962,9 @@ export function AgentSkillsTab({
                     <p className="mt-1 text-xs text-muted-foreground">{skill.originLabel}</p>
                   )}
                   {skill.readOnly && skill.locationLabel && (
-                    <p className="mt-1 text-xs text-muted-foreground">Location: {skill.locationLabel}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {copy("agentSkills.location", "Location: {{location}}", "위치: {{location}}", { location: skill.locationLabel })}
+                    </p>
                   )}
                   {skill.detail && (
                     <p className="mt-1 text-xs text-muted-foreground">{skill.detail}</p>
@@ -2954,7 +3013,7 @@ export function AgentSkillsTab({
                         <span>{checkbox}</span>
                       </TooltipTrigger>
                       <TooltipContent side="top">
-                        {unsupportedSkillMessage ?? "Manage skills in the adapter directly."}
+                        {unsupportedSkillMessage ?? copy("agentSkills.manageInAdapter", "Manage skills in the adapter directly.", "어댑터에서 직접 스킬을 관리하세요.")}
                       </TooltipContent>
                     </Tooltip>
                   ) : (
@@ -2969,7 +3028,11 @@ export function AgentSkillsTab({
               return (
                 <section className="border-y border-border">
                   <div className="px-3 py-6 text-sm text-muted-foreground">
-                    Import skills into the company library first, then attach them here.
+                    {copy(
+                      "agentSkills.empty",
+                      "Import skills into the company library first, then attach them here.",
+                      "먼저 회사 스킬 라이브러리로 스킬을 가져온 뒤 여기에서 연결하세요.",
+                    )}
                   </div>
                 </section>
               );
@@ -2987,7 +3050,7 @@ export function AgentSkillsTab({
                   <section className="border-y border-border">
                     <div className="border-b border-border bg-muted/40 px-3 py-2">
                       <span className="text-xs font-medium text-muted-foreground">
-                        Required by Paperclip
+                        {copy("agentSkills.required", "Required by Paperclip", "Paperclip 필수 스킬")}
                       </span>
                     </div>
                     {requiredSkillRows.map(renderSkillRow)}
@@ -3004,7 +3067,12 @@ export function AgentSkillsTab({
                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
                     >
                       <span className="text-xs font-medium text-muted-foreground">
-                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
+                        {copy(
+                          "agentSkills.unmanaged",
+                          "({{count}}) User-installed skills, not managed by Paperclip",
+                          "사용자 설치 스킬 {{count}}개, Paperclip 관리 아님",
+                          { count: unmanagedSkillRows.length },
+                        )}
                       </span>
                       {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
@@ -3017,7 +3085,9 @@ export function AgentSkillsTab({
 
           {desiredOnlyMissingSkills.length > 0 && (
             <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
-              <div className="font-medium">Requested skills missing from the company library</div>
+              <div className="font-medium">
+                {copy("agentSkills.missing.title", "Requested skills missing from the company library", "요청된 스킬이 회사 라이브러리에 없습니다.")}
+              </div>
               <div className="mt-1 text-xs">
                 {desiredOnlyMissingSkills.join(", ")}
               </div>
@@ -3027,22 +3097,22 @@ export function AgentSkillsTab({
           <section className="border-t border-border pt-4">
             <div className="grid gap-2 text-sm sm:grid-cols-2">
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
-                <span className="text-muted-foreground">Adapter</span>
+                <span className="text-muted-foreground">{copy("agentSkills.adapter", "Adapter", "어댑터")}</span>
                 <span className="font-medium">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
               </div>
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
-                <span className="text-muted-foreground">Skills applied</span>
+                <span className="text-muted-foreground">{copy("agentSkills.applied", "Skills applied", "스킬 적용 방식")}</span>
                 <span>{skillApplicationLabel}</span>
               </div>
               <div className="flex items-center justify-between gap-3 border-b border-border/60 py-2">
-                <span className="text-muted-foreground">Selected skills</span>
+                <span className="text-muted-foreground">{copy("agentSkills.selected", "Selected skills", "선택된 스킬")}</span>
                 <span>{skillDraft.length}</span>
               </div>
             </div>
 
             {syncSkills.isError && (
               <p className="mt-3 text-xs text-destructive">
-                {syncSkills.error instanceof Error ? syncSkills.error.message : "Failed to update skills"}
+                {syncSkills.error instanceof Error ? syncSkills.error.message : copy("agentSkills.updateFailed", "Failed to update skills", "스킬을 업데이트하지 못했습니다.")}
               </p>
             )}
           </section>
@@ -3055,6 +3125,8 @@ export function AgentSkillsTab({
 /* ---- Runs Tab ---- */
 
 function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelected: boolean; agentId: string }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
@@ -3083,11 +3155,11 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
             : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
             : "bg-muted text-muted-foreground"
         )}>
-          {sourceLabels[run.invocationSource] ?? run.invocationSource}
+          {sourceLabel(run.invocationSource, copy)}
         </span>
         {sourceResolvedFold ? <SourceResolvedFoldBadge showIcon={false} className="shrink-0 text-[10px] py-0" /> : null}
         <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
-          {relativeTime(run.createdAt)}
+          {relativeTime(run.createdAt, locale)}
         </span>
       </div>
       {summary && (
@@ -3122,10 +3194,11 @@ function RunsTab({
   adapterType: string;
   adapterConfig: Record<string, unknown>;
 }) {
+  const copy = useLocalizedCopy();
   const { isMobile } = useSidebar();
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">{copy("agentDetail.runs.empty", "No runs yet.", "아직 실행이 없습니다.")}</p>;
   }
 
   // Sort by created descending
@@ -3190,6 +3263,8 @@ function RunsTab({
 /* ---- Run Detail (expanded) ---- */
 
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3207,7 +3282,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.id]);
 
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
+    mutationFn: () => heartbeatsApi.cancel(run.id, { reason: "Cancelled from agent run detail" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
@@ -3326,8 +3401,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [isRunning, run.startedAt]);
 
   const timeFormat: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
-  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString("en-US", timeFormat) : null;
+  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString(locale, timeFormat) : null;
+  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString(locale, timeFormat) : null;
   const durationSec = run.startedAt && run.finishedAt
     ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
     : null;
@@ -3356,7 +3431,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {cancelRun.isPending
+                    ? copy("agentDetail.run.canceling", "Cancelling...", "취소 중...")
+                    : copy("common.cancel", "Cancel", "취소")}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -3368,7 +3445,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={resumeRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {resumeRun.isPending ? "Resuming…" : "Resume"}
+                  {resumeRun.isPending
+                    ? copy("agentDetail.run.resuming", "Resuming...", "재개 중...")
+                    : copy("agentDetail.run.resume", "Resume", "재개")}
                 </Button>
               )}
               {canRetryRun && !canResumeLostRun && (
@@ -3380,7 +3459,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   disabled={retryRun.isPending}
                 >
                   <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                  {retryRun.isPending ? "Retrying…" : "Retry"}
+                  {retryRun.isPending
+                    ? copy("agentDetail.run.retrying", "Retrying...", "재시도 중...")
+                    : copy("agentDetail.run.retry", "Retry", "재시도")}
                 </Button>
               )}
             </div>
@@ -3407,12 +3488,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error ? resumeRun.error.message : copy("agentDetail.run.resumeFailed", "Failed to resume run", "실행을 재개하지 못했습니다.")}
               </div>
             )}
             {retryRun.isError && (
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error ? retryRun.error.message : copy("agentDetail.run.retryFailed", "Failed to retry run", "실행을 재시도하지 못했습니다.")}
               </div>
             )}
             {startTime && (
@@ -3423,12 +3504,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {endTime}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {relativeTime(run.startedAt!)}
-                  {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
+                  {relativeTime(run.startedAt!, locale)}
+                  {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt, locale)}</>}
                 </div>
                 {displayDurationSec !== null && (
                   <div className="text-xs text-muted-foreground">
-                    Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
+                    {copy("agentDetail.run.duration", "Duration", "소요 시간")}: {formatDurationMs(displayDurationSec * 1000, locale)}
                   </div>
                 )}
               </div>
@@ -3448,18 +3529,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => runClaudeLogin.mutate()}
                   disabled={runClaudeLogin.isPending}
                 >
-                  {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
+                  {runClaudeLogin.isPending
+                    ? copy("agentDetail.run.claudeLoginRunning", "Running claude login...", "Claude 로그인 실행 중...")
+                    : copy("agentDetail.run.claudeLogin", "Login to Claude Code", "Claude Code 로그인")}
                 </Button>
                 {runClaudeLogin.isError && (
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
-                      : "Failed to run Claude login"}
+                      : copy("agentDetail.run.claudeLoginFailed", "Failed to run Claude login", "Claude 로그인을 실행하지 못했습니다.")}
                   </p>
                 )}
                 {claudeLoginResult?.loginUrl && (
                   <p className="text-xs">
-                    Login URL:
+                    {copy("agentDetail.run.loginUrl", "Login URL", "로그인 URL")}:
                     <a
                       href={claudeLoginResult.loginUrl}
                       className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
@@ -3488,8 +3571,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
-                Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+                {copy("agentDetail.run.exitCode", "Exit code", "종료 코드")} {run.exitCode}
+                {run.signal && <span className="text-muted-foreground ml-1">({copy("agentDetail.run.signal", "signal", "시그널")}: {run.signal})</span>}
               </div>
             )}
             {retryState && (
@@ -3522,19 +3605,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           {hasMetrics && (
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
+                <div className="text-xs text-muted-foreground">{copy("agentDetail.costs.input", "Input", "입력")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Output</div>
+                <div className="text-xs text-muted-foreground">{copy("agentDetail.costs.output", "Output", "출력")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
+                <div className="text-xs text-muted-foreground">{copy("agentDetail.costs.cached", "Cached", "캐시")}</div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
+                <div className="text-xs text-muted-foreground">{copy("agentDetail.costs.cost", "Cost", "비용")}</div>
                 <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
               </div>
             </div>
@@ -3549,20 +3632,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               onClick={() => setSessionOpen((v) => !v)}
             >
               <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
-              Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
+              {copy("agentDetail.run.session", "Session", "세션")}
+              {sessionChanged && <span className="text-yellow-400 ml-1">({copy("agentDetail.run.changed", "changed", "변경됨")})</span>}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
                 {run.sessionIdBefore && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
+                    <span className="text-muted-foreground w-12">{sessionChanged ? copy("agentDetail.run.before", "Before", "이전") : "ID"}</span>
                     <CopyText text={run.sessionIdBefore} className="font-mono" />
                   </div>
                 )}
                 {sessionChanged && run.sessionIdAfter && (
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">After</span>
+                    <span className="text-muted-foreground w-12">{copy("agentDetail.run.after", "After", "이후")}</span>
                     <CopyText text={run.sessionIdAfter} className="font-mono" />
                   </div>
                 )}
@@ -3575,21 +3658,26 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                       onClick={() => {
                         const issueCount = touchedIssueIds.length;
                         const confirmed = window.confirm(
-                          `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
+                          copy(
+                            "agentDetail.run.clearSessionConfirm",
+                            `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
+                            `이 실행이 건드린 작업 ${issueCount}개의 세션을 초기화할까요?`,
+                            { count: issueCount },
+                          ),
                         );
                         if (!confirmed) return;
                         clearSessionsForTouchedIssues.mutate();
                       }}
                     >
                       {clearSessionsForTouchedIssues.isPending
-                        ? "clearing session..."
-                        : "clear session for these issues"}
+                        ? copy("agentDetail.run.clearingSession", "clearing session...", "세션 초기화 중...")
+                        : copy("agentDetail.run.clearSession", "clear session for these issues", "이 작업들의 세션 초기화")}
                     </button>
                     {clearSessionsForTouchedIssues.isError && (
                       <p className="text-[11px] text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
-                          : "Failed to clear sessions"}
+                          : copy("agentDetail.run.clearSessionFailed", "Failed to clear sessions", "세션을 초기화하지 못했습니다.")}
                       </p>
                     )}
                   </div>
@@ -3603,7 +3691,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Issues Touched ({touchedIssues.length})</span>
+          <span className="text-xs font-medium text-muted-foreground">
+            {copy("agentDetail.run.issuesTouched", "Issues Touched", "관련 작업")} ({touchedIssues.length})
+          </span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
@@ -3625,7 +3715,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stderr excerpt for failed runs */}
       {run.stderrExcerpt && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
+          <span className="text-xs font-medium text-red-600 dark:text-red-400">{copy("agentDetail.run.stderr", "stderr", "stderr")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
         </div>
       )}
@@ -3633,7 +3723,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* stdout excerpt when no log is available */}
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
-          <span className="text-xs font-medium text-muted-foreground">stdout</span>
+          <span className="text-xs font-medium text-muted-foreground">{copy("agentDetail.run.stdout", "stdout", "stdout")}</span>
           <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
         </div>
       )}
@@ -3655,6 +3745,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 /* ---- Log Viewer ---- */
 
 function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -3843,7 +3935,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             setLogLoading(false);
             return;
           }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+          setLogError(err instanceof Error ? err.message : copy("agentDetail.logs.loadRunLogFailed", "Failed to load run log", "실행 로그를 불러오지 못했습니다."));
         }
       } finally {
         if (!cancelled) setLogLoading(false);
@@ -3867,7 +3959,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+      setLogError(err instanceof Error ? err.message : copy("agentDetail.logs.loadMoreRunLogFailed", "Failed to load more run log", "추가 실행 로그를 불러오지 못했습니다."));
     } finally {
       setLoadingMoreLog(false);
     }
@@ -4056,11 +4148,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   }, [run.id]);
 
   if (loading && logLoading) {
-    return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
+    return <p className="text-xs text-muted-foreground">{copy("agentDetail.logs.loading", "Loading run logs...", "실행 로그 불러오는 중...")}</p>;
   }
 
   if (events.length === 0 && logLines.length === 0 && !logError) {
-    return <p className="text-xs text-muted-foreground">No log events.</p>;
+    return <p className="text-xs text-muted-foreground">{copy("agentDetail.logs.empty", "No log events.", "로그 이벤트가 없습니다.")}</p>;
   }
 
   const levelColors: Record<string, string> = {
@@ -4087,7 +4179,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
+          {copy("agentDetail.logs.transcript", "Transcript", "작업 기록")} ({transcript.length})
         </span>
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded-lg border border-border/70 bg-background/70 p-0.5">
@@ -4103,7 +4195,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 )}
                 onClick={() => setTranscriptMode(mode)}
               >
-                {mode}
+                {mode === "nice"
+                  ? copy("agentDetail.logs.niceMode", "nice", "정리")
+                  : copy("agentDetail.logs.rawMode", "raw", "원문")}
               </button>
             ))}
           </div>
@@ -4119,7 +4213,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 lastMetricsRef.current = readScrollMetrics(container);
               }}
             >
-              Jump to live
+              {copy("agentDetail.logs.jumpToLive", "Jump to live", "실시간 위치로 이동")}
             </Button>
           )}
           {isLive && (
@@ -4128,7 +4222,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
               </span>
-              Live
+              {copy("agentDetail.live", "Live", "실행 중")}
             </span>
           )}
         </div>
@@ -4138,7 +4232,9 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           entries={transcript}
           mode={transcriptMode}
           streaming={isLive}
-          emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          emptyMessage={run.logRef
+            ? copy("agentDetail.logs.waitingTranscript", "Waiting for transcript...", "작업 기록을 기다리는 중...")
+            : copy("agentDetail.logs.noPersistedTranscript", "No persisted transcript for this run.", "이 실행에 저장된 작업 기록이 없습니다.")}
         />
         {hasMoreLog && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
@@ -4149,12 +4245,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               onClick={loadMorePersistedLog}
               disabled={loadingMoreLog}
             >
-              {loadingMoreLog ? "Loading..." : "Load more log"}
+              {loadingMoreLog
+                ? copy("agentDetail.logs.loadingMore", "Loading...", "불러오는 중...")
+                : copy("agentDetail.logs.loadMore", "Load more log", "로그 더 보기")}
             </Button>
             <span className="text-xs text-muted-foreground">
-              Showing the first {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
+              {copy("agentDetail.logs.showingFirst", "Showing the first", "처음")} {Math.round(logOffset / 1024).toLocaleString(locale)} KB
               {typeof run.logBytes === "number" && run.logBytes > 0
-                ? ` of ${Math.round(run.logBytes / 1024).toLocaleString("en-US")} KB`
+                ? ` / ${Math.round(run.logBytes / 1024).toLocaleString(locale)} KB`
                 : ""}
             </span>
           </div>
@@ -4169,16 +4267,16 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {(run.status === "failed" || run.status === "timed_out") && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
+          <div className="text-xs font-medium text-red-700 dark:text-red-300">{copy("agentDetail.logs.failureDetails", "Failure details", "실패 상세")}</div>
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
+              <span className="text-red-700 dark:text-red-300">{copy("agentDetail.logs.error", "Error", "오류")}: </span>
               {redactPathText(run.error, censorUsernameInLogs)}
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{copy("agentDetail.run.stderrExcerpt", "stderr excerpt", "stderr 발췌")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
@@ -4186,7 +4284,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
           {run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{copy("agentDetail.logs.adapterResultJson", "adapter result JSON", "어댑터 결과 JSON")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
               </pre>
@@ -4194,7 +4292,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{copy("agentDetail.run.stdoutExcerpt", "stdout excerpt", "stdout 발췌")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
@@ -4205,7 +4303,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {events.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          <div className="mb-2 text-xs font-medium text-muted-foreground">{copy("agentDetail.logs.events", "Events", "이벤트")} ({events.length})</div>
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color
@@ -4216,7 +4314,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               return (
                 <div key={evt.id} className="flex gap-2">
                   <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
+                    {new Date(evt.createdAt).toLocaleTimeString(locale, { hour12: false })}
                   </span>
                   <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
                     {evt.stream ? `[${evt.stream}]` : ""}
@@ -4241,6 +4339,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 /* ---- Keys Tab ---- */
 
 function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
@@ -4285,7 +4384,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {newToken && (
         <div className="border border-yellow-300 dark:border-yellow-600/40 bg-yellow-50 dark:bg-yellow-500/5 rounded-lg p-4 space-y-2">
           <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400">
-            API key created — copy it now, it will not be shown again.
+            {copy("agentDetail.keys.createdWarning", "API key created — copy it now, it will not be shown again.", "API 키가 생성되었습니다. 다시 표시되지 않으니 지금 복사하세요.")}
           </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
@@ -4295,7 +4394,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               variant="ghost"
               size="icon-sm"
               onClick={() => setTokenVisible((v) => !v)}
-              title={tokenVisible ? "Hide" : "Show"}
+              title={tokenVisible ? copy("common.hide", "Hide", "숨기기") : copy("common.show", "Show", "표시")}
             >
               {tokenVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </Button>
@@ -4303,11 +4402,11 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               variant="ghost"
               size="icon-sm"
               onClick={copyToken}
-              title="Copy"
+              title={copy("common.copy", "Copy", "복사")}
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
-            {copied && <span className="text-xs text-green-400">Copied!</span>}
+            {copied && <span className="text-xs text-green-400">{copy("common.copiedBang", "Copied!", "복사됨!")}</span>}
           </div>
           <Button
             variant="ghost"
@@ -4315,7 +4414,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             className="text-muted-foreground text-xs"
             onClick={() => setNewToken(null)}
           >
-            Dismiss
+            {copy("common.dismiss", "Dismiss", "닫기")}
           </Button>
         </div>
       )}
@@ -4324,14 +4423,14 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-2">
           <Key className="h-3.5 w-3.5" />
-          Create API Key
+          {copy("agentDetail.keys.createTitle", "Create API Key", "API 키 생성")}
         </h3>
         <p className="text-xs text-muted-foreground">
-          API keys allow this agent to authenticate calls to the Paperclip server.
+          {copy("agentDetail.keys.createHelp", "API keys allow this agent to authenticate calls to the Paperclip server.", "API 키를 사용하면 이 직원이 Paperclip 서버 호출을 인증할 수 있습니다.")}
         </p>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Key name (e.g. production)"
+            placeholder={copy("agentDetail.keys.namePlaceholder", "Key name (e.g. production)", "키 이름(예: production)")}
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             className="h-8 text-sm"
@@ -4345,22 +4444,22 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             disabled={createKey.isPending}
           >
             <Plus className="h-3.5 w-3.5 mr-1" />
-            Create
+            {copy("common.create", "Create", "생성")}
           </Button>
         </div>
       </div>
 
       {/* Active keys */}
-      {isLoading && <p className="text-sm text-muted-foreground">Loading keys...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">{copy("agentDetail.keys.loading", "Loading keys...", "키를 불러오는 중...")}</p>}
 
       {!isLoading && activeKeys.length === 0 && !newToken && (
-        <p className="text-sm text-muted-foreground">No active API keys.</p>
+        <p className="text-sm text-muted-foreground">{copy("agentDetail.keys.emptyActive", "No active API keys.", "활성 API 키가 없습니다.")}</p>
       )}
 
       {activeKeys.length > 0 && (
         <div>
           <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Active Keys
+            {copy("agentDetail.keys.active", "Active Keys", "활성 키")}
           </h3>
           <div className="border border-border rounded-lg divide-y divide-border">
             {activeKeys.map((key: AgentKey) => (
@@ -4368,7 +4467,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                 <div>
                   <span className="text-sm font-medium">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
-                    Created {formatDate(key.createdAt)}
+                    {copy("agentDetail.keys.created", "Created", "생성됨")} {formatDate(key.createdAt)}
                   </span>
                 </div>
                 <Button
@@ -4378,7 +4477,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                   onClick={() => revokeKey.mutate(key.id)}
                   disabled={revokeKey.isPending}
                 >
-                  Revoke
+                  {copy("agentDetail.keys.revoke", "Revoke", "폐기")}
                 </Button>
               </div>
             ))}
@@ -4390,7 +4489,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {revokedKeys.length > 0 && (
         <div>
           <h3 className="text-xs font-medium text-muted-foreground mb-2">
-            Revoked Keys
+            {copy("agentDetail.keys.revokedKeys", "Revoked Keys", "폐기된 키")}
           </h3>
           <div className="border border-border rounded-lg divide-y divide-border opacity-50">
             {revokedKeys.map((key: AgentKey) => (
@@ -4398,7 +4497,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                 <div>
                   <span className="text-sm line-through">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
-                    Revoked {key.revokedAt ? formatDate(key.revokedAt) : ""}
+                    {copy("agentDetail.keys.revoked", "Revoked", "폐기됨")} {key.revokedAt ? formatDate(key.revokedAt) : ""}
                   </span>
                 </div>
               </div>

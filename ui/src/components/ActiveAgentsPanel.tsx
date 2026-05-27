@@ -14,7 +14,9 @@ import {
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
+import { StatusBadge } from "./StatusBadge";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 
 function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
   const state = deriveActiveRecoveryDisplayState(action);
@@ -50,6 +52,16 @@ function isRunActive(run: LiveRunForIssue): boolean {
   return run.status === "queued" || run.status === "running";
 }
 
+function livenessLabel(run: LiveRunForIssue, copy: ReturnType<typeof useLocalizedCopy>): string | null {
+  if (run.status === "queued") return copy("activeAgents.liveness.queued", "Queued for execution", "실행 대기 중");
+  if (run.status === "running") return copy("activeAgents.liveness.running", "Running now", "현재 실행 중");
+  if (run.livenessState === "needs_followup") return copy("activeAgents.liveness.needsFollowup", "Needs follow-up", "후속 확인 필요");
+  if (run.livenessState === "failed") return copy("activeAgents.liveness.failed", "Recovery needed", "복구 필요");
+  if (run.status === "succeeded") return copy("activeAgents.liveness.succeeded", "Completed successfully", "성공 완료");
+  if (run.status === "cancelled") return copy("activeAgents.liveness.cancelled", "Cancelled", "취소됨");
+  return null;
+}
+
 interface ActiveAgentsPanelProps {
   companyId: string;
   title?: string;
@@ -65,16 +77,20 @@ interface ActiveAgentsPanelProps {
 
 export function ActiveAgentsPanel({
   companyId,
-  title = "Agents",
+  title,
   minRunCount = MIN_DASHBOARD_RUNS,
   fetchLimit,
   cardLimit = DASHBOARD_RUN_CARD_LIMIT,
   gridClassName,
   cardClassName,
-  emptyMessage = "No recent agent runs.",
+  emptyMessage,
   queryScope = "dashboard",
   showMoreLink = true,
 }: ActiveAgentsPanelProps) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
+  const panelTitle = title ?? copy("activeAgents.title", "Agents", "직원");
+  const panelEmptyMessage = emptyMessage ?? copy("activeAgents.empty", "No recent agent runs.", "최근 직원 실행이 없습니다.");
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
@@ -118,11 +134,11 @@ export function ActiveAgentsPanel({
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
+        {panelTitle}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          <p className="text-sm text-muted-foreground">{panelEmptyMessage}</p>
         </div>
       ) : (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
@@ -136,6 +152,7 @@ export function ActiveAgentsPanel({
               hasOutput={hasOutputForRun(run.id)}
               isActive={isRunActive(run)}
               className={cardClassName}
+              locale={locale}
             />
           ))}
         </div>
@@ -143,7 +160,12 @@ export function ActiveAgentsPanel({
       {showMoreLink && hiddenRunCount > 0 && (
         <div className="mt-3 flex justify-end text-xs text-muted-foreground">
           <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
-            {hiddenRunCount} more active/recent run{hiddenRunCount === 1 ? "" : "s"}
+            {copy(
+              "activeAgents.moreRuns",
+              hiddenRunCount === 1 ? "{{count}} more active/recent run" : "{{count}} more active/recent runs",
+              "활성/최근 실행 {{count}}개 더 보기",
+              { count: hiddenRunCount },
+            )}
           </Link>
         </div>
       )}
@@ -159,6 +181,7 @@ const AgentRunCard = memo(function AgentRunCard({
   hasOutput,
   isActive,
   className,
+  locale,
 }: {
   companyId: string;
   run: LiveRunForIssue;
@@ -167,7 +190,16 @@ const AgentRunCard = memo(function AgentRunCard({
   hasOutput: boolean;
   isActive: boolean;
   className?: string;
+  locale?: string | null;
 }) {
+  const copy = useLocalizedCopy();
+  const runTimeLabel = isActive
+    ? copy("activeAgents.run.liveNow", "Live now", "지금 실행 중")
+    : run.finishedAt
+      ? copy("activeAgents.run.finished", "Finished {{time}}", "{{time}} 완료", { time: relativeTime(run.finishedAt, locale) })
+      : copy("activeAgents.run.started", "Started {{time}}", "{{time}} 시작", { time: relativeTime(run.createdAt, locale) });
+  const progressLabel = livenessLabel(run, copy);
+
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -191,8 +223,14 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{runTimeLabel}</span>
+              <StatusBadge status={run.status} />
             </div>
+            {progressLabel ? (
+              <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                {progressLabel}
+              </div>
+            ) : null}
           </div>
 
           <Link
@@ -231,6 +269,7 @@ const AgentRunCard = memo(function AgentRunCard({
           transcript={transcript}
           hasOutput={hasOutput}
           companyId={companyId}
+          locale={locale}
         />
       </div>
     </div>

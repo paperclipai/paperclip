@@ -22,6 +22,7 @@ import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -58,6 +59,7 @@ export function BlockedInboxView({
   showIdentifierColumn,
   showUpdatedColumn,
 }: BlockedInboxViewProps) {
+  const copy = useLocalizedCopy();
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
   const {
@@ -136,7 +138,7 @@ export function BlockedInboxView({
 
   if (error) {
     const message =
-      error instanceof Error ? error.message : "Couldn't load the Blocked tab.";
+      error instanceof Error ? error.message : copy("inbox.blocked.loadFailed", "Couldn't load the Blocked tab.", "막힘 탭을 불러오지 못했습니다.");
     return (
       <div
         data-testid="blocked-inbox-error"
@@ -146,9 +148,9 @@ export function BlockedInboxView({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
+            <p className="text-sm font-medium">{copy("inbox.blocked.loadFailed", "Couldn't load the Blocked tab.", "막힘 탭을 불러오지 못했습니다.")}</p>
             <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {message}
+              {copy("inbox.blocked.otherTabsWork", "Other Inbox tabs still work.", "다른 받은함 탭은 계속 사용할 수 있습니다.")} {message}
             </p>
           </div>
           <Button
@@ -159,7 +161,7 @@ export function BlockedInboxView({
             onClick={() => void refetch()}
             disabled={isFetching}
           >
-            {isFetching ? "Trying…" : "Try again"}
+            {isFetching ? copy("common.trying", "Trying...", "시도 중...") : copy("common.tryAgain", "Try again", "다시 시도")}
           </Button>
         </div>
       </div>
@@ -176,9 +178,9 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
+          <p className="text-sm font-medium text-foreground">{copy("inbox.blocked.emptyTitle", "No work is stopped.", "멈춘 작업이 없습니다.")}</p>
           <p className="text-xs text-muted-foreground">
-            Issues that need a decision, recovery, or external action will appear here.
+            {copy("inbox.blocked.emptyBody", "Issues that need a decision, recovery, or external action will appear here.", "결정, 복구, 외부 조치가 필요한 작업이 여기에 표시됩니다.")}
           </p>
         </div>
       </div>
@@ -192,7 +194,7 @@ export function BlockedInboxView({
           data-testid="blocked-inbox-no-search-results"
           className="rounded-lg border border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
-          No stopped items match your search.
+          {copy("inbox.blocked.noSearchResults", "No stopped items match your search.", "검색과 일치하는 멈춘 항목이 없습니다.")}
         </div>
       </div>
     );

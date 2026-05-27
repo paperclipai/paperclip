@@ -56,6 +56,7 @@ import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -95,15 +96,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -113,6 +105,23 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   blocked: "bg-red-500",
   cancelled: "bg-neutral-400",
 };
+
+function localizedIssueFilterLabel(value: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    backlog: copy("status.backlog", "Backlog", "대기"),
+    todo: copy("status.todo", "Todo", "할 일"),
+    in_progress: copy("status.inProgress", "In progress", "진행 중"),
+    in_review: copy("status.inReview", "In review", "검토 중"),
+    done: copy("status.done", "Done", "완료"),
+    blocked: copy("status.blocked", "Blocked", "막힘"),
+    cancelled: copy("status.cancelled", "Cancelled", "취소"),
+    critical: copy("priority.critical", "Critical", "긴급"),
+    high: copy("priority.high", "High", "높음"),
+    medium: copy("priority.medium", "Medium", "보통"),
+    low: copy("priority.low", "Low", "낮음"),
+  };
+  return labels[value] ?? issueFilterLabel(value);
+}
 
 /* ── View state ── */
 
@@ -424,6 +433,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  const copy = useLocalizedCopy();
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -470,9 +480,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder={copy("issues.search.placeholder", "Search issues...", "작업 검색...")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label={copy("issues.search.aria", "Search issues", "작업 검색")}
         data-page-search-target="true"
       />
     </div>
@@ -488,6 +498,8 @@ function SubIssueProgressSummaryStrip({
   issueLinkState?: unknown;
   parentIssueIdForCostSummary?: string;
 }) {
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -517,35 +529,31 @@ function SubIssueProgressSummaryStrip({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {copy("issues.subIssues.doneCount", "{{done}}/{{total}} done", "{{done}}/{{total}} 완료", { done: summary.doneCount, total: summary.totalCount })}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {copy("issues.subIssues.inProgressCount", "{{count}} in progress", "{{count}}개 진행 중", { count: summary.inProgressCount })}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {copy("issues.subIssues.blockedCount", "{{count}} blocked", "{{count}}개 막힘", { count: summary.blockedCount })}
             </span>
             {showCostSummary && (
               <>
                 <span
                   className="text-muted-foreground tabular-nums"
-                  title={`${costSummary.runCount.toLocaleString()} run${
-                    costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-issue${
-                    costSummary.issueCount === 1 ? "" : "s"
-                  }`}
+                  title={`${costSummary.runCount.toLocaleString(locale)} ${copy("issues.subIssues.runs", "runs", "실행")} / ${costSummary.issueCount.toLocaleString(locale)} ${copy("issues.subIssues.subIssues", "sub-issues", "하위 작업")}`}
                 >
-                  {formatTokens(totalTokens)} tokens
+                  {formatTokens(totalTokens)} {copy("common.tokens", "tokens", "토큰")}
                 </span>
                 <span className="text-muted-foreground tabular-nums">
-                  {formatDurationMs(costSummary.runtimeMs)} runtime
+                  {formatDurationMs(costSummary.runtimeMs, locale)} {copy("common.runtime", "runtime", "실행 시간")}
                 </span>
               </>
             )}
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label={copy("issues.subIssues.progress", "Sub-issues completion progress", "하위 작업 완료 진행률")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -556,7 +564,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={`${localizedIssueFilterLabel(status, copy)}: ${count.toLocaleString(locale)}`}
                 aria-hidden="true"
               />
             ))}
@@ -567,7 +575,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? copy("issues.subIssues.nextUp", "Next up", "다음 작업") : copy("issues.subIssues.waitingOnBlockers", "Waiting on blockers", "차단 작업 대기")}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -582,11 +590,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{copy("issues.subIssues.noneActive", "No active sub-issues", "활성 하위 작업 없음")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">{copy("issues.subIssues.allDone", "All sub-issues done", "모든 하위 작업 완료")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">{copy("issues.subIssues.noneActionable", "No actionable sub-issues", "진행 가능한 하위 작업 없음")}</div>
           )}
         </div>
       </div>
@@ -626,6 +634,8 @@ export function IssuesList({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -861,7 +871,7 @@ export function IssuesList({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? copy("common.board", "Board", "보드") : copy("common.me", "Me", "나"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -912,7 +922,7 @@ export function IssuesList({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, issues]);
+  }, [agents, copy, currentUserId, issues]);
 
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
@@ -1069,13 +1079,13 @@ export function IssuesList({
       const groups = groupBy(filtered, (i) => i.status);
       return issueStatusOrder
         .filter((s) => groups[s]?.length)
-        .map((s) => ({ key: s, label: issueFilterLabel(s), items: groups[s]! }));
+        .map((s) => ({ key: s, label: localizedIssueFilterLabel(s, copy), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
       const groups = groupBy(filtered, (i) => i.priority);
       return issuePriorityOrder
         .filter((p) => groups[p]?.length)
-        .map((p) => ({ key: p, label: issueFilterLabel(p), items: groups[p]! }));
+        .map((p) => ({ key: p, label: localizedIssueFilterLabel(p, copy), items: groups[p]! }));
     }
     if (viewState.groupBy === "workspace") {
       const groups = groupBy(
@@ -1091,7 +1101,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? copy("issues.group.noWorkspace", "No Workspace", "작업공간 없음") : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1107,7 +1117,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
+          label: key === "__no_project" ? copy("issues.group.noProject", "No Project", "프로젝트 없음") : (projectById.get(key)?.name ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1122,7 +1132,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? copy("issues.group.noParent", "No Parent", "상위 작업 없음") : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1135,14 +1145,15 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? copy("issues.group.unassigned", "Unassigned", "미지정")
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? copy("common.user", "User", "사용자"))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
   }, [
     filtered,
+    copy,
     issueFilterWorkspaceContext,
     viewState.groupBy,
     agents,
@@ -1289,8 +1300,12 @@ export function IssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel
+    ? copy("issues.createLabeled", "Create {{label}}", "{{label}} 만들기", { label: createIssueLabel })
+    : copy("issues.create", "Create Issue", "작업 만들기");
+  const createButtonLabel = createIssueLabel
+    ? copy("issues.newLabeled", "New {{label}}", "새 {{label}}", { label: createIssueLabel })
+    : copy("issues.new", "New Issue", "새 작업");
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1353,14 +1368,16 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={copy("issues.view.list", "List view", "목록 보기")}
+              aria-label={copy("issues.view.list", "List view", "목록 보기")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={copy("issues.view.board", "Board view", "보드 보기")}
+              aria-label={copy("issues.view.board", "Board view", "보드 보기")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1373,7 +1390,9 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled
+                ? copy("issues.nesting.disable", "Disable parent-child nesting", "상위/하위 접기 해제")
+                : copy("issues.nesting.enable", "Enable parent-child nesting", "상위/하위 접기 사용")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1387,7 +1406,7 @@ export function IssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
                 onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
-                title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}
+                title={boardCompactCards ? copy("issues.board.comfortableCards", "Use comfortable cards", "여유 있는 카드 사용") : copy("issues.board.compactCards", "Use compact cards", "촘촘한 카드 사용")}
               >
                 <ChevronsDownUp className="h-3.5 w-3.5" />
               </Button>
@@ -1397,7 +1416,7 @@ export function IssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCollapsedStatuses.length > 0 && "bg-accent")}
                 onClick={() => updateView({ boardColdLaneMode: boardCollapsedStatuses.length > 0 ? "expanded" : "collapsed" })}
-                title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}
+                title={boardCollapsedStatuses.length > 0 ? copy("issues.board.expandCold", "Expand cold lanes", "비활성 열 펼치기") : copy("issues.board.collapseCold", "Collapse cold lanes", "비활성 열 접기")}
               >
                 <PanelTopClose className="h-3.5 w-3.5" />
               </Button>
@@ -1411,7 +1430,7 @@ export function IssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={copy("issues.board.cardsPerColumn", "Cards per column", "열당 카드 수")}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1431,7 +1450,7 @@ export function IssuesList({
                         )}
                         onClick={() => updateView({ boardColumnPageSize: pageSize })}
                       >
-                        <span>{pageSize} per column</span>
+                        <span>{copy("issues.board.perColumn", "{{count}} per column", "열당 {{count}}개", { count: pageSize })}</span>
                         {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
                       </button>
                     ))}
@@ -1449,7 +1468,7 @@ export function IssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={copy("issues.board.resetDensity", "Reset board density", "보드 밀도 초기화")}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1461,7 +1480,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title={copy("issues.columns.title", "Choose which issue columns stay visible", "표시할 작업 열 선택")}
             iconOnly
           />
 
@@ -1483,19 +1502,19 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={copy("issues.sort.title", "Sort", "정렬")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", copy("issues.sort.workflow", "Workflow", "흐름")],
+                    ["status", copy("issues.sort.status", "Status", "상태")],
+                    ["priority", copy("issues.sort.priority", "Priority", "우선순위")],
+                    ["title", copy("issues.sort.titleField", "Title", "제목")],
+                    ["created", copy("issues.sort.created", "Created", "생성일")],
+                    ["updated", copy("issues.sort.updated", "Updated", "수정일")],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -1527,20 +1546,20 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={copy("issues.group.title", "Group", "그룹")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
-                    ["none", "None"],
+                    ["status", copy("issues.group.status", "Status", "상태")],
+                    ["priority", copy("issues.group.priority", "Priority", "우선순위")],
+                    ["assignee", copy("issues.group.assignee", "Assignee", "담당자")],
+                    ["project", copy("issues.group.project", "Project", "프로젝트")],
+                    ["workspace", copy("issues.group.workspace", "Workspace", "작업공간")],
+                    ["parent", copy("issues.group.parent", "Parent Issue", "상위 작업")],
+                    ["none", copy("issues.group.none", "None", "없음")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -1564,18 +1583,18 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {copy("issues.search.limitReached", "Showing up to {{count}} matches. Refine the search to narrow further.", "{{count}}개까지 표시 중입니다. 검색어를 더 좁혀 주세요.", { count: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
+          {copy("issues.board.limitReached", "Some board columns are showing up to {{count}} issues. Refine filters or search to reveal the rest.", "일부 보드 열은 {{count}}개까지만 표시 중입니다. 나머지는 필터나 검색을 좁혀 확인하세요.", { count: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={copy("issues.emptyFiltered", "No issues match the current filters or search.", "현재 필터나 검색과 일치하는 작업이 없습니다.")}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1748,18 +1767,18 @@ export function IssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                ({copy("issues.subTaskCount", "{{count}} sub-task", "하위 작업 {{count}}개", { count: totalDescendants })})
                               </span>
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
                                 <span
                                   className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={copy("status.paused", "Paused", "일시정지")}
+                                  title={copy("status.paused", "Paused", "일시정지")}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {copy("status.paused", "Paused", "일시정지")}
                                 </span>
                               ) : (
                                 <span className="ml-1.5 inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
@@ -1770,11 +1789,11 @@ export function IssuesList({
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <span
                                 className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This issue needs a next step"
+                                aria-label={copy("issues.nextStep.aria", "Needs next step", "다음 단계 필요")}
+                                title={copy("issues.nextStep.title", "This issue needs a next step", "이 작업은 다음 단계가 필요합니다.")}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
+                                {copy("issues.nextStep", "Needs next step", "다음 단계 필요")}
                               </span>
                             ) : null}
                           </>
@@ -1819,7 +1838,7 @@ export function IssuesList({
                             />
                           </>
                         )}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
+                        mobileMeta={issueActivityText(issue, locale).toLowerCase()}
                         desktopTrailing={(
                           visibleTrailingIssueColumns.length > 0 ? (
                             <InboxIssueTrailingColumns
@@ -1857,7 +1876,7 @@ export function IssuesList({
                                         <Identity name={agentName(issue.assigneeAgentId)!} size="sm" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
-                                          name={assigneeUserLabel ?? "User"}
+                                          name={assigneeUserLabel ?? copy("common.user", "User", "사용자")}
                                           avatarUrl={assigneeUserProfile?.image ?? null}
                                           size="sm"
                                           className="min-w-0"
@@ -1867,7 +1886,7 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {copy("issues.assignee", "Assignee", "담당자")}
                                         </span>
                                       )}
                                     </button>
@@ -1880,7 +1899,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={copy("issues.assignee.search", "Search assignees...", "담당자 검색...")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1897,7 +1916,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
+                                        {copy("issues.assignee.none", "No assignee", "담당자 없음")}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -1912,7 +1931,7 @@ export function IssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{copy("common.me", "Me", "나")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])
@@ -1959,10 +1978,13 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more issues..."
+                  ? copy("issues.loadMore.loading", "Loading more issues...", "작업을 더 불러오는 중...")
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} issues`
-                    : "Scroll to load more issues"}
+                    ? copy("issues.loadMore.rendering", "Rendering {{visible}} of {{total}} issues", "{{total}}개 중 {{visible}}개 표시 중", {
+                      visible: Math.min(renderedIssueRowLimit, filtered.length).toLocaleString(locale),
+                      total: filtered.length.toLocaleString(locale),
+                    })
+                    : copy("issues.loadMore.scroll", "Scroll to load more issues", "스크롤하면 작업을 더 불러옵니다.")}
               </p>
             </div>
           )}

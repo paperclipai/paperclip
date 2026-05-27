@@ -32,6 +32,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 import {
   getProjectSortModeStorageKey,
   PROJECT_SORT_MODE_UPDATED_EVENT,
@@ -44,11 +45,6 @@ import type { Project } from "@paperclipai/shared";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
-const PROJECT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
-];
 const REORDER_POINTER_MEDIA = "(hover: hover) and (pointer: fine)";
 
 type ProjectItemProps = {
@@ -228,6 +224,7 @@ function SortableProjectItem(props: ProjectItemProps) {
 }
 
 export function SidebarProjects() {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
@@ -282,6 +279,14 @@ export function SidebarProjects() {
   );
   const isTopMode = sortMode === "top";
   const canReorderProjects = isTopMode && !isMobile && fineReorderPointer;
+  const projectSortChoices = useMemo<SidebarSectionRadioChoice[]>(
+    () => [
+      { value: "top", label: copy("sidebar.sort.top", "Top", "상단 고정") },
+      { value: "alphabetical", label: copy("sidebar.sort.alphabetical", "Alphabetical", "가나다순") },
+      { value: "recent", label: copy("sidebar.sort.recent", "Recent", "최근순") },
+    ],
+    [copy],
+  );
 
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
@@ -383,21 +388,21 @@ export function SidebarProjects() {
 
   return (
     <SidebarSection
-      label="Projects"
+      label={copy("sidebar.section.projects", "Projects", "프로젝트")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New project",
+        ariaLabel: copy("sidebar.projects.new", "New project", "새 프로젝트"),
         icon: Plus,
         onClick: openNewProject,
       }}
       menu={{
-        ariaLabel: "Projects section actions",
+        ariaLabel: copy("sidebar.projects.actions", "Projects section actions", "프로젝트 섹션 작업"),
         actions: [
-          { type: "item", label: "Browse projects", icon: FolderOpen, href: "/projects" },
+          { type: "item", label: copy("sidebar.projects.browse", "Browse projects", "프로젝트 둘러보기"), icon: FolderOpen, href: "/projects" },
           { type: "separator" },
         ],
-        radioLabel: "Project sort",
-        radioChoices: PROJECT_SORT_CHOICES,
+        radioLabel: copy("sidebar.projects.sort", "Project sort", "프로젝트 정렬"),
+        radioChoices: projectSortChoices,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
       }}

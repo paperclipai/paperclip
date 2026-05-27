@@ -53,11 +53,12 @@ import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
-import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
+import { getAdapterLabel, getLocalizedAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 
 /* ---- Create mode values ---- */
 
@@ -195,6 +196,7 @@ function clampDelayMsFromSeconds(value: number) {
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
+  const copy = useLocalizedCopy();
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
@@ -531,7 +533,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      setRefreshModelsError(error instanceof Error ? error.message : copy("agentConfig.models.refreshFailed", "Failed to refresh adapter models.", "어댑터 모델 목록을 새로고침하지 못했습니다."));
     } finally {
       setRefreshingModels(false);
     }
@@ -690,13 +692,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            <span className="text-xs text-muted-foreground">{copy("agentConfig.unsavedChanges", "Unsaved changes", "저장하지 않은 변경")}</span>
             <Button
               size="sm"
               onClick={handleSave}
               disabled={!isCreate && props.isSaving}
             >
-              {!isCreate && props.isSaving ? "Saving..." : "Save"}
+              {!isCreate && props.isSaving ? copy("common.savingDots", "Saving...", "저장 중...") : copy("common.save", "Save", "저장")}
             </Button>
           </div>
         </div>
@@ -706,42 +708,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {!isCreate && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
+            ? <h3 className="text-sm font-medium mb-3">{copy("agentConfig.identity", "Identity", "기본 정보")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{copy("agentConfig.identity", "Identity", "기본 정보")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field label="Name" hint={help.name}>
+            <Field label={copy("agentConfig.name", "Name", "이름")} hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
                 onCommit={(v) => mark("identity", "name", v)}
                 immediate
                 className={inputClass}
-                placeholder="Agent name"
+                placeholder={copy("agentConfig.namePlaceholder", "Agent name", "직원 이름")}
               />
             </Field>
-            <Field label="Title" hint={help.title}>
+            <Field label={copy("agentConfig.title", "Title", "직책")} hint={help.title}>
               <DraftInput
                 value={eff("identity", "title", props.agent.title ?? "")}
                 onCommit={(v) => mark("identity", "title", v || null)}
                 immediate
                 className={inputClass}
-                placeholder="e.g. VP of Engineering"
+                placeholder={copy("agentConfig.titlePlaceholder", "e.g. VP of Engineering", "예: 개발 총괄")}
               />
             </Field>
-            <Field label="Reports to" hint={help.reportsTo}>
+            <Field label={copy("agentConfig.reportsTo", "Reports to", "보고 대상")} hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
                 value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
                 onChange={(id) => mark("identity", "reportsTo", id)}
                 excludeAgentIds={[props.agent.id]}
-                chooseLabel="Choose manager…"
+                chooseLabel={copy("agentConfig.chooseManager", "Choose manager…", "상위 관리자 선택…")}
               />
             </Field>
-            <Field label="Capabilities" hint={help.capabilities}>
+            <Field label={copy("agentConfig.capabilities", "Capabilities", "역할/능력")} hint={help.capabilities}>
               <MarkdownEditor
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
                 onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder="Describe what this agent can do..."
+                placeholder={copy("agentConfig.capabilitiesPlaceholder", "Describe what this agent can do...", "이 직원이 할 수 있는 일을 설명하세요...")}
                 contentClassName="min-h-[44px] text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const asset = await uploadMarkdownImage.mutateAsync({
@@ -754,7 +756,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
             {isLocal && !props.hidePromptTemplate && (
               <>
-                <Field label="Prompt Template" hint={help.promptTemplate}>
+                <Field label={copy("agentConfig.promptTemplate", "Prompt Template", "프롬프트 템플릿")} hint={help.promptTemplate}>
                   <MarkdownEditor
                     value={eff(
                       "adapterConfig",
@@ -762,7 +764,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       String(config.promptTemplate ?? ""),
                     )}
                     onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
-                    placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
+                    placeholder={copy("agentConfig.promptTemplatePlaceholder", "You are agent {{ agent.name }}. Your role is {{ agent.role }}...", "당신은 {{ agent.name }}입니다. 역할은 {{ agent.role }}입니다...")}
                     contentClassName="min-h-[88px] text-sm font-mono"
                     imageUploadHandler={async (file) => {
                       const namespace = `agents/${props.agent.id}/prompt-template`;
@@ -772,7 +774,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   />
                 </Field>
                 <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
+                  {copy("agentConfig.promptTemplateWarning", "Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.", "프롬프트 템플릿은 매 상태 점검마다 반복됩니다. 반복 토큰 비용과 캐시 낭비를 줄이려면 짧고 동적으로 유지하세요.")}
                 </div>
               </>
             )}
@@ -784,13 +786,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {environmentsEnabled ? (
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+            ? <h3 className="text-sm font-medium mb-3">{copy("agentConfig.execution", "Execution", "실행")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{copy("agentConfig.execution", "Execution", "실행")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <Field
-              label="Default environment"
-              hint="Agent-level default execution target. Project and issue settings can still override this."
+              label={copy("agentConfig.defaultEnvironment", "Default environment", "기본 실행 환경")}
+              hint={copy("agentConfig.defaultEnvironmentHint", "Agent-level default execution target. Project and issue settings can still override this.", "직원 기본 실행 대상입니다. 프로젝트와 작업 설정이 이를 덮어쓸 수 있습니다.")}
             >
               <select
                 className={inputClass}
@@ -804,7 +806,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   mark("identity", "defaultEnvironmentId", nextValue || null);
                 }}
               >
-                <option value="">Company default (Local)</option>
+                <option value="">{copy("agentConfig.companyDefaultLocal", "Company default (Local)", "회사 기본값(Local)")}</option>
                 {runnableEnvironments.map((environment) => (
                   <option key={environment.id} value={environment.id}>
                     {environment.name} · {environment.driver}
@@ -820,8 +822,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
-            : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
+            ? <h3 className="text-sm font-medium">{copy("agentConfig.adapter", "Adapter", "어댑터")}</h3>
+            : <span className="text-xs font-medium text-muted-foreground">{copy("agentConfig.adapter", "Adapter", "어댑터")}</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
             <Button
@@ -832,13 +834,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onClick={triggerTestEnvironment}
               disabled={testEnvironmentDisabled}
             >
-              {testEnvironment.isPending ? "Testing..." : "Test"}
+              {testEnvironment.isPending ? copy("agentConfig.testing", "Testing...", "테스트 중...") : copy("agentConfig.test", "Test", "테스트")}
             </Button>
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && (
-            <Field label="Adapter type" hint={help.adapterType}>
+            <Field label={copy("agentConfig.adapterType", "Adapter type", "어댑터 유형")} hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
                 disabledTypes={disabledTypes}
@@ -899,7 +901,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
-                : "Environment test failed"}
+                : copy("agentConfig.environmentTestFailed", "Environment test failed", "환경 테스트 실패")}
             </div>
           )}
 
@@ -909,7 +911,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {/* Working directory */}
           {showLegacyWorkingDirectoryField && (
-            <Field label="Working directory (deprecated)" hint={help.cwd}>
+            <Field label={copy("agentConfig.workingDirectoryDeprecated", "Working directory (deprecated)", "작업 폴더(구 방식)")} hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                 <DraftInput
@@ -941,11 +943,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isLocal && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">{copy("agentConfig.permissionsConfiguration", "Permissions & Configuration", "권한 및 설정")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{copy("agentConfig.permissionsConfiguration", "Permissions & Configuration", "권한 및 설정")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
+              <Field label={copy("agentConfig.command", "Command", "명령")} hint={help.localCommand}>
                 <DraftInput
                   value={
                     isCreate
@@ -981,7 +983,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
               {supportsModelProfiles && (
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy("agentConfig.primaryModel", "Primary model", "기본 모델")}</div>
               )}
               <ModelDropdown
                 models={models}
@@ -1011,22 +1013,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     : undefined
                 }
                 refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint="No model detected. Select or enter one manually."
+                detectModelLabel={copy("agentConfig.models.detect", "Detect model", "모델 감지")}
+                emptyDetectHint={copy("agentConfig.models.emptyDetectHint", "No model detected. Select or enter one manually.", "감지된 모델이 없습니다. 직접 선택하거나 입력하세요.")}
               />
               {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
                     ?? (fetchedModelsError instanceof Error
                       ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
+                      : copy("agentConfig.models.loadFailed", "Failed to load adapter models.", "어댑터 모델 목록을 불러오지 못했습니다."))}
                 </p>
               )}
               {adapterType === "opencode_local"
                 && currentDefaultEnvironment
                 && currentDefaultEnvironment.driver !== "local" && (
                 <p className="text-xs text-muted-foreground">
-                  Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
+                  {copy("agentConfig.opencodLocalOnly", "Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for", "OpenCode 실시간 모델 감지는 Local 환경에서만 동작합니다. 현재 환경은 기본 목록과 수동 입력을 사용합니다:")} {currentDefaultEnvironment.name}.
                 </p>
               )}
 
@@ -1061,14 +1063,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     codexSearchEnabled &&
                     currentThinkingEffort === "minimal" && (
                       <p className="text-xs text-amber-400">
-                        Codex may reject `minimal` thinking when search is enabled.
+                        {copy("agentConfig.codexMinimalSearchWarning", "Codex may reject `minimal` thinking when search is enabled.", "검색이 켜진 상태에서는 Codex가 `minimal` 추론을 거부할 수 있습니다.")}
                       </p>
                     )}
                 </>
               )}
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
-                  <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
+                  <Field label={copy("agentConfig.bootstrapPromptLegacy", "Bootstrap prompt (legacy)", "부트스트랩 프롬프트(구 방식)")} hint={help.bootstrapPrompt}>
                     <MarkdownEditor
                       value={eff(
                         "adapterConfig",
@@ -1078,7 +1080,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       onChange={(v) =>
                         mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
                       }
-                      placeholder="Optional initial setup prompt for the first run"
+                      placeholder={copy("agentConfig.bootstrapPromptPlaceholder", "Optional initial setup prompt for the first run", "첫 실행에만 사용할 초기 설정 프롬프트")}
                       contentClassName="min-h-[44px] text-sm font-mono"
                       imageUploadHandler={async (file) => {
                         const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
@@ -1088,7 +1090,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     />
                   </Field>
                   <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                    Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
+                    {copy("agentConfig.bootstrapPromptLegacyWarning", "Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent's prompt template or instructions file instead.", "부트스트랩 프롬프트는 구 방식이며 향후 제거될 수 있습니다. 이 내용은 직원 프롬프트 템플릿이나 지침 파일로 옮기는 것을 권장합니다.")}
                   </div>
                 </>
               )}
@@ -1097,7 +1099,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               )}
               <uiAdapter.ConfigFields {...adapterFieldProps} />
 
-              <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
+              <Field label={copy("agentConfig.extraArgs", "Extra args (comma-separated)", "추가 인자(쉼표로 구분)")} hint={help.extraArgs}>
                 <DraftInput
                   value={
                     isCreate
@@ -1111,11 +1113,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                   immediate
                   className={inputClass}
-                  placeholder="e.g. --verbose, --foo=bar"
+                  placeholder={copy("agentConfig.extraArgsPlaceholder", "e.g. --verbose, --foo=bar", "예: --verbose, --foo=bar")}
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
+              <Field label={copy("agentConfig.environmentVariables", "Environment variables", "환경 변수")} hint={help.envVars}>
                 <EnvVarEditor
                   value={
                     isCreate
@@ -1139,7 +1141,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                  <Field label={copy("agentConfig.timeoutSec", "Timeout (sec)", "제한 시간(초)")} hint={help.timeoutSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -1151,7 +1153,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       className={inputClass}
                     />
                   </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+                  <Field label={copy("agentConfig.graceSec", "Interrupt grace period (sec)", "중단 대기 시간(초)")} hint={help.graceSec}>
                     <DraftNumberInput
                       value={eff(
                         "adapterConfig",
@@ -1344,7 +1346,9 @@ function AdapterTypeDropdown({
   disabledTypes: Set<string>;
 }) {
   const [open, setOpen] = useState(false);
-  const selectedDisplay = getAdapterDisplay(value);
+  const copy = useLocalizedCopy();
+  const selectedDisplay = getLocalizedAdapterDisplay(value, copy);
+  const experimentalLabel = copy("common.experimental", "Experimental", "실험");
   const adapterList = useMemo(
     () =>
       listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
@@ -1360,7 +1364,7 @@ function AdapterTypeDropdown({
           <span className="inline-flex min-w-0 items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
-            {selectedDisplay.experimental && <ExperimentalBadge />}
+            {selectedDisplay.experimental && <ExperimentalBadge label={experimentalLabel} />}
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
@@ -1387,10 +1391,10 @@ function AdapterTypeDropdown({
             <span className="inline-flex items-center gap-1.5">
               {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
               <span>{item.label}</span>
-              {item.experimental && <ExperimentalBadge />}
+              {item.experimental && <ExperimentalBadge label={experimentalLabel} />}
             </span>
             {item.comingSoon && (
-              <span className="text-[10px] text-muted-foreground">Coming soon</span>
+              <span className="text-[10px] text-muted-foreground">{copy("common.comingSoon", "Coming soon", "예정")}</span>
             )}
           </button>
         ))}
@@ -1399,10 +1403,10 @@ function AdapterTypeDropdown({
   );
 }
 
-function ExperimentalBadge() {
+function ExperimentalBadge({ label = "Experimental" }: { label?: string }) {
   return (
     <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-200">
-      Experimental
+      {label}
     </span>
   );
 }
@@ -1444,6 +1448,7 @@ function ModelDropdown({
   emptyDetectHint?: string;
   defaultLabel?: string;
 }) {
+  const copy = useLocalizedCopy();
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
@@ -1516,7 +1521,7 @@ function ModelDropdown({
   }
 
   return (
-    <Field label="Model" hint={help.model}>
+    <Field label={copy("agentConfig.models.model", "Model", "모델")} hint={help.model}>
       <Popover
         open={open}
         onOpenChange={(nextOpen) => {
@@ -1530,7 +1535,7 @@ function ModelDropdown({
               {selected
                 ? selected.label
                 : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
+                  || (allowDefault ? (defaultLabel ?? copy("agentConfig.models.default", "Default", "기본값")) : required ? copy("agentConfig.models.selectRequired", "Select model (required)", "모델 선택(필수)") : copy("agentConfig.models.select", "Select model", "모델 선택"))}
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1539,7 +1544,9 @@ function ModelDropdown({
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
-              placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
+              placeholder={creatable
+                ? copy("agentConfig.models.searchCreatable", "Search models... (type to create)", "모델 검색... 직접 입력 가능")
+                : copy("agentConfig.models.search", "Search models...", "모델 검색...")}
               value={modelSearch}
               onChange={(e) => setModelSearch(e.target.value)}
               autoFocus
@@ -1570,7 +1577,11 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                 <path d="M3 3v5h5" />
               </svg>
-              {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
+              {detectingModel
+                ? copy("agentConfig.models.detecting", "Detecting...", "감지 중...")
+                : detectedModel
+                  ? copy("agentConfig.models.redetectFromConfig", "Re-detect from config", "설정에서 다시 감지")
+                  : (detectModelLabel ?? copy("agentConfig.models.detectFromConfig", "Detect from config", "설정에서 감지"))}
             </button>
           )}
           {onRefreshModels && !modelSearch.trim() && (
@@ -1588,7 +1599,9 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
                 <path d="M8 16H3v5" />
               </svg>
-              {refreshingModels ? "Refreshing..." : "Refresh models"}
+              {refreshingModels
+                ? copy("agentConfig.models.refreshing", "Refreshing...", "새로고침 중...")
+                : copy("agentConfig.models.refresh", "Refresh models", "모델 목록 새로고침")}
             </button>
           )}
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
@@ -1605,7 +1618,7 @@ function ModelDropdown({
                 {models.find((m) => m.id === value)?.label ?? value}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
-                current
+                {copy("agentConfig.models.current", "current", "현재")}
               </span>
             </button>
           )}
@@ -1624,7 +1637,7 @@ function ModelDropdown({
                 {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
-                detected
+                {copy("agentConfig.models.detected", "detected", "감지됨")}
               </span>
             </button>
           )}
@@ -1648,7 +1661,7 @@ function ModelDropdown({
                     {entry?.label ?? candidate}
                   </span>
                   <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
-                    config
+                    {copy("agentConfig.models.config", "config", "설정")}
                   </span>
                 </button>
               );
@@ -1666,7 +1679,7 @@ function ModelDropdown({
                   onOpenChange(false);
                 }}
               >
-                Default
+                {copy("agentConfig.models.default", "Default", "기본값")}
               </button>
             )}
             {canCreateManualModel && (
@@ -1679,7 +1692,7 @@ function ModelDropdown({
                   setModelSearch("");
                 }}
               >
-                <span>Use manual model</span>
+                <span>{copy("agentConfig.models.useManual", "Use manual model", "수동 모델 사용")}</span>
                 <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
               </button>
             )}
@@ -1714,8 +1727,8 @@ function ModelDropdown({
               <div className="px-2 py-2 space-y-2">
                 <p className="text-xs text-muted-foreground">
                   {onDetectModel
-                    ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
-                    : "No models found."}
+                    ? (emptyDetectHint ?? copy("agentConfig.models.noDetectedYet", "No model detected yet. Enter a provider/model manually.", "아직 감지된 모델이 없습니다. provider/model을 직접 입력하세요."))
+                    : copy("agentConfig.models.noModelsFound", "No models found.", "모델을 찾지 못했습니다.")}
                 </p>
               </div>
             )}
@@ -1747,16 +1760,17 @@ function CheapModelSection({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const copy = useLocalizedCopy();
   const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
+    ? `${copy("agentConfig.cheapModel.adapterDefault", "Adapter default", "어댑터 기본값")} · ${adapterDefaultModel}`
+    : copy("agentConfig.cheapModel.noAdapterDefault", "No adapter default — choose a cheaper model", "어댑터 기본값 없음 - 저비용 모델을 선택하세요");
   return (
     <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Cheap model</div>
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{copy("agentConfig.cheapModel.title", "Cheap model", "저비용 모델")}</div>
           <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
+            {copy("agentConfig.cheapModel.description", "Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.", "저비용 프로필을 요청하는 실행에서 사용합니다. 기본 모델은 그대로 유지됩니다.")}
           </p>
         </div>
         <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
@@ -1780,12 +1794,12 @@ function CheapModelSection({
       ) : null}
       {enabled && !model && adapterDefaultModel ? (
         <p className="text-[11px] text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
+          {copy("agentConfig.cheapModel.fallbackPrefix", "No explicit cheap model selected — runtime falls back to", "명시적인 저비용 모델이 없어 런타임이 다음 모델로 대체합니다:")} <code>{adapterDefaultModel}</code>.
         </p>
       ) : null}
       {enabled && !model && !adapterDefaultModel ? (
         <p className="text-[11px] text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
+          {copy("agentConfig.cheapModel.noFallback", "No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.", "저비용 모델이 선택되지 않았고 어댑터 기본값도 없습니다. 저비용 실행은 안내 문구와 함께 기본 모델로 계속 실행됩니다.")}
         </p>
       ) : null}
     </div>
@@ -1805,14 +1819,24 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const copy = useLocalizedCopy();
   const selected = options.find((option) => option.id === value) ?? options[0];
+  const labelFor = (label: string) => ({
+    Auto: copy("agentConfig.thinking.auto", "Auto", "자동"),
+    Minimal: copy("agentConfig.thinking.minimal", "Minimal", "최소"),
+    Low: copy("agentConfig.thinking.low", "Low", "낮음"),
+    Medium: copy("agentConfig.thinking.medium", "Medium", "보통"),
+    High: copy("agentConfig.thinking.high", "High", "높음"),
+    "X-High": copy("agentConfig.thinking.xhigh", "X-High", "매우 높음"),
+    Max: copy("agentConfig.thinking.max", "Max", "최대"),
+  }[label] ?? label);
 
   return (
-    <Field label="Thinking effort" hint={help.thinkingEffort}>
+    <Field label={copy("agentConfig.thinkingEffort", "Thinking effort", "추론 강도")} hint={help.thinkingEffort}>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
+            <span className={cn(!value && "text-muted-foreground")}>{selected ? labelFor(selected.label) : copy("agentConfig.thinking.auto", "Auto", "자동")}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
@@ -1829,7 +1853,7 @@ function ThinkingEffortDropdown({
                 onOpenChange(false);
               }}
             >
-              <span>{option.label}</span>
+              <span>{labelFor(option.label)}</span>
               {option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : null}
             </button>
           ))}

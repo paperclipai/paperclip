@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -202,6 +203,7 @@ function buildRoutinesTabHref(tab: RoutinesTab) {
 export function Routines() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -241,8 +243,8 @@ export function Routines() {
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("routines.breadcrumb", "Routines", "루틴") }]);
+  }, [copy, setBreadcrumbs]);
 
   useEffect(() => {
     setRoutineViewState(getRoutineViewState(routineViewStateKey));
@@ -310,10 +312,10 @@ export function Routines() {
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
-        title: "Routine created",
+        title: copy("routines.toast.created", "Routine created", "루틴 생성됨"),
         body: routine.assigneeAgentId
-          ? "Add the first trigger to turn it into a live workflow."
-          : "Draft saved. Add a default agent before enabling automation.",
+          ? copy("routines.toast.createdWithAgent", "Add the first trigger to turn it into a live workflow.", "첫 트리거를 추가하면 실행 가능한 워크플로가 됩니다.")
+          : copy("routines.toast.createdDraft", "Draft saved. Add a default agent before enabling automation.", "초안이 저장되었습니다. 자동화를 켜기 전에 기본 직원을 추가하세요."),
         tone: "success",
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
@@ -343,8 +345,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        title: copy("routines.toast.updateFailed", "Failed to update routine", "루틴 업데이트 실패"),
+        body: mutationError instanceof Error ? mutationError.message : copy("routines.toast.updateFailedBody", "Paperclip could not update the routine.", "Paperclip이 루틴을 업데이트하지 못했습니다."),
         tone: "error",
       });
     },
@@ -378,8 +380,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        title: copy("routines.toast.runFailed", "Routine run failed", "루틴 실행 실패"),
+        body: mutationError instanceof Error ? mutationError.message : copy("routines.toast.runFailedBody", "Paperclip could not start the routine run.", "Paperclip이 루틴 실행을 시작하지 못했습니다."),
         tone: "error",
       });
     },
@@ -428,14 +430,63 @@ export function Routines() {
   const recentRunsIssueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Recent Runs",
+        copy("routines.tab.runs", "Recent Runs", "최근 실행"),
         buildRoutinesTabHref("runs"),
         "issues",
       ),
-    [],
+    [copy],
   );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
+  const routineSortLabels: Record<RoutineSortField, string> = {
+    updated: copy("routines.sort.updated", "Updated", "최근 수정"),
+    created: copy("routines.sort.created", "Created", "생성일"),
+    lastRun: copy("routines.sort.lastRun", "Last run", "마지막 실행"),
+    title: copy("routines.sort.title", "Title", "제목"),
+  };
+  const routineGroupLabels: Record<RoutineGroupBy, string> = {
+    project: copy("routines.group.project", "Project", "프로젝트"),
+    assignee: copy("routines.group.assignee", "Agent", "직원"),
+    none: copy("routines.group.none", "None", "없음"),
+  };
+  const concurrencyPolicyLabels: Record<string, string> = {
+    coalesce_if_active: copy("routines.policy.concurrency.coalesce", "Coalesce if active", "실행 중이면 후속 1건만 유지"),
+    always_enqueue: copy("routines.policy.concurrency.always", "Always enqueue", "항상 대기열에 추가"),
+    skip_if_active: copy("routines.policy.concurrency.skip", "Skip if active", "실행 중이면 건너뛰기"),
+  };
+  const localizedConcurrencyDescriptions: Record<string, string> = {
+    coalesce_if_active: copy(
+      "routines.policy.concurrency.coalesceHelp",
+      concurrencyPolicyDescriptions.coalesce_if_active,
+      "이미 실행 중이면 후속 실행 하나만 대기열에 유지합니다.",
+    ),
+    always_enqueue: copy(
+      "routines.policy.concurrency.alwaysHelp",
+      concurrencyPolicyDescriptions.always_enqueue,
+      "루틴이 실행 중이어도 모든 트리거 발생을 대기열에 추가합니다.",
+    ),
+    skip_if_active: copy(
+      "routines.policy.concurrency.skipHelp",
+      concurrencyPolicyDescriptions.skip_if_active,
+      "이전 실행이 끝나지 않았으면 새 트리거 발생을 버립니다.",
+    ),
+  };
+  const catchUpPolicyLabels: Record<string, string> = {
+    skip_missed: copy("routines.policy.catchup.skip", "Skip missed", "놓친 실행 무시"),
+    enqueue_missed_with_cap: copy("routines.policy.catchup.enqueue", "Enqueue missed with cap", "놓친 실행 제한 추가"),
+  };
+  const localizedCatchUpDescriptions: Record<string, string> = {
+    skip_missed: copy(
+      "routines.policy.catchup.skipHelp",
+      catchUpPolicyDescriptions.skip_missed,
+      "스케줄러나 루틴이 일시정지된 동안 놓친 실행 구간을 무시합니다.",
+    ),
+    enqueue_missed_with_cap: copy(
+      "routines.policy.catchup.enqueueHelp",
+      catchUpPolicyDescriptions.enqueue_missed_with_cap,
+      "복구 후 놓친 스케줄 구간을 제한된 묶음으로 따라잡습니다.",
+    ),
+  };
 
   function updateRoutineView(patch: Partial<RoutineViewState>) {
     setRoutineViewState((current) => {
@@ -459,8 +510,8 @@ export function Routines() {
   function handleToggleEnabled(routine: RoutineListItem, enabled: boolean) {
     if (!enabled && !routine.assigneeAgentId) {
       pushToast({
-        title: "Default agent required",
-        body: "Set a default agent before enabling routine automation.",
+        title: copy("routines.toast.defaultAgentRequired", "Default agent required", "기본 직원 필요"),
+        body: copy("routines.toast.defaultAgentRequiredBody", "Set a default agent before enabling routine automation.", "루틴 자동화를 켜기 전에 기본 직원을 지정하세요."),
         tone: "warn",
       });
       return;
@@ -478,8 +529,21 @@ export function Routines() {
     });
   }
 
+  function routineGroupDisplayLabel(group: RoutineGroup) {
+    if (group.key === "__no_project") return copy("routines.group.noProject", "No project", "프로젝트 없음");
+    if (group.key === "__unassigned") return copy("routines.group.unassigned", "Unassigned", "미지정");
+    if (group.label === "Unknown project") return copy("routines.group.unknownProject", "Unknown project", "알 수 없는 프로젝트");
+    if (group.label === "Unknown agent") return copy("routines.group.unknownAgent", "Unknown agent", "알 수 없는 직원");
+    return group.label;
+  }
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return (
+      <EmptyState
+        icon={Repeat}
+        message={copy("routines.noCompany", "Select a company to view routines.", "루틴을 보려면 회사를 선택하세요.")}
+      />
+    );
   }
 
   if (isLoading) {
@@ -491,15 +555,19 @@ export function Routines() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Routines
+            {copy("routines.title", "Routines", "루틴")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution issues.
+            {copy(
+              "routines.subtitle",
+              "Recurring work definitions that materialize into auditable execution issues.",
+              "반복 업무를 감사 가능한 실행 작업으로 전환하는 정의입니다.",
+            )}
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Create routine
+          {copy("routines.create", "Create routine", "루틴 만들기")}
         </Button>
       </div>
 
@@ -509,31 +577,31 @@ export function Routines() {
           value={activeTab}
           onValueChange={handleTabChange}
           items={[
-            { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
+            { value: "routines", label: copy("routines.tab.routines", "Routines", "루틴") },
+            { value: "runs", label: copy("routines.tab.runs", "Recent Runs", "최근 실행") },
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
+              {copy(
+                "routines.count",
+                (routines ?? []).length === 1 ? "{{count}} routine" : "{{count}} routines",
+                "루틴 {{count}}개",
+                { count: (routines ?? []).length },
+              )}
             </p>
             <div className="flex items-center gap-1">
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
+                  <Button variant="ghost" size="sm" className="text-xs" title={copy("routines.sort.title", "Sort", "정렬")}>
                     <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                    <span className="hidden sm:inline">Sort</span>
+                    <span className="hidden sm:inline">{copy("routines.sort.title", "Sort", "정렬")}</span>
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="p-2 space-y-0.5">
-                    {([
-                      ["updated", "Updated"],
-                      ["created", "Created"],
-                      ["lastRun", "Last run"],
-                      ["title", "Title"],
-                    ] as const).map(([field, label]) => (
+                    {(["updated", "created", "lastRun", "title"] as const).map((field) => (
                       <button
                         key={field}
                         className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
@@ -549,10 +617,12 @@ export function Routines() {
                           );
                         }}
                       >
-                        <span>{label}</span>
+                        <span>{routineSortLabels[field]}</span>
                         {routineViewState.sortField === field ? (
                           <span className="text-xs text-muted-foreground">
-                            {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
+                            {routineViewState.sortDir === "asc"
+                              ? copy("routines.sort.asc", "Asc", "오름차순")
+                              : copy("routines.sort.desc", "Desc", "내림차순")}
                           </span>
                         ) : null}
                       </button>
@@ -562,18 +632,14 @@ export function Routines() {
               </Popover>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Group">
+                  <Button variant="ghost" size="sm" className="text-xs" title={copy("routines.group.title", "Group", "그룹")}>
                     <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                    <span className="hidden sm:inline">Group</span>
+                    <span className="hidden sm:inline">{copy("routines.group.title", "Group", "그룹")}</span>
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="p-2 space-y-0.5">
-                    {([
-                      ["project", "Project"],
-                      ["assignee", "Agent"],
-                      ["none", "None"],
-                    ] as const).map(([value, label]) => (
+                    {(["project", "assignee", "none"] as const).map((value) => (
                       <button
                         key={value}
                         className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
@@ -583,7 +649,7 @@ export function Routines() {
                         }`}
                         onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
                       >
-                        <span>{label}</span>
+                        <span>{routineGroupLabels[value]}</span>
                         {routineViewState.groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
                       </button>
                     ))}
@@ -622,9 +688,15 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
+                {copy("routines.composer.eyebrow", "New routine", "새 루틴")}
+              </p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Default project and agent are optional for draft routines.
+                {copy(
+                  "routines.composer.subtitle",
+                  "Define the recurring work first. Default project and agent are optional for draft routines.",
+                  "반복 업무부터 정의하세요. 초안 루틴에서는 기본 프로젝트와 직원은 선택입니다.",
+                )}
               </p>
             </div>
             <Button
@@ -636,7 +708,7 @@ export function Routines() {
               }}
               disabled={createRoutine.isPending}
             >
-              Cancel
+              {copy("common.cancel", "Cancel", "취소")}
             </Button>
           </div>
 
@@ -645,7 +717,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={copy("routines.composer.titlePlaceholder", "Routine title", "루틴 제목")}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -678,16 +750,16 @@ export function Routines() {
             <div className="px-5 pb-3">
               <div className="overflow-x-auto overscroll-x-contain">
                 <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
-                  <span>For</span>
+                  <span>{copy("routines.composer.for", "For", "담당")}</span>
                   <InlineEntitySelector
                     ref={assigneeSelectorRef}
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
-                    placeholder="Assignee"
-                    noneLabel="No assignee"
-                    searchPlaceholder="Search assignees..."
-                    emptyMessage="No assignees found."
+                    placeholder={copy("routines.assignee.placeholder", "Assignee", "담당 직원")}
+                    noneLabel={copy("routines.assignee.none", "No assignee", "담당 직원 없음")}
+                    searchPlaceholder={copy("routines.assignee.search", "Search assignees...", "담당 직원 검색...")}
+                    emptyMessage={copy("routines.assignee.empty", "No assignees found.", "직원을 찾지 못했습니다.")}
                     onChange={(assigneeAgentId) => {
                       if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
                       setDraft((current) => ({ ...current, assigneeAgentId }));
@@ -710,7 +782,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         )
                       ) : (
-                        <span className="text-muted-foreground">Assignee</span>
+                        <span className="text-muted-foreground">{copy("routines.assignee.placeholder", "Assignee", "담당 직원")}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -724,16 +796,16 @@ export function Routines() {
                       );
                     }}
                   />
-                  <span>in</span>
+                  <span>{copy("routines.composer.in", "in", "프로젝트")}</span>
                   <InlineEntitySelector
                     ref={projectSelectorRef}
                     value={draft.projectId}
                     options={projectOptions}
                     recentOptionIds={recentProjectIds}
-                    placeholder="Project"
-                    noneLabel="No project"
-                    searchPlaceholder="Search projects..."
-                    emptyMessage="No projects found."
+                    placeholder={copy("routines.project.placeholder", "Project", "프로젝트")}
+                    noneLabel={copy("routines.project.none", "No project", "프로젝트 없음")}
+                    searchPlaceholder={copy("routines.project.search", "Search projects...", "프로젝트 검색...")}
+                    emptyMessage={copy("routines.project.empty", "No projects found.", "프로젝트를 찾지 못했습니다.")}
                     onChange={(projectId) => {
                       if (projectId) trackRecentProject(projectId);
                       setDraft((current) => ({ ...current, projectId }));
@@ -749,7 +821,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Project</span>
+                        <span className="text-muted-foreground">{copy("routines.project.placeholder", "Project", "프로젝트")}</span>
                       )
                     }
                     renderOption={(option) => {
@@ -775,7 +847,7 @@ export function Routines() {
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
-                placeholder="Add instructions..."
+                placeholder={copy("routines.composer.instructionsPlaceholder", "Add instructions...", "지시사항 추가...")}
                 bordered={false}
                 contentClassName="min-h-[160px] text-sm text-muted-foreground"
                 mentions={mentionOptions}
@@ -791,15 +863,25 @@ export function Routines() {
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                   <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    <p className="text-sm font-medium">
+                      {copy("routines.advanced.title", "Advanced delivery settings", "고급 실행 설정")}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {copy(
+                        "routines.advanced.subtitle",
+                        "Keep policy controls secondary to the work definition.",
+                        "정책 제어는 업무 정의보다 보조 설정으로 유지합니다.",
+                      )}
+                    </p>
                   </div>
                   {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                        {copy("routines.advanced.concurrency", "Concurrency", "동시 실행")}
+                      </p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -809,14 +891,16 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{concurrencyPolicyLabels[value] ?? value.replaceAll("_", " ")}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                      <p className="text-xs text-muted-foreground">{localizedConcurrencyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                        {copy("routines.advanced.catchup", "Catch-up", "놓친 실행 처리")}
+                      </p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -826,11 +910,11 @@ export function Routines() {
                         </SelectTrigger>
                         <SelectContent>
                           {catchUpPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            <SelectItem key={value} value={value}>{catchUpPolicyLabels[value] ?? value.replaceAll("_", " ")}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[draft.catchUpPolicy]}</p>
+                      <p className="text-xs text-muted-foreground">{localizedCatchUpDescriptions[draft.catchUpPolicy]}</p>
                     </div>
                   </div>
                 </CollapsibleContent>
@@ -840,7 +924,11 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
+              {copy(
+                "routines.composer.footerHint",
+                "After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.",
+                "생성 후 바로 트리거 설정으로 이동합니다. 기본 직원을 추가하기 전까지 초안 루틴은 일시정지 상태로 남습니다.",
+              )}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -851,11 +939,15 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending
+                  ? copy("routines.creating", "Creating...", "만드는 중...")
+                  : copy("routines.create", "Create routine", "루틴 만들기")}
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  {createRoutine.error instanceof Error
+                    ? createRoutine.error.message
+                    : copy("routines.error.create", "Failed to create routine", "루틴을 만들지 못했습니다.")}
                 </p>
               ) : null}
             </div>
@@ -866,7 +958,7 @@ export function Routines() {
       {error ? (
         <Card>
           <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load routines"}
+            {error instanceof Error ? error.message : copy("routines.error.load", "Failed to load routines", "루틴을 불러오지 못했습니다.")}
           </CardContent>
         </Card>
       ) : null}
@@ -877,7 +969,11 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No routines yet. Use Create routine to define the first recurring workflow."
+                message={copy(
+                  "routines.empty",
+                  "No routines yet. Use Create routine to define the first recurring workflow.",
+                  "아직 루틴이 없습니다. 루틴 만들기로 첫 반복 워크플로를 정의하세요.",
+                )}
               />
             </div>
           ) : (
@@ -899,7 +995,7 @@ export function Routines() {
                       <CollapsibleTrigger className="flex items-center gap-1.5">
                         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
                         <span className="text-sm font-semibold uppercase tracking-wide">
-                          {group.label}
+                          {routineGroupDisplayLabel(group)}
                         </span>
                       </CollapsibleTrigger>
                       <span className="text-xs text-muted-foreground">

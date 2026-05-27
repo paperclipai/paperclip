@@ -4,10 +4,23 @@ import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
-function statusLabel(status: string): string {
+function statusLabel(status: string, copy?: ReturnType<typeof useLocalizedCopy>): string {
+  if (copy) {
+    const labels: Record<string, string> = {
+      backlog: copy("status.backlog", "Backlog", "대기"),
+      todo: copy("status.todo", "To Do", "할 일"),
+      in_progress: copy("status.inProgress", "In Progress", "진행 중"),
+      in_review: copy("status.inReview", "In Review", "검토 중"),
+      done: copy("status.done", "Done", "완료"),
+      cancelled: copy("status.cancelled", "Cancelled", "취소"),
+      blocked: copy("status.blocked", "Blocked", "막힘"),
+    };
+    if (labels[status]) return labels[status];
+  }
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -62,6 +75,7 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
 }
 
 export function StatusIcon({ status, blockerAttention, onChange, className, showLabel }: StatusIconProps) {
+  const copy = useLocalizedCopy();
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const isStalledBlocked = status === "blocked" && blockerAttention?.state === "stalled";
@@ -73,7 +87,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
       ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
       : issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
-  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
+  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status, copy);
   const blockerAttentionState = isCoveredBlocked
     ? "covered"
     : isStalledBlocked
@@ -109,12 +123,12 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     </span>
   );
 
-  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
+  if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status, copy)}</span></span> : circle;
 
   const trigger = showLabel ? (
     <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{statusLabel(status, copy)}</span>
     </button>
   ) : circle;
 
@@ -134,7 +148,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
             }}
           >
             <StatusIcon status={s} />
-            {statusLabel(s)}
+            {statusLabel(s, copy)}
           </Button>
         ))}
       </PopoverContent>

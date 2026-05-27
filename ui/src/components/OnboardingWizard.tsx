@@ -28,7 +28,8 @@ import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { getLocalizedAdapterDisplay } from "../adapters/adapter-display-registry";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
@@ -70,6 +71,7 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - break the roadmap into concrete tasks and start delegating work`;
 
 export function OnboardingWizard() {
+  const copy = useLocalizedCopy();
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
   const queryClient = useQueryClient();
@@ -213,13 +215,13 @@ export function OnboardingWizard() {
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
-      .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
+      .map((a) => ({ ...getLocalizedAdapterDisplay(a.type, copy), type: a.type }));
 
     return {
       recommendedAdapters: all.filter((a) => a.recommended),
       moreAdapters: all.filter((a) => !a.recommended),
     };
-  }, [disabledTypes]);
+  }, [copy, disabledTypes]);
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
@@ -738,7 +740,7 @@ export function OnboardingWizard() {
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
+                      {copy("onboarding.adapterType", "Adapter type", "직원 런타임")}
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {recommendedAdapters.map((opt) => (
@@ -768,7 +770,7 @@ export function OnboardingWizard() {
                         >
                           {opt.recommended && (
                             <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
+                              {copy("common.recommended", "Recommended", "추천")}
                             </span>
                           )}
                           <opt.icon className="h-4 w-4" />
@@ -790,7 +792,7 @@ export function OnboardingWizard() {
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      {copy("onboarding.moreAdapters", "More Agent Adapter Types", "다른 직원 런타임")}
                     </button>
 
                     {showMoreAdapters && (
@@ -830,7 +832,7 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
+                                ? opt.disabledLabel ?? copy("common.comingSoon", "Coming soon", "예정")
                                 : opt.description}
                             </span>
                           </button>
@@ -844,7 +846,7 @@ export function OnboardingWizard() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
+                          {copy("common.model", "Model", "모델")}
                         </label>
                         <Popover
                           open={modelOpen}

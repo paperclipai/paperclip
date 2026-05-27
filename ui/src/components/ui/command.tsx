@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { useLocalizedCopy } from "@/i18n/ui-copy"
 
 function Command({
   className,
@@ -31,8 +32,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title,
+  description,
   children,
   className,
   showCloseButton = true,
@@ -43,11 +44,15 @@ function CommandDialog({
   className?: string
   showCloseButton?: boolean
 }) {
+  const copy = useLocalizedCopy()
+  const dialogTitle = title ?? copy("commandDialog.title", "Command Palette", "명령 팔레트")
+  const dialogDescription = description ?? copy("commandDialog.description", "Search for a command to run...", "실행할 명령을 검색하세요...")
+
   return (
     <Dialog {...props}>
       <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
+        <DialogTitle>{dialogTitle}</DialogTitle>
+        <DialogDescription>{dialogDescription}</DialogDescription>
       </DialogHeader>
       <DialogContent
         className={cn("overflow-hidden p-0", className)}
@@ -62,7 +67,7 @@ function CommandDialog({
             className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-0 right-2 flex h-12 items-center rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{copy("common.close", "Close", "닫기")}</span>
           </DialogPrimitive.Close>
         )}
       </DialogContent>

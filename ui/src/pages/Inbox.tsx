@@ -156,6 +156,7 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useCurrentLocale, useLocalizedCopy } from "@/i18n/ui-copy";
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
@@ -663,6 +664,8 @@ function JoinRequestInboxRow({
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
@@ -703,11 +706,11 @@ export function Inbox() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Inbox",
+        copy("inbox.breadcrumb", "Inbox", "받은함"),
         `${location.pathname}${location.search}${location.hash}`,
         "inbox",
       ),
-    [location.pathname, location.search, location.hash],
+    [copy, location.pathname, location.search, location.hash],
   );
 
   const { data: session } = useQuery({
@@ -741,8 +744,8 @@ export function Inbox() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Inbox" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("inbox.breadcrumb", "Inbox", "받은함") }]);
+  }, [copy, setBreadcrumbs]);
 
   useEffect(() => {
     saveLastInboxTab(tab);
@@ -882,7 +885,7 @@ export function Inbox() {
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? copy("common.board", "Board", "보드") : copy("common.me", "Me", "나"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -934,7 +937,7 @@ export function Inbox() {
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, mineIssues, touchedIssues]);
+  }, [agents, copy, currentUserId, mineIssues, touchedIssues]);
   const issuesToRender = useMemo(
     () => {
       if (tab === "mine") return visibleMineIssues;
@@ -1866,7 +1869,7 @@ export function Inbox() {
   }, [selectedIndex]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState icon={InboxIcon} message={copy("inbox.noCompany", "Select a company to view inbox.", "받은함을 보려면 회사를 선택하세요.")} />;
   }
 
   const hasRunFailures = failedRuns.length > 0;
@@ -1924,7 +1927,7 @@ export function Inbox() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            placeholder="Search inbox…"
+            placeholder={copy("inbox.search", "Search inbox...", "받은함 검색...")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -1954,15 +1957,15 @@ export function Inbox() {
             items={[
               {
                 value: "mine",
-                label: "Mine",
+                label: copy("inbox.tabs.mine", "Mine", "내 작업"),
               },
               {
                 value: "recent",
-                label: "Recent",
+                label: copy("inbox.tabs.recent", "Recent", "최근"),
               },
-              { value: "unread", label: "Unread" },
-              { value: "blocked", label: "Blocked" },
-              { value: "all", label: "All" },
+              { value: "unread", label: copy("inbox.tabs.unread", "Unread", "읽지 않음") },
+              { value: "blocked", label: copy("inbox.tabs.blocked", "Blocked", "막힘") },
+              { value: "all", label: copy("inbox.tabs.all", "All", "전체") },
             ]}
           />
         </Tabs>
@@ -1972,7 +1975,7 @@ export function Inbox() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search inbox…"
+              placeholder={copy("inbox.search", "Search inbox...", "받은함 검색...")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2019,14 +2022,14 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={copy("issues.group.title", "Group", "그룹")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="space-y-0.5 p-2">
-                    {BLOCKED_GROUP_OPTIONS.map(([value, label]) => (
+                    {BLOCKED_GROUP_OPTIONS.map(([value]) => (
                       <button
                         key={value}
                         type="button"
@@ -2036,7 +2039,7 @@ export function Inbox() {
                         )}
                         onClick={() => setBlockedGroupBy(value)}
                       >
-                        <span>{label}</span>
+                        <span>{value === "blocker_type" ? copy("inbox.blocked.group.blockerType", "Blocker type", "차단 유형") : copy("issues.group.none", "None", "없음")}</span>
                         {blockedGroupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
                       </button>
                     ))}
@@ -2048,7 +2051,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={copy("inbox.columns.title", "Choose which inbox columns stay visible", "표시할 받은함 열 선택")}
                 iconOnly
               />
               <Popover>
@@ -2058,14 +2061,14 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 shrink-0"
-                    title="Sort"
+                    title={copy("issues.sort.title", "Sort", "정렬")}
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-48 p-0">
                   <div className="space-y-0.5 p-2">
-                    {BLOCKED_SORT_OPTIONS.map(([value, label]) => (
+                    {BLOCKED_SORT_OPTIONS.map(([value]) => (
                       <button
                         key={value}
                         type="button"
@@ -2075,7 +2078,13 @@ export function Inbox() {
                         )}
                         onClick={() => setBlockedSortBy(value)}
                       >
-                        <span>{label}</span>
+                        <span>
+                          {value === "urgency"
+                            ? copy("inbox.blocked.sort.urgency", "Most urgent", "긴급순")
+                            : value === "most_recent"
+                              ? copy("inbox.blocked.sort.mostRecent", "Most recent", "최근순")
+                              : copy("inbox.blocked.sort.longestStopped", "Longest stopped", "오래 멈춘 순")}
+                        </span>
                         {blockedSortBy === value ? <Check className="h-3.5 w-3.5" /> : null}
                       </button>
                     ))}
@@ -2091,7 +2100,9 @@ export function Inbox() {
                 size="icon"
                 className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
-                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+                title={nestingEnabled
+                  ? copy("issues.nesting.disable", "Disable parent-child nesting", "상위/하위 접기 해제")
+                  : copy("issues.nesting.enable", "Enable parent-child nesting", "상위/하위 접기 사용")}
               >
                 <ListTree className="h-3.5 w-3.5" />
               </Button>
@@ -2116,7 +2127,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={copy("issues.group.title", "Group", "그룹")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2124,11 +2135,11 @@ export function Inbox() {
                 <PopoverContent align="end" className="w-40 p-2">
                   <div className="space-y-0.5">
                     {([
-                      ["none", "None"],
-                      ["type", "Type"],
-                      ["assignee", "Assignee"],
-                      ["project", "Project"],
-                      ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                      ["none", copy("issues.group.none", "None", "없음")],
+                      ["type", copy("inbox.group.type", "Type", "유형")],
+                      ["assignee", copy("issues.group.assignee", "Assignee", "담당자")],
+                      ["project", copy("issues.group.project", "Project", "프로젝트")],
+                      ...(isolatedWorkspacesEnabled ? ([["workspace", copy("issues.group.workspace", "Workspace", "작업공간")]] as const) : []),
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -2151,7 +2162,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={copy("inbox.columns.title", "Choose which inbox columns stay visible", "표시할 받은함 열 선택")}
                 iconOnly
               />
               {canMarkAllRead && (
@@ -2164,19 +2175,19 @@ export function Inbox() {
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    {markAllReadMutation.isPending ? copy("inbox.marking", "Marking...", "표시 중...") : copy("inbox.markAllRead", "Mark all as read", "모두 읽음 표시")}
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
+                        <DialogTitle>{copy("inbox.markAllReadConfirmTitle", "Mark all as read?", "모두 읽음으로 표시할까요?")}</DialogTitle>
                         <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                          {copy("inbox.markAllReadConfirmBody", "This will mark {{count}} unread items as read.", "읽지 않은 항목 {{count}}개를 읽음으로 표시합니다.", { count: unreadIssueIds.length })}
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
                         <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
+                          {copy("common.cancel", "Cancel", "취소")}
                         </Button>
                         <Button
                           onClick={() => {
@@ -2184,7 +2195,7 @@ export function Inbox() {
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
                         >
-                          Mark all as read
+                          {copy("inbox.markAllRead", "Mark all as read", "모두 읽음 표시")}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
@@ -2204,15 +2215,15 @@ export function Inbox() {
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
             <SelectTrigger className="h-8 w-[170px] text-xs">
-              <SelectValue placeholder="Category" />
+              <SelectValue placeholder={copy("inbox.category", "Category", "카테고리")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
-              <SelectItem value="alerts">Alerts</SelectItem>
+              <SelectItem value="everything">{copy("inbox.category.all", "All categories", "전체 카테고리")}</SelectItem>
+              <SelectItem value="issues_i_touched">{copy("inbox.category.myRecentIssues", "My recent issues", "내 최근 작업")}</SelectItem>
+              <SelectItem value="join_requests">{copy("inbox.category.joinRequests", "Join requests", "가입 요청")}</SelectItem>
+              <SelectItem value="approvals">{copy("inbox.category.approvals", "Approvals", "승인")}</SelectItem>
+              <SelectItem value="failed_runs">{copy("inbox.category.failedRuns", "Failed runs", "실패 실행")}</SelectItem>
+              <SelectItem value="alerts">{copy("inbox.category.alerts", "Alerts", "알림")}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -2222,12 +2233,12 @@ export function Inbox() {
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-[170px] text-xs">
-                <SelectValue placeholder="Approval status" />
+                <SelectValue placeholder={copy("inbox.approvalStatus", "Approval status", "승인 상태")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
+                <SelectItem value="all">{copy("inbox.approvalStatus.all", "All approval statuses", "전체 승인 상태")}</SelectItem>
+                <SelectItem value="actionable">{copy("inbox.approvalStatus.actionable", "Needs action", "조치 필요")}</SelectItem>
+                <SelectItem value="resolved">{copy("inbox.approvalStatus.resolved", "Resolved", "처리됨")}</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -2265,14 +2276,14 @@ export function Inbox() {
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
-              ? "No inbox items match your search."
+              ? copy("inbox.empty.search", "No inbox items match your search.", "검색과 일치하는 받은함 항목이 없습니다.")
               : tab === "mine"
-              ? "Inbox zero."
+              ? copy("inbox.empty.mine", "Inbox zero.", "받은함이 비었습니다.")
               : tab === "unread"
-              ? "No new inbox items."
+              ? copy("inbox.empty.unread", "No new inbox items.", "새 받은함 항목이 없습니다.")
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? copy("inbox.empty.recent", "No recent inbox items.", "최근 받은함 항목이 없습니다.")
+                : copy("inbox.empty.filtered", "No inbox items match these filters.", "이 필터와 일치하는 받은함 항목이 없습니다.")
           }
         />
       )}
@@ -2354,7 +2365,7 @@ export function Inbox() {
                           ({childCount} sub-task{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileMeta={issueActivityText(issue, locale).toLowerCase()}
                       mobileLeading={
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button

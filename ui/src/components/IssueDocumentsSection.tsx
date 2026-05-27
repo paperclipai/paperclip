@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { isSystemIssueDocumentKey } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
+import { useLocalizedCopy } from "@/i18n/ui-copy";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
@@ -169,6 +170,7 @@ export function IssueDocumentsSection({
 }) {
   const queryClient = useQueryClient();
   const location = useLocation();
+  const copy = useLocalizedCopy();
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
@@ -734,19 +736,21 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{copy("issueDocuments.new", "New document", "새 문서")}</span>
+            <span className="sm:hidden">{copy("issueDocuments.newShort", "New", "새로 만들기")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">
+            {copy("issueDocuments.title", "Documents", "문서")}
+          </h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{copy("issueDocuments.new", "New document", "새 문서")}</span>
+              <span className="sm:hidden">{copy("issueDocuments.newShort", "New", "새로 만들기")}</span>
             </Button>
           </div>
         </div>
@@ -766,7 +770,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={copy("issueDocuments.keyPlaceholder", "Document key", "문서 키")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -777,7 +781,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={copy("issueDocuments.titlePlaceholder", "Optional title", "선택 제목")}
             />
           )}
           <MarkdownEditor
@@ -785,7 +789,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={copy("issueDocuments.bodyPlaceholder", "Markdown body", "마크다운 본문")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -796,14 +800,16 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {copy("common.cancel", "Cancel", "취소")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending
+                ? copy("common.saving", "Saving...", "저장 중...")
+                : copy("issueDocuments.create", "Create document", "문서 만들기")}
             </Button>
           </div>
         </div>

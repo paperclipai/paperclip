@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
+import { i18n } from "@/i18n";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -363,7 +364,8 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -380,7 +382,8 @@ describe("IssueProperties", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
     document.body.innerHTML = "";
   });
 
@@ -643,6 +646,45 @@ describe("IssueProperties", () => {
     expect(container.textContent).toMatch(/CreatedApr 6, 2026, \d{1,2}:34 (AM|PM)/);
     expect(container.textContent).toMatch(/StartedApr 6, 2026, \d{1,2}:35 (AM|PM)/);
     expect(container.textContent).toMatch(/CompletedApr 6, 2026, \d{1,2}:36 (AM|PM)/);
+
+    act(() => root.unmount());
+  });
+
+  it("renders core issue property labels in Korean when the locale is Korean", async () => {
+    await i18n.changeLanguage("ko");
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdAt: new Date(2026, 3, 6, 12, 34),
+        startedAt: new Date(2026, 3, 6, 12, 35),
+        completedAt: new Date(2026, 3, 6, 12, 36),
+      }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("상태");
+    expect(container.textContent).toContain("우선순위");
+    expect(container.textContent).toContain("태그 없음");
+    expect(container.textContent).toContain("담당자");
+    expect(container.textContent).toContain("담당자 없음");
+    expect(container.textContent).toContain("프로젝트 없음");
+    expect(container.textContent).toContain("상위 작업 없음");
+    expect(container.textContent).toContain("하위 작업");
+    expect(container.textContent).toContain("하위 작업 추가");
+    expect(container.textContent).toContain("없음");
+    expect(container.textContent).toContain("예약 없음");
+    expect(container.textContent).toContain("생성자");
+    expect(container.textContent).toContain("시작");
+    expect(container.textContent).toContain("완료");
+    expect(container.textContent).toContain("생성");
+    expect(container.textContent).toContain("수정");
+    expect(container.textContent).not.toContain("Sub-issues");
+    expect(container.textContent).not.toContain("Add sub-issue");
+    expect(container.textContent).not.toContain("No project");
+    expect(container.textContent).not.toContain("Unassigned");
+    expect(container.textContent).not.toContain("Not scheduled");
 
     act(() => root.unmount());
   });

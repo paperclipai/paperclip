@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
 import {
   Select,
   SelectContent,
@@ -43,14 +44,33 @@ function activityEntityTitle(event: ActivityEvent) {
   return null;
 }
 
+function entityTypeLabel(type: string, copy: ReturnType<typeof useLocalizedCopy>) {
+  const labels: Record<string, string> = {
+    agent: copy("activity.entity.agent", "Agent", "직원"),
+    approval: copy("activity.entity.approval", "Approval", "승인"),
+    asset: copy("activity.entity.asset", "Asset", "자산"),
+    comment: copy("activity.entity.comment", "Comment", "댓글"),
+    company: copy("activity.entity.company", "Company", "회사"),
+    goal: copy("activity.entity.goal", "Goal", "목표"),
+    issue: copy("activity.entity.issue", "Issue", "작업"),
+    project: copy("activity.entity.project", "Project", "프로젝트"),
+    run: copy("activity.entity.run", "Run", "실행"),
+    skill: copy("activity.entity.skill", "Skill", "스킬"),
+    routine: copy("activity.entity.routine", "Routine", "루틴"),
+  };
+  return labels[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
+}
+
 export function Activity() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: copy("activity.breadcrumb", "Activity", "활동") }]);
+  }, [copy, setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: ACTIVITY_PAGE_LIMIT }],
@@ -101,7 +121,7 @@ export function Activity() {
   }, [data]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select a company to view activity." />;
+    return <EmptyState icon={History} message={copy("activity.noCompany", "Select a company to view activity.", "활동을 보려면 회사를 선택하세요.")} />;
   }
 
   if (isLoading) {
@@ -122,13 +142,13 @@ export function Activity() {
       <div className="flex items-center justify-end">
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
+            <SelectValue placeholder={copy("activity.filter.placeholder", "Filter by type", "유형 필터")} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="all">{copy("activity.filter.all", "All types", "전체 유형")}</SelectItem>
             {entityTypes.map((type) => (
               <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
+                {entityTypeLabel(type, copy)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -138,7 +158,7 @@ export function Activity() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {filtered && filtered.length === 0 && (
-        <EmptyState icon={History} message="No activity yet." />
+        <EmptyState icon={History} message={copy("activity.empty", "No activity yet.", "아직 활동이 없습니다.")} />
       )}
 
       {filtered && filtered.length > 0 && (
@@ -151,6 +171,7 @@ export function Activity() {
               userProfileMap={userProfileMap}
               entityNameMap={entityNameMap}
               entityTitleMap={entityTitleMap}
+              locale={locale}
             />
           ))}
         </div>

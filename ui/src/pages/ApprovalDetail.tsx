@@ -8,18 +8,21 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
-import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
+import { approvalSubject, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { useCurrentLocale, useLocalizedCopy } from "../i18n/ui-copy";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const copy = useLocalizedCopy();
+  const locale = useCurrentLocale();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -65,10 +68,10 @@ export function ApprovalDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Approvals", href: "/approvals" },
-      { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
+      { label: copy("approvals.breadcrumb", "Approvals", "승인"), href: "/approvals" },
+      { label: approval?.id?.slice(0, 8) ?? approvalId ?? copy("approvalDetail.breadcrumb", "Approval", "승인 상세") },
     ]);
-  }, [setBreadcrumbs, approval, approvalId]);
+  }, [copy, setBreadcrumbs, approval, approvalId]);
 
   const refresh = () => {
     if (!approvalId) return;
@@ -91,7 +94,7 @@ export function ApprovalDetail() {
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.approve", "Approve failed", "승인에 실패했습니다.")),
   });
 
   const rejectMutation = useMutation({
@@ -100,7 +103,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.reject", "Reject failed", "반려에 실패했습니다.")),
   });
 
   const revisionMutation = useMutation({
@@ -109,7 +112,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.revision", "Revision request failed", "수정 요청에 실패했습니다.")),
   });
 
   const resubmitMutation = useMutation({
@@ -118,7 +121,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Resubmit failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.resubmit", "Resubmit failed", "재제출 표시를 실패했습니다.")),
   });
 
   const addCommentMutation = useMutation({
@@ -128,7 +131,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Comment failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.comment", "Comment failed", "댓글 작성에 실패했습니다.")),
   });
 
   const deleteAgentMutation = useMutation({
@@ -138,17 +141,26 @@ export function ApprovalDetail() {
       refresh();
       navigate("/approvals");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Delete failed"),
+    onError: (err) => setError(err instanceof Error ? err.message : copy("approvalDetail.error.delete", "Delete failed", "삭제에 실패했습니다.")),
   });
 
   if (isLoading) return <PageSkeleton variant="detail" />;
-  if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
+  if (!approval) return <p className="text-sm text-muted-foreground">{copy("approvalDetail.notFound", "Approval not found.", "승인 요청을 찾을 수 없습니다.")}</p>;
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
+  const approvalTypeLabels: Record<string, string> = {
+    hire_agent: copy("approval.type.hireAgent", "Hire Agent", "직원 고용"),
+    approve_ceo_strategy: copy("approval.type.ceoStrategy", "CEO Strategy", "CEO 전략"),
+    budget_override_required: copy("approval.type.budgetOverride", "Budget Override", "예산 초과 승인"),
+    request_board_approval: copy("approval.type.boardApproval", "Board Approval", "보드 승인"),
+  };
+  const approvalTitleBase = approvalTypeLabels[approval.type] ?? approval.type;
+  const approvalTitleSubject = approvalSubject(payload);
+  const approvalTitle = approvalTitleSubject ? `${approvalTitleBase}: ${approvalTitleSubject}` : approvalTitleBase;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
@@ -156,17 +168,17 @@ export function ApprovalDetail() {
       ? {
           label:
             (linkedIssues?.length ?? 0) > 1
-              ? "Review linked issues"
-              : "Review linked issue",
+              ? copy("approvalDetail.cta.reviewLinkedIssues", "Review linked issues", "연결 작업 검토")
+              : copy("approvalDetail.cta.reviewLinkedIssue", "Review linked issue", "연결 작업 검토"),
           to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
         }
       : linkedAgentId
         ? {
-            label: "Open hired agent",
+            label: copy("approvalDetail.cta.openHiredAgent", "Open hired agent", "고용된 직원 열기"),
             to: `/agents/${linkedAgentId}`,
           }
         : {
-            label: "Back to approvals",
+            label: copy("approvalDetail.cta.back", "Back to approvals", "승인 목록으로"),
             to: "/approvals",
           };
 
@@ -181,9 +193,15 @@ export function ApprovalDetail() {
                 <Sparkles className="h-3 w-3 text-green-500 dark:text-green-200 absolute -right-2 -top-1 animate-pulse" />
               </div>
               <div>
-                <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
+                <p className="text-sm text-green-800 dark:text-green-100 font-medium">
+                  {copy("approvalDetail.approvedBanner.title", "Approval confirmed", "승인이 완료되었습니다.")}
+                </p>
                 <p className="text-xs text-green-700 dark:text-green-200/90">
-                  Requesting agent was notified to review this approval and linked issues.
+                  {copy(
+                    "approvalDetail.approvedBanner.body",
+                    "Requesting agent was notified to review this approval and linked issues.",
+                    "요청한 직원에게 이 승인과 연결 작업을 확인하라고 알렸습니다.",
+                  )}
                 </p>
               </div>
             </div>
@@ -203,7 +221,7 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <h2 className="text-lg font-semibold">{approvalTitle}</h2>
               <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>
@@ -212,7 +230,7 @@ export function ApprovalDetail() {
         <div className="text-sm space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground text-xs">Requested by</span>
+              <span className="text-muted-foreground text-xs">{copy("approvalDetail.requestedBy", "Requested by", "요청자")}</span>
               <Identity
                 name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
                 size="sm"
@@ -226,7 +244,7 @@ export function ApprovalDetail() {
             onClick={() => setShowRawPayload((v) => !v)}
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
-            See full request
+            {copy("approvalDetail.rawRequest", "See full request", "전체 요청 보기")}
           </button>
           {showRawPayload && (
             <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
@@ -234,13 +252,15 @@ export function ApprovalDetail() {
             </pre>
           )}
           {approval.decisionNote && (
-            <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
+            <p className="text-xs text-muted-foreground">
+              {copy("approvalDetail.decisionNote", "Decision note: {{note}}", "결정 메모: {{note}}", { note: approval.decisionNote })}
+            </p>
           )}
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Issues</p>
+            <p className="text-xs text-muted-foreground mb-1.5">{copy("approvalDetail.linkedIssues", "Linked Issues", "연결 작업")}</p>
             <div className="space-y-1.5">
               {linkedIssues.map((issue) => (
                 <Link
@@ -256,7 +276,11 @@ export function ApprovalDetail() {
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground mt-2">
-              Linked issues remain open until the requesting agent follows up and closes them.
+              {copy(
+                "approvalDetail.linkedIssues.note",
+                "Linked issues remain open until the requesting agent follows up and closes them.",
+                "연결 작업은 요청한 직원이 후속 처리하고 닫을 때까지 열린 상태로 남습니다.",
+              )}
             </p>
           </div>
         )}
@@ -269,7 +293,7 @@ export function ApprovalDetail() {
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
-                Approve
+                {copy("approvalDetail.action.approve", "Approve", "승인")}
               </Button>
               <Button
                 variant="destructive"
@@ -277,13 +301,17 @@ export function ApprovalDetail() {
                 onClick={() => rejectMutation.mutate()}
                 disabled={rejectMutation.isPending}
               >
-                Reject
+                {copy("approvalDetail.action.reject", "Reject", "반려")}
               </Button>
             </>
           )}
           {isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
-              Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
+              {copy("approvalDetail.budgetStop.prefix", "Resolve this budget stop from the budget controls on", "이 예산 중지는")}
+              {" "}
+              <Link to="/costs" className="underline underline-offset-2">/costs</Link>
+              {" "}
+              {copy("approvalDetail.budgetStop.suffix", ".", "예산 관리에서 해제하세요.")}
             </p>
           )}
           {approval.status === "pending" && (
@@ -293,7 +321,7 @@ export function ApprovalDetail() {
               onClick={() => revisionMutation.mutate()}
               disabled={revisionMutation.isPending}
             >
-              Request revision
+              {copy("approvalDetail.action.requestRevision", "Request revision", "수정 요청")}
             </Button>
           )}
           {approval.status === "revision_requested" && (
@@ -303,7 +331,7 @@ export function ApprovalDetail() {
               onClick={() => resubmitMutation.mutate()}
               disabled={resubmitMutation.isPending}
             >
-              Mark resubmitted
+              {copy("approvalDetail.action.markResubmitted", "Mark resubmitted", "재제출 표시")}
             </Button>
           )}
           {approval.status === "rejected" && approval.type === "hire_agent" && linkedAgentId && (
@@ -312,19 +340,25 @@ export function ApprovalDetail() {
               variant="outline"
               className="text-destructive border-destructive/40"
               onClick={() => {
-                if (!window.confirm("Delete this disapproved agent? This cannot be undone.")) return;
+                if (!window.confirm(copy(
+                  "approvalDetail.confirmDeleteAgent",
+                  "Delete this disapproved agent? This cannot be undone.",
+                  "반려된 이 직원을 삭제할까요? 이 작업은 되돌릴 수 없습니다.",
+                ))) return;
                 deleteAgentMutation.mutate(linkedAgentId);
               }}
               disabled={deleteAgentMutation.isPending}
             >
-              Delete disapproved agent
+              {copy("approvalDetail.action.deleteAgent", "Delete disapproved agent", "반려된 직원 삭제")}
             </Button>
           )}
         </div>
       </div>
 
       <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+        <h3 className="text-sm font-medium">
+          {copy("approvalDetail.comments.title", "Comments ({{count}})", "댓글 {{count}}개", { count: comments?.length ?? 0 })}
+        </h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment: ApprovalComment) => (
             <div key={comment.id} className="border border-border/60 rounded-md p-3">
@@ -337,10 +371,10 @@ export function ApprovalDetail() {
                     />
                   </Link>
                 ) : (
-                  <Identity name="Board" size="sm" />
+                  <Identity name={copy("approvalDetail.board", "Board", "보드")} size="sm" />
                 )}
                 <span className="text-xs text-muted-foreground">
-                  {new Date(comment.createdAt).toLocaleString()}
+                  {new Date(comment.createdAt).toLocaleString(locale)}
                 </span>
               </div>
               <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
@@ -350,7 +384,7 @@ export function ApprovalDetail() {
         <Textarea
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
-          placeholder="Add a comment..."
+          placeholder={copy("approvalDetail.comment.placeholder", "Add a comment...", "댓글 추가...")}
           rows={3}
         />
         <div className="flex justify-end">
@@ -359,7 +393,9 @@ export function ApprovalDetail() {
             onClick={() => addCommentMutation.mutate()}
             disabled={!commentBody.trim() || addCommentMutation.isPending}
           >
-            {addCommentMutation.isPending ? "Posting…" : "Post comment"}
+            {addCommentMutation.isPending
+              ? copy("approvalDetail.comment.posting", "Posting…", "게시 중...")
+              : copy("approvalDetail.comment.post", "Post comment", "댓글 게시")}
           </Button>
         </div>
       </div>

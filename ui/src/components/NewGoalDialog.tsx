@@ -23,20 +23,15 @@ import {
   Layers,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useLocalizedCopy } from "../i18n/ui-copy";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
-
-const levelLabels: Record<string, string> = {
-  company: "Company",
-  team: "Team",
-  agent: "Agent",
-  task: "Task",
-};
 
 export function NewGoalDialog() {
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const copy = useLocalizedCopy();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
@@ -70,7 +65,7 @@ export function NewGoalDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No company selected");
+      if (!selectedCompanyId) throw new Error(copy("newGoal.error.noCompany", "No company selected", "선택된 회사가 없습니다."));
       return assetsApi.uploadImage(selectedCompanyId, file, "goals/drafts");
     },
   });
@@ -103,6 +98,18 @@ export function NewGoalDialog() {
   }
 
   const currentParent = (goals ?? []).find((g) => g.id === appliedParentId);
+  const levelLabels: Record<string, string> = {
+    company: copy("goal.level.company", "Company", "회사"),
+    team: copy("goal.level.team", "Team", "팀"),
+    agent: copy("goal.level.agent", "Agent", "직원"),
+    task: copy("goal.level.task", "Task", "작업"),
+  };
+  const statusLabels: Record<string, string> = {
+    planned: copy("goal.status.planned", "Planned", "계획됨"),
+    active: copy("goal.status.active", "Active", "활성"),
+    achieved: copy("goal.status.achieved", "Achieved", "달성"),
+    cancelled: copy("goal.status.cancelled", "Cancelled", "취소"),
+  };
 
   return (
     <Dialog
@@ -128,7 +135,11 @@ export function NewGoalDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+            <span>
+              {newGoalDefaults.parentId
+                ? copy("newGoal.subTitle", "New sub-goal", "새 하위 목표")
+                : copy("newGoal.title", "New goal", "새 목표")}
+            </span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -136,6 +147,9 @@ export function NewGoalDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => setExpanded(!expanded)}
+              aria-label={expanded
+                ? copy("newGoal.collapse", "Collapse dialog", "창 축소")
+                : copy("newGoal.expand", "Expand dialog", "창 확대")}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
@@ -144,6 +158,7 @@ export function NewGoalDialog() {
               size="icon-xs"
               className="text-muted-foreground"
               onClick={() => { reset(); closeNewGoal(); }}
+              aria-label={copy("common.close", "Close", "닫기")}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -154,7 +169,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={copy("newGoal.title.placeholder", "Goal title", "목표 제목")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -173,7 +188,7 @@ export function NewGoalDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={copy("newGoal.description.placeholder", "Add description...", "설명 추가...")}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -202,7 +217,7 @@ export function NewGoalDialog() {
                   )}
                   onClick={() => { setStatus(s); setStatusOpen(false); }}
                 >
-                  {s}
+                  {statusLabels[s] ?? s}
                 </button>
               ))}
             </PopoverContent>
@@ -237,7 +252,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
+                {currentParent ? currentParent.title : copy("newGoal.parent", "Parent goal", "상위 목표")}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
@@ -248,7 +263,7 @@ export function NewGoalDialog() {
                 )}
                 onClick={() => { setParentId(""); setParentOpen(false); }}
               >
-                No parent
+                {copy("newGoal.parent.none", "No parent", "상위 목표 없음")}
               </button>
               {(goals ?? []).map((g) => (
                 <button
@@ -273,7 +288,11 @@ export function NewGoalDialog() {
             disabled={!title.trim() || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending
+              ? copy("newGoal.creating", "Creating…", "만드는 중...")
+              : newGoalDefaults.parentId
+                ? copy("newGoal.createSubGoal", "Create sub-goal", "하위 목표 만들기")
+                : copy("newGoal.create", "Create goal", "목표 만들기")}
           </Button>
         </div>
       </DialogContent>
