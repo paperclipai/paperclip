@@ -153,6 +153,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Time in milliseconds before an unresolved escalation triggers the default action.",
         default: DEFAULT_CONFIG.escalationTimeoutMs,
       },
+      escalationDedupeWindowMs: {
+        type: "number",
+        title: "Escalation dedupe window (ms)",
+        description:
+          "Suppresses duplicate issue.escalation.needs_human_decision Slack posts for the same issue inside this window. Defaults to 1 hour.",
+        default: DEFAULT_CONFIG.escalationDedupeWindowMs,
+      },
       escalationDefaultAction: {
         type: "string",
         title: "Escalation Default Action",

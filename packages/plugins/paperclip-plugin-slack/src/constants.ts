@@ -1,7 +1,10 @@
 import type { SlackPluginConfig } from "./types.js";
 
 export const PLUGIN_ID = "paperclip-plugin-slack";
-export const PLUGIN_VERSION = "2.1.1";
+export const PLUGIN_VERSION = "2.2.0";
+
+export const ESCALATION_NEEDS_HUMAN_DECISION_EVENT =
+  "issue.escalation.needs_human_decision" as const;
 
 export const WEBHOOK_KEYS = {
   slackEvents: "slack-events",
@@ -33,6 +36,8 @@ export const STATE_KEYS = {
   dailyAgentCosts: (date: string) => `daily-agent-costs-${date}`,
   firstRunNotified: (id: string) => `first-run-notified-${id}`,
   budgetAlert: (id: string, bucket: number) => `budget-alert-${id}-${bucket}`,
+  humanDecisionEscalation: (issueId: string) =>
+    `human-decision-escalation-${issueId}`,
   watchRegistry: (ch: string, ts: string) => `watches_${ch}_${ts}`,
   commandRegistry: "custom-commands",
   slackUser: (paperclipUserId: string) => `slack-user-${paperclipUserId}`,
@@ -58,6 +63,7 @@ export const DEFAULT_CONFIG: SlackPluginConfig = {
   notifyAssigneeOnAssignment: true,
   enableDailyDigest: false,
   escalationTimeoutMs: 900000,
+  escalationDedupeWindowMs: 3600000,
   escalationDefaultAction: "defer",
   escalationHoldMessage:
     "Your request has been escalated to a human agent. Please hold.",

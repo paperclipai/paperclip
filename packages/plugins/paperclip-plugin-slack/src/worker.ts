@@ -8,7 +8,11 @@ import {
   type ToolRunContext,
   type ToolResult,
 } from "@paperclipai/plugin-sdk";
-import { WEBHOOK_KEYS, STATE_KEYS } from "./constants.js";
+import {
+  WEBHOOK_KEYS,
+  STATE_KEYS,
+  ESCALATION_NEEDS_HUMAN_DECISION_EVENT,
+} from "./constants.js";
 import {
   ESCALATE_TO_HUMAN_DECLARATION,
   HANDOFF_TO_AGENT_DECLARATION,
@@ -68,6 +72,7 @@ import {
   BUILTIN_WATCH_TEMPLATES,
 } from "./proactive-suggestions.js";
 import { resolveSlackUserId } from "./user-mapping.js";
+import { postHumanDecisionEscalation } from "./escalation-watch.js";
 import type {
   SlackPluginConfig,
   EscalationRecord,
@@ -875,6 +880,16 @@ const plugin = definePlugin({
     // =========================================================================
     // Core event subscriptions (existing notifications)
     // =========================================================================
+    ctx.events.on(ESCALATION_NEEDS_HUMAN_DECISION_EVENT as any, async (event) => {
+      const result = await postHumanDecisionEscalation(ctx, token, config, event);
+      if (result.error) {
+        ctx.logger.warn("Failed to forward human-decision escalation", {
+          issueId: event.entityId,
+          error: result.error,
+        });
+      }
+    });
+
     if (config.notifyOnIssueCreated) {
       ctx.events.on("issue.created", async (event) => {
         const result = await notify(event, formatIssueCreated);

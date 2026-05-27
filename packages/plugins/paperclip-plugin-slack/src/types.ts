@@ -22,6 +22,7 @@ export interface SlackPluginConfig {
   notifyAssigneeOnAssignment: boolean;
   enableDailyDigest: boolean;
   escalationTimeoutMs: number;
+  escalationDedupeWindowMs: number;
   escalationDefaultAction: string;
   escalationHoldMessage: string;
   paperclipBaseUrl: string;

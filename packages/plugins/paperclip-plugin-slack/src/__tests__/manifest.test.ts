@@ -39,3 +39,11 @@ describe("manifest.tools", () => {
     expect(tool?.parametersSchema).toBeDefined();
   });
 });
+
+describe("manifest.instanceConfigSchema", () => {
+  it("documents the escalation channel and dedupe window", () => {
+    const properties = manifest.instanceConfigSchema?.properties as Record<string, unknown>;
+    expect(properties.escalationChatId).toBeDefined();
+    expect(properties.escalationDedupeWindowMs).toBeDefined();
+  });
+});
