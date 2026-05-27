@@ -2597,8 +2597,9 @@ export function issueRoutes(
       else recoveryActionByIssue.delete(issue.id);
     }));
     res.json(result.map((issue) => {
-      const blockedByIssueIds = Array.isArray(issue.blockedBy)
-        ? issue.blockedBy.map((blocker) => blocker.id)
+      const issueAny = issue as { blockedBy?: { id: string }[] };
+      const blockedByIssueIds = Array.isArray(issueAny.blockedBy)
+        ? issueAny.blockedBy.map((blocker) => blocker.id)
         : [];
       return {
         ...issue,
