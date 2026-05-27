@@ -845,7 +845,13 @@ const plugin = definePlugin({
     ) => {
       const fallback = overrideChannelId || config.defaultChannelId;
       const channelId = await resolveChannel(ctx, event.companyId, fallback);
-      if (!channelId) return;
+      if (!channelId) {
+        await ctx.metrics.write("slack.notifications.failed", 1, {
+          event_type: event.eventType,
+          error_code: "no_channel",
+        });
+        return;
+      }
       const result = await postMessage(
         ctx,
         token,
@@ -1798,4 +1804,6 @@ export default plugin;
 // when the host spawns the worker via a symlinked install dir (the symlink target
 // resolves but argv[1] stays as the symlink path). startWorkerRpcHost bypasses
 // that check; safe because this file is only ever loaded as the worker entrypoint.
-startWorkerRpcHost({ plugin });
+if (!process.env.VITEST) {
+  startWorkerRpcHost({ plugin });
+}
