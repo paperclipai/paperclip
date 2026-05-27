@@ -11,6 +11,34 @@ export const queryKeys = {
       ["company-skills", companyId, skillId, "update-status"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
+    providers: (companyId: string) => ["company-skills", companyId, "providers"] as const,
+    brabrixSearch: (
+      companyId: string,
+      q: string,
+      category: string | null,
+      tags: string[],
+      limit: number,
+      offset: number,
+    ) => [
+      "company-skills",
+      companyId,
+      "providers",
+      "brabrix-skillhub",
+      "search",
+      q,
+      category ?? "",
+      tags.join(","),
+      limit,
+      offset,
+    ] as const,
+    brabrixFeatured: (companyId: string, limit: number) =>
+      ["company-skills", companyId, "providers", "brabrix-skillhub", "featured", limit] as const,
+    brabrixCategories: (companyId: string) =>
+      ["company-skills", companyId, "providers", "brabrix-skillhub", "categories"] as const,
+    brabrixSettings: (companyId: string) =>
+      ["company-skills", companyId, "providers", "brabrix-skillhub", "settings"] as const,
+    brabrixSkillDetail: (companyId: string, skillId: string) =>
+      ["company-skills", companyId, "providers", "brabrix-skillhub", "detail", skillId] as const,
   },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
@@ -100,6 +128,10 @@ export const queryKeys = {
   },
   brabrix: {
     nextTaskSync: (companyId: string) => ["brabrix", companyId, "sync-next-task"] as const,
+    settings: (companyId: string) => ["brabrix", companyId, "settings"] as const,
+    connectionTest: (companyId: string) => ["brabrix", companyId, "connection-test"] as const,
+    projects: (companyId: string) => ["brabrix", companyId, "projects"] as const,
+    importedProjects: (companyId: string) => ["brabrix", companyId, "imported-projects"] as const,
   },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,

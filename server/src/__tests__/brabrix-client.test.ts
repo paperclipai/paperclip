@@ -58,8 +58,35 @@ describe("BrabrixClient", () => {
     const firstUrl = String(firstCall?.[0]);
     const firstInit = firstCall?.[1];
     expect(firstUrl).toContain("/v1/projects/project-1/context");
+    expect(firstUrl).not.toContain("projectId=");
+    expect(firstUrl).not.toContain("provider=");
+    expect(firstUrl).not.toContain("agentId=");
     expect(firstInit?.method).toBe("GET");
     expect((firstInit?.headers as Record<string, string>)["authorization"]).toBe("Bearer token-123");
+  });
+
+  it("adds projectId query only when endpoint template does not include {projectId}", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }));
+
+    const client = new BrabrixClient(
+      baseConfig({
+        endpoints: {
+          projectContext: "/v1/project-context",
+          nextTask: "/v1/projects/{projectId}/tasks/next",
+          sendRunLogs: "/v1/projects/{projectId}/runs/{runId}/logs",
+          completeTask: "/v1/projects/{projectId}/tasks/{taskId}/complete",
+        },
+      }),
+      fetchMock,
+    );
+
+    await client.getProjectContext();
+    const firstCall = fetchMock.mock.calls[0];
+    const firstUrl = String(firstCall?.[0]);
+    expect(firstUrl).toContain("/v1/project-context");
+    expect(firstUrl).toContain("projectId=project-1");
   });
 
   it("retries retryable HTTP errors before succeeding", async () => {
@@ -84,5 +111,28 @@ describe("BrabrixClient", () => {
 
     await expect(client.getNextTask()).rejects.toThrow("BRABRIX_API_URL");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses X-API-Key auth for bbx_ tokens to match Brabrix extension semantics", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({
+          nextTask: {
+            taskId: "task-123",
+            title: "Sync item",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+
+    const client = new BrabrixClient(baseConfig({ agentToken: "bbx_token_123" }), fetchMock);
+    await client.getNextTask();
+
+    const firstCall = fetchMock.mock.calls[0];
+    const firstInit = firstCall?.[1];
+    const headers = (firstInit?.headers as Record<string, string>) ?? {};
+    expect(headers["x-api-key"]).toBe("bbx_token_123");
+    expect(headers["authorization"]).toBeUndefined();
   });
 });

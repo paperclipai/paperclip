@@ -239,6 +239,22 @@ function truncateForLog(value: string | undefined, maxLength = 500): string | un
   return `${trimmed.slice(0, maxLength)}…`;
 }
 
+function normalizeAuthToken(rawToken: string): string {
+  const trimmed = rawToken.trim();
+  if (trimmed.toLowerCase().startsWith("bearer ")) {
+    return trimmed.slice(7).trim();
+  }
+  return trimmed;
+}
+
+function isBrabrixApiKeyToken(token: string): boolean {
+  return token.startsWith("bbx_");
+}
+
+function resolveBrabrixAuthMode(token: string): "x-api-key" | "bearer" {
+  return isBrabrixApiKeyToken(token) ? "x-api-key" : "bearer";
+}
+
 function isRetryableStatus(status: number): boolean {
   return RETRYABLE_STATUS_CODES.has(status);
 }
@@ -289,7 +305,7 @@ export class BrabrixClient {
     const resolved = resolveBrabrixConfig(this.config);
     if (!resolved) {
       throw new Error(
-        "Brabrix integration is not fully configured. Set BRABRIX_AGENT_TOKEN, BRABRIX_PROJECT_ID, and all BRABRIX_*_ENDPOINT variables.",
+        "Brabrix integration is not fully configured. Set BRABRIX_AGENT_TOKEN and BRABRIX_PROJECT_ID (optionally override BRABRIX_*_ENDPOINT variables).",
       );
     }
     return resolved;
@@ -315,14 +331,29 @@ export class BrabrixClient {
     readyConfig: BrabrixReadyConfig,
     hasBody: boolean,
   ): Record<string, string> {
-    return {
-      ...(hasBody ? { "content-type": "application/json" } : {}),
+    const normalizedToken = normalizeAuthToken(readyConfig.agentToken);
+    const headers: Record<string, string> = {
       accept: "application/json",
-      authorization: `Bearer ${readyConfig.agentToken}`,
-      "x-brabrix-project-id": readyConfig.projectId,
-      ...(readyConfig.provider ? { "x-brabrix-provider": readyConfig.provider } : {}),
-      ...(readyConfig.agentId ? { "x-brabrix-agent-id": readyConfig.agentId } : {}),
     };
+
+    if (hasBody) {
+      headers["content-type"] = "application/json";
+    }
+
+    if (resolveBrabrixAuthMode(normalizedToken) === "x-api-key") {
+      headers["x-api-key"] = normalizedToken;
+    } else {
+      headers.authorization = `Bearer ${normalizedToken}`;
+    }
+
+    if (readyConfig.provider) {
+      headers["x-brabrix-provider"] = readyConfig.provider;
+    }
+    if (readyConfig.agentId) {
+      headers["x-brabrix-agent-id"] = readyConfig.agentId;
+    }
+
+    return headers;
   }
 
   private async request<T>(input: {
@@ -334,6 +365,7 @@ export class BrabrixClient {
     query?: Record<string, string | number | boolean | null | undefined>;
   }): Promise<T | null> {
     const readyConfig = this.resolveReadyConfig();
+    const authMode = resolveBrabrixAuthMode(normalizeAuthToken(readyConfig.agentToken));
     const maxAttempts = Math.max(1, readyConfig.maxRetries + 1);
     const endpointTemplate = readyConfig.endpoints[input.endpoint];
     const urlWithoutQuery = this.resolveEndpointUrl(
@@ -407,6 +439,7 @@ export class BrabrixClient {
             retrying: shouldRetry,
             retryDelayMs: shouldRetry ? readyConfig.retryDelayMs * attempt : 0,
             durationMs,
+            authMode,
             url,
             responseBody: knownError.details.responseBody,
             err: knownError.details.cause ?? knownError,
@@ -430,6 +463,8 @@ export class BrabrixClient {
 
   async getProjectContext(): Promise<BrabrixProjectContext | null> {
     const readyConfig = this.resolveReadyConfig();
+    const endpointTemplate = readyConfig.endpoints.projectContext;
+    const projectIdInPath = endpointTemplate.includes("{projectId}");
     const payload = await this.request<unknown>({
       action: "getProjectContext",
       endpoint: "projectContext",
@@ -438,11 +473,11 @@ export class BrabrixClient {
         projectId: readyConfig.projectId,
         agentId: readyConfig.agentId,
       },
-      query: {
-        projectId: readyConfig.projectId,
-        provider: readyConfig.provider,
-        agentId: readyConfig.agentId,
-      },
+      query: projectIdInPath
+        ? undefined
+        : {
+            projectId: readyConfig.projectId,
+          },
     });
 
     const context = normalizeProjectContext(extractProjectContextPayload(payload), readyConfig.projectId);
@@ -459,6 +494,8 @@ export class BrabrixClient {
 
   async getNextTask(): Promise<BrabrixTask | null> {
     const readyConfig = this.resolveReadyConfig();
+    const endpointTemplate = readyConfig.endpoints.nextTask;
+    const projectIdInPath = endpointTemplate.includes("{projectId}");
     const payload = await this.request<unknown>({
       action: "getNextTask",
       endpoint: "nextTask",
@@ -467,11 +504,11 @@ export class BrabrixClient {
         projectId: readyConfig.projectId,
         agentId: readyConfig.agentId,
       },
-      query: {
-        projectId: readyConfig.projectId,
-        provider: readyConfig.provider,
-        agentId: readyConfig.agentId,
-      },
+      query: projectIdInPath
+        ? undefined
+        : {
+            projectId: readyConfig.projectId,
+          },
     });
 
     const task = normalizeTask(extractNextTaskPayload(payload));

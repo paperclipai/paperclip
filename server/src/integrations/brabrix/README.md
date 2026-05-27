@@ -29,7 +29,24 @@ Leitura e normalização de configuração via ambiente:
 - `BRABRIX_HTTP_MAX_RETRIES`
 - `BRABRIX_HTTP_RETRY_DELAY_MS`
 
+Defaults embutidos:
+
+- `BRABRIX_API_URL=https://api.brabrix.com`
+- `BRABRIX_PROJECT_CONTEXT_ENDPOINT=/v1/projects/{projectId}/context`
+- `BRABRIX_NEXT_TASK_ENDPOINT=/v1/projects/{projectId}/tasks/next`
+- `BRABRIX_SEND_RUN_LOGS_ENDPOINT=/v1/projects/{projectId}/runs/{runId}/logs`
+- `BRABRIX_COMPLETE_TASK_ENDPOINT=/v1/projects/{projectId}/tasks/{taskId}/complete`
+
 `resolveBrabrixConfig()` retorna `null` quando a integração não está pronta, permitindo modo seguro de no-op.
+
+### `server/src/services/brabrix-settings.ts`
+Resolução company-scoped da configuração de sync:
+
+- Token, projectId e tenantId por `Secrets` em `Company Settings -> Brabrix`
+- Fallback para env (`BRABRIX_AGENT_TOKEN`, `BRABRIX_PROJECT_ID`, `BRABRIX_TENANT_ID`)
+- APIs:
+  - `GET /api/companies/:companyId/brabrix/settings`
+  - `PATCH /api/companies/:companyId/brabrix/settings`
 
 ### `brabrix-client.ts`
 Cliente HTTP tipado com `fetch`:
@@ -43,6 +60,10 @@ Cliente HTTP tipado com `fetch`:
 - Timeout configurável por env
 - Logs estruturados por request (status, tentativa, duração, endpoint)
 - Suporte a endpoint template com parâmetros (`/v1/projects/{projectId}/...`)
+- Semântica de auth alinhada ao VS Code Brabrix:
+  - token iniciando com `bbx_` -> envia `x-api-key`
+  - demais tokens -> envia `Authorization: Bearer ...`
+- Para endpoints com `{projectId}` no path (defaults), `getProjectContext()` e `getNextTask()` usam URL limpa sem query params redundantes.
 
 ### `server/src/services/brabrix-agent-sync.ts`
 Serviço de orquestração da integração:
@@ -52,6 +73,29 @@ Serviço de orquestração da integração:
 - `syncStatus()`: sincroniza status explícito da task
 - `updateExecution()`: envia logs e conclui task quando status do run é terminal (`completed|failed|canceled`)
 - `isEnabled()`: indica se configuração está pronta
+
+### `brabrix-project-importer.ts`
+Importador principal para `Import Brabrix Project`:
+
+- `testConnection()`
+- `listProjects()`
+- `getProjectBundle(projectId)`
+- `importProject(projectId)`
+- `syncProject(projectId)`
+- `listImportedProjects()`
+- `disconnectProject(projectId)`
+
+Responsabilidades:
+
+- montar bundle completo (`Project`, `PRD`, `Specs`, `Backlog`, `Features`, `Skills`)
+- mapear para projeto/workspace local com metadata Brabrix
+- upsert incremental de goals e issues com deduplicação
+- reutilizar pipeline existente de skills (sem criar pipeline paralelo)
+- expor badges de estado (`Imported`, `Synced`, `Out of sync`)
+- usar o mesmo contrato de endpoints da extensão Brabrix VSCode (`/api/v1/tenants/current/dev/projects...`)
+- enviar `x-tenant-id` em rotas tenant-scoped apenas quando `tenantId` estiver configurado com UUID válido
+- quando `tenantId` não estiver configurado (ou estiver inválido), tentar auto-resolver via `GET /api/v1/me/memberships?size=100` (com cache no ciclo da requisição)
+- operar em modo best-effort para endpoints opcionais do bundle (ex.: `export/context`, workflow, skills export): falhas `5xx` geram `warnings` e não abortam o import
 
 ### `server/src/services/brabrix-task-goal-mapper.ts`
 Mapper tipado para converter `BrabrixTask -> AgentGoal` automaticamente:
@@ -69,16 +113,30 @@ Builder modular de prompt/contexto:
 
 ## Fluxo da integração
 
+### Fluxo principal (recomendado): Import Brabrix Project
+
+1. Configurar token/API key em `Company Settings > Brabrix`.
+2. Testar conexão.
+3. Listar projetos.
+4. Selecionar projeto.
+5. Importar bundle completo.
+6. Sincronizar manualmente quando necessário.
+
+### Fluxo legado (compatibilidade): Sync Next Task -> Goal
+
+Mantido para não quebrar compatibilidade, mas conceitualmente secundário em relação ao import de projeto completo.
+
 1. Inicializar config por `getBrabrixConfig()`.
-2. Validar com `resolveBrabrixConfig()`.
-3. Se habilitado:
+2. Sobrepor config por empresa (`brabrix-settings.ts`) quando houver bindings em settings.
+3. Validar com `resolveBrabrixConfig()`.
+4. Se habilitado:
    - carregar `ProjectContext`
    - buscar `BrabrixTask` pendente
    - converter task em `AgentGoal`
    - montar contexto modular para execução do agente
    - enviar logs periódicos de execução
    - concluir task no término do run
-4. Se não habilitado:
+5. Se não habilitado:
    - operar em no-op (sem quebrar execução principal)
 
 ## Payloads esperados
@@ -199,9 +257,10 @@ Request:
 
 ## Pipeline Arquitetural
 
-Para visão completa da pipeline de conversão `BrabrixTask -> AgentGoal -> Contexto`, veja:
+Para visão completa:
 
 - `server/src/integrations/brabrix/pipeline-architecture.md`
+- `server/src/integrations/brabrix/project-import-architecture.md`
 
 ## Onde integrar APIs reais adicionais
 

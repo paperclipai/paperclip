@@ -1,5 +1,6 @@
 export { companyService } from "./companies.js";
 export { createBrabrixAgentSyncService } from "./brabrix-agent-sync.js";
+export { brabrixSettingsService } from "./brabrix-settings.js";
 export { buildBrabrixAgentContext, inferBrabrixAgentProfileKey, resolveBrabrixAgentProfile } from "./context-builder.js";
 export { mapBrabrixTaskToAgentGoal } from "./brabrix-task-goal-mapper.js";
 export { companySearchService } from "./company-search.js";

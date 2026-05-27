@@ -97,3 +97,92 @@ export interface AgentGoal {
 }
 
 export type BrabrixProjectContext = ProjectContext;
+
+export interface BrabrixProject {
+  projectId: string;
+  name: string;
+  description?: string | null;
+  status?: string | null;
+  customerName?: string | null;
+  projectType?: string | null;
+  updatedAt?: string | null;
+  sourceUrl?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixPrd {
+  title: string;
+  content: string;
+  status?: string | null;
+  sourceUrl?: string | null;
+  updatedAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixSpec {
+  specId: string;
+  type: string;
+  title: string;
+  content: string;
+  status?: string | null;
+  sourceUrl?: string | null;
+  updatedAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixBacklogItem {
+  itemId: string;
+  projectId: string;
+  parentId?: string | null;
+  type: "EPIC" | "FEATURE" | "USER_STORY" | "TASK" | "BUG" | "IMPROVEMENT" | "DOCUMENTATION" | string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  acceptanceCriteria?: string[];
+  estimatedHours?: number | null;
+  updatedAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixFeature {
+  featureId: string;
+  projectId: string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  epicId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixSkillReference {
+  skillId?: string | null;
+  key?: string | null;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  tags?: string[];
+  provider?: string | null;
+  sourceUrl?: string | null;
+  markdown?: string | null;
+  prompts?: string | null;
+  rules?: string | null;
+  workflows?: string | null;
+  architecturePatterns?: string | null;
+  conventions?: string | null;
+  agentContexts?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BrabrixProjectBundle {
+  project: BrabrixProject;
+  projectContext: ProjectContext | null;
+  prd: BrabrixPrd | null;
+  technicalSpecs: BrabrixSpec[];
+  backlogItems: BrabrixBacklogItem[];
+  features: BrabrixFeature[];
+  linkedSkills: BrabrixSkillReference[];
+  warnings?: string[];
+  raw?: Record<string, unknown>;
+}
