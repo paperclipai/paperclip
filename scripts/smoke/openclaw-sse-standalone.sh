@@ -26,7 +26,11 @@ OPENCLAW_TIMEOUT_SEC="${OPENCLAW_TIMEOUT_SEC:-180}"
 OPENCLAW_MODEL="${OPENCLAW_MODEL:-openclaw}"
 OPENCLAW_USER="${OPENCLAW_USER:-paperclip-smoke}"
 
-PAPERCLIP_RUN_ID="${PAPERCLIP_RUN_ID:-smoke-run-$(date +%s)}"
+# A real UUID, not a free-form label: Paperclip's auth middleware now rejects
+# non-UUID X-Paperclip-Run-Id headers with 400, and the mcp-server / CLI throw
+# at boot on non-UUID env input. Pre-2026-05-27 this defaulted to
+# `smoke-run-$(date +%s)`, which silently corrupted uuid columns.
+PAPERCLIP_RUN_ID="${PAPERCLIP_RUN_ID:-$(uuidgen | tr A-Z a-z)}"
 PAPERCLIP_AGENT_ID="${PAPERCLIP_AGENT_ID:-openclaw-smoke-agent}"
 PAPERCLIP_COMPANY_ID="${PAPERCLIP_COMPANY_ID:-openclaw-smoke-company}"
 PAPERCLIP_API_URL="${PAPERCLIP_API_URL:-http://localhost:3100}"

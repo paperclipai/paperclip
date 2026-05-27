@@ -1,4 +1,5 @@
 import { URL } from "node:url";
+import { isRunIdParseError, parseOptionalRunId, type RunId } from "@paperclipai/shared";
 
 export class ApiRequestError extends Error {
   status: number;
@@ -53,13 +54,27 @@ interface ApiClientOptions {
 export class PaperclipApiClient {
   readonly apiBase: string;
   apiKey?: string;
-  readonly runId?: string;
+  readonly runId?: RunId;
   readonly recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
 
   constructor(opts: ApiClientOptions) {
     this.apiBase = opts.apiBase.replace(/\/+$/, "");
     this.apiKey = opts.apiKey?.trim() || undefined;
-    this.runId = opts.runId?.trim() || undefined;
+    // Validate runId at construction so every outbound request that sets
+    // X-Paperclip-Run-Id is guaranteed to carry a canonical UUID. The CLI's
+    // long-running entry points get a loud error at startup rather than a
+    // confused 500 at first mutation.
+    const rawRunId = opts.runId?.trim();
+    const runIdResult = parseOptionalRunId(
+      rawRunId && rawRunId.length > 0 ? rawRunId : undefined,
+      "cli",
+    );
+    if (isRunIdParseError(runIdResult)) {
+      throw new Error(
+        `Invalid --run-id / PAPERCLIP_RUN_ID: expected canonical UUID, got ${JSON.stringify(runIdResult.got)}`,
+      );
+    }
+    this.runId = runIdResult ?? undefined;
     this.recoverAuth = opts.recoverAuth;
   }
 
