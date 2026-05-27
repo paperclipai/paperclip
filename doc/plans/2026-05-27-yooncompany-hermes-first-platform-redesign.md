@@ -73,7 +73,7 @@ corepack pnpm view hermes-paperclip-adapter version versions description --json
 Results:
 
 - Current branch: `codex/yooncompany-fork-master-integration`.
-- Current commit: `9be28c64f`.
+- Latest update started from fork/master base: `2b1e228f5`.
 - Worktree status: clean at time of inspection.
 - Fork relation: `HEAD...fork/master = 0 0`.
 - Upstream relation: `HEAD...upstream/master = 31 0`; the fork has local YoonCompany/Paperclip integration commits and no missing upstream commits at the time checked.
@@ -471,14 +471,14 @@ Goal:
 
 Draft profiles:
 
-- `yoon-orchestrator`: routes work, decomposes tasks, owns Hermes Kanban.
-- `yoon-research`: market/research/doc investigation.
-- `yoon-docs`: document writing and internal knowledge cleanup.
-- `yoon-dev-codex-bridge`: creates Paperclip issues for Codex implementation, not direct code execution.
-- `yoon-business`: business division planning.
-- `yoon-media`: YouTube/content division planning.
-- `yoon-academy`: Academy/Tinker operation planning.
-- `yoon-tincolive`: TincoLive product/development planning.
+- `yoonorchestrator`: routes work, decomposes tasks, owns Hermes Kanban.
+- `yoonresearch`: market/research/doc investigation.
+- `yoondocs`: document writing and internal knowledge cleanup.
+- `yooncodexbridge`: creates Paperclip issues for Codex implementation, not direct code execution.
+- `yoonbusiness`: business division planning.
+- `yoonmedia`: YouTube/content division planning.
+- `yoonacademy`: Academy/Tinker operation planning.
+- `yoontincolive`: TincoLive product/development planning.
 
 Risk:
 
@@ -549,9 +549,9 @@ Do not continue the old Next Improvement Plan as-is. Replace it with:
 | 1. Architecture acceptance | In progress | PM confirmed the core is Hermes-first. This document is the working baseline. |
 | 2. Adapter diff | Complete | See `2026-05-27-hermes-paperclip-adapter-0-3-diff.md`; package upgrade to `0.3.0` applied after diff review. |
 | 3. Read-only Hermes status console | Eighth slice complete | Global YoonCompany panel and dashboard now expose current Hermes role/toolset/session/safety mismatch, the 1단계 approval package preview, blocked dangerous actions, a no-execution issue draft action, the planned Hermes profile roster, read-only Kanban/cross-link previews, visible screen-context auto-attach, and Koreanized YoonCompany-specific copy. |
-| 4. Hermes profile design | Proposal complete | See `2026-05-27-yooncompany-hermes-first-steps-4-7.md`; no profile creation executed. |
+| 4. Hermes profile design | Phase 1 approved/applied | See `2026-05-27-yooncompany-hermes-first-steps-4-7.md`; actual profile names are `yoonorchestrator`, `yoonresearch`, and `yoondocs`. Use `C:\yooncompany\bin\hermes.exe`, not PATH `hermes.exe`. |
 | 5. Paperclip-Hermes mapping | Preview implemented | Textual cross-link format is now visible in the dashboard; no DB schema change. |
-| 6. Hermes capability enablement | Approval draft complete | Actual agent/profile/config mutation remains blocked pending Paperclip approval. |
+| 6. Hermes capability enablement | Partially applied under approval | YOO-50 / approval `66898bbb-0301-44b7-b914-78b24902fdf3` approved the first profile/Kanban gate. Paperclip agent config migration is still a separate approved follow-up. |
 | 7. UI polish reorder | Complete | UI order now starts with Hermes runtime/profile/Kanban visibility, then Koreanization/question panel/screen context. |
 
 ## Open Questions For PM

@@ -94,6 +94,9 @@ describe("YoonCompany command worker", () => {
       priority: "medium",
     });
     expect(issue?.description).toContain("모드: 조사/보고 전용.");
+    expect(issue?.description).toContain("Hermes 명령: C:\\yooncompany\\bin\\hermes.exe");
+    expect(issue?.description).toContain("Hermes 보드: yooncompany");
+    expect(issue?.description).toContain("PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행");
     expect(issue?.description).toContain("repo 파일 수정, 배포, 병합, push, 삭제, DB 쓰기");
   });
 });

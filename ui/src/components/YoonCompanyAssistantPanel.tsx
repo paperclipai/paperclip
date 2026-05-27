@@ -15,6 +15,7 @@ import {
   SearchCheck,
   Send,
   ShieldCheck,
+  Terminal,
   Workflow,
   X,
 } from "lucide-react";
@@ -27,6 +28,9 @@ import {
   findYoonCompanyAgent,
   getYoonCompanyHermesStatus,
   HERMES_PHASE1_APPROVAL_PACKAGE,
+  YOONCOMPANY_HERMES_BOARD,
+  YOONCOMPANY_HERMES_COMMAND,
+  YOONCOMPANY_HERMES_COMMAND_NOTE,
 } from "../lib/yooncompany-hermes-status";
 
 function pageLabel(pathname: string): string {
@@ -114,6 +118,13 @@ const CODEX_6002_SEQUENCE = [
   "- Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고하라.",
 ];
 
+const HERMES_COMMAND_LINES = [
+  "Hermes 실행 기준:",
+  `- 명령: ${YOONCOMPANY_HERMES_COMMAND}`,
+  `- 보드: ${YOONCOMPANY_HERMES_BOARD}`,
+  `- 주의: ${YOONCOMPANY_HERMES_COMMAND_NOTE}.`,
+];
+
 function codexDescription(kind: "ask" | "guide" | "analyze", context: string, userRequest = "") {
   const intent = kind === "guide"
     ? "현재 화면 사용법과 다음 클릭 위치를 설명하고, 필요하면 작업으로 쪼개라."
@@ -152,6 +163,8 @@ function hermesDescription(context: string, userRequest = "") {
     "대상: Hermes 오케스트레이터 / 조사 직원.",
     "모드: 오케스트레이션 접수/조사/보고 전용.",
     "",
+    ...HERMES_COMMAND_LINES,
+    "",
     context,
     "",
     "오케스트레이션 요청:",
@@ -169,6 +182,8 @@ function hermesApprovalDescription(context: string) {
     "",
     context,
     "",
+    ...HERMES_COMMAND_LINES,
+    "",
     "승인 제목:",
     HERMES_PHASE1_APPROVAL_PACKAGE.title,
     "",
@@ -185,7 +200,8 @@ function hermesApprovalDescription(context: string) {
     ...HERMES_PHASE1_APPROVAL_PACKAGE.blocked.map((item) => `- ${item}`),
     "",
     "검증 조건:",
-    "- Hermes profile list/show 결과를 남긴다.",
+    `- ${YOONCOMPANY_HERMES_COMMAND} profile list/show 결과를 남긴다.`,
+    `- ${YOONCOMPANY_HERMES_COMMAND} kanban --board ${YOONCOMPANY_HERMES_BOARD} list/show 결과를 남긴다.`,
     "- Paperclip agent 표시/설정 diff를 남긴다.",
     "- heartbeat, repo 쓰기, 직접 DB 쓰기, 배포/발송/외부 공개가 실행되지 않았음을 보고한다.",
     "",
@@ -248,6 +264,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
     ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 이전 필요" : "구조화 설정"}`
     : "설정값 없음";
   const role = status.title || "역할 설명 없음";
+  const command = status.command || `${status.requiredCommand} 필요`;
 
   return (
     <div className="mt-4 border border-border bg-muted/20 p-3">
@@ -257,6 +274,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       </div>
       <div className="grid gap-2">
         <StatusLine icon={Bot} label="현재 역할" value={agent ? `${agent.name} · ${role}` : "Hermes 직원 미확인"} />
+        <StatusLine icon={Terminal} label="실행 명령" value={command} />
         <StatusLine icon={ClipboardList} label="Paperclip toolsets" value={toolsets} />
         <StatusLine icon={AlertTriangle} label="막힌 핵심 기능" value={missing} />
         <StatusLine icon={Radio} label="세션" value={session} />
@@ -267,6 +285,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
           현재 설정은 Hermes 오케스트레이터가 아니라 제한된 조사 직원에 가깝습니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
           {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
+          {status.commandMatchesLocal ? "" : ` Hermes 실행은 ${status.requiredCommand} 명시 경로를 기준으로 해야 합니다.`}
         </p>
       ) : null}
     </div>
