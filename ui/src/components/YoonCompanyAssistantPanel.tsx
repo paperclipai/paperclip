@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "@/lib/router";
 import type { Agent } from "@paperclipai/shared";
 import {
+  AlertTriangle,
   Bot,
   ClipboardList,
   DollarSign,
@@ -13,6 +14,8 @@ import {
   Radio,
   SearchCheck,
   Send,
+  ShieldCheck,
+  Workflow,
   X,
 } from "lucide-react";
 import { agentsApi } from "../api/agents";
@@ -20,13 +23,11 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
-
-function findAgent(agents: Agent[] | undefined, keyword: "codex" | "hermes") {
-  return agents?.find((agent) => {
-    const haystack = `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();
-    return haystack.includes(keyword);
-  }) ?? null;
-}
+import {
+  findYoonCompanyAgent,
+  getYoonCompanyHermesStatus,
+  HERMES_PHASE1_APPROVAL_PACKAGE,
+} from "../lib/yooncompany-hermes-status";
 
 function pageLabel(pathname: string): string {
   if (pathname.includes("/dashboard")) return "대시보드";
@@ -139,15 +140,48 @@ function hermesDescription(context: string, userRequest = "") {
     "YoonCompany 전역 질문 패널 v2에서 생성됨.",
     "생성 방식: Paperclip 이슈 초안/보류 생성. 직접 실행 아님.",
     "",
-    "대상: Hermes Research Worker.",
-    "모드: 조사/보고 전용.",
+    "대상: Hermes Orchestrator / Research Worker.",
+    "모드: 오케스트레이션 접수/조사/보고 전용.",
     "",
     context,
     "",
-    "조사 요청:",
-    "- 공개 자료, 로그, 메모리를 확인해 사실/근거/제안을 분리 보고하라.",
+    "오케스트레이션 요청:",
+    "- 일을 분해하고, 필요한 조사/문서/개발 위임과 승인 필요 항목을 분리하라.",
+    "- 공개 자료, 로그, 메모리를 확인할 때는 사실/근거/제안을 분리 보고하라.",
     ...requestBlock(userRequest),
     "- repo 파일 수정, 배포, 병합, push, 삭제, DB 쓰기 금지.",
+  ].join("\n");
+}
+
+function hermesApprovalDescription(context: string) {
+  return [
+    "YoonCompany Hermes-first phase 1 승인 요청 초안.",
+    "생성 방식: Paperclip 이슈 초안/보류 생성. 직접 실행 아님.",
+    "",
+    context,
+    "",
+    "승인 제목:",
+    HERMES_PHASE1_APPROVAL_PACKAGE.title,
+    "",
+    "요청 작업:",
+    `- ${HERMES_PHASE1_APPROVAL_PACKAGE.action}`,
+    "",
+    "대상 profile:",
+    ...HERMES_PHASE1_APPROVAL_PACKAGE.targets.map((target) => `- ${target}`),
+    "",
+    "승인 시 허용:",
+    ...HERMES_PHASE1_APPROVAL_PACKAGE.allowed.map((item) => `- ${item}`),
+    "",
+    "승인 전 금지:",
+    ...HERMES_PHASE1_APPROVAL_PACKAGE.blocked.map((item) => `- ${item}`),
+    "",
+    "검증 조건:",
+    "- Hermes profile list/show 결과를 남긴다.",
+    "- Paperclip agent 표시/설정 diff를 남긴다.",
+    "- heartbeat, repo write, direct DB write, deploy/send/publish가 실행되지 않았음을 보고한다.",
+    "",
+    "approval_id: none",
+    "dangerous_actions_executed: none",
   ].join("\n");
 }
 
@@ -192,12 +226,50 @@ function StatusLine({ icon: Icon, label, value }: { icon: typeof GitBranch; labe
   );
 }
 
+function HermesStatusCard({ agent }: { agent: Agent | null }) {
+  const status = getYoonCompanyHermesStatus(agent);
+  const toolsets = status.toolsets.length > 0 ? status.toolsets.join(", ") : "Paperclip 설정값 없음";
+  const missing = status.missingToolsets.length > 0 ? status.missingToolsets.join(", ") : "누락 없음 또는 전체 기본값";
+  const session = status.persistSession === null ? "설정값 없음" : status.persistSession ? "지속 세션" : "비지속 세션";
+  const safety = [
+    status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
+    status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
+  ].join(", ");
+  const maxTurns = status.maxTurns
+    ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 이전 필요" : "구조화 설정"}`
+    : "설정값 없음";
+  const role = status.title || "역할 설명 없음";
+
+  return (
+    <div className="mt-4 border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
+        <Workflow className="h-3.5 w-3.5 text-muted-foreground" />
+        Hermes 중심 상태
+      </div>
+      <div className="grid gap-2">
+        <StatusLine icon={Bot} label="현재 역할" value={agent ? `${agent.name} · ${role}` : "Hermes 직원 미확인"} />
+        <StatusLine icon={ClipboardList} label="Paperclip toolsets" value={toolsets} />
+        <StatusLine icon={AlertTriangle} label="막힌 핵심 기능" value={missing} />
+        <StatusLine icon={Radio} label="세션" value={session} />
+        <StatusLine icon={GitBranch} label="안전 신호" value={safety} />
+        <StatusLine icon={ClipboardList} label="실행 제한" value={maxTurns} />
+      </div>
+      {status.missingToolsets.length > 0 ? (
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          현재 설정은 Hermes 오케스트레이터가 아니라 제한된 조사 직원에 가깝습니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
+          {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function YoonCompanyAssistantPanel() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { openNewIssue } = useDialogActions();
   const location = useLocation();
   const [open, setOpen] = useState(false);
-  const [target, setTarget] = useState<"codex" | "hermes">("codex");
+  const [target, setTarget] = useState<"codex" | "hermes">("hermes");
   const [requestText, setRequestText] = useState("");
 
   const { data: agents } = useQuery({
@@ -207,8 +279,8 @@ export function YoonCompanyAssistantPanel() {
     staleTime: 30_000,
   });
 
-  const codexAgent = useMemo(() => findAgent(agents, "codex"), [agents]);
-  const hermesAgent = useMemo(() => findAgent(agents, "hermes"), [agents]);
+  const codexAgent = useMemo(() => findYoonCompanyAgent(agents, "codex"), [agents]);
+  const hermesAgent = useMemo(() => findYoonCompanyAgent(agents, "hermes"), [agents]);
   const context = pageContext(location.pathname, location.search, location.hash, selectedCompany);
   const disabled = !selectedCompanyId;
 
@@ -229,11 +301,21 @@ export function YoonCompanyAssistantPanel() {
 
   function openHermes(userRequest = "") {
     openNewIssue({
-      title: titleFromInput("Hermes 조사", "Hermes 조사 요청", userRequest),
+      title: titleFromInput("Hermes 오케스트레이션", "Hermes 오케스트레이션 요청", userRequest),
       description: hermesDescription(context, userRequest),
       priority: "medium",
       status: "backlog",
       assigneeAgentId: hermesAgent?.id,
+    });
+    setOpen(false);
+  }
+
+  function openHermesApprovalDraft() {
+    openNewIssue({
+      title: HERMES_PHASE1_APPROVAL_PACKAGE.title,
+      description: hermesApprovalDescription(context),
+      priority: "high",
+      status: "backlog",
     });
     setOpen(false);
   }
@@ -289,7 +371,7 @@ export function YoonCompanyAssistantPanel() {
                   )}
                   onClick={() => setTarget("codex")}
                 >
-                  Codex 개발/결정
+                  Codex 개발 위임
                 </button>
                 <button
                   type="button"
@@ -299,7 +381,7 @@ export function YoonCompanyAssistantPanel() {
                   )}
                   onClick={() => setTarget("hermes")}
                 >
-                  Hermes 조사/기억
+                  Hermes 오케스트레이션
                 </button>
               </div>
               <textarea
@@ -316,13 +398,13 @@ export function YoonCompanyAssistantPanel() {
                 className="inline-flex items-center justify-center gap-2 border border-border bg-foreground px-3 py-2 text-sm font-medium text-background transition-colors hover:bg-foreground/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Send className="h-3.5 w-3.5" />
-                {target === "hermes" ? "조사 이슈 초안 만들기" : "개발 이슈 초안 만들기"}
+                {target === "hermes" ? "오케스트레이션 이슈 초안 만들기" : "개발 이슈 초안 만들기"}
               </button>
             </div>
             <ActionButton
               icon={MessageSquareText}
-              title="Codex에게 묻기"
-              body="개발, 설정, 오류, 의사결정을 보류 이슈로 정리합니다."
+              title="Codex 개발 위임"
+              body="구현, 설정, 오류 수정 범위를 Codex 작업으로 정리합니다."
               disabled={disabled}
               onClick={() => openCodex("ask")}
             />
@@ -342,19 +424,29 @@ export function YoonCompanyAssistantPanel() {
             />
             <ActionButton
               icon={ClipboardList}
-              title="Hermes 조사"
-              body="파일 수정 없이 공개 자료, 로그, 메모리 조사 보류 이슈를 만듭니다."
+              title="Hermes 오케스트레이션"
+              body="조사, 문서, 개발 위임, 승인 필요 항목을 보류 이슈로 정리합니다."
               disabled={disabled}
               onClick={() => openHermes()}
+            />
+            <ActionButton
+              icon={ShieldCheck}
+              title="Hermes phase 1 승인"
+              body="profile/toolset/Kanban 활성화 전 승인 요청 초안을 만듭니다."
+              disabled={disabled}
+              onClick={openHermesApprovalDraft}
             />
           </div>
 
           <div className="mt-4 grid gap-2 border-t border-border pt-4">
-            <StatusLine icon={Bot} label="메인 직원" value={codexAgent ? `${codexAgent.name} · 6002 우선` : "Codex 직원 미확인"} />
+            <StatusLine icon={Bot} label="오케스트레이터" value={hermesAgent ? `${hermesAgent.name} · Hermes 중심 전환 대상` : "Hermes 직원 미확인"} />
+            <StatusLine icon={Bot} label="개발 워커" value={codexAgent ? `${codexAgent.name} · 6002 구현 담당` : "Codex 직원 미확인"} />
             <StatusLine icon={Radio} label="외부 지시" value="Telegram은 미연결, Hermes gateway 설정 후 연결 가능" />
             <StatusLine icon={DollarSign} label="비용" value="구독형 포함 실행과 API 과금은 비용 화면에서 구분" />
             <StatusLine icon={GitBranch} label="프로젝트" value="로컬 변경 후 GitHub 브랜치/PR 단위로 정리" />
           </div>
+
+          <HermesStatusCard agent={hermesAgent} />
 
           <div className="mt-4 flex flex-wrap gap-2 text-xs">
             <Link to="/dashboard/live" className="border border-border px-2.5 py-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">

@@ -110,8 +110,14 @@ describe("YoonCompanyAssistantPanel", () => {
       makeAgent({
         id: "hermes-1",
         name: "Hermes Research Worker",
-        title: "Research worker",
+        title: "Research, memory, and report worker - repo write prohibited",
         adapterType: "hermes_local",
+        adapterConfig: {
+          toolsets: "terminal,memory,session_search,skills,web",
+          extraArgs: ["--yolo", "--max-turns", "8"],
+          persistSession: false,
+        },
+        permissions: { canCreateAgents: true },
       }),
     ]);
   });
@@ -139,12 +145,6 @@ describe("YoonCompanyAssistantPanel", () => {
     });
     await flush();
 
-    const hermesTarget = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Hermes 조사/기억"));
-    await act(async () => {
-      hermesTarget?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
     const textarea = container.querySelector("textarea");
     expect(textarea).not.toBeNull();
     await act(async () => {
@@ -153,7 +153,7 @@ describe("YoonCompanyAssistantPanel", () => {
     await flush();
 
     const createButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("조사 이슈 초안 만들기"));
+      .find((button) => button.textContent?.includes("오케스트레이션 이슈 초안 만들기"));
     expect(createButton).toBeDefined();
     expect((createButton as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
@@ -164,10 +164,11 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(mockOpenNewIssue).toHaveBeenCalledWith(expect.objectContaining({
       status: "backlog",
       assigneeAgentId: "hermes-1",
-      title: "Hermes 조사: 현재 Hermes 권한과 조사 역할을 비교해줘",
+      title: "Hermes 오케스트레이션: 현재 Hermes 권한과 조사 역할을 비교해줘",
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
     expect(defaults.description).toContain("직접 실행 아님");
+    expect(defaults.description).toContain("오케스트레이션 접수/조사/보고 전용");
     expect(defaults.description).toContain("회사: YoonCompany (YOO)");
     expect(defaults.description).toContain("현재 직원: hermes-research-worker");
     expect(defaults.description).toContain("화면 제목: 직원 상세");
@@ -187,6 +188,13 @@ describe("YoonCompanyAssistantPanel", () => {
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[aria-label="YoonCompany 질문 패널"]')?.click();
+    });
+    await flush();
+
+    const codexTarget = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Codex 개발 위임"));
+    await act(async () => {
+      codexTarget?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
@@ -215,5 +223,75 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("Observe: 실제 문서, git status, 코드, 로그, 화면 상태를 먼저 확인하라.");
     expect(defaults.description).toContain("Verify: typecheck/test/browser/log/API 중 실제 근거를 남겨라.");
     expect(defaults.description).toContain("Risk-report: 변경 파일, 실행 명령, 결과, 남은 위험, 다음 행동을 보고하라.");
+  });
+
+  it("shows the Hermes-first read-only status mismatch", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <YoonCompanyAssistantPanel />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="YoonCompany 질문 패널"]')?.click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Hermes 중심 상태");
+    expect(container.textContent).toContain("Hermes Research Worker · Research, memory, and report worker - repo write prohibited");
+    expect(container.textContent).toContain("terminal, memory, session_search, skills, web");
+    expect(container.textContent).toContain("file, browser, mcp, delegation, kanban");
+    expect(container.textContent).toContain("비지속 세션");
+    expect(container.textContent).toContain("--yolo 중복 위험, agent 생성권한 있음");
+    expect(container.textContent).toContain("8 · extraArgs 이전 필요");
+    expect(container.textContent).toContain("adapter 0.3.0은 --yolo를 내부에서 추가");
+    expect(container.textContent).toContain("제한된 조사 직원에 가깝습니다");
+  });
+
+  it("opens a phase 1 Hermes approval issue draft without assigning execution", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <YoonCompanyAssistantPanel />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="YoonCompany 질문 패널"]')?.click();
+    });
+    await flush();
+
+    const approvalButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Hermes phase 1 승인"));
+    expect(approvalButton).toBeDefined();
+
+    await act(async () => {
+      (approvalButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(mockOpenNewIssue).toHaveBeenCalledWith(expect.objectContaining({
+      status: "backlog",
+      priority: "high",
+      title: "Approve Hermes-first phase 1 persistent configuration",
+    }));
+    const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { assigneeAgentId?: string; description?: string };
+    expect(defaults.assigneeAgentId).toBeUndefined();
+    expect(defaults.description).toContain("직접 실행 아님");
+    expect(defaults.description).toContain("yoon-orchestrator");
+    expect(defaults.description).toContain("yoon-research");
+    expect(defaults.description).toContain("yoon-docs");
+    expect(defaults.description).toContain("승인 전 금지");
+    expect(defaults.description).toContain("Hermes repo write");
+    expect(defaults.description).toContain("direct DB write");
+    expect(defaults.description).toContain("approval_id: none");
+    expect(defaults.description).toContain("dangerous_actions_executed: none");
   });
 });
