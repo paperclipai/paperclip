@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createGunzip } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
@@ -403,6 +404,79 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           `),
         ).rejects.toThrow();
       } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
+    "falls back to restorable javascript inserts when pg_dump is unavailable",
+    async () => {
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const previousPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = "paperclip-missing-pg-dump";
+      process.env.PAPERCLIP_PSQL_PATH = "paperclip-missing-psql";
+
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_auto_fallback_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-auto-fallback-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."auto_fallback_records" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+          INSERT INTO "public"."auto_fallback_records" ("payload")
+          VALUES ('restorable without psql');
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-auto-fallback-test",
+        });
+
+        const backupText = await new Promise<string>((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          fs.createReadStream(result.backupFile)
+            .pipe(createGunzip())
+            .on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+            .on("error", reject)
+            .on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        });
+        expect(backupText).toContain("INSERT INTO \"public\".\"auto_fallback_records\"");
+        expect(backupText).not.toContain("COPY \"public\".\"auto_fallback_records\"");
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ payload: string }[]>(`
+          SELECT "payload"
+          FROM "public"."auto_fallback_records"
+        `);
+        expect(rows).toEqual([{ payload: "restorable without psql" }]);
+      } finally {
+        if (previousPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+        }
+        if (previousPsqlPath === undefined) {
+          delete process.env.PAPERCLIP_PSQL_PATH;
+        } else {
+          process.env.PAPERCLIP_PSQL_PATH = previousPsqlPath;
+        }
         await sourceSql.end();
         await restoreSql.end();
       }
