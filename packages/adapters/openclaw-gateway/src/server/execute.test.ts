@@ -1,3 +1,4 @@
+import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import { describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { resolveSessionKey } from "./execute.js";
@@ -6,6 +7,20 @@ import {
   OPENCLAW_GATEWAY_PROTOCOL_VERSION,
 } from "./protocol.js";
 import { testEnvironment } from "./test.js";
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -97,15 +112,22 @@ describe("OpenClaw gateway protocol", () => {
     });
 
     try {
-      const result = await testEnvironment({
+      const context: AdapterEnvironmentTestContext = {
+        companyId: "company-1",
         adapterType: "openclaw_gateway",
         config: {
           url: `ws://127.0.0.1:${address.port}`,
           authToken: "test-token",
         },
-      } as never);
+      };
+      const result = await testEnvironment(context);
 
-      await expect(receivedParams).resolves.toMatchObject({
+      const params = await withTimeout(
+        receivedParams,
+        500,
+        "timed out waiting for OpenClaw gateway probe connect params",
+      );
+      expect(params).toMatchObject({
         minProtocol: 4,
         maxProtocol: 4,
       });
