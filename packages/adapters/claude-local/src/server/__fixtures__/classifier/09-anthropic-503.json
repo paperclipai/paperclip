@@ -1,0 +1,15 @@
+{
+  "name": "09-anthropic-503",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Error: HTTP 503 service unavailable\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "anthropic_5xx",
+    "matchContains": "503"
+  }
+}

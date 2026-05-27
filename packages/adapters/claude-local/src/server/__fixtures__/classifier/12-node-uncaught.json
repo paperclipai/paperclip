@@ -1,0 +1,15 @@
+{
+  "name": "12-node-uncaught",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Uncaught Exception: TypeError: Cannot read properties of undefined\n    at node:internal/process/task_queues:96:5\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "claude_cli_panic",
+    "matchContains": "Uncaught"
+  }
+}

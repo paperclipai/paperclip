@@ -1,0 +1,15 @@
+{
+  "name": "04-token-refresh-revoked",
+  "input": {
+    "exitCode": 1,
+    "stderr": "OAuth error: invalid_grant: refresh token revoked\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "token_refresh_revoked",
+    "matchContains": "invalid_grant"
+  }
+}

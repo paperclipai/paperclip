@@ -1,0 +1,15 @@
+{
+  "name": "11-claude-cli-panic",
+  "input": {
+    "exitCode": 134,
+    "stderr": "panic: runtime error: invalid memory address or nil pointer dereference\ngoroutine 1 [running]:\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "claude_cli_panic",
+    "matchContains": "panic:"
+  }
+}

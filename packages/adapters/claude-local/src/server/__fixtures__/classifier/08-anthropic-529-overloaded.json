@@ -1,0 +1,15 @@
+{
+  "name": "08-anthropic-529-overloaded",
+  "input": {
+    "exitCode": 1,
+    "stderr": "HTTP 529 {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "anthropic_5xx",
+    "matchContains": "HTTP 529"
+  }
+}

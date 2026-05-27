@@ -1,0 +1,15 @@
+{
+  "name": "18-http-400",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Error: HTTP 400 Bad Request: prompt too long\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "non_recoverable_other",
+    "matchContains": "exitCode=1"
+  }
+}

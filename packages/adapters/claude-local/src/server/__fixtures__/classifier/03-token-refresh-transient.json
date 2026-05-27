@@ -1,0 +1,15 @@
+{
+  "name": "03-token-refresh-transient",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Warning: access token expired, attempting refresh...\nrefresh failed retry in 5s\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "token_refresh_transient",
+    "matchContains": "access token expired"
+  }
+}

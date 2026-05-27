@@ -1,0 +1,15 @@
+{
+  "name": "06-etimedout-prestream",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Error: connect ETIMEDOUT 1.2.3.4:443\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "network_etimedout",
+    "matchContains": "ETIMEDOUT"
+  }
+}

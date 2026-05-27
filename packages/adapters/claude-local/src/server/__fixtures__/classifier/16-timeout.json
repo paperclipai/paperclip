@@ -1,0 +1,15 @@
+{
+  "name": "16-timeout",
+  "input": {
+    "exitCode": null,
+    "stderr": "",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": true
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "timeout",
+    "matchContains": null
+  }
+}

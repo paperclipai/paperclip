@@ -1,0 +1,15 @@
+{
+  "name": "13-auth-required",
+  "input": {
+    "exitCode": 1,
+    "stderr": "You are not logged in. Please run `claude login` to continue.\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "auth_required",
+    "matchContains": "claude_auth_required"
+  }
+}

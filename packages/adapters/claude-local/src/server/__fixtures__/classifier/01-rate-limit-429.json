@@ -1,0 +1,15 @@
+{
+  "name": "01-rate-limit-429",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Error: HTTP 429 Too Many Requests: rate-limit exceeded\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "rate_limit",
+    "matchContains": "429"
+  }
+}

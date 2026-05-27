@@ -1,0 +1,15 @@
+{
+  "name": "07-fetch-failed-dns",
+  "input": {
+    "exitCode": 1,
+    "stderr": "TypeError: fetch failed\n  caused by: getaddrinfo ENOTFOUND api.anthropic.com\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "network_fetch_failed",
+    "matchContains": "fetch failed"
+  }
+}

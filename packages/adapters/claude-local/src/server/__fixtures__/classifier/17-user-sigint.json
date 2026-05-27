@@ -1,0 +1,15 @@
+{
+  "name": "17-user-sigint",
+  "input": {
+    "exitCode": 130,
+    "stderr": "Aborted by user\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "user_abort",
+    "matchContains": "exitCode=130"
+  }
+}

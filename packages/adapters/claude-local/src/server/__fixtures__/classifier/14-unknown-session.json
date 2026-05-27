@@ -1,0 +1,19 @@
+{
+  "name": "14-unknown-session",
+  "input": {
+    "exitCode": 1,
+    "stderr": "",
+    "stdout": "",
+    "parsed": {
+      "type": "result",
+      "subtype": "error",
+      "result": "no conversation found with session id: abc-123"
+    },
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "unknown_session",
+    "matchContains": "no conversation found"
+  }
+}

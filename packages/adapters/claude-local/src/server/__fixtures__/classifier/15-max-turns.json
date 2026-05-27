@@ -1,0 +1,19 @@
+{
+  "name": "15-max-turns",
+  "input": {
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "",
+    "parsed": {
+      "type": "result",
+      "subtype": "error_max_turns",
+      "result": "Reached maximum turns"
+    },
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "max_turns",
+    "matchContains": "error_max_turns"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "10-malformed-json-exit0",
+  "input": {
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"partial\"}",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "malformed_stream_json",
+    "matchContains": "exit_0_no_parsed_result"
+  }
+}

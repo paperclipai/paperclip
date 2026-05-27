@@ -1,0 +1,15 @@
+{
+  "name": "05-econnreset-midstream",
+  "input": {
+    "exitCode": 1,
+    "stderr": "Error: socket hang up: read ECONNRESET\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": true,
+    "reason": "network_econnreset",
+    "matchContains": "socket hang up"
+  }
+}

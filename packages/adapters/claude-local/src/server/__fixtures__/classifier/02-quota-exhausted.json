@@ -1,0 +1,15 @@
+{
+  "name": "02-quota-exhausted",
+  "input": {
+    "exitCode": 1,
+    "stderr": "{\"type\":\"billing_error\",\"message\":\"credit balance too low\"}\n",
+    "stdout": "",
+    "parsed": null,
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "quota_exhausted",
+    "matchContains": "billing_error"
+  }
+}

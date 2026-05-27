@@ -1,0 +1,19 @@
+{
+  "name": "19-success",
+  "input": {
+    "exitCode": 0,
+    "stderr": "",
+    "stdout": "",
+    "parsed": {
+      "type": "result",
+      "subtype": "success",
+      "result": "ok"
+    },
+    "timedOut": false
+  },
+  "expected": {
+    "recoverable": false,
+    "reason": "ok",
+    "matchContains": null
+  }
+}
