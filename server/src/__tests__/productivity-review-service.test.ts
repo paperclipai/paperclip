@@ -933,6 +933,59 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
   });
 
+  it("backs off when the same source issue has two terminal productivity reviews in 24h", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await db.insert(issues).values([
+      {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: "First repeated productivity review",
+        status: "done",
+        priority: "high",
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: seeded.issueId,
+        originFingerprint: `productivity-review:${seeded.issueId}`,
+        parentId: seeded.issueId,
+        issueNumber: 2,
+        identifier: `${seeded.issuePrefix}-2`,
+        createdAt: new Date(now.getTime() - 23 * 60 * 60 * 1000),
+        updatedAt: new Date(now.getTime() - 23 * 60 * 60 * 1000),
+      },
+      {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: "Second repeated productivity review",
+        status: "done",
+        priority: "high",
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: seeded.issueId,
+        originFingerprint: `productivity-review:${seeded.issueId}`,
+        parentId: seeded.issueId,
+        issueNumber: 3,
+        identifier: `${seeded.issuePrefix}-3`,
+        createdAt: new Date(now.getTime() - 12 * 60 * 60 * 1000),
+        updatedAt: new Date(now.getTime() - 12 * 60 * 60 * 1000),
+      },
+    ]);
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(2);
+  });
+
   it("does not file a review when 100% of sampling-window runs are routine-origin", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({

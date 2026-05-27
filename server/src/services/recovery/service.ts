@@ -257,6 +257,23 @@ function didAutomaticRecoveryFail(
     );
 }
 
+const QUOTA_EXHAUSTED_RUN_ERROR_CODES = new Set<string>([
+  "provider_quota_exhausted",
+]);
+
+function isQuotaExhaustedTerminalRun(latestRun: LatestIssueRun) {
+  if (!latestRun) return false;
+  if (
+    !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+      latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+    )
+  ) {
+    return false;
+  }
+  const errorCode = readNonEmptyString(latestRun.errorCode);
+  return Boolean(errorCode && QUOTA_EXHAUSTED_RUN_ERROR_CODES.has(errorCode));
+}
+
 function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): SuccessfulRunHandoffRecoveryEvidence | null {
   if (!latestRun) return null;
 
@@ -2992,6 +3009,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (isQuotaExhaustedTerminalRun(latestRun)) {
+        result.skipped += 1;
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         // 2026-05-25 BLO-7521: if the operator just manually unblocked this
         // recovery-origin issue, give the agent a fresh run window before

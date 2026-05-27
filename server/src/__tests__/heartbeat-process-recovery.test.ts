@@ -1033,7 +1033,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issues)
       .where(eq(issues.id, issueId));
-    expect(sourceIssue?.status).toBe("todo");
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.executionRunId).not.toBe(runId);
 
     const remainingBlockers = await db
       .select({ blockerIssueId: issueRelations.issueId })
@@ -1987,6 +1988,66 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(loserWakeup?.status).toBe("skipped");
   });
 
+  it("reaps orphaned k8s runs before dispatching queued work for the same issue", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, issueId, runId: orphanRunId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      agentStatus: "running",
+      includeIssue: true,
+      lastOutputAt: stale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId: orphanRunId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
+
+    const queuedWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: queuedWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      createdAt: new Date("2026-03-19T00:10:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:10:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForValue(async () => {
+      const run = await heartbeat.getRun(queuedRunId);
+      return run && run.status !== "queued" ? run : null;
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const orphanRun = runs.find((run) => run.id === orphanRunId);
+    const queuedRun = runs.find((run) => run.id === queuedRunId);
+    expect(orphanRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(queuedRun?.status).not.toBe("queued");
+    expect(queuedRun?.errorCode).not.toBe("duplicate_dispatch_suppressed");
+    await heartbeat.cancelRun(queuedRunId);
+  });
+
   it("cancels a queued stale routine duplicate when another open issue owns the execution lock", async () => {
     const { companyId, agentId, issueId: duplicateIssueId } = await seedAssignedTodoNoRunFixture();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -2219,7 +2280,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runStatus,
         runErrorCode,
       });
-  
+
       const result = await heartbeat.reconcileStrandedAssignedIssues();
       expect(result.dispatchRequeued).toBe(0);
       expect(result.continuationRequeued).toBe(1);
@@ -3074,6 +3135,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure:");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
+  });
+
+  it("does not create recovery blockers for provider quota exhaustion", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "provider_quota_exhausted",
+      runError: "provider quota exhausted; resets later",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.checkoutRunId).toBe(runId);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(recoveryIssues).toHaveLength(0);
+
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("keeps repeated recovery failures on the same canonical recovery issue", async () => {
