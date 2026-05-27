@@ -801,6 +801,12 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       return null;
     }
 
+    await closeBridgeRow({
+      row: input.bridge,
+      outcome: "superseded",
+      notifyAdapter: false,
+    });
+
     return deliverBridgeRow({
       row: created,
       companyId: input.companyId,

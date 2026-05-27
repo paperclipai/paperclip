@@ -471,7 +471,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.id).toBe(failedBridge?.id);
     expect(rows[0]).toEqual(expect.objectContaining({
-      status: "failed",
+      status: "closed",
+      closeOutcome: "superseded",
       lastError: "clickup send failed",
     }));
     expect(rows[1]).toEqual(expect.objectContaining({
