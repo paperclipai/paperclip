@@ -6,9 +6,10 @@
 - Risk level: L1 documentation.
 - Persistent Hermes/Paperclip config changes executed by this document: none.
 - Actual phase 1 approval: `YOO-50`, approval `66898bbb-0301-44b7-b914-78b24902fdf3`.
+- Profile rule reinforcement approval: `655db324-ee53-4d0b-9540-64a210847356`.
 - Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
-- Git commit/push/PR/merge executed: none.
+- Git commit/push/PR/merge evidence: tracked by the scoped follow-up PR for each repo documentation update.
 
 This document covers steps 4-7 from the Hermes-first redesign sequence:
 
@@ -34,6 +35,26 @@ Hermes should become the runtime center through profiles. Profiles are not cosme
 | `yoonmedia` | YouTube/content production pipeline planning | `kanban,web,browser,memory,skills,session_search` | No | Media Ops |
 | `yoontincolive` | TincoLive product/development planning | `kanban,web,browser,memory,skills,session_search` | No | Product Ops |
 | `yooncodexbridge` | Creates/audits Paperclip issues for Codex implementation | `kanban,web,memory,skills,session_search` | No | Dev Bridge |
+
+### Applied phase 1 profile descriptions
+
+Applied on 2026-05-27 with approval `655db324-ee53-4d0b-9540-64a210847356`.
+
+Verification commands:
+
+```powershell
+C:\yooncompany\bin\hermes.exe profile describe yoonorchestrator
+C:\yooncompany\bin\hermes.exe profile describe yoonresearch
+C:\yooncompany\bin\hermes.exe profile describe yoondocs
+C:\yooncompany\bin\hermes.exe profile list
+C:\yooncompany\bin\hermes.exe kanban --board yooncompany assignees
+```
+
+Current descriptions:
+
+- `yoonorchestrator`: YoonCompany Hermes orchestrator. Routes intake, decomposes work, owns yooncompany Kanban, and hands implementation to Paperclip/Codex. Must stay evidence-first and proposal-first; no repo write, deploy, delete, send, DB/config/rule changes, or external publish unless an exact Paperclip approval id authorizes that scope.
+- `yoonresearch`: YoonCompany Hermes research worker. Investigates public sources, logs, memory, and repo-read context, then reports facts/evidence/options. No repo writes, DB/config changes, external publish, sends, credential/cost actions, or autonomous execution; escalate L3/L4 to Paperclip approval.
+- `yoondocs`: YoonCompany Hermes documentation worker. Drafts handoffs, operating notes, proposal text, and evidence summaries for Codex/Paperclip review. Persistent file edits, repo writes, rule/memory/skill changes, PRs, deploys, and sends require scoped Paperclip approval.
 
 ### Orchestrator rule
 
