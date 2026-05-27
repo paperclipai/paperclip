@@ -42,6 +42,14 @@ import {
 } from "./heartbeat-run-summary.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import {
+  openObservabilityStore,
+  type ObservabilityStore,
+} from "./observability-store.js";
+import {
+  extractTierSignal,
+  recordInvocation as recordTierInvocation,
+} from "./tier-observability.js";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -1488,7 +1496,14 @@ function resolveNextSessionState(input: {
   };
 }
 
-export function heartbeatService(db: Db) {
+export interface HeartbeatServiceOptions {
+  /** ROCAA-25: optional override for the tier observability store. When
+   *  omitted, the store opens lazily on first invocation that needs it,
+   *  so test callers that never reach `adapter.execute` pay zero cost. */
+  observabilityStore?: ObservabilityStore;
+}
+
+export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -1501,6 +1516,15 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // ROCAA-25: tier observability store. Opens lazily on first read so the
+  // SQLite file is only created when an adapter actually runs.
+  let observabilityStoreCache: ObservabilityStore | null = options.observabilityStore ?? null;
+  const getObservabilityStore = (): ObservabilityStore => {
+    if (!observabilityStoreCache) {
+      observabilityStoreCache = openObservabilityStore();
+    }
+    return observabilityStoreCache;
+  };
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -3838,12 +3862,18 @@ export function heartbeatService(db: Db) {
           );
         }
       }
+      // ROCAA-25: capture the most recent adapter meta so the post-execute
+      // tier observability recorder can use it. Multi-spawn adapters call
+      // onMeta per spawn; we keep the last one so it matches the tier that
+      // actually produced the returned result.
+      let lastAdapterMeta: AdapterInvocationMeta | null = null;
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
         if (meta.env && secretKeys.size > 0) {
           for (const key of secretKeys) {
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
+        lastAdapterMeta = meta;
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",
@@ -3944,6 +3974,40 @@ export function heartbeatService(db: Db) {
         previousLegacySessionId: runtimeForAdapter.sessionId,
       });
       const rawUsage = normalizeUsageTotals(adapterResult.usage);
+
+      // ROCAA-25: record this invocation in the tier observability store.
+      // Best-effort: failures are logged inside `recordTierInvocation` and
+      // never propagate. `lastAdapterMeta` may be null for adapters that
+      // don't emit meta (legacy / mocks); in that case we skip.
+      if (lastAdapterMeta) {
+        const obsStore = getObservabilityStore();
+        if (obsStore.enabled) {
+          const tokensInTotal =
+            (rawUsage?.inputTokens ?? 0) + (rawUsage?.cachedInputTokens ?? 0);
+          const tokensOutTotal = rawUsage?.outputTokens ?? 0;
+          recordTierInvocation({
+            store: obsStore,
+            meta: lastAdapterMeta,
+            // ROCAA-180: pass the adapter result so top-level
+            // `tierUsed`/`tierTransitions`/`classifierVersion` and
+            // `meta.failoverEvent` flow into the observability row.
+            result: adapterResult,
+            agent: {
+              id: agent.id,
+              companyId: agent.companyId,
+              name: agent.name,
+            },
+            runId: run.id,
+            issueId,
+            startedAt,
+            endedAt: new Date(),
+            tokensIn: rawUsage ? tokensInTotal : null,
+            tokensOut: rawUsage ? tokensOutTotal : null,
+            costEstimateUsd: adapterResult.costUsd ?? 0,
+          });
+        }
+      }
+
       const sessionUsageResolution = await resolveNormalizedUsageForSession({
         agentId: agent.id,
         runId: run.id,
@@ -3978,8 +4042,24 @@ export function heartbeatService(db: Db) {
               ? "timed_out"
               : "failed";
 
+      // ROCAA-180: surface tier signal on the run row so the UI / digest can
+      // render which budget the run spent against. `extractTierSignal`
+      // prefers the result's top-level fields and falls back to meta.context
+      // for legacy adapters. We cast lastAdapterMeta through `unknown` to
+      // dodge a TS narrowing quirk: the `if (lastAdapterMeta)` block above
+      // (whose body never reassigns it) lets TS narrow the variable to
+      // `never` here, even though the callback at 3876 mutates it.
+      const capturedMeta =
+        lastAdapterMeta as unknown as AdapterInvocationMeta | null;
+      const tierSignal = extractTierSignal(adapterResult, capturedMeta ?? undefined);
+      const lastFailoverEvent = capturedMeta?.failoverEvent ?? null;
+      const hasTierSignal =
+        tierSignal.tierUsed > 0 ||
+        tierSignal.tierTransitions.length > 0 ||
+        lastFailoverEvent != null;
+
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        normalizedUsage || adapterResult.costUsd != null || hasTierSignal
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -4001,6 +4081,11 @@ export function heartbeatService(db: Db) {
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              // ROCAA-180 tier fields (read by ROCAA-181 RunInvocationCard).
+              tierUsed: tierSignal.tierUsed,
+              tierTransitions: tierSignal.tierTransitions,
+              classifierVersion: tierSignal.classifierVersion ?? null,
+              failoverEvent: lastFailoverEvent,
             } as Record<string, unknown>)
           : null;
 

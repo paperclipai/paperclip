@@ -236,9 +236,9 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,
-    hermesLocalAdapter,
     processAdapter,
     httpAdapter,
+    hermesLocalAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }

@@ -35,6 +35,15 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { openObservabilityStore } from "./services/observability-store.js";
+import {
+  createTierDigestScheduler,
+  tierDigestSchedulerConfigFromEnv,
+} from "./services/tier-digest-scheduler.js";
+import {
+  createTierDigestWebhookDispatcher,
+  tierDigestDispatcherOptionsFromEnv,
+} from "./services/tier-digest-webhook.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -640,8 +649,40 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // ROCAA-25 Slice 3: daily Tier mix digest -> OPS Slack webhook.
+    // Disabled-by-default unless PAPERCLIP_OPS_TIER_DIGEST_WEBHOOK_URL is set.
+    try {
+      const tierDigestSchedConfig = tierDigestSchedulerConfigFromEnv();
+      const dispatcherOptions = tierDigestDispatcherOptionsFromEnv();
+      if (tierDigestSchedConfig.enabled && dispatcherOptions.url) {
+        const observabilityStore = openObservabilityStore();
+        const dispatcher = createTierDigestWebhookDispatcher(dispatcherOptions);
+        const scheduler = createTierDigestScheduler({
+          store: observabilityStore,
+          dispatcher,
+          hour: tierDigestSchedConfig.hour,
+          minute: tierDigestSchedConfig.minute,
+          timezone: tierDigestSchedConfig.timezone,
+        });
+        scheduler.start();
+      } else {
+        logger.info(
+          {
+            enabled: tierDigestSchedConfig.enabled,
+            urlConfigured: Boolean(dispatcherOptions.url),
+          },
+          "tier-digest scheduler not started (env not configured)",
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "tier-digest scheduler startup failed",
+      );
+    }
   }
-  
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     const settingsSvc = instanceSettingsService(db);

@@ -32,6 +32,7 @@ export interface UsageSummary {
 
 export type AdapterBillingType =
   | "api"
+  | "api_key"
   | "subscription"
   | "metered_api"
   | "subscription_included"
@@ -39,6 +40,73 @@ export type AdapterBillingType =
   | "credits"
   | "fixed"
   | "unknown";
+
+// ---------------------------------------------------------------------------
+// Failover decision log schema (ROCAA-22 / ROCAA-27)
+// ---------------------------------------------------------------------------
+
+/**
+ * Identifier for which execution tier produced a given result. v1 covers the
+ * claude_local Tier 0 (claude CLI subscription) → Tier 1 (Anthropic SDK
+ * metered API key) failover. Adapters that don't participate in tiered
+ * failover leave these fields unset.
+ */
+export type AdapterTierUsed = "tier_0_claude_cli" | "tier_1_anthropic_sdk";
+
+/**
+ * Stable id for *why* the executor moved between tiers. Subset of the
+ * claude_local classifier's recoverability reasons — only the ones that
+ * fire a Tier 0 → Tier 1 transition. Non-recoverable failures and the
+ * happy path do not produce a transition entry.
+ */
+export type AdapterTierTransitionReason =
+  | "rate_limit"
+  | "token_refresh_transient"
+  | "network_econnreset"
+  | "network_etimedout"
+  | "network_fetch_failed"
+  | "anthropic_5xx"
+  | "claude_cli_panic"
+  | "malformed_stream_json";
+
+/**
+ * One recorded transition between execution tiers. Bounded to length ≤ 1 in
+ * v1 by the wiring layer (the classifier is never called on a Tier 1 outcome).
+ */
+export interface AdapterTierTransition {
+  /** ISO 8601 UTC, set when the transition decision is made. */
+  at: string;
+  /** Tier that just failed. */
+  from: AdapterTierUsed;
+  /** Tier the executor moved to. */
+  to: AdapterTierUsed;
+  /** Stable reason id from the classifier verdict. */
+  reason: AdapterTierTransitionReason;
+  /** Regex/parsed-field marker the classifier matched on. Truncated to 240 chars. */
+  classifierMatch: string | null;
+  /** Free-form short detail for humans. ≤ 240 chars. */
+  detail?: string;
+  /** Exit code of the failing attempt, for forensics. */
+  fromExitCode: number | null;
+  /** Whether the failing attempt produced a parsed JSON result. */
+  fromParsed: boolean;
+}
+
+/**
+ * Run-meta payload the wiring layer emits via `onMeta({ failoverEvent })`
+ * when a Tier 0 → Tier 1 transition fires. The run UI reads this to render
+ * a "Tier 1 (API key)" pill on the run card so operators can see *which
+ * budget* the invocation will spend.
+ */
+export interface AdapterFailoverEvent {
+  at: string;
+  from: AdapterTierUsed;
+  to: AdapterTierUsed;
+  reason: AdapterTierTransitionReason;
+  classifierMatch: string | null;
+  /** Operator-facing name of the credential Tier 1 is using (e.g. secret name). */
+  billerKeyName: string;
+}
 
 export interface AdapterRuntimeServiceReport {
   id?: string | null;
@@ -92,12 +160,42 @@ export interface AdapterExecutionResult {
       description?: string;
     }>;
   } | null;
+  // -------------------------------------------------------------------------
+  // Failover decision log fields (ROCAA-22 / ROCAA-27 log schema).
+  //
+  // Added at top level (sibling to `exitCode`, `usage`, `provider`, `biller`)
+  // so downstream consumers — run pipeline, run UI, governance — can render
+  // them without parsing a nested JSON. The wiring layer in claude-local
+  // always populates all three when failover-aware execution is used; other
+  // adapters leave them unset.
+  // -------------------------------------------------------------------------
+  /** Which tier actually produced the returned result. */
+  tierUsed?: AdapterTierUsed;
+  /** 0 entries on plain success; 1 entry on Tier 0→Tier 1; never 2+ in v1. */
+  tierTransitions?: AdapterTierTransition[];
+  /** Version string for the classifier that produced any transitions, e.g. "1.0.0". */
+  classifierVersion?: string;
 }
 
 export interface AdapterSessionCodec {
   deserialize(raw: unknown): Record<string, unknown> | null;
   serialize(params: Record<string, unknown> | null): Record<string, unknown> | null;
   getDisplayId?: (params: Record<string, unknown> | null) => string | null;
+}
+
+/**
+ * Cost-cap block payload (ROCAA-23). Emitted on `AdapterInvocationMeta` by
+ * the wiring layer when a Tier 1 attempt was refused by the daily or
+ * per-issue cap gate. Distinct from `failoverEvent` so consumers can
+ * structurally tell "would-have-failed-over but was capped" apart from a
+ * normal Tier 0 success.
+ */
+export interface AdapterCostCapBlock {
+  reason: "daily_cap_tripped" | "per_issue_cap_tripped";
+  detail: string;
+  /** When the block will lift (daily cap only). null for per-issue caps. */
+  resetAt: string | null;
+  issueId: string | null;
 }
 
 export interface AdapterInvocationMeta {
@@ -110,6 +208,19 @@ export interface AdapterInvocationMeta {
   prompt?: string;
   promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
+  /**
+   * Set by the wiring layer when a Tier 0 → Tier 1 failover transition fires.
+   * The run UI reads this to render the "Tier 1 (API key)" pill on the run
+   * card; the field is absent on non-transition invocations.
+   */
+  failoverEvent?: AdapterFailoverEvent;
+  /**
+   * Set by the wiring layer when a Tier 1 attempt was refused by the
+   * ROCAA-23 cost-cap gate before the SDK call fired. Carries the structured
+   * reason so the run UI can render a "Capped" pill and operators can route
+   * the appropriate cap-rotation playbook.
+   */
+  costCapBlock?: AdapterCostCapBlock;
 }
 
 export interface AdapterExecutionContext {
@@ -358,6 +469,14 @@ export interface ServerAdapterModule {
    * rather than reading config.paperclipRuntimeSkills.
    */
   requiresMaterializedRuntimeSkills?: boolean;
+
+  /**
+   * Optional tool allowlist for least-privilege enforcement (ROCAA-289).
+   * When present, only the listed tool names are permitted (no --yolo).
+   * Enforced by adapter execution layer and hermes-paperclip-adapter shim.
+   * Approved set example: ["paperclip", "vault_read", "vault_search", "terminal", "web", "rag_query"]
+   */
+  toolAllowlist?: string[];
 }
 
 // ---------------------------------------------------------------------------
