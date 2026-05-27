@@ -65,6 +65,28 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const SESSION_ROTATION_MAX_BYTES = 2 * 1024 * 1024; // 2MB
+
+async function findSessionJsonlPath(claudeConfigDir: string, sessionId: string): Promise<string | null> {
+  const projectsDir = path.join(claudeConfigDir, "projects");
+  let dirs: string[];
+  try {
+    dirs = await fs.readdir(projectsDir);
+  } catch {
+    return null;
+  }
+  for (const dir of dirs) {
+    const candidate = path.join(projectsDir, dir, `${sessionId}.jsonl`);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // not in this dir
+    }
+  }
+  return null;
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -611,7 +633,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTargetIsRemote,
     }) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-  const sessionId = canResumeSession ? runtimeSessionId : null;
+  let sessionId = canResumeSession ? runtimeSessionId : null;
+
+  // Session size rotation: prevent unbounded JSONL growth that causes rate-limit failures on resume.
+  if (sessionId && !executionTargetIsRemote) {
+    const claudeConfigDir =
+      (typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim())
+        ? configEnv.CLAUDE_CONFIG_DIR.trim()
+        : path.join(process.env.HOME ?? "", ".claude");
+    const sessionJsonlPath = await findSessionJsonlPath(claudeConfigDir, sessionId);
+    if (sessionJsonlPath) {
+      const stat = await fs.stat(sessionJsonlPath).catch(() => null);
+      if (stat && stat.size > SESSION_ROTATION_MAX_BYTES) {
+        const sizeMb = (stat.size / 1024 / 1024).toFixed(1);
+        const archiveDir = path.join(
+          process.env.HOME ?? "",
+          ".claude",
+          "session-recovery",
+          new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19),
+        );
+        await fs.mkdir(archiveDir, { recursive: true }).catch(() => null);
+        const archivePath = path.join(archiveDir, path.basename(sessionJsonlPath));
+        await fs.rename(sessionJsonlPath, archivePath).catch(() => null);
+        await onLog(
+          "stdout",
+          `[paperclip] Session "${sessionId}" JSONL is ${sizeMb}MB (limit 2MB) — archived to ${archivePath} and starting fresh session.\n`,
+        );
+        env.PAPERCLIP_SESSION_ROTATED = "1";
+        env.PAPERCLIP_SESSION_ROTATED_FROM = sessionId;
+        env.PAPERCLIP_SESSION_ROTATED_SIZE_MB = sizeMb;
+        sessionId = null;
+      }
+    }
+  }
+
   if (
     executionTargetIsRemote &&
     runtimeSessionId &&
