@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveLogValue,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -134,5 +140,28 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts sensitive values from logger error objects and unstructured params", () => {
+    const err = new Error(
+      "Failed query: update heartbeat_runs set result_json=$1 -- params: stdout=OPENAI_API_KEY=sk-live-example",
+    ) as Error & { params?: string; cause?: Error };
+    err.params = "github token ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    err.cause = new Error("nested bearer token: Bearer nested-secret-value");
+
+    const result = redactSensitiveLogValue({
+      err,
+      msg: "failed with sk-message-example and ghp_message_secret_value_123456",
+    }) as {
+      err: { message: string; params: string; cause: { message: string } };
+      msg: string;
+    };
+
+    expect(JSON.stringify(result)).toContain(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(result)).not.toContain("sk-live-example");
+    expect(JSON.stringify(result)).not.toContain("ghp_1234567890abcdefghijklmnopqrstuvwxyz");
+    expect(JSON.stringify(result)).not.toContain("nested-secret-value");
+    expect(JSON.stringify(result)).not.toContain("sk-message-example");
+    expect(JSON.stringify(result)).not.toContain("ghp_message_secret_value_123456");
   });
 });
