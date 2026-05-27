@@ -10,6 +10,7 @@
 - Paperclip Orchestrator agent approval: `29a1d242-417f-4fec-9a14-1db1bb17fb9c`; hire approval `9c6adaa5-10c8-440c-baa8-5f4177fa4e78`.
 - Cross-link template approval: `86cbdc5c-3fbb-4721-b5c9-862e83898b92`.
 - Permission staging approval: `125abce0-7161-4c74-b072-d0a22d897282`.
+- Assistant cross-link preview approval: `e5d5e2e9-2d62-46db-b764-f0f06788cf51`.
 - Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
 - Git commit/push/PR/merge evidence: tracked by the scoped follow-up PR for each repo documentation update.
@@ -311,6 +312,8 @@ The previous UI plan was useful but in the wrong order. It should now be reorder
 8. Then screen context auto-attach:
    - route/title/entity id first
    - screenshot later after secret redaction design
+
+Applied final panel refinement on 2026-05-27 with approval `e5d5e2e9-2d62-46db-b764-f0f06788cf51`: the YoonCompany question panel now shows the Hermes cross-link preview fields before creating a Hermes issue draft.
 
 ### What changed in the implementation slices
 

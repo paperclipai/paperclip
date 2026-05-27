@@ -161,6 +161,10 @@ describe("YoonCompanyAssistantPanel", () => {
 
     expect(container.textContent).toContain("현재 화면 컨텍스트 자동 첨부");
     expect(container.textContent).toContain("이슈 초안에 포함");
+    expect(container.textContent).toContain("Hermes 연결 필드 미리보기");
+    expect(container.textContent).toContain("hermes_board: yooncompany");
+    expect(container.textContent).toContain("hermes_task_id: pending");
+    expect(container.textContent).toContain("hermes_profile: yoonorchestrator");
     expect(container.textContent).toContain("회사: YoonCompany (YOO)");
     expect(container.textContent).toContain("경로: /YOO/agents/hermes-research-worker?tab=runs#latest");
 
