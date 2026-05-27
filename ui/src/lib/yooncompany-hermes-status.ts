@@ -7,11 +7,24 @@ export const HERMES_ORCHESTRATION_TOOLSETS = ["file", "browser", "mcp", "delegat
 export const HERMES_PAPERCLIP_ADAPTER_VERSION = "0.3.0";
 export const HERMES_ADAPTER_MANAGED_YOLO = false;
 export const HERMES_PHASE1_APPROVAL_PACKAGE = {
-  title: "Hermes-first 1단계 지속 설정 승인",
-  action: "Hermes 오케스트레이터 profile/Kanban 운영 기준과 Paperclip 읽기 전용 표시만 허용",
+  title: "Hermes 중심 1단계 지속 설정 승인",
+  action: "Hermes 오케스트레이터 프로필/Kanban 운영 기준과 Paperclip 읽기 전용 표시만 허용",
   targets: ["yoonorchestrator", "yoonresearch", "yoondocs"],
-  allowed: ["profile/Kanban 상태 조회", "표시/초안 agent만", "heartbeat 비활성", "repo 쓰기 금지"],
+  allowed: ["프로필/Kanban 상태 조회", "표시/초안 agent만", "heartbeat 비활성", "repo 쓰기 금지"],
   blocked: ["자율 heartbeat", "Hermes repo 쓰기", "직접 DB 쓰기", "배포/발송/외부 공개"],
+};
+
+const HERMES_TOOLSET_LABELS: Record<string, string> = {
+  browser: "브라우저",
+  delegation: "하위 직원 위임",
+  file: "파일 읽기",
+  kanban: "Kanban",
+  mcp: "MCP",
+  memory: "메모리",
+  session_search: "세션 검색",
+  skills: "스킬",
+  terminal: "터미널",
+  web: "웹 조사",
 };
 
 export const HERMES_PROFILE_ROSTER = [
@@ -82,7 +95,7 @@ export const HERMES_KANBAN_PREVIEW_COLUMNS = [
   {
     key: "research_docs",
     label: "조사/문서",
-    purpose: "조사, 문서화, 로그 요약, 운영 메모를 profile별로 처리",
+    purpose: "조사, 문서화, 로그 요약, 운영 메모를 프로필별로 처리",
     owner: "yoonresearch · yoondocs",
     gate: "repo/DB 변경 없음",
   },
@@ -107,22 +120,44 @@ export const HERMES_PAPERCLIP_CROSSLINK_FIELDS = [
   { key: "paperclip_approval_id", label: "Paperclip 승인", example: "approval_id: none" },
   { key: "hermes_board", label: "Hermes 보드", example: YOONCOMPANY_HERMES_BOARD },
   { key: "hermes_task_id", label: "Hermes 작업", example: "t_44b37f5f" },
-  { key: "hermes_profile", label: "Hermes profile", example: "yoonresearch" },
+  { key: "hermes_profile", label: "Hermes 프로필", example: "yoonresearch" },
   { key: "codex_run_or_pr", label: "Codex 증거", example: "PR #2 / 명령 로그" },
 ];
 
 export const HERMES_CROSSLINK_TEMPLATE_LINES = [
   "Paperclip ↔ Hermes 연결 필드:",
-  "- paperclip_issue_id: generated_after_issue_creation",
-  "- paperclip_issue_identifier: generated_after_issue_creation",
+  "- paperclip_issue_id: issue 생성 후 자동 입력",
+  "- paperclip_issue_identifier: issue 생성 후 자동 입력",
   "- paperclip_approval_id: approval_id: none",
   `- hermes_board: ${YOONCOMPANY_HERMES_BOARD}`,
   "- hermes_task_id: pending",
   "- hermes_profile: yoonorchestrator",
-  "- codex_agent_id: pending_if_code_change_required",
-  "- risk_level: L0-L1 until approval states otherwise",
+  "- codex_agent_id: 코드 변경 필요 시 연결 대기",
+  "- risk_level: L0-L1, approval_id 없으면 조사/초안까지만",
   "- dangerous_actions_executed: none",
 ];
+
+export function formatHermesToolsetList(toolsets: string[]) {
+  return toolsets.map((toolset) => HERMES_TOOLSET_LABELS[toolset] ?? toolset).join(", ");
+}
+
+export function localizeYoonCompanyAgentTitle(title: string) {
+  const normalized = title.trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized.includes("hermes-first operations orchestrator")) {
+    return "Hermes 중심 운영 오케스트레이터 - 승인 게이트 적용, repo 쓰기 금지";
+  }
+  if (normalized.includes("research, memory, and report worker")) {
+    return "조사, 메모리, 보고 직원 - repo 쓰기 금지";
+  }
+  return title
+    .replace(/Hermes-first/gi, "Hermes 중심")
+    .replace(/operations orchestrator/gi, "운영 오케스트레이터")
+    .replace(/approval gated/gi, "승인 게이트 적용")
+    .replace(/no repo writes/gi, "repo 쓰기 금지")
+    .replace(/repo write prohibited/gi, "repo 쓰기 금지")
+    .replace(/Research, memory, and report worker/gi, "조사, 메모리, 보고 직원");
+}
 
 function agentSearchText(agent: Agent) {
   return `${agent.name} ${agent.title ?? ""} ${agent.adapterType}`.toLowerCase();

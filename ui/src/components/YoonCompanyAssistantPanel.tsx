@@ -29,6 +29,8 @@ import {
   getYoonCompanyHermesStatus,
   HERMES_CROSSLINK_TEMPLATE_LINES,
   HERMES_PHASE1_APPROVAL_PACKAGE,
+  formatHermesToolsetList,
+  localizeYoonCompanyAgentTitle,
   YOONCOMPANY_HERMES_BOARD,
   YOONCOMPANY_HERMES_COMMAND,
   YOONCOMPANY_HERMES_COMMAND_NOTE,
@@ -192,7 +194,7 @@ function hermesDescription(context: string, userRequest = "") {
 
 function hermesApprovalDescription(context: string) {
   return [
-    "YoonCompany Hermes-first 1단계 승인 요청 초안.",
+    "YoonCompany Hermes 중심 1단계 승인 요청 초안.",
     "생성 방식: Paperclip 이슈 초안/보류 생성. 직접 실행 아님.",
     "",
     context,
@@ -272,8 +274,8 @@ function StatusLine({ icon: Icon, label, value }: { icon: typeof GitBranch; labe
 
 function HermesStatusCard({ agent }: { agent: Agent | null }) {
   const status = getYoonCompanyHermesStatus(agent);
-  const toolsets = status.toolsets.length > 0 ? status.toolsets.join(", ") : "Paperclip 설정값 없음";
-  const missing = status.missingToolsets.length > 0 ? status.missingToolsets.join(", ") : "누락 없음 또는 전체 기본값";
+  const toolsets = status.toolsets.length > 0 ? formatHermesToolsetList(status.toolsets) : "Paperclip 설정값 없음";
+  const missing = status.missingToolsets.length > 0 ? formatHermesToolsetList(status.missingToolsets) : "누락 없음 또는 전체 기본값";
   const session = status.persistSession === null ? "설정값 없음" : status.persistSession ? "지속 세션" : "비지속 세션";
   const safety = [
     status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 명시됨" : "--yolo 명시 없음",
@@ -281,9 +283,9 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
     status.canAssignTasks ? "task 배정권한 있음" : "task 배정권한 없음",
   ].join(", ");
   const maxTurns = status.maxTurns
-    ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "extraArgs 기준" : "구조화 설정"}`
+    ? `${status.maxTurns.value} · ${status.maxTurns.source === "extraArgs" ? "실행 인자 기준" : "구조화 설정"}`
     : "설정값 없음";
-  const role = status.title || "역할 설명 없음";
+  const role = localizeYoonCompanyAgentTitle(status.title) || "역할 설명 없음";
   const command = status.command || `${status.requiredCommand} 필요`;
 
   return (
@@ -295,8 +297,8 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       <div className="grid gap-2">
         <StatusLine icon={Bot} label="현재 역할" value={agent ? `${agent.name} · ${role}` : "Hermes 직원 미확인"} />
         <StatusLine icon={Terminal} label="실행 명령" value={command} />
-        <StatusLine icon={Workflow} label="Profile" value={status.profile || "profile 미지정"} />
-        <StatusLine icon={ClipboardList} label="Paperclip toolsets" value={toolsets} />
+        <StatusLine icon={Workflow} label="프로필" value={status.profile || "profile 미지정"} />
+        <StatusLine icon={ClipboardList} label="Paperclip 도구 묶음" value={toolsets} />
         <StatusLine icon={AlertTriangle} label="막힌 핵심 기능" value={missing} />
         <StatusLine icon={Radio} label="세션" value={session} />
         <StatusLine icon={GitBranch} label="안전 신호" value={safety} />
@@ -305,7 +307,7 @@ function HermesStatusCard({ agent }: { agent: Agent | null }) {
       {status.missingToolsets.length > 0 ? (
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
           현재 설정은 아직 제한된 Hermes 오케스트레이션 상태입니다. 기능 개방은 승인 후 단계적으로 진행해야 합니다.
-          {status.duplicateYoloRisk ? " 현재 extraArgs의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
+          {status.duplicateYoloRisk ? " 현재 실행 인자의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
           {status.commandMatchesLocal ? "" : ` Hermes 실행은 ${status.requiredCommand} 명시 경로를 기준으로 해야 합니다.`}
         </p>
       ) : null}
@@ -533,7 +535,7 @@ export function YoonCompanyAssistantPanel() {
             <ActionButton
               icon={ShieldCheck}
               title="Hermes 1단계 승인"
-              body="profile/toolset/Kanban 활성화 전 승인 요청 초안을 만듭니다."
+              body="프로필/도구/Kanban 활성화 전 승인 요청 초안을 만듭니다."
               disabled={disabled}
               onClick={openHermesApprovalDraft}
             />

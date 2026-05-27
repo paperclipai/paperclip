@@ -19,12 +19,13 @@ import {
   HERMES_PAPERCLIP_ADAPTER_VERSION,
   HERMES_PAPERCLIP_CROSSLINK_FIELDS,
   HERMES_PROFILE_ROSTER,
+  formatHermesToolsetList,
   YOONCOMPANY_HERMES_COMMAND_NOTE,
 } from "../lib/yooncompany-hermes-status";
 import { cn } from "../lib/utils";
 
 function formatList(values: string[], fallback: string) {
-  return values.length > 0 ? values.join(", ") : fallback;
+  return values.length > 0 ? formatHermesToolsetList(values) : fallback;
 }
 
 function formatSession(value: boolean | null) {
@@ -34,7 +35,7 @@ function formatSession(value: boolean | null) {
 
 function formatMaxTurns(status: ReturnType<typeof getYoonCompanyHermesStatus>) {
   if (!status.maxTurns) return "설정값 없음";
-  const suffix = status.maxTurns.source === "extraArgs" ? "extraArgs 기준" : "구조화 설정";
+  const suffix = status.maxTurns.source === "extraArgs" ? "실행 인자 기준" : "구조화 설정";
   return `${status.maxTurns.value} · ${suffix}`;
 }
 
@@ -96,7 +97,7 @@ export function YoonCompanyHermesStatusPanel({
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Workflow className="h-4 w-4 text-muted-foreground" />
-            Hermes-first 운영 상태
+            Hermes 중심 운영 상태
           </div>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">
             Hermes를 오케스트레이터로, Paperclip을 승인/감사 콘솔로, Codex를 개발 워커로 두기 위한 현재 정합성입니다.
@@ -116,7 +117,7 @@ export function YoonCompanyHermesStatusPanel({
         <Signal
           icon={Bot}
           label="오케스트레이터"
-          value={hermesAgent ? `${hermesAgent.name} · ${status.adapterType ?? "adapter 미확인"}` : "Hermes 직원 미확인"}
+          value={hermesAgent ? `${hermesAgent.name} · ${status.adapterType ?? "어댑터 미확인"}` : "Hermes 직원 미확인"}
           tone={hermesAgent ? "neutral" : "warn"}
         />
         <Signal
@@ -131,7 +132,7 @@ export function YoonCompanyHermesStatusPanel({
           value={codexAgent ? `${codexAgent.name} · ${codexAgent.adapterType}` : "Codex 직원 미확인"}
           tone={codexAgent ? "neutral" : "warn"}
         />
-        <Signal icon={ClipboardList} label="Paperclip toolsets" value={toolsets} />
+        <Signal icon={ClipboardList} label="Paperclip 도구 묶음" value={toolsets} />
         <Signal
           icon={status.orchestrationReady ? CheckCircle2 : AlertTriangle}
           label="오케스트레이션 준비"
@@ -141,11 +142,11 @@ export function YoonCompanyHermesStatusPanel({
       </div>
 
       <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-6">
-        <Signal icon={Workflow} label="Adapter" value={`hermes-paperclip-adapter ${HERMES_PAPERCLIP_ADAPTER_VERSION}`} />
+        <Signal icon={Workflow} label="어댑터" value={`hermes-paperclip-adapter ${HERMES_PAPERCLIP_ADAPTER_VERSION}`} />
         <Signal
           icon={Workflow}
-          label="Profile"
-          value={status.profile || "profile 미지정"}
+          label="프로필"
+          value={status.profile || "프로필 미지정"}
           tone={status.profile === "yoonorchestrator" ? "ok" : "warn"}
         />
         <Signal icon={Radio} label="세션" value={formatSession(status.persistSession)} tone={status.persistSession ? "ok" : "warn"} />
@@ -159,15 +160,15 @@ export function YoonCompanyHermesStatusPanel({
         <Signal
           icon={AlertTriangle}
           label="다음 승인 게이트"
-          value="profile/toolset/Kanban 실제 활성화"
+          value="프로필/도구/Kanban 실제 활성화"
           tone="warn"
         />
       </div>
 
       {!status.orchestrationReady ? (
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          현재 Hermes는 설치된 런타임 능력보다 Paperclip 직원 설정이 좁습니다. 이 패널은 상태만 드러내며, profile 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
-          {status.duplicateYoloRisk ? " 현재 extraArgs의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
+          현재 Hermes는 설치된 런타임 능력보다 Paperclip 직원 설정이 좁습니다. 이 패널은 상태만 드러내며, 프로필 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
+          {status.duplicateYoloRisk ? " 현재 실행 인자의 --yolo는 중복되므로 승인 후 제거하거나 정책화해야 합니다." : ""}
           {commandWarning}
         </p>
       ) : null}
@@ -207,9 +208,9 @@ export function YoonCompanyHermesStatusPanel({
         <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
             <Workflow className="h-3.5 w-3.5" />
-            Hermes profile 구성 미리보기
+            Hermes 프로필 구성 미리보기
           </div>
-          <div className="text-xs text-muted-foreground">실제 profile명 기준 · 직접 변경 없음</div>
+          <div className="text-xs text-muted-foreground">실제 프로필명 기준 · 직접 변경 없음</div>
         </div>
         <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {HERMES_PROFILE_ROSTER.map((profile) => (
@@ -222,7 +223,7 @@ export function YoonCompanyHermesStatusPanel({
               </div>
               <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{profile.role}</p>
               <div className="mt-2 truncate text-xs text-muted-foreground">
-                {profile.toolsets.join(", ")}
+                {formatHermesToolsetList(profile.toolsets)}
               </div>
             </div>
           ))}
@@ -236,7 +237,7 @@ export function YoonCompanyHermesStatusPanel({
               <ClipboardList className="h-3.5 w-3.5" />
               Hermes Kanban 읽기 전용 미리보기
             </div>
-            <div className="text-xs text-muted-foreground">실제 board 기준 · 직접 변경 없음</div>
+            <div className="text-xs text-muted-foreground">실제 보드 기준 · 직접 변경 없음</div>
           </div>
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             {HERMES_KANBAN_PREVIEW_COLUMNS.map((column) => (
@@ -256,7 +257,7 @@ export function YoonCompanyHermesStatusPanel({
               <GitBranch className="h-3.5 w-3.5" />
               Paperclip ↔ Hermes 교차링크 템플릿
             </div>
-            <div className="text-xs text-muted-foreground">DB schema 변경 없음</div>
+            <div className="text-xs text-muted-foreground">DB 스키마 변경 없음</div>
           </div>
           <div className="mt-2 space-y-1.5">
             {HERMES_PAPERCLIP_CROSSLINK_FIELDS.map((field) => (

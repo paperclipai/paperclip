@@ -56,7 +56,7 @@ describe("YoonCompanyHermesStatusPanel", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows Hermes-first dashboard state and the blocked orchestration capabilities", async () => {
+  it("shows Hermes-focused dashboard state and the blocked orchestration capabilities", async () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(
@@ -97,36 +97,36 @@ describe("YoonCompanyHermesStatusPanel", () => {
       );
     });
 
-    expect(container.textContent).toContain("Hermes-first 운영 상태");
+    expect(container.textContent).toContain("Hermes 중심 운영 상태");
     expect(container.textContent).toContain("Hermes Orchestrator · hermes_local");
     expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe");
     expect(container.textContent).toContain("Codex Lead Engineer · codex_local");
-    expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
-    expect(container.textContent).toContain("막힘: file, mcp, delegation");
+    expect(container.textContent).toContain("터미널, 메모리, 세션 검색, 스킬, 웹 조사, 브라우저, Kanban");
+    expect(container.textContent).toContain("막힘: 파일 읽기, MCP, 하위 직원 위임");
     expect(container.textContent).toContain("hermes-paperclip-adapter 0.3.0");
-    expect(container.textContent).toContain("Profile");
+    expect(container.textContent).toContain("프로필");
     expect(container.textContent).toContain("yoonorchestrator");
     expect(container.textContent).toContain("지속 세션");
     expect(container.textContent).toContain("--yolo 명시 없음, agent 생성권한 없음, task 배정권한 없음");
-    expect(container.textContent).toContain("12 · extraArgs 기준");
+    expect(container.textContent).toContain("12 · 실행 인자 기준");
     expect(container.textContent).toContain("승인 패키지 초안");
-    expect(container.textContent).toContain("Hermes-first 1단계 지속 설정 승인");
+    expect(container.textContent).toContain("Hermes 중심 1단계 지속 설정 승인");
     expect(container.textContent).toContain("yoonorchestrator");
     expect(container.textContent).toContain("승인 전 금지");
     expect(container.textContent).toContain("자율 heartbeat");
     expect(container.textContent).toContain("Hermes repo 쓰기");
-    expect(container.textContent).toContain("Hermes profile 구성 미리보기");
-    expect(container.textContent).toContain("실제 profile명 기준 · 직접 변경 없음");
+    expect(container.textContent).toContain("Hermes 프로필 구성 미리보기");
+    expect(container.textContent).toContain("실제 프로필명 기준 · 직접 변경 없음");
     expect(container.textContent).toContain("yoonorchestrator");
     expect(container.textContent).toContain("yoonbusiness");
     expect(container.textContent).toContain("yoontincolive");
     expect(container.textContent).toContain("yooncodexbridge");
     expect(container.textContent).toContain("Hermes Kanban 읽기 전용 미리보기");
-    expect(container.textContent).toContain("실제 board 기준 · 직접 변경 없음");
+    expect(container.textContent).toContain("실제 보드 기준 · 직접 변경 없음");
     expect(container.textContent).toContain("Codex 이관");
     expect(container.textContent).toContain("evidence 없으면 완료 아님");
     expect(container.textContent).toContain("Paperclip ↔ Hermes 교차링크 템플릿");
-    expect(container.textContent).toContain("DB schema 변경 없음");
+    expect(container.textContent).toContain("DB 스키마 변경 없음");
     expect(container.textContent).toContain("Hermes 작업");
     expect(container.textContent).toContain("t_44b37f5f");
     expect(container.querySelector('a[href="/agents"]')?.textContent).toContain("직원 보기");

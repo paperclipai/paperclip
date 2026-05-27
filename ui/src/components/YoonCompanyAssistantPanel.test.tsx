@@ -278,14 +278,14 @@ describe("YoonCompanyAssistantPanel", () => {
     await flush();
 
     expect(container.textContent).toContain("Hermes 중심 상태");
-    expect(container.textContent).toContain("Hermes Orchestrator · Hermes-first operations orchestrator - approval gated, no repo writes");
+    expect(container.textContent).toContain("Hermes Orchestrator · Hermes 중심 운영 오케스트레이터 - 승인 게이트 적용, repo 쓰기 금지");
     expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe");
-    expect(container.textContent).toContain("Profile · yoonorchestrator");
-    expect(container.textContent).toContain("terminal, memory, session_search, skills, web, browser, kanban");
-    expect(container.textContent).toContain("file, mcp, delegation");
+    expect(container.textContent).toContain("프로필 · yoonorchestrator");
+    expect(container.textContent).toContain("터미널, 메모리, 세션 검색, 스킬, 웹 조사, 브라우저, Kanban");
+    expect(container.textContent).toContain("파일 읽기, MCP, 하위 직원 위임");
     expect(container.textContent).toContain("지속 세션");
     expect(container.textContent).toContain("--yolo 명시 없음, agent 생성권한 없음, task 배정권한 없음");
-    expect(container.textContent).toContain("12 · extraArgs 기준");
+    expect(container.textContent).toContain("12 · 실행 인자 기준");
     expect(container.textContent).toContain("아직 제한된 Hermes 오케스트레이션 상태입니다");
   });
 
@@ -317,7 +317,7 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(mockOpenNewIssue).toHaveBeenCalledWith(expect.objectContaining({
       status: "backlog",
       priority: "high",
-      title: "Hermes-first 1단계 지속 설정 승인",
+      title: "Hermes 중심 1단계 지속 설정 승인",
     }));
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { assigneeAgentId?: string; description?: string };
     expect(defaults.assigneeAgentId).toBeUndefined();
