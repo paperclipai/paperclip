@@ -701,6 +701,57 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("does not reopen closed issues from board-authenticated run comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      runId: "77777777-7777-4777-8777-777777777777",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Done: posted one proposal comment and marked the issue done." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Done: posted one proposal comment and marked the issue done.",
+      { agentId: undefined, userId: "local-board", runId: "77777777-7777-4777-8777-777777777777" },
+      {
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+      },
+    );
+    await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not wake the assignee from board-authenticated run comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      runId: "77777777-7777-4777-8777-777777777777",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Done: posted one proposal comment and marked the issue done." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.getCurrentScheduledRetry).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
