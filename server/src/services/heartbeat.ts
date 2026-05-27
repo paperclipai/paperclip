@@ -5378,6 +5378,7 @@ export function heartbeatService(db: Db) {
           eq(activityLog.action, "issue.awaiting_human.entered"),
           eq(issues.status, "awaiting_human"),
           eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
           sql`not exists (
             select 1
             from ${awaitingHumanBridges}
