@@ -9,6 +9,9 @@ packages:
   # Keep this smoke fixture installable as a local plugin example without
   # forcing PRs to commit pnpm-lock.yaml for a new workspace importer.
   - "!packages/plugins/examples/plugin-orchestration-smoke-example"
+  # Keep this local YoonCompany plugin example installable without forcing
+  # root pnpm-lock.yaml churn for a new workspace importer.
+  - "!packages/plugins/examples/plugin-yooncompany-command"
   - server
   - ui
   - cli
