@@ -1502,7 +1502,8 @@ export function issueRoutes(
   ) {
     if (issue.status === "cancelled") {
       res.status(409).json({
-        error: "Cancelled issues must be restored through the dedicated restore flow",
+        error:
+          "Cancelled issues can only be restored by a board user via direct status PATCH (PATCH /api/issues/:id with status:\"todo\"). Agents requesting restoration should file a recovery issue assigned to a board user with the rationale.",
         details: {
           issueId: issue.id,
           status: issue.status,
