@@ -207,7 +207,10 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("dangerous_actions_executed: none");
     expect(defaults.description).toContain("회사: YoonCompany (YOO)");
     expect(defaults.description).toContain("현재 직원: hermes-research-worker");
+    expect(defaults.description).toContain("선택 리소스 ID: hermes-research-worker");
     expect(defaults.description).toContain("화면 제목: 직원 상세");
+    expect(defaults.description).toContain("뷰포트:");
+    expect(defaults.description).toContain("스크린샷 참조: 첨부 안 함");
     expect(defaults.description).toContain("현재 Hermes 권한과 조사 역할을 비교해줘");
   });
 
@@ -315,6 +318,43 @@ describe("YoonCompanyAssistantPanel", () => {
     expect(defaults.description).toContain("현재 화면 컨텍스트: 사용자가 첨부하지 않음.");
     expect(defaults.description).not.toContain("경로: /YOO/agents/hermes-research-worker?tab=runs#latest");
     expect(defaults.description).not.toContain("화면 제목: 직원 상세");
+  });
+
+  it("redacts sensitive values from screen context metadata", async () => {
+    document.title = "직원 상세 token=secret-token-value";
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <YoonCompanyAssistantPanel />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="YoonCompany 질문 패널"]')?.click();
+    });
+    await flush();
+
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    await act(async () => {
+      setTextareaValue(textarea!, "민감정보 제거 여부 확인");
+    });
+    await flush();
+
+    const createButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("오케스트레이션 이슈 초안 만들기"));
+    expect(createButton).toBeDefined();
+    await act(async () => {
+      (createButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
+    expect(defaults.description).toContain("브라우저 제목: 직원 상세 token=[민감정보 제거됨]");
+    expect(defaults.description).not.toContain("secret-token-value");
   });
 
   it("shows the Hermes-first read-only status mismatch", async () => {

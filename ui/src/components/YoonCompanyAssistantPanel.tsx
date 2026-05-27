@@ -53,12 +53,19 @@ function routeResourceContext(pathname: string): string[] {
   const segments = pathname.split("/").filter(Boolean);
   const [, section, resourceId] = segments;
   if (!section || !resourceId) return [];
-  if (section === "issues") return [`현재 이슈: ${resourceId}`];
-  if (section === "agents") return [`현재 직원: ${resourceId}`];
-  if (section === "projects") return [`현재 프로젝트: ${resourceId}`];
-  if (section === "goals") return [`현재 목표: ${resourceId}`];
-  if (section === "approvals") return [`현재 승인: ${resourceId}`];
+  const base = [`선택 리소스 ID: ${resourceId}`];
+  if (section === "issues") return [`현재 이슈: ${resourceId}`, ...base];
+  if (section === "agents") return [`현재 직원: ${resourceId}`, ...base];
+  if (section === "projects") return [`현재 프로젝트: ${resourceId}`, ...base];
+  if (section === "goals") return [`현재 목표: ${resourceId}`, ...base];
+  if (section === "approvals") return [`현재 승인: ${resourceId}`, ...base];
   return [];
+}
+
+function redactSensitiveContextText(value: string) {
+  return value
+    .replace(/(api[_-]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi, "$1=[민감정보 제거됨]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[민감정보 제거됨]");
 }
 
 function readVisibleScreenContext() {
@@ -66,10 +73,13 @@ function readVisibleScreenContext() {
   const mainHeading = document.querySelector("main h1")?.textContent?.trim();
   const activeTab = document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim();
   const selectedText = window.getSelection()?.toString().trim();
+  const viewport = typeof window === "undefined" ? null : `${window.innerWidth}x${window.innerHeight}`;
   return [
-    mainHeading ? `화면 제목: ${mainHeading}` : null,
-    activeTab ? `선택 탭: ${activeTab}` : null,
-    selectedText ? `선택 텍스트: ${selectedText.slice(0, 500)}` : null,
+    mainHeading ? `화면 제목: ${redactSensitiveContextText(mainHeading)}` : null,
+    activeTab ? `선택 탭: ${redactSensitiveContextText(activeTab)}` : null,
+    selectedText ? `선택 텍스트: ${redactSensitiveContextText(selectedText.slice(0, 500))}` : null,
+    viewport ? `뷰포트: ${viewport}` : null,
+    "스크린샷 참조: 첨부 안 함",
   ].filter(Boolean) as string[];
 }
 
@@ -80,14 +90,15 @@ function pageContextLines(
   company: { id: string; name: string; issuePrefix?: string | null } | null,
 ) {
   const route = `${pathname}${search}${hash}`;
+  const safeRoute = redactSensitiveContextText(route);
   return [
     company ? `회사: ${company.name} (${company.issuePrefix ?? "prefix 없음"})` : null,
     company ? `회사 ID: ${company.id}` : null,
     `현재 화면: ${pageLabel(pathname)}`,
-    `경로: ${route}`,
+    `경로: ${safeRoute}`,
     ...routeResourceContext(pathname),
     ...readVisibleScreenContext(),
-    typeof document === "undefined" ? null : `브라우저 제목: ${document.title}`,
+    typeof document === "undefined" ? null : `브라우저 제목: ${redactSensitiveContextText(document.title)}`,
   ].filter(Boolean) as string[];
 }
 
@@ -353,7 +364,7 @@ export function YoonCompanyAssistantPanel() {
   const contextLines = pageContextLines(location.pathname, location.search, location.hash, selectedCompany);
   const context = contextLines.join("\n");
   const draftContext = includeScreenContext ? context : "현재 화면 컨텍스트: 사용자가 첨부하지 않음.";
-  const visibleContextLines = includeScreenContext ? contextLines.slice(0, 5) : ["현재 화면 컨텍스트: 첨부 안 함"];
+  const visibleContextLines = includeScreenContext ? contextLines : ["현재 화면 컨텍스트: 첨부 안 함"];
   const disabled = !selectedCompanyId;
 
   function openCodex(kind: "ask" | "guide" | "analyze", userRequest = "") {
@@ -509,7 +520,7 @@ export function YoonCompanyAssistantPanel() {
                   <div className="text-xs text-muted-foreground">{includeScreenContext ? "이슈 초안에 포함" : "첨부 안 함"}</div>
                 </div>
                 <div className="mt-2 space-y-1">
-                  {visibleContextLines.map((line) => (
+                  {visibleContextLines.slice(0, 9).map((line) => (
                     <div key={line} className="truncate text-xs leading-5 text-muted-foreground">
                       {line}
                     </div>
