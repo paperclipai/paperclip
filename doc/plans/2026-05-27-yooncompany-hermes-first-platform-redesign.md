@@ -552,7 +552,7 @@ Do not continue the old Next Improvement Plan as-is. Replace it with:
 | 4. Hermes profile design | Phase 1 approved/applied | See `2026-05-27-yooncompany-hermes-first-steps-4-7.md`; actual profile names are `yoonorchestrator`, `yoonresearch`, and `yoondocs`. Profile descriptions were reinforced under approval `655db324-ee53-4d0b-9540-64a210847356`. Use `C:\yooncompany\bin\hermes.exe`, not PATH `hermes.exe`. |
 | 5. Paperclip-Hermes mapping | Template applied | Textual cross-link format is visible in the dashboard and included in Hermes issue/approval/quick-action templates under approval `86cbdc5c-3fbb-4721-b5c9-862e83898b92`; no DB schema change. |
 | 6. Hermes capability enablement | Partially applied under approval | YOO-50 / approval `66898bbb-0301-44b7-b914-78b24902fdf3` approved the first profile/Kanban gate. `Hermes Orchestrator` was added under approval `29a1d242-417f-4fec-9a14-1db1bb17fb9c` with `--profile yoonorchestrator`, no heartbeat, and no repo write permission. Permission staging approval `125abce0-7161-4c74-b072-d0a22d897282` sets Hermes `canCreateAgents=false` and `canAssignTasks=false`. |
-| 7. UI polish reorder | Complete | UI order now starts with Hermes runtime/profile/Kanban visibility, then Koreanization/question panel/screen context. |
+| 7. UI polish reorder | Complete | UI order now starts with Hermes runtime/profile/Kanban visibility, then Koreanization/question panel/screen context. Approval `e5d5e2e9-2d62-46db-b764-f0f06788cf51` added Hermes cross-link preview fields to the question panel before issue draft creation. |
 
 ## Open Questions For PM
 

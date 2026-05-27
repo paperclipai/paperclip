@@ -442,6 +442,24 @@ export function YoonCompanyAssistantPanel() {
                   ))}
                 </div>
               </div>
+              {target === "hermes" ? (
+                <div className="border border-border bg-background px-3 py-2">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                      <GitBranch className="h-3.5 w-3.5" />
+                      Hermes 연결 필드 미리보기
+                    </div>
+                    <div className="text-xs text-muted-foreground">이슈 초안에 포함</div>
+                  </div>
+                  <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                    {HERMES_CROSSLINK_TEMPLATE_LINES.slice(4, 10).map((line) => (
+                      <div key={line} className="truncate text-xs leading-5 text-muted-foreground">
+                        {line.replace(/^- /, "")}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <button
                 type="button"
                 disabled={disabled || !requestText.trim()}
