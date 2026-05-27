@@ -7,6 +7,7 @@ import {
   GitBranch,
   Radio,
   ShieldCheck,
+  Terminal,
   Workflow,
 } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -18,6 +19,7 @@ import {
   HERMES_PAPERCLIP_ADAPTER_VERSION,
   HERMES_PAPERCLIP_CROSSLINK_FIELDS,
   HERMES_PROFILE_ROSTER,
+  YOONCOMPANY_HERMES_COMMAND_NOTE,
 } from "../lib/yooncompany-hermes-status";
 import { cn } from "../lib/utils";
 
@@ -74,10 +76,14 @@ export function YoonCompanyHermesStatusPanel({
   const status = getYoonCompanyHermesStatus(hermesAgent);
   const toolsets = formatList(status.toolsets, "Paperclip 설정값 없음");
   const missing = formatList(status.missingToolsets, "누락 없음");
+  const commandValue = status.command || `${status.requiredCommand} 필요`;
   const safety = [
     status.duplicateYoloRisk ? "--yolo 중복 위험" : status.yolo ? "--yolo 활성" : "--yolo 미표시",
     status.canCreateAgents ? "agent 생성권한 있음" : "agent 생성권한 없음",
   ].join(", ");
+  const commandWarning = status.commandMatchesLocal
+    ? ""
+    : ` Hermes 실행은 ${status.requiredCommand}만 기준으로 삼습니다. ${YOONCOMPANY_HERMES_COMMAND_NOTE}.`;
 
   return (
     <section className={cn("border border-border bg-muted/20 p-4", className)} aria-label="YoonCompany Hermes 운영 상태">
@@ -101,12 +107,18 @@ export function YoonCompanyHermesStatusPanel({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-5">
         <Signal
           icon={Bot}
           label="오케스트레이터"
           value={hermesAgent ? `${hermesAgent.name} · ${status.adapterType ?? "adapter 미확인"}` : "Hermes 직원 미확인"}
           tone={hermesAgent ? "neutral" : "warn"}
+        />
+        <Signal
+          icon={Terminal}
+          label="Hermes 명령"
+          value={commandValue}
+          tone={status.commandMatchesLocal ? "ok" : "warn"}
         />
         <Signal
           icon={GitBranch}
@@ -145,6 +157,7 @@ export function YoonCompanyHermesStatusPanel({
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
           현재 Hermes는 설치된 런타임 능력보다 Paperclip 직원 설정이 좁습니다. 이 패널은 상태만 드러내며, profile 생성이나 권한 개방은 승인 후 별도 변경으로 처리해야 합니다.
           {status.duplicateYoloRisk ? " adapter 0.3.0은 --yolo를 내부에서 추가하므로 현재 extraArgs의 --yolo는 승인 후 제거하거나 정책화해야 합니다." : ""}
+          {commandWarning}
         </p>
       ) : null}
 
@@ -185,7 +198,7 @@ export function YoonCompanyHermesStatusPanel({
             <Workflow className="h-3.5 w-3.5" />
             Hermes profile 구성 미리보기
           </div>
-          <div className="text-xs text-muted-foreground">읽기 전용 · profile 미생성</div>
+          <div className="text-xs text-muted-foreground">실제 profile명 기준 · 직접 변경 없음</div>
         </div>
         <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {HERMES_PROFILE_ROSTER.map((profile) => (
@@ -212,7 +225,7 @@ export function YoonCompanyHermesStatusPanel({
               <ClipboardList className="h-3.5 w-3.5" />
               Hermes Kanban 읽기 전용 미리보기
             </div>
-            <div className="text-xs text-muted-foreground">board/task 생성 안 됨</div>
+            <div className="text-xs text-muted-foreground">실제 board 기준 · 직접 변경 없음</div>
           </div>
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             {HERMES_KANBAN_PREVIEW_COLUMNS.map((column) => (

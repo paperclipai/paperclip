@@ -9,6 +9,8 @@ type CreateGuidedIssueParams = {
 type AgentCandidate = Awaited<ReturnType<PluginContext["agents"]["list"]>>[number];
 
 const HEALTH_MESSAGE = "YoonCompany command plugin ready";
+const YOONCOMPANY_HERMES_COMMAND = "C:\\yooncompany\\bin\\hermes.exe";
+const YOONCOMPANY_HERMES_BOARD = "yooncompany";
 
 const CODEX_6002_SEQUENCE = [
   "6002 실행 순서: observe -> plan -> implement -> verify -> risk-report.",
@@ -82,6 +84,9 @@ function getIssueTemplate(kind: GuidedIssueKind): {
         "",
         "대상: Hermes Research Worker.",
         "모드: 조사/보고 전용.",
+        `Hermes 명령: ${YOONCOMPANY_HERMES_COMMAND}`,
+        `Hermes 보드: ${YOONCOMPANY_HERMES_BOARD}`,
+        "주의: PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행.",
         "",
         "조사 요청:",
         "- 조사 주제, 비교 대상, 필요한 근거를 여기에 적으세요.",

@@ -174,6 +174,9 @@ describe("YoonCompanyAssistantPanel", () => {
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { description?: string };
     expect(defaults.description).toContain("직접 실행 아님");
     expect(defaults.description).toContain("오케스트레이션 접수/조사/보고 전용");
+    expect(defaults.description).toContain("명령: C:\\yooncompany\\bin\\hermes.exe");
+    expect(defaults.description).toContain("보드: yooncompany");
+    expect(defaults.description).toContain("PATH의 hermes.exe를 쓰지 말고 명시 경로로 실행");
     expect(defaults.description).toContain("회사: YoonCompany (YOO)");
     expect(defaults.description).toContain("현재 직원: hermes-research-worker");
     expect(defaults.description).toContain("화면 제목: 직원 상세");
@@ -248,6 +251,7 @@ describe("YoonCompanyAssistantPanel", () => {
 
     expect(container.textContent).toContain("Hermes 중심 상태");
     expect(container.textContent).toContain("Hermes Research Worker · Research, memory, and report worker - repo write prohibited");
+    expect(container.textContent).toContain("C:\\yooncompany\\bin\\hermes.exe 필요");
     expect(container.textContent).toContain("terminal, memory, session_search, skills, web");
     expect(container.textContent).toContain("file, browser, mcp, delegation, kanban");
     expect(container.textContent).toContain("비지속 세션");
@@ -290,9 +294,10 @@ describe("YoonCompanyAssistantPanel", () => {
     const defaults = mockOpenNewIssue.mock.calls[0]?.[0] as { assigneeAgentId?: string; description?: string };
     expect(defaults.assigneeAgentId).toBeUndefined();
     expect(defaults.description).toContain("직접 실행 아님");
-    expect(defaults.description).toContain("yoon-orchestrator");
-    expect(defaults.description).toContain("yoon-research");
-    expect(defaults.description).toContain("yoon-docs");
+    expect(defaults.description).toContain("명령: C:\\yooncompany\\bin\\hermes.exe");
+    expect(defaults.description).toContain("yoonorchestrator");
+    expect(defaults.description).toContain("yoonresearch");
+    expect(defaults.description).toContain("yoondocs");
     expect(defaults.description).toContain("승인 전 금지");
     expect(defaults.description).toContain("Hermes repo 쓰기");
     expect(defaults.description).toContain("직접 DB 쓰기");

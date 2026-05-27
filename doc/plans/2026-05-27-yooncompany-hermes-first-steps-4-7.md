@@ -2,9 +2,11 @@
 
 ## Status
 
-- Status: proposal-only planning document.
-- Risk level: L1.
-- Persistent Hermes/Paperclip config changes executed: none.
+- Status: implementation guidance, updated after phase 1 approval.
+- Risk level: L1 documentation.
+- Persistent Hermes/Paperclip config changes executed by this document: none.
+- Actual phase 1 approval: `YOO-50`, approval `66898bbb-0301-44b7-b914-78b24902fdf3`.
+- Runtime command: `C:\yooncompany\bin\hermes.exe`; do not rely on `PATH` `hermes.exe`.
 - DB writes executed: none.
 - Git commit/push/PR/merge executed: none.
 
@@ -23,15 +25,15 @@ Hermes should become the runtime center through profiles. Profiles are not cosme
 
 | Profile | Purpose | Default toolsets | Mutates repo? | Paperclip role |
 | --- | --- | --- | --- | --- |
-| `yoon-orchestrator` | Routes work, decomposes tasks, owns Hermes Kanban | `kanban,memory,skills,session_search,web,browser` | No | Orchestrator |
-| `yoon-research` | Public research, market scans, source summaries | `web,browser,memory,skills,session_search` | No | Research |
-| `yoon-docs` | Internal docs, handoffs, summaries, procedure drafts | `file,memory,skills,session_search` | Proposal only at first | Docs |
-| `yoon-business` | Business division planning and KPI work | `web,browser,memory,skills,session_search` | No | Business |
-| `yoon-startup` | Everyone's Startup division planning | `web,browser,memory,skills,session_search` | No | Startup |
-| `yoon-academy` | Academy/Tinker operations | `web,browser,memory,skills,session_search` | No | Academy Ops |
-| `yoon-media` | YouTube/content production pipeline planning | `kanban,web,browser,memory,skills,session_search` | No | Media Ops |
-| `yoon-tincolive` | TincoLive product/development planning | `kanban,web,browser,memory,skills,session_search` | No | Product Ops |
-| `yoon-codex-bridge` | Creates/audits Paperclip issues for Codex implementation | `kanban,web,memory,skills,session_search` | No | Dev Bridge |
+| `yoonorchestrator` | Routes work, decomposes tasks, owns Hermes Kanban | `kanban,memory,skills,session_search,web,browser` | No | Orchestrator |
+| `yoonresearch` | Public research, market scans, source summaries | `web,browser,memory,skills,session_search` | No | Research |
+| `yoondocs` | Internal docs, handoffs, summaries, procedure drafts | `file,memory,skills,session_search` | Proposal only at first | Docs |
+| `yoonbusiness` | Business division planning and KPI work | `web,browser,memory,skills,session_search` | No | Business |
+| `yoonstartup` | Everyone's Startup division planning | `web,browser,memory,skills,session_search` | No | Startup |
+| `yoonacademy` | Academy/Tinker operations | `web,browser,memory,skills,session_search` | No | Academy Ops |
+| `yoonmedia` | YouTube/content production pipeline planning | `kanban,web,browser,memory,skills,session_search` | No | Media Ops |
+| `yoontincolive` | TincoLive product/development planning | `kanban,web,browser,memory,skills,session_search` | No | Product Ops |
+| `yooncodexbridge` | Creates/audits Paperclip issues for Codex implementation | `kanban,web,memory,skills,session_search` | No | Dev Bridge |
 
 ### Orchestrator rule
 
@@ -40,11 +42,11 @@ The orchestrator does not directly edit product repos in phase 1. It decomposes 
 Safe flow:
 
 ```text
-yoon-orchestrator
+yoonorchestrator
 -> Hermes Kanban child tasks for research/docs/business/media
 -> Paperclip issue for Codex when code changes are required
 -> Codex implements and reports evidence
--> yoon-orchestrator reads result and continues
+-> yoonorchestrator reads result and continues
 ```
 
 ### Profile creation requirements
@@ -113,7 +115,7 @@ Research task:
 ```text
 Paperclip issue YOO-101
 -> Hermes board yooncompany
--> Hermes task hk_abc123 assigned to yoon-research
+-> Hermes task t_44b37f5f assigned to yoonresearch
 -> Completion summary linked back to YOO-101
 ```
 
@@ -148,7 +150,8 @@ Create Hermes orchestrator profile proposal and update Paperclip display/config 
 Exact targets:
 
 ```text
-Hermes profiles: yoon-orchestrator, yoon-research, yoon-docs
+Hermes command: C:\yooncompany\bin\hermes.exe
+Hermes profiles: yoonorchestrator, yoonresearch, yoondocs
 Paperclip agent: add or reconfigure a Hermes Orchestrator display agent
 Paperclip UI: read-only status/links only
 ```
@@ -176,7 +179,7 @@ Verification plan:
 
 ```powershell
 C:\yooncompany\bin\hermes.exe profile list
-C:\yooncompany\bin\hermes.exe profile show yoon-orchestrator
+C:\yooncompany\bin\hermes.exe profile show yoonorchestrator
 C:\yooncompany\bin\hermes.exe tools list
 Invoke-RestMethod http://127.0.0.1:3100/api/companies/a01eddd0-d750-43ea-8858-d1cb087c4de2/agents
 ```
