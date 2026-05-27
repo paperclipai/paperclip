@@ -1216,19 +1216,8 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           throw new Error("Awaiting human bridge poll event missing externalEventId");
         }
 
-        if (event.kind === "reply" && event.body?.trim()) {
-          const replyBody = event.body.trim();
-          const currentInteraction = await interactionsSvc.getById(row.interactionId);
-          const responsePayload = (
-            currentInteraction
-            && currentInteraction.kind === "ask_user_questions"
-            && currentInteraction.status === "pending"
-          )
-              ? buildAskUserQuestionsResponseFromReply({
-                interaction: currentInteraction,
-                replyBody,
-              })
-            : null;
+        if (event.kind === "reply") {
+          const replyBody = event.body?.trim() || null;
           const replyProcessing = await db.transaction(async (tx) => {
             const txInteractionsSvc = issueThreadInteractionService(tx as unknown as Db);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
@@ -1247,11 +1236,36 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             if (!recorded) {
               return {
                 duplicate: true as const,
+                emptyBody: false as const,
                 answered: false as const,
                 commentId: null as string | null,
                 resolvedInteraction: null as IssueThreadInteraction | null,
+                body: null as string | null,
               };
             }
+
+            if (!replyBody) {
+              return {
+                duplicate: false as const,
+                emptyBody: true as const,
+                answered: false as const,
+                commentId: null as string | null,
+                resolvedInteraction: null as IssueThreadInteraction | null,
+                body: null as string | null,
+              };
+            }
+
+            const currentInteraction = await interactionsSvc.getById(row.interactionId);
+            const responsePayload = (
+              currentInteraction
+              && currentInteraction.kind === "ask_user_questions"
+              && currentInteraction.status === "pending"
+            )
+                ? buildAskUserQuestionsResponseFromReply({
+                  interaction: currentInteraction,
+                  replyBody,
+                })
+              : null;
 
             const body = buildReplyReceivedBody(row.provider, replyBody);
             const [comment] = await tx.insert(issueComments).values({
@@ -1286,12 +1300,11 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           });
 
           if (replyProcessing.duplicate) continue;
+          if (replyProcessing.emptyBody) continue;
 
-          const answeredInteraction = responsePayload && replyProcessing.resolvedInteraction
-            ? replyProcessing.resolvedInteraction
-            : null;
+          const answeredInteraction = replyProcessing.resolvedInteraction ?? null;
 
-          const body = replyProcessing.body ?? buildReplyReceivedBody(row.provider, replyBody);
+          const body = replyProcessing.body ?? buildReplyReceivedBody(row.provider, replyBody!);
           const [issueRow] = await db.select({
             status: issues.status,
             identifier: issues.identifier,

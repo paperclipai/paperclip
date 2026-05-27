@@ -596,6 +596,57 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(issueAfter && issueBefore && issueAfter.updatedAt.getTime()).toBeGreaterThanOrEqual(issueBefore.updatedAt.getTime());
   });
 
+  it("dedupes an empty reply event without creating a comment", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      resolveAdapter: () => ({
+        send: vi.fn(async () => ({
+          externalThreadId: "thread-1",
+          externalMessageId: "message-1",
+          nextPollAt: new Date("2026-05-22T00:01:00.000Z"),
+        })),
+        poll: vi.fn(async () => ({
+          status: "ok",
+          detail: "ok",
+          events: [
+            {
+              kind: "reply",
+              externalEventId: "reply-empty-1",
+              externalThreadId: "thread-1",
+              externalMessageId: "message-1",
+              body: "   ",
+              metadata: { clickupReplyId: "reply-empty-1" },
+            },
+          ],
+        })),
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    const bridge = await service.openOrReuseForInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      agentId: seeded.agentId,
+      ...approvalNotification(),
+    });
+
+    const first = await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
+    expect(first.replies).toBe(0);
+
+    const second = await service.pollActiveBridges(new Date("2026-05-22T00:04:00.000Z"));
+    expect(second.replies).toBe(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(0);
+
+    const events = await db.select().from(awaitingHumanBridgeInboundEvents).where(
+      eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id),
+    );
+    expect(events).toHaveLength(1);
+  });
+
   it("skips a duplicate inbound event when overlapping polls race on the same ClickUp reply", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     let pollCalls = 0;
