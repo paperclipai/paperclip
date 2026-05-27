@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { Router } from "express";
 import { patchCompanyAwaitingHumanSettingsSchema } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { validate } from "../middleware/validate.js";
 import { awaitingHumanSettingsService, companyService, logActivity } from "../services/index.js";
 
 export function companyAwaitingHumanSettingsRoutes(db: Db) {
@@ -21,7 +22,7 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
     res.json(await settings.get(companyId));
   });
 
-  router.patch("/", async (req, res) => {
+  router.patch("/", validate(patchCompanyAwaitingHumanSettingsSchema), async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as { companyId: string }).companyId;
     assertCompanyAccess(req, companyId);
@@ -30,7 +31,7 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const body = patchCompanyAwaitingHumanSettingsSchema.parse(req.body);
+    const body = req.body;
     const actor = getActorInfo(req);
     const updated = await settings.update(companyId, body, {
       userId: req.actor.userId,
