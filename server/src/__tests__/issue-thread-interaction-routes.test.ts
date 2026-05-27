@@ -24,6 +24,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -34,7 +35,15 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
-function registerModuleMocks() {
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: mockLoggerWarn,
+    error: vi.fn(),
+  },
+}));
+
+function registerModuleMocks(overrides: Record<string, unknown> = {}) {
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       canUser: vi.fn(async () => true),
@@ -90,6 +99,7 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+    ...overrides,
   }));
 }
 
@@ -546,6 +556,48 @@ describe("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("records a visible activity event when awaiting human bridge runtime init fails", async () => {
+    const runtimeInitError = new Error("awaitingHumanBridgeRuntime failed");
+    vi.resetModules();
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/index.js");
+    registerModuleMocks({
+      awaitingHumanBridgeRuntime: () => {
+        throw runtimeInitError;
+      },
+    });
+
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6/reject")
+      .send({ reason: "Needs changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      { err: runtimeInitError },
+      "awaitingHumanBridge runtime init failed; bridge close on UI interactions will be no-op",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        actorType: "system",
+        actorId: "awaiting_human_bridge",
+        action: "issue.awaiting_human.bridge_close_unavailable",
+        entityType: "issue",
+        entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        details: expect.objectContaining({
+          outcome: "superseded",
+          reason: "Issue thread interaction resolved via UI.",
+          detail: "awaitingHumanBridgeRuntime failed",
+        }),
+      }),
+    );
   });
 
   it("allows agent-authored interaction creation and stamps the active run id", async () => {

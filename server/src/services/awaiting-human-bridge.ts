@@ -1260,7 +1260,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               return {
                 duplicate: true as const,
                 emptyBody: false as const,
-                answered: false as const,
                 commentId: null as string | null,
                 resolvedInteraction: null as IssueThreadInteraction | null,
                 body: null as string | null,
@@ -1271,7 +1270,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
               return {
                 duplicate: false as const,
                 emptyBody: true as const,
-                answered: false as const,
                 commentId: null as string | null,
                 resolvedInteraction: null as IssueThreadInteraction | null,
                 body: null as string | null,
@@ -1323,7 +1321,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
 
             return {
               duplicate: false as const,
-              answered: false as const,
               commentId: comment?.id ?? null,
               body,
               resolvedInteraction,

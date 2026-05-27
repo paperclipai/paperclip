@@ -362,17 +362,50 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const routinesSvc = routineService(db);
+  let awaitingHumanBridgeRuntimeInitFailed = false;
+  let awaitingHumanBridgeRuntimeInitError: unknown = null;
   const noOpAwaitingHumanBridge: AwaitingHumanBridgeCloser = {
-    closeOpenBridgesForIssue: async () => ({ closedCount: 0 }),
+    closeOpenBridgesForIssue: async (input) => {
+      if (awaitingHumanBridgeRuntimeInitFailed) {
+        try {
+          await logActivity(db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "awaiting_human_bridge",
+            action: "issue.awaiting_human.bridge_close_unavailable",
+            entityType: "issue",
+            entityId: input.issueId,
+            details: {
+              outcome: input.outcome ?? null,
+              reason: input.reason ?? null,
+              detail: awaitingHumanBridgeRuntimeInitError instanceof Error
+                ? awaitingHumanBridgeRuntimeInitError.message
+                : String(awaitingHumanBridgeRuntimeInitError ?? "awaitingHumanBridgeRuntime init failed"),
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, companyId: input.companyId, issueId: input.issueId },
+            "failed to record awaitingHumanBridge runtime init failure in activity log",
+          );
+        }
+      }
+      return { closedCount: 0 };
+    },
   };
   let awaitingHumanBridge: AwaitingHumanBridgeCloser = noOpAwaitingHumanBridge;
   try {
-    const awaitingHumanBridgeRuntime = services.awaitingHumanBridgeRuntime;
-    if (awaitingHumanBridgeRuntime) {
+    if ("awaitingHumanBridgeRuntime" in services) {
+      const awaitingHumanBridgeRuntime = services.awaitingHumanBridgeRuntime;
       awaitingHumanBridge = awaitingHumanBridgeRuntime(db);
     }
-  } catch {
-    // Some route tests mock ../services/index.js without this optional export.
+  } catch (err) {
+    awaitingHumanBridgeRuntimeInitFailed = true;
+    awaitingHumanBridgeRuntimeInitError = err;
+    logger.warn(
+      { err },
+      "awaitingHumanBridge runtime init failed; bridge close on UI interactions will be no-op",
+    );
   }
   const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
