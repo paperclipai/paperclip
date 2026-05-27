@@ -24,7 +24,23 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
-import detectPort from "detect-port";
+// Local detect-port replacement that only binds to 127.0.0.1 (avoids 0.0.0.0 EPERM in sandboxes)
+async function detectPort(port: number): Promise<number> {
+  const net = await import("node:net");
+  return new Promise<number>((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => {
+      server.close();
+      resolve(port + 1); // Port busy, suggest next one
+    });
+    server.listen(port, "127.0.0.1", () => {
+      const addr = server.address();
+      const actualPort = typeof addr === "object" && addr ? addr.port : port;
+      server.close();
+      resolve(actualPort);
+    });
+  });
+}
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";

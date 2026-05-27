@@ -1,5 +1,19 @@
 export type { Company } from "./company.js";
 export type {
+  CoachDecision,
+  OPCAgentPlanItem,
+  OPCBlueprint,
+  OPCBlueprintStatus,
+  OPCBudgetTimeGuesses,
+  OPCCoachResponse,
+  OPCCreateCompanyResponse,
+  OPCIssuePlanItem,
+  OPCProposalDetail,
+  OPCRoutinePlanItem,
+  ProposalArtifact,
+  ProposalSourceType,
+} from "./opc.js";
+export type {
   Environment,
   EnvironmentLease,
   EnvironmentProbeResult,

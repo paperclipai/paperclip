@@ -3,6 +3,7 @@ export { authApi } from "./auth";
 export { healthApi } from "./health";
 export { accessApi } from "./access";
 export { companiesApi } from "./companies";
+export { opcApi } from "./opc";
 export { agentsApi } from "./agents";
 export { projectsApi } from "./projects";
 export { issuesApi } from "./issues";

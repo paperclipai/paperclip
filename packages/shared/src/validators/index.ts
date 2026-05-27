@@ -27,6 +27,17 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  approveOPCBlueprintSchema,
+  createOPCCompanySchema,
+  createOPCProposalSchema,
+  opcChatSchema,
+  proposalSourceTypeSchema,
+  type ApproveOPCBlueprint,
+  type CreateOPCCompany,
+  type CreateOPCProposal,
+  type OPCChat,
+} from "./opc.js";
+export {
   environmentDriverSchema,
   environmentStatusSchema,
   environmentLeaseStatusSchema,
