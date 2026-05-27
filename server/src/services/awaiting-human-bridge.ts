@@ -637,7 +637,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           .limit(1);
 
         const bridge = failedBridge
-          ? await reopenFailedBridgeRowAndRedeliver({
+          ? await createRetryBridgeRowAndRedeliver({
             bridge: failedBridge,
             companyId: row.companyId,
             issueId: row.issueId,
@@ -759,7 +759,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     return updated ?? input.row;
   }
 
-  async function reopenFailedBridgeRowAndRedeliver(input: {
+  async function createRetryBridgeRowAndRedeliver(input: {
     bridge: typeof awaitingHumanBridges.$inferSelect;
     companyId: string;
     issueId: string;
@@ -768,26 +768,21 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
     handoffKind: "request_confirmation" | "ask_user_questions";
     notification: AwaitingHumanNotificationPayload;
   }) {
-    const [reopened] = await db.update(awaitingHumanBridges).set({
+    const [created] = await db.insert(awaitingHumanBridges).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      interactionId: input.interactionId,
+      agentId: input.agentId,
+      provider: input.bridge.provider,
       status: "pending_delivery",
-      externalThreadId: null,
-      externalMessageId: null,
-      nextPollAt: null,
-      lastPolledAt: null,
-      closedAt: null,
-      closeOutcome: null,
-      closeReason: null,
-      lastError: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }).where(eq(awaitingHumanBridges.id, input.bridge.id)).returning();
+    }).returning();
 
-    if (!reopened) {
-      throw new Error("Failed to reopen existing awaiting human bridge after send failure");
+    if (!created) {
+      throw new Error("Failed to create retry awaiting human bridge after send failure");
     }
 
     return deliverBridgeRow({
-      row: reopened,
+      row: created,
       companyId: input.companyId,
       issueId: input.issueId,
       interactionId: input.interactionId,
@@ -1026,7 +1021,7 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         .where(and(
           eq(awaitingHumanBridges.companyId, input.companyId),
           eq(awaitingHumanBridges.interactionId, input.interactionId),
-          inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human", "closed", "failed"]),
+          inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
         ))
         .orderBy(awaitingHumanBridges.createdAt)
         .limit(1);
@@ -1042,8 +1037,25 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
         externalMessageId: input.externalMessageId,
         externalThreadId: input.externalThreadId ?? null,
         nextPollAt: new Date(),
+      }).onConflictDoNothing({
+        target: awaitingHumanBridges.interactionId,
+        where: inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
       }).returning();
-      return created;
+      if (created) return created;
+      const [existingAfterConflict] = await db
+        .select()
+        .from(awaitingHumanBridges)
+        .where(and(
+          eq(awaitingHumanBridges.companyId, input.companyId),
+          eq(awaitingHumanBridges.interactionId, input.interactionId),
+          inArray(awaitingHumanBridges.status, ["pending_delivery", "waiting_for_human"]),
+        ))
+        .orderBy(awaitingHumanBridges.createdAt)
+        .limit(1);
+      if (!existingAfterConflict) {
+        throw new Error("Failed to attach existing awaiting human delivery bridge");
+      }
+      return existingAfterConflict;
     },
 
     async reconcileDeliveredInteractions(input: Array<{
@@ -1181,7 +1193,10 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
       }
 
       for (const event of polled.events) {
-        const externalEventId = event.externalEventId?.trim() || null;
+        const externalEventId = readNonEmptyString(event.externalEventId);
+        if (!externalEventId) {
+          throw new Error("Awaiting human bridge poll event missing externalEventId");
+        }
 
         if (event.kind === "reply" && event.body?.trim()) {
           const replyBody = event.body.trim();
@@ -1196,23 +1211,18 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 replyBody,
               })
             : null;
-          const shouldRejectConfirmationReply = Boolean(
-            currentInteraction
-            && currentInteraction.kind === "request_confirmation"
-            && currentInteraction.status === "pending",
-          );
-
           const replyProcessing = await db.transaction(async (tx) => {
             const txInteractionsSvc = issueThreadInteractionService(tx as unknown as Db);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
               bridgeId: row.id,
+              interactionId: row.interactionId,
               eventKind: event.kind,
               externalEventId,
               externalMessageId: event.externalMessageId?.trim() || null,
               externalThreadId: event.externalThreadId?.trim() || null,
               payload: { ...(event.raw ?? {}), ...(event.metadata ?? {}) },
             }).onConflictDoNothing({
-              target: [awaitingHumanBridgeInboundEvents.bridgeId, awaitingHumanBridgeInboundEvents.externalEventId],
+              target: [awaitingHumanBridgeInboundEvents.interactionId, awaitingHumanBridgeInboundEvents.externalEventId],
               where: sql`${awaitingHumanBridgeInboundEvents.externalEventId} IS NOT NULL`,
             }).returning({ id: awaitingHumanBridgeInboundEvents.id });
 
@@ -1246,13 +1256,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
                 id: row.issueId,
                 companyId: row.companyId,
               }, row.interactionId, responsePayload, { actorType: "system" });
-            } else if (shouldRejectConfirmationReply) {
-              resolvedInteraction = await txInteractionsSvc.rejectInteraction({
-                id: row.issueId,
-                companyId: row.companyId,
-              }, row.interactionId, {
-                reason: replyBody,
-              }, { actorType: "system" });
             }
 
             return {
@@ -1266,14 +1269,9 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
 
           if (replyProcessing.duplicate) continue;
 
-          let answeredInteraction = null;
-          if (responsePayload && replyProcessing.resolvedInteraction) {
-            answeredInteraction = replyProcessing.resolvedInteraction;
-          }
-          let rejectedInteraction: IssueThreadInteraction | null = null;
-          if (shouldRejectConfirmationReply && !responsePayload && replyProcessing.resolvedInteraction) {
-            rejectedInteraction = replyProcessing.resolvedInteraction;
-          }
+          const answeredInteraction = responsePayload && replyProcessing.resolvedInteraction
+            ? replyProcessing.resolvedInteraction
+            : null;
 
           const body = replyProcessing.body ?? `ClickUp reply received:\n\n${replyBody}`;
           const [issueRow] = await db.select({
@@ -1362,62 +1360,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             }
           }
 
-          if (rejectedInteraction) {
-            const [issueAfterReject] = await db.select({
-              assigneeAgentId: issues.assigneeAgentId,
-              status: issues.status,
-            }).from(issues).where(eq(issues.id, row.issueId)).limit(1);
-
-            await logActivity(db, {
-              companyId: row.companyId,
-              actorType: "system",
-              actorId: "clickup_approval_poller",
-              action: rejectedInteraction.status === "expired"
-                ? "issue.thread_interaction_expired"
-                : "issue.thread_interaction_rejected",
-              entityType: "issue",
-              entityId: row.issueId,
-              details: {
-                interactionId: rejectedInteraction.id,
-                interactionKind: rejectedInteraction.kind,
-                interactionStatus: rejectedInteraction.status,
-                rejectionReason:
-                  rejectedInteraction.kind === "request_confirmation"
-                    ? (rejectedInteraction.result?.reason ?? null)
-                    : null,
-                resolutionSource: "clickup_reply",
-                clickupMessageId: row.externalMessageId ?? null,
-                clickupReplyId: event.metadata?.clickupReplyId ?? externalEventId,
-              },
-            });
-
-            if (
-              issueAfterReject
-              && issueAfterReject.status !== "backlog"
-              && !isClosedIssueStatus(issueAfterReject.status)
-            ) {
-              await insertWakeup({
-                companyId: row.companyId,
-                agentId: issueAfterReject.assigneeAgentId ?? row.agentId,
-                payload: {
-                  issueId: row.issueId,
-                  interactionId: rejectedInteraction.id,
-                  interactionStatus: rejectedInteraction.status,
-                  mutation: "interaction",
-                },
-              });
-            }
-
-            await this.closeBridge({
-              bridgeId: row.id,
-              outcome: "rejected",
-              reason: replyBody,
-            });
-
-            summary.rejected += 1;
-            return summary;
-          }
-
           if (shouldWakeOnReplyIssueStatus(issueRow?.status)) {
             await insertWakeup({
               companyId: row.companyId,
@@ -1446,7 +1388,6 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
           identifier: issues.identifier,
         }).from(issues).where(eq(issues.id, row.issueId)).limit(1);
         if (!issue) continue;
-        const signalExternalEventId = externalEventId ?? `signal:${row.id}`;
 
         if (event.kind === "approval_signal") {
           await db.transaction(async (tx) => {
@@ -1454,13 +1395,14 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             const txInteractionsSvc = issueThreadInteractionService(txDb);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
               bridgeId: row.id,
+              interactionId: row.interactionId,
               eventKind: event.kind,
-              externalEventId: signalExternalEventId,
+              externalEventId,
               externalMessageId: event.externalMessageId?.trim() || null,
               externalThreadId: event.externalThreadId?.trim() || null,
               payload: { ...(event.raw ?? {}), ...(event.metadata ?? {}) },
             }).onConflictDoNothing({
-              target: [awaitingHumanBridgeInboundEvents.bridgeId, awaitingHumanBridgeInboundEvents.externalEventId],
+              target: [awaitingHumanBridgeInboundEvents.interactionId, awaitingHumanBridgeInboundEvents.externalEventId],
               where: sql`${awaitingHumanBridgeInboundEvents.externalEventId} IS NOT NULL`,
             }).returning({ id: awaitingHumanBridgeInboundEvents.id });
 
@@ -1526,13 +1468,14 @@ export function awaitingHumanBridgeService(db: Db, deps: AwaitingHumanBridgeDeps
             const txInteractionsSvc = issueThreadInteractionService(txDb);
             const [recorded] = await tx.insert(awaitingHumanBridgeInboundEvents).values({
               bridgeId: row.id,
+              interactionId: row.interactionId,
               eventKind: event.kind,
-              externalEventId: signalExternalEventId,
+              externalEventId,
               externalMessageId: event.externalMessageId?.trim() || null,
               externalThreadId: event.externalThreadId?.trim() || null,
               payload: { ...(event.raw ?? {}), ...(event.metadata ?? {}) },
             }).onConflictDoNothing({
-              target: [awaitingHumanBridgeInboundEvents.bridgeId, awaitingHumanBridgeInboundEvents.externalEventId],
+              target: [awaitingHumanBridgeInboundEvents.interactionId, awaitingHumanBridgeInboundEvents.externalEventId],
               where: sql`${awaitingHumanBridgeInboundEvents.externalEventId} IS NOT NULL`,
             }).returning({ id: awaitingHumanBridgeInboundEvents.id });
 

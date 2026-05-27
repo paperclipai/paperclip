@@ -13,7 +13,7 @@ import {
   awaitingHumanBridges,
   issueComments,
 } from "@paperclipai/db";
-import { and, eq, lte } from "drizzle-orm";
+import { and, asc, eq, lte } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -400,7 +400,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
   });
 
-  it("retries a failed bridge-open by reopening the same row", async () => {
+  it("retries a failed bridge-open by creating a fresh row", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const send = vi.fn()
       .mockImplementationOnce(async () => {
@@ -466,10 +466,15 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(send).toHaveBeenCalledTimes(2);
 
     const rows = await db.select().from(awaitingHumanBridges)
-      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId));
-    expect(rows).toHaveLength(1);
+      .where(eq(awaitingHumanBridges.interactionId, seeded.interactionId))
+      .orderBy(asc(awaitingHumanBridges.createdAt), asc(awaitingHumanBridges.id));
+    expect(rows).toHaveLength(2);
     expect(rows[0]?.id).toBe(failedBridge?.id);
     expect(rows[0]).toEqual(expect.objectContaining({
+      status: "failed",
+      lastError: "clickup send failed",
+    }));
+    expect(rows[1]).toEqual(expect.objectContaining({
       status: "waiting_for_human",
       externalMessageId: "message-1",
       lastError: null,
@@ -514,7 +519,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(sendArg?.notification.body).toContain("Basic analytics");
   });
 
-  it("rejects a confirmation reply, forwards the comment, wakes the agent, and closes the bridge", async () => {
+  it("imports a confirmation reply as a comment, wakes the agent, and leaves the bridge open", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const [issueBefore] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, seeded.issueId));
     const service = awaitingHumanBridgeService(db, {
@@ -562,18 +567,18 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const [interaction] = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, seeded.interactionId));
-    expect(interaction?.status).toBe("rejected");
+    expect(interaction?.status).toBe("pending");
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
-    expect(updatedIssue?.status).toBe("todo");
+    expect(updatedIssue?.status).toBe("awaiting_human");
 
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.payload).toMatchObject({
       issueId: seeded.issueId,
       interactionId: seeded.interactionId,
-      interactionStatus: "rejected",
-      mutation: "interaction",
+      commentId: comments[0]?.id,
+      mutation: "comment",
     });
 
     const events = await db.select().from(awaitingHumanBridgeInboundEvents).where(
@@ -583,9 +588,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, bridge.id));
     expect(updatedBridge).toEqual(expect.objectContaining({
-      status: "closed",
-      closeOutcome: "rejected",
-      closeReason: "Please revise the summary first.",
+      status: "waiting_for_human",
+      closeOutcome: null,
     }));
 
     const [issueAfter] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, seeded.issueId));
@@ -656,19 +660,19 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("processes null external event ids on each poll", async () => {
-    const seeded = await seedAskUserQuestionsBinaryInteraction();
+  it("dedupes a reply across bridge reopenings for the same interaction", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
     const poll = vi.fn(async () => ({
       status: "ok" as const,
       detail: "ok",
       events: [
         {
           kind: "reply" as const,
-          externalEventId: null,
+          externalEventId: "reply-1",
           externalThreadId: "thread-1",
           externalMessageId: "message-1",
-          body: "zzz qqq",
-          metadata: {},
+          body: "Please revise the summary first.",
+          metadata: { clickupReplyId: "reply-1" },
         },
       ],
     }));
@@ -685,41 +689,51 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       }),
     });
 
-    const bridge = await service.openOrReuseForInteraction({
+    const firstBridge = await service.openOrReuseForInteraction({
       companyId: seeded.companyId,
       issueId: seeded.issueId,
       interactionId: seeded.interactionId,
       agentId: seeded.agentId,
-      handoffKind: "ask_user_questions",
-      notification: {
-        title: "Board input needed",
-        summary: "Need answers.",
-        link: "https://bizbox.example/issues/BIZ-35",
-        cta: "Reply in Bizbox.",
-        labels: ["awaiting_human", "ask_user_questions"],
-      },
+      ...approvalNotification(),
     });
 
-    const baselineUpdatedAt = new Date("2026-05-22T00:00:00.000Z");
-    await db.update(issues).set({
-      updatedAt: baselineUpdatedAt,
-    }).where(eq(issues.id, seeded.issueId));
+    const firstResult = await service.pollBridge(firstBridge.id, new Date("2026-05-22T00:03:00.000Z"));
+    expect(firstResult.replies).toBe(1);
 
-    await service.pollBridge(bridge.id, new Date("2026-05-22T00:03:00.000Z"));
-    await service.pollBridge(bridge.id, new Date("2026-05-22T00:04:00.000Z"));
+    await service.closeBridge({
+      bridgeId: firstBridge.id,
+      outcome: "superseded",
+      reason: "test",
+    });
 
-    expect(poll).toHaveBeenCalledTimes(2);
+    const secondBridge = await service.openOrReuseForInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      agentId: seeded.agentId,
+      ...approvalNotification(),
+    });
+    expect(secondBridge.id).not.toBe(firstBridge.id);
+
+    const secondResult = await service.pollBridge(secondBridge.id, new Date("2026-05-22T00:04:00.000Z"));
+    expect(secondResult.replies).toBe(0);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
-    expect(comments).toHaveLength(2);
-
-    const [updatedIssue] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, seeded.issueId));
-    expect(updatedIssue?.updatedAt.getTime()).toBeGreaterThan(baselineUpdatedAt.getTime());
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toBe("ClickUp reply received:\n\nPlease revise the summary first.");
 
     const events = await db.select().from(awaitingHumanBridgeInboundEvents).where(
-      eq(awaitingHumanBridgeInboundEvents.bridgeId, bridge.id),
+      eq(awaitingHumanBridgeInboundEvents.interactionId, seeded.interactionId),
     );
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(1);
+
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
+    expect(wakes).toHaveLength(1);
+
+    const [updatedBridge] = await db.select().from(awaitingHumanBridges).where(eq(awaitingHumanBridges.id, secondBridge.id));
+    expect(updatedBridge).toEqual(expect.objectContaining({
+      status: "waiting_for_human",
+    }));
   });
 
   it("delegates plain reply wakes through requestWakeup when provided", async () => {
@@ -772,8 +786,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       payload: expect.objectContaining({
         issueId: seeded.issueId,
         interactionId: seeded.interactionId,
-        interactionStatus: "rejected",
-        mutation: "interaction",
+        commentId: expect.any(String),
+        mutation: "comment",
       }),
     }));
 
@@ -963,7 +977,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
   });
 
-  it("dedupes a null externalEventId approval signal if closeBridge fails after the transaction commits", async () => {
+  it("dedupes an approval signal if closeBridge fails after the transaction commits", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const service = awaitingHumanBridgeService(db, {
       resolveProviderForCompany: async () => "clickup",
@@ -979,7 +993,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
           events: [
             {
               kind: "approval_signal",
-              externalEventId: null,
+              externalEventId: "approval-1",
               externalThreadId: "thread-1",
               externalMessageId: "message-1",
               body: "approved",
@@ -1160,7 +1174,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     }));
   });
 
-  it("wakes the current assignee, not the original bridge agent, after a rejection on reassignment", async () => {
+  it("wakes the original bridge agent, not the reassigned assignee, after a reply on reassignment", async () => {
     const seeded = await seedAwaitingHumanInteraction();
     const reassignedAgentId = randomUUID();
     await db.insert(agents).values({
@@ -1216,16 +1230,16 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     await service.pollActiveBridges(new Date("2026-05-22T00:03:00.000Z"));
 
     const reassignedWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, reassignedAgentId));
-    expect(reassignedWakes).toHaveLength(1);
-    expect(reassignedWakes[0]?.payload).toMatchObject({
-      issueId: seeded.issueId,
-      interactionId: seeded.interactionId,
-      interactionStatus: "rejected",
-      mutation: "interaction",
-    });
+    expect(reassignedWakes).toHaveLength(0);
 
     const originalWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
-    expect(originalWakes).toHaveLength(0);
+    expect(originalWakes).toHaveLength(1);
+    expect(originalWakes[0]?.payload).toMatchObject({
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      commentId: expect.any(String),
+      mutation: "comment",
+    });
   });
 
   it("retries a rejected signal after the wakeup insert fails instead of parking the interaction", async () => {
@@ -1441,6 +1455,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     await db.insert(awaitingHumanBridgeInboundEvents).values({
       bridgeId: bridge.id,
+      interactionId: seeded.interactionId,
       eventKind: "reject_signal",
       externalEventId: "reject-1",
       externalMessageId: "message-1",
@@ -2277,6 +2292,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
     await db.insert(awaitingHumanBridgeInboundEvents).values({
       bridgeId: bridge.id,
+      interactionId: seeded.interactionId,
       eventKind: "approval_signal",
       externalEventId: "approval-1",
       externalMessageId: "message-1",
@@ -2408,8 +2424,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(result).toEqual({
       checked: 1,
       approved: 0,
-      rejected: 1,
-      replies: 0,
+      rejected: 0,
+      replies: 1,
       noSignal: 0,
       failed: 0,
       skipped: 0,
@@ -2422,8 +2438,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.externalMessageId).toBe("message-42");
     expect(rows[0]).toEqual(expect.objectContaining({
-      status: "closed",
-      closeOutcome: "rejected",
+      status: "waiting_for_human",
+      closeOutcome: null,
     }));
   });
 
@@ -2496,8 +2512,8 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     expect(result).toEqual({
       checked: 1,
       approved: 0,
-      rejected: 1,
-      replies: 0,
+      rejected: 0,
+      replies: 1,
       noSignal: 0,
       failed: 1,
       skipped: 0,
@@ -2512,7 +2528,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     const secondInteraction = await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, second.interactionId))
       .then((rows) => rows[0] ?? null);
-    expect(secondInteraction?.status).toBe("rejected");
+    expect(secondInteraction?.status).toBe("pending");
   });
 
   it("finds persisted pending awaiting-human confirmations and reconciles them end to end", async () => {

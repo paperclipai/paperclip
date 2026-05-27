@@ -3,7 +3,7 @@ import type { AwaitingHumanNotificationPayload } from "./awaiting-human-notifica
 
 export type AwaitingHumanBridgePollEvent = {
   kind: "reply" | "approval_signal" | "reject_signal";
-  externalEventId?: string | null;
+  externalEventId: string;
   externalThreadId?: string | null;
   externalMessageId?: string | null;
   body?: string | null;

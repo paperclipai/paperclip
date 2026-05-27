@@ -5374,7 +5374,7 @@ export function heartbeatService(db: Db) {
       if (!candidate.interactionId || candidate.interactionId.trim().length === 0) return false;
       const details = parseObject(candidate.handoffDetails);
       const delivery = parseObject(details.notificationDelivery);
-      return delivery.channel === "clickup-chat" && (delivery.status === "sent" || delivery.status === "enqueued");
+      return delivery.status === "sent" || delivery.status === "enqueued";
     }).map((candidate) => ({
       companyId: candidate.companyId,
       issueId: candidate.issueId,
