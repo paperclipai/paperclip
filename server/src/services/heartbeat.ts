@@ -5356,10 +5356,15 @@ export function heartbeatService(db: Db) {
         eq(activityLog.companyId, issues.companyId),
         sql`${activityLog.entityId} = cast(${issues.id} as text)`,
       ))
+      .innerJoin(issueThreadInteractions, and(
+        eq(activityLog.companyId, issueThreadInteractions.companyId),
+        sql`${activityLog.details} ->> 'interactionId' = cast(${issueThreadInteractions.id} as text)`,
+      ))
       .where(and(
         eq(activityLog.entityType, "issue"),
         eq(activityLog.action, "issue.awaiting_human.entered"),
         eq(issues.status, "awaiting_human"),
+        eq(issueThreadInteractions.status, "pending"),
         sql`not exists (
           select 1
           from ${awaitingHumanBridges}
