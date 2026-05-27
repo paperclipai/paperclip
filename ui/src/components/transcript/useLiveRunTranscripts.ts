@@ -232,7 +232,8 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
+        if (error instanceof ApiError && error.status === 404) {
+          // Run may disappear after backend cancellation; stop retrying this run log.
           missingTerminalLogRunIdsRef.current.add(run.id);
         }
       } finally {
