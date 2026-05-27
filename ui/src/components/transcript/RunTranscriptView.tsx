@@ -12,6 +12,7 @@ import {
   User,
   Wrench,
 } from "lucide-react";
+import { useTranslation } from "@/i18n";
 
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";

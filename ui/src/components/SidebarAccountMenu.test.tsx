@@ -41,6 +41,35 @@ vi.mock("../context/ThemeContext", () => ({
   }),
 }));
 
+vi.mock("@/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string) => {
+      const translations: Record<string, string> = {
+        "component.sidebarAccountMenu.board": "Board",
+        "component.sidebarAccountMenu.signedIn": "Signed in",
+        "component.sidebarAccountMenu.localWorkspaceBoard": "Local workspace board",
+        "component.sidebarAccountMenu.account": "Account",
+        "component.sidebarAccountMenu.local": "Local",
+        "component.sidebarAccountMenu.viewProfile": "View profile",
+        "component.sidebarAccountMenu.viewProfileDesc": "Open your activity, task, and usage ledger.",
+        "component.sidebarAccountMenu.editProfile": "Edit profile",
+        "component.sidebarAccountMenu.editProfileDesc": "Update your display name and avatar.",
+        "component.sidebarAccountMenu.instanceSettings": "Instance settings",
+        "component.sidebarAccountMenu.instanceSettingsDesc": "Jump back to the last settings page you opened.",
+        "component.sidebarAccountMenu.documentation": "Documentation",
+        "component.sidebarAccountMenu.documentationDesc": "Open Paperclip docs in a new tab.",
+        "component.sidebarAccountMenu.switchToLightMode": "Switch to light mode",
+        "component.sidebarAccountMenu.switchToDarkMode": "Switch to dark mode",
+        "component.sidebarAccountMenu.toggleThemeDesc": "Toggle the app appearance.",
+        "component.sidebarAccountMenu.signOut": "Sign out",
+        "component.sidebarAccountMenu.signOutPending": "Signing out...",
+        "component.sidebarAccountMenu.signOutDesc": "End this browser session.",
+      };
+      return translations[key] || key;
+    },
+  }),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -57,6 +86,7 @@ describe("SidebarAccountMenu", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    localStorage.removeItem("paperclip_locale");
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: {

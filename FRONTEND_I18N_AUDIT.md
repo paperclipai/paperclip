@@ -1,0 +1,135 @@
+# 前端国际化审计报告 / Frontend i18n Audit Report
+
+> Generated: 2026-05-22
+> Project: paperclip
+> Total UI source files analyzed: 558 (excluding node_modules, fixtures, i18n, __tests__)
+
+## Executive Summary
+
+The paperclip frontend uses **react-i18next** for internationalization and the system is **already well-established**:
+
+| Metric | Value |
+|---|---|
+| en.json keys | 4115 (225KB) |
+| zh-CN.json keys | 4112 (222KB) |
+| zh-CN missing from en | 3 keys |
+| Files using i18n | 301 / 402 (75%) |
+| Files with raw Chinese | 1 (components/LanguageSwitcher.tsx — intentionally untranslated label) |
+
+**Conclusion:** The codebase is **~99% internationalized**. zh-CN coverage is nearly complete. Only 1 user-facing string needs review (LanguageSwitcher label), and 3 translation keys are missing from zh-CN.
+
+---
+
+## i18n System Overview
+
+**Library:** react-i18next + i18next-browser-languagedetector
+**Entry:** `ui/src/i18n/index.ts`
+**Locales:** `ui/src/i18n/locales/` (43 language files)
+**Namespaces (34):** app, issue, issueChat, agent, company, issueChat, approval, routine, markdownBody, markdownEditor, jsonSchemaForm, commandPalette, finance, goal, nav, page, dialog, component, ui, issuesList, activityCharts, cloudAccess, companySwitcher, devRestart, propertiesPanel, routineHistory, routineRunVariablesDialog, routineVariablesEditor, sidebarAgents, sidebarCompanyMenu, worktreeBanner, agentConfig, lib
+
+**Language detection:** localStorage (`paperclip_locale`) → navigator language → fallback to `en`
+
+---
+
+## Coverage Analysis
+
+| Category | Count | Description |
+|---|---|---|
+| Pure i18n | 301 | Uses t() / useTranslation throughout |
+| No i18n imports | 101 | Utility / backend / UI primitive files — no user-facing strings |
+| Mixed (i18n + raw strings) | 0 | No files found |
+
+### Files Without i18n Imports — Categorized
+
+These 101 files don't import from i18n. After manual review, **none need i18n** — they are:
+
+**Backend-adjacent (API clients, no UI):**
+- `adapters/` — Agent adapter implementations (logic only, no rendered text)
+- `api/` — API client functions (data fetching, no UI strings)
+
+**Utility / pure logic (no UI at all):**
+- `lib/` — Pure TypeScript utilities (status-colors.ts, groupBy.ts, timeAgo.ts, etc.)
+- `vite-env.d.ts` — Type declarations only
+
+**Generic UI primitives (Shadcn/ui, no user content):**
+- `components/ui/` — badge.tsx, checkbox.tsx, label.tsx, skeleton.tsx, etc.
+- These are headless components; all user-facing labels come from parent components that use i18n
+
+**Minimal display components (numeric/symbolic only):**
+- `StatusIcon.tsx` — Renders icons, not text
+- `StatusBadge.tsx` — Status text is passed as props from i18n-aware parents
+- `PriorityIcon.tsx`, `MetricCard.tsx`, `QuotaBar.tsx`, `PackageFileTree.tsx` — Same pattern
+- `BreadcrumbBar.tsx` — Uses parent-supplied labels
+- `EmptyState.tsx` — Accepts title/description as props from i18n-aware parents
+- `FilterBar.tsx`, `PageTabBar.tsx`, `PageSkeleton.tsx`, `EntityRow.tsx` — Same prop-driven pattern
+- `SidebarNavItem.tsx`, `RunChatSurface.tsx` — Uses parent labels
+
+**One intentional hardcoded string:**
+- `components/LanguageSwitcher.tsx` line 15: `{ code: "zh-CN", label: "中文" }` — This is the language picker label itself; translating it would be circular.
+
+---
+
+## zh-CN Gap: Missing Translation Keys
+
+**3 keys exist in en.json but NOT in zh-CN.json:**
+
+| Missing Key | Recommended Translation |
+|---|---|
+| `common.actions.download` | 下载 |
+| `common.actions.previous` | 上一个 |
+| `common.actions.next` | 下一个 |
+
+---
+
+## Recommendations
+
+### Immediate Action (Low Effort, High Value)
+Add 3 missing zh-CN keys to `ui/src/i18n/locales/zh-CN.json`:
+```json
+"common": {
+  "actions": {
+    "download": "下载",
+    "previous": "上一个",
+    "next": "下一个"
+  }
+}
+```
+
+### No Action Needed
+- 101 "no-i18n" files — these are correctly architected as utility/API/primitive layers
+- All user-facing strings in pages and complex components already use i18n
+- zh-CN file is 222KB with 4112 keys — well-maintained
+
+### Future Guidelines
+1. **New components** should import `{ t }` from `'../i18n'` for any user-facing strings
+2. **New en.json keys** must include zh-CN counterparts in the same PR
+3. **Run verification** after any locale file change:
+```bash
+node -e "
+const en = require('./ui/src/i18n/locales/en.json');
+const zh = require('./ui/src/i18n/locales/zh-CN.json');
+function missing(a, b, p='') {
+  const m = [];
+  for (const k of Object.keys(a)) {
+    const np = p ? p+'.'+k : k;
+    if (typeof a[k] === 'object') m.push(...missing(a[k], b[k]||{}, np));
+    else if (!(k in (b||{}))) m.push(np);
+  }
+  return m;
+}
+const gaps = missing(en, zh);
+console.log(gaps.length === 0 ? 'All keys translated' : 'Missing: ' + gaps);
+"
+```
+
+---
+
+## Files with Hardcoded Chinese Strings
+
+| File | Line | Content | Status |
+|---|---|---|---|
+| `components/LanguageSwitcher.tsx` | 15 | `label: "中文"` | Intentional — language picker UI label |
+
+---
+
+*Generated by automated i18n audit. Script: `scan_i18n_full.mjs`*

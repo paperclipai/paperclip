@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
@@ -14,8 +15,8 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import {
-  BLOCKED_GROUP_OPTIONS,
-  BLOCKED_SORT_OPTIONS,
+  getBlockedGroupOptions,
+  getBlockedSortOptions,
   type BlockedInboxGroupBy,
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
@@ -661,6 +662,7 @@ function JoinRequestInboxRow({
 }
 
 export function Inbox() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
@@ -1451,6 +1453,7 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
+  const [showClearAllConfirm, setShowClearAllConfirm] = useState(false);
   const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
   const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
   const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
@@ -1609,6 +1612,17 @@ export function Inbox() {
       });
     }, 300);
   }, [markItemRead]);
+
+  const clearAllTasksMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedCompanyId) throw new Error("No company selected");
+      return issuesApi.clearAllTasks(selectedCompanyId);
+    },
+    onSuccess: () => {
+      setShowClearAllConfirm(false);
+      invalidateInboxIssueQueries();
+    },
+  });
 
   const handleArchiveNonIssue = useCallback((key: string) => {
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
@@ -1954,15 +1968,15 @@ export function Inbox() {
             items={[
               {
                 value: "mine",
-                label: "Mine",
+                label: t("page.inbox.tabs.mine"),
               },
               {
                 value: "recent",
-                label: "Recent",
+                label: t("page.inbox.tabs.recent"),
               },
-              { value: "unread", label: "Unread" },
-              { value: "blocked", label: "Blocked" },
-              { value: "all", label: "All" },
+              { value: "unread", label: t("page.inbox.tabs.unread") },
+              { value: "blocked", label: t("page.inbox.tabs.blocked") },
+              { value: "all", label: t("page.inbox.tabs.all") },
             ]}
           />
         </Tabs>
@@ -2026,7 +2040,7 @@ export function Inbox() {
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="space-y-0.5 p-2">
-                    {BLOCKED_GROUP_OPTIONS.map(([value, label]) => (
+                    {getBlockedGroupOptions().map(([value, label]) => (
                       <button
                         key={value}
                         type="button"
@@ -2065,7 +2079,7 @@ export function Inbox() {
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-48 p-0">
                   <div className="space-y-0.5 p-2">
-                    {BLOCKED_SORT_OPTIONS.map(([value, label]) => (
+                    {getBlockedSortOptions().map(([value, label]) => (
                       <button
                         key={value}
                         type="button"
@@ -2164,19 +2178,22 @@ export function Inbox() {
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    {markAllReadMutation.isPending ? t("page.inbox.markingAllRead") : t("page.inbox.markAllRead")}
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
+                        <DialogTitle>{t("page.inbox.markAllReadConfirm.title")}</DialogTitle>
                         <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                          {t("page.inbox.markAllReadConfirm.description", {
+                            count: unreadIssueIds.length,
+                            itemLabel: t(unreadIssueIds.length === 1 ? "page.inbox.markAllReadConfirm.item_one" : "page.inbox.markAllReadConfirm.item_other"),
+                          })}
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
                         <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
+                          {t("common.actions.cancel")}
                         </Button>
                         <Button
                           onClick={() => {
@@ -2184,13 +2201,44 @@ export function Inbox() {
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
                         >
-                          Mark all as read
+                          {t("page.inbox.markAllRead")}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
                 </>
               )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0"
+                onClick={() => setShowClearAllConfirm(true)}
+                disabled={clearAllTasksMutation.isPending}
+              >
+                {clearAllTasksMutation.isPending ? t("page.inbox.clearingAll") : t("page.inbox.clearAll")}
+              </Button>
+              <Dialog open={showClearAllConfirm} onOpenChange={setShowClearAllConfirm}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>{t("page.inbox.clearAllConfirm.title")}</DialogTitle>
+                    <DialogDescription>
+                      {t("page.inbox.clearAllConfirm.description", { count: issues?.length ?? 0 })}
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setShowClearAllConfirm(false)}>
+                      {t("page.inbox.clearAllConfirm.cancel")}
+                    </Button>
+                    <Button
+                      onClick={() => clearAllTasksMutation.mutate()}
+                      disabled={clearAllTasksMutation.isPending}
+                    >
+                      {t("page.inbox.clearAllConfirm.confirm")}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </>
           ) : null}
         </div>

@@ -8,42 +8,43 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 type Platform = "mac" | "windows" | "linux";
 
-const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
-  { id: "mac", label: "macOS", icon: Apple },
-  { id: "windows", label: "Windows", icon: Monitor },
-  { id: "linux", label: "Linux", icon: Terminal },
+const platforms: { id: Platform; icon: typeof Apple }[] = [
+  { id: "mac", icon: Apple },
+  { id: "windows", icon: Monitor },
+  { id: "linux", icon: Terminal },
 ];
 
-const instructions: Record<Platform, { steps: string[]; tip?: string }> = {
+const getInstructions = (t: (key: string) => string) => ({
   mac: {
     steps: [
-      "Open Finder and navigate to the folder.",
-      "Right-click (or Control-click) the folder.",
-      "Hold the Option (⌥) key — \"Copy\" changes to \"Copy as Pathname\".",
-      "Click \"Copy as Pathname\", then paste here.",
+      t("pages.pathInstructions.macosStep1"),
+      t("pages.pathInstructions.macosStep2"),
+      t("pages.pathInstructions.macosStep3"),
+      t("pages.pathInstructions.macosStep4"),
     ],
-    tip: "You can also open Terminal, type cd, drag the folder into the terminal window, and press Enter. Then type pwd to see the full path.",
+    tip: t("pages.pathInstructions.macosTip"),
   },
   windows: {
     steps: [
-      "Open File Explorer and navigate to the folder.",
-      "Click in the address bar at the top — the full path will appear.",
-      "Copy the path, then paste here.",
+      t("pages.pathInstructions.windowsStep1"),
+      t("pages.pathInstructions.windowsStep2"),
+      t("pages.pathInstructions.windowsStep3"),
     ],
-    tip: "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\".",
+    tip: t("pages.pathInstructions.windowsTip"),
   },
   linux: {
     steps: [
-      "Open a terminal and navigate to the directory with cd.",
-      "Run pwd to print the full path.",
-      "Copy the output and paste here.",
+      t("pages.pathInstructions.linuxStep1"),
+      t("pages.pathInstructions.linuxStep2"),
+      t("pages.pathInstructions.linuxStep3"),
     ],
-    tip: "In most file managers, Ctrl+L reveals the full path in the address bar.",
+    tip: t("pages.pathInstructions.linuxTip"),
   },
-};
+});
 
 function detectPlatform(): Platform {
   const ua = navigator.userAgent.toLowerCase();
@@ -61,7 +62,9 @@ export function PathInstructionsModal({
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
+  const { t } = useTranslation();
   const [platform, setPlatform] = useState<Platform>(detectPlatform);
+  const instructions = getInstructions(t);
 
   const current = instructions[platform];
 
@@ -69,11 +72,9 @@ export function PathInstructionsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-base">How to get a full path</DialogTitle>
+          <DialogTitle className="text-base">{t("pages.pathInstructions.title")}</DialogTitle>
           <DialogDescription>
-            Paste the absolute path (e.g.{" "}
-            <code className="text-xs bg-muted px-1 py-0.5 rounded">/Users/you/project</code>
-            ) into the input field.
+            {t("pages.pathInstructions.description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -92,7 +93,7 @@ export function PathInstructionsModal({
               onClick={() => setPlatform(p.id)}
             >
               <p.icon className="h-3.5 w-3.5" />
-              {p.label}
+              {t(`pages.pathInstructions.${p.id === "mac" ? "macos" : p.id}`)}
             </button>
           ))}
         </div>
@@ -124,6 +125,7 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -135,7 +137,7 @@ export function ChoosePathButton({ className }: { className?: string }) {
         )}
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("pages.pathInstructions.choose")}
       </button>
       <PathInstructionsModal open={open} onOpenChange={setOpen} />
     </>

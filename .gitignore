@@ -15,6 +15,12 @@ data/
 .pnpm-store/
 tmp-*
 cli/tmp/
+.trae/
+test_scripts/
+
+
+graphify-out/
+.codegraph/
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs

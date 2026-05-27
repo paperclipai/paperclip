@@ -10,6 +10,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +28,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
+import { useTranslation } from "@/i18n";
 
 /**
  * Adapter types that are suitable for agent creation (excludes internal
@@ -51,6 +53,7 @@ export function NewAgentDialog() {
   const [latestAgentPrompt, setLatestAgentPrompt] = useState<string | null>(null);
   const [latestAgentPromptCopied, setLatestAgentPromptCopied] = useState(false);
   const disabledTypes = useDisabledAdaptersSync();
+  const { t } = useTranslation();
 
   function resetDialogState() {
     setMode("choices");
@@ -230,9 +233,10 @@ export function NewAgentDialog() {
           mode === "invite" || mode === "prompt" ? "sm:max-w-2xl" : "sm:max-w-md",
         )}
       >
+        <DialogTitle className="sr-only">{t("agent.newAgentDialog.title")}</DialogTitle>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{t("agent.newAgentDialog.title")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -255,14 +259,13 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
+                  {t("agent.newAgentDialog.recommendation")}
                 </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {t("agent.newAgentDialog.askCeo")}
               </Button>
 
               <div className="grid gap-2">
@@ -289,10 +292,10 @@ export function NewAgentDialog() {
                   onClick={() => setMode("choices")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("agent.newAgentDialog.back")}
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose the runtime Paperclip should start or resume directly.
+                  {t("agent.newAgentDialog.advancedSetup")}
                 </p>
               </div>
 
@@ -312,7 +315,7 @@ export function NewAgentDialog() {
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                        Recommended
+                        {t("agent.newAgentDialog.recommended")}
                       </span>
                     )}
                     <opt.icon className="h-4 w-4" />

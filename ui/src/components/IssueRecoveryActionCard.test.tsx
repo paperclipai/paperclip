@@ -13,6 +13,74 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+vi.mock("@/i18n", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) => {
+      const translations: Record<string, string> = {
+        "component.issueRecoveryActionCard.stateLabels.needed": "RECOVERY NEEDED",
+        "component.issueRecoveryActionCard.stateLabels.inProgress": "RECOVERY IN PROGRESS",
+        "component.issueRecoveryActionCard.stateLabels.observing": "OBSERVING ACTIVE RUN",
+        "component.issueRecoveryActionCard.stateLabels.escalated": "RECOVERY ESCALATED",
+        "component.issueRecoveryActionCard.stateLabels.resolved": "RECOVERY RESOLVED",
+        "component.issueRecoveryActionCard.kindLabels.missingDisposition": "Missing Disposition",
+        "component.issueRecoveryActionCard.kindLabels.strandedAssignedIssue": "Stranded Issue",
+        "component.issueRecoveryActionCard.kindLabels.activeRunWatchdog": "Active Watchdog",
+        "component.issueRecoveryActionCard.kindLabels.issueGraphLiveness": "Graph Liveness",
+        "component.issueRecoveryActionCard.headlines.missingDisposition": "This issue's run finished, but no next step was chosen.",
+        "component.issueRecoveryActionCard.headlines.strandedAssignedIssue": "Paperclip retried this issue's last run and it still has no live execution path.",
+        "component.issueRecoveryActionCard.headlines.activeRunWatchdog": "The active run has been silent. Recovery is observing without interrupting it.",
+        "component.issueRecoveryActionCard.headlines.issueGraphLiveness": "Paperclip detected this issue lost a live action path. A recovery owner needs to act.",
+        "component.issueRecoveryActionCard.headlines.resolvedOutcome": "Recovery resolved as {{outcome}}.",
+        "component.issueRecoveryActionCard.outcomeLabels.restored": "restored",
+        "component.issueRecoveryActionCard.outcomeLabels.delegated": "delegated to follow-up",
+        "component.issueRecoveryActionCard.outcomeLabels.falsePositive": "false positive",
+        "component.issueRecoveryActionCard.outcomeLabels.blocked": "blocked",
+        "component.issueRecoveryActionCard.outcomeLabels.escalated": "escalated",
+        "component.issueRecoveryActionCard.outcomeLabels.cancelled": "cancelled",
+        "component.issueRecoveryActionCard.wakePolicy.correctiveWakeQueued": "Corrective wake queued",
+        "component.issueRecoveryActionCard.wakePolicy.escalatedToBoard": "Escalated to board",
+        "component.issueRecoveryActionCard.wakePolicy.manual": "Manual",
+        "component.issueRecoveryActionCard.wakePolicy.monitorScheduled": "Monitor scheduled",
+        "component.issueRecoveryActionCard.wakePolicy.monitorScheduledWithInterval": "Monitor scheduled · {{interval}}",
+        "component.issueRecoveryActionCard.timeFormat.inMinutes": "in {{min}}m",
+        "component.issueRecoveryActionCard.timeFormat.minutesAgo": "{{min}}m ago",
+        "component.issueRecoveryActionCard.runChip": "run {{short}}",
+        "component.issueRecoveryActionCard.resolveButton": "Resolve…",
+        "component.issueRecoveryActionCard.resolvePopoverTitle": "Resolve recovery",
+        "component.issueRecoveryActionCard.resolveOptions.tryAgain.label": "Try again",
+        "component.issueRecoveryActionCard.resolveOptions.tryAgain.description": "Dismiss recovery and return the source issue to todo.",
+        "component.issueRecoveryActionCard.resolveOptions.markDone.label": "Mark issue done",
+        "component.issueRecoveryActionCard.resolveOptions.markDone.description": "Restore by recording the requested work as complete.",
+        "component.issueRecoveryActionCard.resolveOptions.sendForReview.label": "Send for review",
+        "component.issueRecoveryActionCard.resolveOptions.sendForReview.description": "Hand off to a reviewer with a real review path.",
+        "component.issueRecoveryActionCard.resolveOptions.falsePositiveDone.label": "False positive, done",
+        "component.issueRecoveryActionCard.resolveOptions.falsePositiveDone.description": "Dismiss recovery and mark the source issue complete.",
+        "component.issueRecoveryActionCard.resolveOptions.falsePositiveReview.label": "False positive, review",
+        "component.issueRecoveryActionCard.resolveOptions.falsePositiveReview.description": "Dismiss recovery and send the source issue for review.",
+        "component.issueRecoveryActionCard.attemptLabel": "attempt {{current}} of {{max}}",
+        "component.issueRecoveryActionCard.timeoutLabel": "Times out {{time}}",
+        "component.issueRecoveryActionCard.resolvedLabel": "Resolved as {{outcome}}",
+        "component.issueRecoveryActionCard.resolvedTimeSeparator": " · ",
+        "component.issueRecoveryActionCard.footerMessages.observing": "Recovery is observing without interrupting the live run.",
+        "component.issueRecoveryActionCard.footerMessages.staysOpen": "The card stays open until an explicit decision is recorded.",
+        "component.issueRecoveryActionCard.recovery": "Recovery:",
+        "component.issueRecoveryActionCard.user": "user {{id}}",
+        "component.issueRecoveryActionCard.unassigned": "unassigned — pick one to wake them",
+        "component.issueRecoveryActionCard.returnsTo": "→ Returns to:",
+        "common.board": "Board",
+        "common.system": "System",
+      };
+      let result = translations[key] ?? key;
+      if (options) {
+        Object.entries(options).forEach(([k, v]) => {
+          result = result.replace(`{{${k}}}`, String(v));
+        });
+      }
+      return result;
+    },
+  }),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 

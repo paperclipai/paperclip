@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, and, isNull, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -3234,5 +3233,209 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+});
+
+describeEmbeddedPostgres("issueService.batchArchiveClearAll and batchUnarchiveAll", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-batch-archive-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  it("batchArchiveClearAll archives only originKind=manual tasks and returns correct count", async () => {
+    const companyId = await seedCompany();
+    const userId = "user-1";
+
+    const manualId = randomUUID();
+    const routineId = randomUUID();
+    const harnessId = randomUUID();
+    const alreadyArchivedId = randomUUID();
+
+    await db.insert(issues).values([
+      { id: manualId, companyId, title: "Manual task", status: "todo", priority: "medium", originKind: "manual" },
+      { id: routineId, companyId, title: "Routine execution", status: "todo", priority: "medium", originKind: "routine_execution" },
+      { id: harnessId, companyId, title: "Harness liveness", status: "todo", priority: "medium", originKind: "harness_liveness_escalation" },
+      {
+        id: alreadyArchivedId,
+        companyId,
+        title: "Already archived",
+        status: "todo",
+        priority: "medium",
+        originKind: "manual",
+        hiddenAt: new Date("2026-01-01"),
+      },
+    ]);
+
+    const result = await svc.batchArchiveClearAll(companyId, userId);
+
+    expect(result.archived).toBe(1);
+
+    const all = await db.select({ id: issues.id, hiddenAt: issues.hiddenAt }).from(issues).where(eq(issues.companyId, companyId));
+    const byId = Object.fromEntries(all.map((r) => [r.id, r.hiddenAt]));
+
+    expect(byId[manualId]).toBeInstanceOf(Date);
+    expect(byId[alreadyArchivedId]?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(byId[routineId]).toBeNull();
+    expect(byId[harnessId]).toBeNull();
+  });
+
+  it("batchArchiveClearAll archives all manual tasks in batches across multiple batches", async () => {
+    const companyId = await seedCompany();
+    const userId = "user-1";
+
+    // Create more than BATCH_SIZE (200) manual issues
+    const manualIds = Array.from({ length: 250 }, () => randomUUID());
+    await db.insert(issues).values(
+      manualIds.map((id) => ({ id, companyId, title: "Batch item", status: "todo", priority: "medium", originKind: "manual" })),
+    );
+
+    const result = await svc.batchArchiveClearAll(companyId, userId);
+
+    expect(result.archived).toBe(250);
+
+    const remaining = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("batchArchiveClearAll clears the user's inbox archives", async () => {
+    const companyId = await seedCompany();
+    const userId = "user-1";
+    const otherUserId = "user-2";
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Test issue", status: "todo", priority: "medium",
+    });
+    await db.insert(issueInboxArchives).values([
+      { companyId, issueId, userId, archivedAt: new Date("2026-01-01") },
+      { companyId, issueId, userId: otherUserId, archivedAt: new Date("2026-01-01") },
+    ]);
+
+    await svc.batchArchiveClearAll(companyId, userId);
+
+    const archives = await db
+      .select({ userId: issueInboxArchives.userId, archivedAt: issueInboxArchives.archivedAt })
+      .from(issueInboxArchives)
+      .where(and(eq(issueInboxArchives.companyId, companyId), eq(issueInboxArchives.issueId, issueId)));
+
+    expect(archives).toEqual([
+      { userId, archivedAt: expect.any(Date) },
+      { userId: otherUserId, archivedAt: new Date("2026-01-01") },
+    ]);
+    // The other user's archive should keep the original date, our user's should be updated to now
+    expect(archives[1].archivedAt?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("batchUnarchiveAll restores all archived manual tasks and returns correct count", async () => {
+    const companyId = await seedCompany();
+    const userId = "user-1";
+
+    const manualArchivedId = randomUUID();
+    const routineArchivedId = randomUUID();
+    const manualActiveId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: manualArchivedId,
+        companyId,
+        title: "Archived manual",
+        status: "todo",
+        priority: "medium",
+        originKind: "manual",
+        hiddenAt: new Date("2026-01-01"),
+      },
+      {
+        id: routineArchivedId,
+        companyId,
+        title: "Archived routine",
+        status: "todo",
+        priority: "medium",
+        originKind: "routine_execution",
+        hiddenAt: new Date("2026-01-01"),
+      },
+      { id: manualActiveId, companyId, title: "Active manual", status: "todo", priority: "medium", originKind: "manual" },
+    ]);
+
+    // Verify originKind values are stored correctly before the operation
+    const beforeRoutine = await db
+      .select({ originKind: issues.originKind })
+      .from(issues)
+      .where(eq(issues.id, routineArchivedId))
+      .then((r) => r[0]);
+    expect(beforeRoutine?.originKind).toBe("routine_execution");
+
+    const result = await svc.batchUnarchiveAll(companyId, userId);
+
+    expect(result.unarchived).toBe(1);
+
+    const all = await db.select({ id: issues.id, hiddenAt: issues.hiddenAt }).from(issues).where(eq(issues.companyId, companyId));
+    const byId = Object.fromEntries(all.map((r) => [r.id, r.hiddenAt]));
+
+    expect(byId[manualArchivedId]).toBeNull();
+    expect(byId[routineArchivedId]?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(byId[manualActiveId]).toBeNull();
+  });
+
+  it("batchArchiveClearAll followed by batchUnarchiveAll restores all manual tasks", async () => {
+    const companyId = await seedCompany();
+    const userId = "user-1";
+
+    await db.insert(issues).values([
+      { id: randomUUID(), companyId, title: "Task 1", status: "todo", priority: "medium", originKind: "manual" },
+      { id: randomUUID(), companyId, title: "Task 2", status: "done", priority: "medium", originKind: "manual" },
+      { id: randomUUID(), companyId, title: "Routine task", status: "todo", priority: "medium", originKind: "routine_execution" },
+    ]);
+
+    const archiveResult = await svc.batchArchiveClearAll(companyId, userId);
+    expect(archiveResult.archived).toBe(2);
+
+    const restoreResult = await svc.batchUnarchiveAll(companyId, userId);
+    expect(restoreResult.unarchived).toBe(2);
+
+    const remaining = await db
+      .select({ id: issues.id, hiddenAt: issues.hiddenAt })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+
+    expect(remaining).toHaveLength(3);
+    expect(remaining.every((r) => r.hiddenAt === null)).toBe(true);
   });
 });

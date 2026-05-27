@@ -18,6 +18,7 @@ import {
   issueChatUxTranscriptsByRunId,
 } from "../fixtures/issueChatUxFixtures";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 import { Bot, Brain, FlaskConical, Loader2, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
 
 const noop = async () => {};
@@ -132,6 +133,7 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
 }
 
 export function IssueChatUxLab() {
+  const { t } = useTranslation();
   const [showComposer, setShowComposer] = useState(true);
 
   return (

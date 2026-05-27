@@ -1,8 +1,9 @@
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocation, useNavigate } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
-const items = [
+const ITEMS_DEFINITION = [
   { value: "general", label: "General", href: "/company/settings" },
   { value: "environments", label: "Environments", href: "/company/settings/environments" },
   { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
@@ -11,7 +12,7 @@ const items = [
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
 ] as const;
 
-type CompanySettingsTab = (typeof items)[number]["value"];
+type CompanySettingsTab = (typeof ITEMS_DEFINITION)[number]["value"];
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes("/company/settings/environments")) {
@@ -38,9 +39,17 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
 }
 
 export function CompanySettingsNav() {
+  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = getCompanySettingsTab(location.pathname);
+
+  const items = [
+    { value: "general", label: t("nav.sidebar.companySettings.general"), href: "/company/settings" },
+    { value: "environments", label: t("nav.sidebar.companySettings.environments"), href: "/company/settings/environments" },
+    { value: "access", label: t("nav.sidebar.companySettings.access"), href: "/company/settings/access" },
+    { value: "invites", label: t("nav.sidebar.companySettings.invites"), href: "/company/settings/invites" },
+  ] as const;
 
   function handleTabChange(value: string) {
     const nextTab = items.find((item) => item.value === value);

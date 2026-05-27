@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -3796,6 +3796,68 @@ export function issueService(db: Db) {
         )
         .returning();
       return row ?? null;
+    },
+
+    batchArchiveClearAll: async (companyId: string, userId: string) => {
+      const BATCH_SIZE = 200;
+      let totalArchived = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const rows = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, companyId),
+              isNull(issues.hiddenAt),
+              sql`${issues.originKind} = 'manual'`,
+            ),
+          )
+          .limit(BATCH_SIZE);
+
+        if (rows.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        const ids = rows.map((r) => r.id);
+        await db
+          .update(issues)
+          .set({ hiddenAt: new Date(), updatedAt: new Date() })
+          .where(inArray(issues.id, ids));
+
+        totalArchived += ids.length;
+        hasMore = rows.length === BATCH_SIZE;
+      }
+
+      // Also archive the inbox for this user across all archived issues
+      await db
+        .update(issueInboxArchives)
+        .set({ archivedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(issueInboxArchives.companyId, companyId),
+            eq(issueInboxArchives.userId, userId),
+          ),
+        );
+
+      return { archived: totalArchived };
+    },
+
+    batchUnarchiveAll: async (companyId: string, userId: string) => {
+      const result = await db
+        .update(issues)
+        .set({ hiddenAt: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "manual"),
+            isNotNull(issues.hiddenAt),
+          ),
+        )
+        .returning();
+      return { unarchived: result.length };
     },
 
     getById: async (raw: string) => {

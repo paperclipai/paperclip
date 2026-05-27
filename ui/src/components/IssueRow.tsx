@@ -8,10 +8,11 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
-import { deriveActiveRecoveryDisplayState, RECOVERY_CHIP_DEFAULT_TONE } from "../lib/recovery-display";
+import { deriveActiveRecoveryDisplayState, getRecoveryChipTone } from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { useTranslation } from "react-i18next";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -60,6 +61,7 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
+  const { t } = useTranslation();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
@@ -86,7 +88,7 @@ export function IssueRow({
     </span>
   ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
-  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected, t) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <span
       data-testid="issue-row-parked-blocker"
@@ -228,10 +230,19 @@ export function IssueRow({
   );
 }
 
-function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): ReactNode {
+function renderRecoveryChip(
+  action: IssueRecoveryAction,
+  selected: boolean,
+  t: ReturnType<typeof useTranslation>[0],
+): ReactNode {
   const state = deriveActiveRecoveryDisplayState(action);
   if (!state) return null;
-  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const tone = getRecoveryChipTone(state, {
+    needed: t("issue.recovery.needed"),
+    inProgress: t("issue.recovery.inProgressFull"),
+    observeOnly: t("issue.recovery.observeOnly"),
+    escalated: t("issue.recovery.escalated"),
+  });
   const Icon = tone.icon;
   return (
     <span

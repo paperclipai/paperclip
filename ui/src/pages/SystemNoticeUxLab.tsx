@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { SystemNotice } from "@/components/SystemNotice";
 import { systemNoticeFixtures } from "@/fixtures/systemNoticeFixtures";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 import {
   CircleDashed,
   FlaskConical,
@@ -125,6 +126,7 @@ const checklist = [
 ];
 
 export function SystemNoticeUxLab() {
+  const { t } = useTranslation();
   const fixtureById = new Map(systemNoticeFixtures.map((f) => [f.id, f] as const));
 
   const warningCollapsed = fixtureById.get("warning-collapsed")!;
@@ -239,7 +241,7 @@ export function SystemNoticeUxLab() {
             label="System alert"
             source={{ label: "Paperclip", href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
-            body="Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
+            body={t("component.systemNotice.successfulRunHandoff.exhausted")}
             metadata={[
               {
                 title: "Recovery owner",

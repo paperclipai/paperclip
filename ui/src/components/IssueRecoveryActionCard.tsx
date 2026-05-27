@@ -14,12 +14,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { agentUrl } from "@/lib/utils";
-import { cn } from "@/lib/utils";
+import { agentUrl, cn } from "@/lib/utils";
 import {
   deriveRecoveryDisplayState,
   type RecoveryDisplayState,
 } from "@/lib/recovery-display";
+import { useTranslation } from "@/i18n";
 
 export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
@@ -43,25 +43,26 @@ export interface IssueRecoveryActionCardProps {
   className?: string;
 }
 
-const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "Missing Disposition",
-  stranded_assigned_issue: "Stranded Issue",
-  active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Graph Liveness",
-};
+function buildKindLabels(t: (key: string) => string): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition: t("component.issueRecoveryActionCard.kindLabels.missingDisposition"),
+    stranded_assigned_issue: t("component.issueRecoveryActionCard.kindLabels.strandedAssignedIssue"),
+    active_run_watchdog: t("component.issueRecoveryActionCard.kindLabels.activeRunWatchdog"),
+    issue_graph_liveness: t("component.issueRecoveryActionCard.kindLabels.issueGraphLiveness"),
+  };
+}
 
-const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "This issue's run finished, but no next step was chosen.",
-  stranded_assigned_issue:
-    "Paperclip retried this issue's last run and it still has no live execution path.",
-  active_run_watchdog:
-    "The active run has been silent. Recovery is observing without interrupting it.",
-  issue_graph_liveness:
-    "Paperclip detected this issue lost a live action path. A recovery owner needs to act.",
-};
+function buildHeadlines(t: (key: string) => string): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition: t("component.issueRecoveryActionCard.headlines.missingDisposition"),
+    stranded_assigned_issue: t("component.issueRecoveryActionCard.headlines.strandedAssignedIssue"),
+    active_run_watchdog: t("component.issueRecoveryActionCard.headlines.activeRunWatchdog"),
+    issue_graph_liveness: t("component.issueRecoveryActionCard.headlines.issueGraphLiveness"),
+  };
+}
 
 const STATE_TONE: Record<RecoveryCardCardState, {
-  label: string;
+  labelKey: string;
   containerClass: string;
   iconWrapClass: string;
   iconClass: string;
@@ -70,7 +71,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   divider: string;
 }> = {
   needed: {
-    label: "RECOVERY NEEDED",
+    labelKey: "component.issueRecoveryActionCard.stateLabels.needed",
     containerClass:
       "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
     iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
@@ -80,7 +81,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
   in_progress: {
-    label: "RECOVERY IN PROGRESS",
+    labelKey: "component.issueRecoveryActionCard.stateLabels.inProgress",
     containerClass:
       "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
     iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
@@ -90,7 +91,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-sky-300/60 dark:border-sky-500/30",
   },
   observe_only: {
-    label: "OBSERVING ACTIVE RUN",
+    labelKey: "component.issueRecoveryActionCard.stateLabels.observing",
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
@@ -100,7 +101,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-border/70",
   },
   escalated: {
-    label: "RECOVERY ESCALATED",
+    labelKey: "component.issueRecoveryActionCard.stateLabels.escalated",
     containerClass:
       "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
     iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
@@ -110,7 +111,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-red-400/50 dark:border-red-500/30",
   },
   resolved: {
-    label: "RECOVERY RESOLVED",
+    labelKey: "component.issueRecoveryActionCard.stateLabels.resolved",
     containerClass:
       "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
     iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
@@ -121,14 +122,16 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   },
 };
 
-const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
-  restored: "restored",
-  delegated: "delegated to follow-up",
-  false_positive: "false positive",
-  blocked: "blocked",
-  escalated: "escalated",
-  cancelled: "cancelled",
-};
+function buildOutcomeLabels(t: (key: string) => string): Record<IssueRecoveryActionOutcome, string> {
+  return {
+    restored: t("component.issueRecoveryActionCard.outcomeLabels.restored"),
+    delegated: t("component.issueRecoveryActionCard.outcomeLabels.delegated"),
+    false_positive: t("component.issueRecoveryActionCard.outcomeLabels.falsePositive"),
+    blocked: t("component.issueRecoveryActionCard.outcomeLabels.blocked"),
+    escalated: t("component.issueRecoveryActionCard.outcomeLabels.escalated"),
+    cancelled: t("component.issueRecoveryActionCard.outcomeLabels.cancelled"),
+  };
+}
 
 function readEvidenceString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -161,22 +164,24 @@ function readEvidenceRunId(action: IssueRecoveryAction, key: "sourceRunId" | "co
   return next;
 }
 
-function readWakePolicySummary(action: IssueRecoveryAction): string | null {
+function readWakePolicySummary(action: IssueRecoveryAction, t: (key: string, options?: Record<string, unknown>) => string): string | null {
   const policy = action.wakePolicy;
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "Corrective wake queued";
-  if (type === "board_escalation") return "Escalated to board";
-  if (type === "manual") return "Manual";
+  if (type === "wake_owner") return t("component.issueRecoveryActionCard.wakePolicy.correctiveWakeQueued");
+  if (type === "board_escalation") return t("component.issueRecoveryActionCard.wakePolicy.escalatedToBoard");
+  if (type === "manual") return t("component.issueRecoveryActionCard.wakePolicy.manual");
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Monitor scheduled · ${interval}` : "Monitor scheduled";
+    return interval
+      ? t("component.issueRecoveryActionCard.wakePolicy.monitorScheduledWithInterval", { interval })
+      : t("component.issueRecoveryActionCard.wakePolicy.monitorScheduled");
   }
   return type.replaceAll("_", " ");
 }
 
-function formatTimeShort(value: string | Date | null | undefined): string | null {
+function formatTimeShort(value: string | Date | null | undefined, t: (key: string, options?: Record<string, unknown>) => string): string | null {
   if (!value) return null;
   try {
     const date = value instanceof Date ? value : new Date(value);
@@ -185,7 +190,9 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0
+        ? t("component.issueRecoveryActionCard.timeFormat.inMinutes", { min: absMin })
+        : t("component.issueRecoveryActionCard.timeFormat.minutesAgo", { min: absMin });
     }
     return date.toLocaleString(undefined, {
       month: "short",
@@ -256,17 +263,19 @@ function RunChip({
   runId,
   agentId,
   status,
+  t,
 }: {
   runId: string | null;
   agentId: string | null | undefined;
   status?: string | null;
+  t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   if (!runId) return <MissingValue />;
   const short = shortenRunId(runId);
   const inner = (
     <>
       <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
-        run {short}
+        {t("component.issueRecoveryActionCard.runChip", { short })}
       </code>
       {status ? (
         <span className="font-sans text-[11px] text-muted-foreground">{status}</span>
@@ -286,43 +295,45 @@ function RunChip({
   return <span className="inline-flex items-center gap-2">{inner}</span>;
 }
 
-const RESOLVE_OPTIONS: Array<{
+function buildResolveOptions(t: (key: string) => string): Array<{
   outcome: RecoveryResolveOutcome;
   label: string;
   description: string;
   destructive?: boolean;
   boardOnly?: boolean;
-}> = [
-  {
-    outcome: "todo",
-    label: "Try again",
-    description: "Dismiss recovery and return the source issue to todo.",
-  },
-  {
-    outcome: "done",
-    label: "Mark issue done",
-    description: "Restore by recording the requested work as complete.",
-  },
-  {
-    outcome: "in_review",
-    label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
-  },
-  {
-    outcome: "false_positive_done",
-    label: "False positive, done",
-    description: "Dismiss recovery and mark the source issue complete.",
-    destructive: true,
-    boardOnly: true,
-  },
-  {
-    outcome: "false_positive_in_review",
-    label: "False positive, review",
-    description: "Dismiss recovery and send the source issue for review.",
-    destructive: true,
-    boardOnly: true,
-  },
-];
+}> {
+  return [
+    {
+      outcome: "todo",
+      label: t("component.issueRecoveryActionCard.resolveOptions.tryAgain.label"),
+      description: t("component.issueRecoveryActionCard.resolveOptions.tryAgain.description"),
+    },
+    {
+      outcome: "done",
+      label: t("component.issueRecoveryActionCard.resolveOptions.markDone.label"),
+      description: t("component.issueRecoveryActionCard.resolveOptions.markDone.description"),
+    },
+    {
+      outcome: "in_review",
+      label: t("component.issueRecoveryActionCard.resolveOptions.sendForReview.label"),
+      description: t("component.issueRecoveryActionCard.resolveOptions.sendForReview.description"),
+    },
+    {
+      outcome: "false_positive_done",
+      label: t("component.issueRecoveryActionCard.resolveOptions.falsePositiveDone.label"),
+      description: t("component.issueRecoveryActionCard.resolveOptions.falsePositiveDone.description"),
+      destructive: true,
+      boardOnly: true,
+    },
+    {
+      outcome: "false_positive_in_review",
+      label: t("component.issueRecoveryActionCard.resolveOptions.falsePositiveReview.label"),
+      description: t("component.issueRecoveryActionCard.resolveOptions.falsePositiveReview.description"),
+      destructive: true,
+      boardOnly: true,
+    },
+  ];
+}
 
 export function IssueRecoveryActionCard({
   action,
@@ -332,18 +343,25 @@ export function IssueRecoveryActionCard({
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
+  const { t } = useTranslation();
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
+  const kindLabels = buildKindLabels(t);
+  const headlines = buildHeadlines(t);
+  const outcomeLabels = buildOutcomeLabels(t);
+  const resolveOptions = buildResolveOptions(t);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
-      return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
+      return t("component.issueRecoveryActionCard.headlines.resolvedOutcome", {
+        outcome: outcomeLabels[action.outcome] ?? action.outcome,
+      });
     }
-    return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState]);
+    return headlines[action.kind] ?? headlines.missing_disposition;
+  }, [action.kind, action.outcome, cardState, headlines, outcomeLabels, t]);
 
-  const wakeSummary = readWakePolicySummary(action);
+  const wakeSummary = readWakePolicySummary(action, t);
   const evidenceSummary = pickEvidenceSummary(action);
   const sourceRunId = readEvidenceRunId(action, "sourceRunId") ?? readEvidenceRunId(action, "latestRunId");
   const correctiveRunId = readEvidenceRunId(action, "correctiveRunId");
@@ -358,7 +376,7 @@ export function IssueRecoveryActionCard({
       return false;
     }
   })();
-  const updatedAtLabel = formatTimeShort(action.updatedAt);
+  const updatedAtLabel = formatTimeShort(action.updatedAt, t);
 
   const ariaState = ({
     needed: "needed",
@@ -369,7 +387,7 @@ export function IssueRecoveryActionCard({
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
   const showResolveActions = onResolve !== undefined && cardState !== "resolved";
-  const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+  const visibleResolveOptions = resolveOptions.filter((option) => {
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
@@ -398,10 +416,10 @@ export function IssueRecoveryActionCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
-            <span className={tone.labelClass}>{tone.label}</span>
+            <span className={tone.labelClass}>{t(tone.labelKey)}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
             <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] tracking-normal text-muted-foreground">
-              {KIND_LABEL[action.kind] ?? action.kind}
+              {kindLabels[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
               <>
@@ -420,32 +438,32 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">{t("component.issueRecoveryActionCard.recovery")}</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
-              <span className="font-medium">Board</span>
+              <span className="font-medium">{t("common.board")}</span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
-              <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+              <span className="font-medium">{t("component.issueRecoveryActionCard.user", { id: action.ownerUserId.slice(0, 6) })}</span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">{t("common.system")}</span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-muted-foreground">{t("component.issueRecoveryActionCard.unassigned")}</span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-muted-foreground">{t("component.issueRecoveryActionCard.returnsTo")}</span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
           </span>
         </MetadataRow>
         <MetadataRow label="Source run">
-          <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
+          <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} t={t} />
         </MetadataRow>
         {correctiveRunId ? (
           <MetadataRow label="Corrective run">
-            <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
+            <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} t={t} />
           </MetadataRow>
         ) : null}
         <MetadataRow label="Evidence">
@@ -463,12 +481,12 @@ export function IssueRecoveryActionCard({
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                attempt {action.attemptCount} of {action.maxAttempts}
+                {t("component.issueRecoveryActionCard.attemptLabel", { current: action.attemptCount, max: action.maxAttempts })}
               </span>
             ) : null}
             {showTimeoutInline ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
+                {t("component.issueRecoveryActionCard.timeoutLabel", { time: formatTimeShort(action.timeoutAt, t) ?? t("component.issueRecoveryActionCard.timeFormat.inMinutes", { min: 0 }) })}
               </span>
             ) : null}
           </span>
@@ -476,8 +494,8 @@ export function IssueRecoveryActionCard({
         {cardState === "resolved" && action.outcome ? (
           <MetadataRow label="Resolution">
             <span className={cn("font-medium", tone.labelClass)}>
-              Resolved as {OUTCOME_LABEL[action.outcome]}
-              {action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}
+              {t("component.issueRecoveryActionCard.resolvedLabel", { outcome: outcomeLabels[action.outcome] })}
+              {action.resolvedAt ? `${t("component.issueRecoveryActionCard.resolvedTimeSeparator")}${formatTimeShort(action.resolvedAt, t) ?? ""}` : ""}
             </span>
           </MetadataRow>
         ) : null}
@@ -491,9 +509,9 @@ export function IssueRecoveryActionCard({
                 size="sm"
                 variant="default"
                 data-testid="recovery-action-resolve-trigger"
-                aria-label="Resolve recovery"
+                aria-label={t("component.issueRecoveryActionCard.resolveButton")}
               >
-                Resolve…
+                {t("component.issueRecoveryActionCard.resolveButton")}
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -502,7 +520,7 @@ export function IssueRecoveryActionCard({
               className="w-72 p-1.5"
             >
               <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                Resolve recovery
+                {t("component.issueRecoveryActionCard.resolvePopoverTitle")}
               </div>
               <div className="flex flex-col">
                 {visibleResolveOptions.map((option) => (
@@ -525,11 +543,11 @@ export function IssueRecoveryActionCard({
           </Popover>
           {cardState === "observe_only" ? (
             <span className="text-[11px] text-muted-foreground">
-              Recovery is observing without interrupting the live run.
+              {t("component.issueRecoveryActionCard.footerMessages.observing")}
             </span>
           ) : (
             <span className="text-[11px] text-muted-foreground">
-              The card stays open until an explicit decision is recorded.
+              {t("component.issueRecoveryActionCard.footerMessages.staysOpen")}
             </span>
           )}
         </div>

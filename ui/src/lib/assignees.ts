@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -66,8 +68,10 @@ export function currentUserAssigneeOption(currentUserId: string | null | undefin
   if (!currentUserId) return [];
   return [{
     id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
-    label: "Me",
-    searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
+    label: t("lib.assignees.me"),
+    searchText: currentUserId === "local-board"
+      ? t("lib.assignees.searchTextBoard")
+      : t("lib.assignees.searchTextHuman", { userId: currentUserId }),
   }];
 }
 
@@ -77,13 +81,13 @@ export function formatAssigneeUserLabel(
   userLabels?: ReadonlyMap<string, string> | Record<string, string> | null,
 ): string | null {
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return "You";
+  if (currentUserId && userId === currentUserId) return t("lib.assignees.you");
   if (userLabels) {
     const label = userLabels instanceof Map
       ? userLabels.get(userId)
       : (userLabels as Record<string, string>)[userId];
     if (typeof label === "string" && label.trim()) return label;
   }
-  if (userId === "local-board") return "Board";
+  if (userId === "local-board") return t("lib.assignees.board");
   return userId.slice(0, 5);
 }

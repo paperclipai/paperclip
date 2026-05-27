@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
+import { useTranslation } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -157,12 +158,13 @@ export function validateField(
   value: unknown,
   schema: JsonSchemaNode,
   isRequired: boolean,
+  t?: (key: string, options?: Record<string, unknown>) => string,
 ): string | null {
   const type = resolveType(schema);
 
   // Required check
   if (isRequired && (value === undefined || value === null || value === "")) {
-    return "This field is required";
+    return t ? t("jsonSchemaForm.validation.fieldRequired") : "This field is required";
   }
 
   // Skip further validation if empty and not required
@@ -171,20 +173,18 @@ export function validateField(
   if (type === "string" || type === "secret-ref") {
     const str = String(value);
     if (schema.minLength != null && str.length < schema.minLength) {
-      return `Must be at least ${schema.minLength} characters`;
+      return t ? t("jsonSchemaForm.validation.minLength", { count: schema.minLength }) : `Must be at least ${schema.minLength} characters`;
     }
     if (schema.maxLength != null && str.length > schema.maxLength) {
-      return `Must be at most ${schema.maxLength} characters`;
+      return t ? t("jsonSchemaForm.validation.maxLength", { count: schema.maxLength }) : `Must be at most ${schema.maxLength} characters`;
     }
     if (schema.pattern) {
-      // Guard against ReDoS: reject overly complex patterns from plugin JSON Schemas.
-      // Limit pattern length and run the regex with a defensive try/catch.
       const MAX_PATTERN_LENGTH = 512;
       if (schema.pattern.length <= MAX_PATTERN_LENGTH) {
         try {
           const re = new RegExp(schema.pattern);
           if (!re.test(str)) {
-            return `Must match pattern: ${schema.pattern}`;
+            return t ? t("jsonSchemaForm.validation.pattern", { pattern: schema.pattern }) : `Must match pattern: ${schema.pattern}`;
           }
         } catch {
           // Invalid regex in schema — skip
@@ -195,34 +195,34 @@ export function validateField(
 
   if (type === "number" || type === "integer") {
     const num = Number(value);
-    if (isNaN(num)) return "Must be a valid number";
+    if (isNaN(num)) return t ? t("jsonSchemaForm.validation.invalidNumber") : "Must be a valid number";
     if (schema.minimum != null && num < schema.minimum) {
-      return `Must be at least ${schema.minimum}`;
+      return t ? t("jsonSchemaForm.validation.minValue", { value: schema.minimum }) : `Must be at least ${schema.minimum}`;
     }
     if (schema.maximum != null && num > schema.maximum) {
-      return `Must be at most ${schema.maximum}`;
+      return t ? t("jsonSchemaForm.validation.maxValue", { value: schema.maximum }) : `Must be at most ${schema.maximum}`;
     }
     if (schema.exclusiveMinimum != null && num <= schema.exclusiveMinimum) {
-      return `Must be greater than ${schema.exclusiveMinimum}`;
+      return t ? t("jsonSchemaForm.validation.exclusiveMinValue", { value: schema.exclusiveMinimum }) : `Must be greater than ${schema.exclusiveMinimum}`;
     }
     if (schema.exclusiveMaximum != null && num >= schema.exclusiveMaximum) {
-      return `Must be less than ${schema.exclusiveMaximum}`;
+      return t ? t("jsonSchemaForm.validation.exclusiveMaxValue", { value: schema.exclusiveMaximum }) : `Must be less than ${schema.exclusiveMaximum}`;
     }
     if (type === "integer" && !Number.isInteger(num)) {
-      return "Must be a whole number";
+      return t ? t("jsonSchemaForm.validation.wholeNumber") : "Must be a whole number";
     }
     if (schema.multipleOf != null && num % schema.multipleOf !== 0) {
-      return `Must be a multiple of ${schema.multipleOf}`;
+      return t ? t("jsonSchemaForm.validation.multipleOf", { value: schema.multipleOf }) : `Must be a multiple of ${schema.multipleOf}`;
     }
   }
 
   if (type === "array") {
     const arr = value as unknown[];
     if (schema.minItems != null && arr.length < schema.minItems) {
-      return `Must have at least ${schema.minItems} items`;
+      return t ? t("jsonSchemaForm.validation.minItems", { count: schema.minItems }) : `Must have at least ${schema.minItems} items`;
     }
     if (schema.maxItems != null && arr.length > schema.maxItems) {
-      return `Must have at most ${schema.maxItems} items`;
+      return t ? t("jsonSchemaForm.validation.maxItems", { count: schema.maxItems }) : `Must have at most ${schema.maxItems} items`;
     }
   }
 

@@ -9,17 +9,24 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import {
   deriveActiveRecoveryDisplayState,
-  RECOVERY_CHIP_DEFAULT_TONE,
+  getRecoveryChipTone,
 } from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useTranslation } from "react-i18next";
 
 function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
+  const { t } = useTranslation();
   const state = deriveActiveRecoveryDisplayState(action);
   if (!state) return null;
-  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
+  const tone = getRecoveryChipTone(state, {
+    needed: t("issue.recovery.needed"),
+    inProgress: t("issue.recovery.inProgressFull"),
+    observeOnly: t("issue.recovery.observeOnly"),
+    escalated: t("issue.recovery.escalated"),
+  });
   const Icon = tone.icon;
   return (
     <span

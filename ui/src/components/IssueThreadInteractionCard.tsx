@@ -25,6 +25,7 @@ import { Checkbox } from "./ui/checkbox";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { useTranslation } from "@/i18n";
 
 interface IssueThreadInteractionCardProps {
   interaction: IssueThreadInteraction;
@@ -65,35 +66,35 @@ function resolveActorLabel(args: {
   return "Unknown";
 }
 
-function statusLabel(status: IssueThreadInteraction["status"]) {
+function statusLabel(status: IssueThreadInteraction["status"], t: (key: string) => string) {
   switch (status) {
     case "pending":
-      return "Pending";
+      return t("issue.interaction.pending");
     case "accepted":
-      return "Accepted";
+      return t("issue.interaction.accepted");
     case "rejected":
-      return "Rejected";
+      return t("issue.interaction.rejected");
     case "answered":
-      return "Answered";
+      return t("issue.interaction.answered");
     case "cancelled":
-      return "Cancelled";
+      return t("issue.interaction.cancelled");
     case "expired":
-      return "Expired";
+      return t("issue.interaction.expired");
     case "failed":
-      return "Failed";
+      return t("issue.interaction.failed");
     default:
       return status;
   }
 }
 
-function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
+function interactionKindLabel(kind: IssueThreadInteraction["kind"], t: (key: string) => string) {
   switch (kind) {
     case "suggest_tasks":
-      return "Suggested tasks";
+      return t("issue.interaction.suggestedTasks");
     case "ask_user_questions":
-      return "Ask user questions";
+      return t("issue.interaction.askUserQuestions");
     case "request_confirmation":
-      return "Confirmation";
+      return t("issue.interaction.confirmation");
     default:
       return kind;
   }
@@ -1214,6 +1215,7 @@ export function IssueThreadInteractionCard({
   onSubmitInteractionAnswers,
   onCancelInteraction,
 }: IssueThreadInteractionCardProps) {
+  const { t } = useTranslation();
   const StatusIcon = statusIcon(interaction.status);
   const styles = statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
@@ -1241,17 +1243,17 @@ export function IssueThreadInteractionCard({
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
               <StatusIcon className="h-3.5 w-3.5" />
-              {interactionKindLabel(interaction.kind)}
+              {interactionKindLabel(interaction.kind, t)}
               <span className="text-current/60">/</span>
-              {statusLabel(interaction.status)}
+              {statusLabel(interaction.status, t)}
             </span>
             {interaction.continuationPolicy === "wake_assignee"
               || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
               <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
                 <ListChecks className="h-3.5 w-3.5" />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes assignee"}
+                  ? t("issue.interaction.wakesOnConfirm")
+                  : t("issue.interaction.wakesAssignee")}
               </span>
             ) : null}
           </div>
@@ -1259,10 +1261,10 @@ export function IssueThreadInteractionCard({
           <div className="mt-3 text-lg font-bold text-foreground">
             {interaction.title
               ?? (interaction.kind === "suggest_tasks"
-                ? "Suggested task tree"
+                ? t("issue.interaction.suggestedTaskTree")
                 : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
-                  : "Confirmation requested")}
+                  ? interaction.payload.title ?? t("issue.interaction.questionsForOperator")
+                  : t("issue.interaction.confirmationRequested"))}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1275,11 +1277,11 @@ export function IssueThreadInteractionCard({
           <TooltipTrigger asChild>
             <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
               <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
-              <div>proposed by {createdByLabel}</div>
+              <div>{t("issue.interaction.proposedBy")} {createdByLabel}</div>
             </div>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-xs">
-            Created {formatDateTime(interaction.createdAt)}
+            {t("issue.interaction.created")} {formatDateTime(interaction.createdAt)}
           </TooltipContent>
         </Tooltip>
       </div>
@@ -1311,8 +1313,8 @@ export function IssueThreadInteractionCard({
 
       {resolvedByLabel ? (
         <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-          Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
-          {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          {t("issue.interaction.resolvedBy")} <span className="font-medium text-foreground">{resolvedByLabel}</span>
+          {interaction.resolvedAt ? ` ${t("issue.interaction.on")} ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>
       ) : null}
     </div>

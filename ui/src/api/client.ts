@@ -19,21 +19,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${BASE}${path}`, {
-    headers,
-    credentials: "include",
-    ...init,
-  });
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => null);
-    throw new ApiError(
-      (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
-      res.status,
-      errorBody,
-    );
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers,
+      credentials: "include",
+      ...init,
+    });
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => null);
+      throw new ApiError(
+        (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
+        res.status,
+        errorBody,
+      );
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes("aborted")) {
+      throw error;
+    }
+    throw error;
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
 }
 
 export const api = {

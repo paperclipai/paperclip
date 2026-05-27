@@ -69,7 +69,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       recursive: true,
       force: true,
       errorOnExist: false,
-      dereference: false,
+      dereference: true,
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException | null)?.code !== "ENOENT") {

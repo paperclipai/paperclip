@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "@/i18n";
 import {
   BookOpen,
   Bot,
@@ -175,6 +176,7 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /* ------------------------------------------------------------------ */
 
 export function DesignGuide() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -194,18 +196,18 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
+        <h2 className="text-xl font-bold">{t("pages.designGuide.title")}</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          {t("pages.designGuide.description")}
         </p>
       </div>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Component Coverage">
+      <Section title={t("pages.designGuide.section.coverage")}>
         <p className="text-sm text-muted-foreground">
-          This page should be updated when new UI primitives or app-level patterns ship.
+          {t("pages.designGuide.coverage.description")}
         </p>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="UI primitives">
@@ -240,38 +242,38 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLORS                                                       */}
       {/* ============================================================ */}
-      <Section title="Colors">
+      <Section title={t("pages.designGuide.section.colors")}>
         <SubSection title="Core">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Background" cssVar="--background" />
-            <Swatch name="Foreground" cssVar="--foreground" />
-            <Swatch name="Card" cssVar="--card" />
-            <Swatch name="Primary" cssVar="--primary" />
-            <Swatch name="Primary foreground" cssVar="--primary-foreground" />
-            <Swatch name="Secondary" cssVar="--secondary" />
-            <Swatch name="Muted" cssVar="--muted" />
-            <Swatch name="Muted foreground" cssVar="--muted-foreground" />
-            <Swatch name="Accent" cssVar="--accent" />
-            <Swatch name="Destructive" cssVar="--destructive" />
-            <Swatch name="Border" cssVar="--border" />
-            <Swatch name="Ring" cssVar="--ring" />
+            <Swatch name={t("pages.designGuide.color.background")} cssVar="--background" />
+            <Swatch name={t("pages.designGuide.color.foreground")} cssVar="--foreground" />
+            <Swatch name={t("pages.designGuide.color.card")} cssVar="--card" />
+            <Swatch name={t("pages.designGuide.color.primary")} cssVar="--primary" />
+            <Swatch name={t("pages.designGuide.color.primaryForeground")} cssVar="--primary-foreground" />
+            <Swatch name={t("pages.designGuide.color.secondary")} cssVar="--secondary" />
+            <Swatch name={t("pages.designGuide.color.muted")} cssVar="--muted" />
+            <Swatch name={t("pages.designGuide.color.mutedForeground")} cssVar="--muted-foreground" />
+            <Swatch name={t("pages.designGuide.color.accent")} cssVar="--accent" />
+            <Swatch name={t("pages.designGuide.color.destructive")} cssVar="--destructive" />
+            <Swatch name={t("pages.designGuide.color.border")} cssVar="--border" />
+            <Swatch name={t("pages.designGuide.color.ring")} cssVar="--ring" />
           </div>
         </SubSection>
 
-        <SubSection title="Sidebar">
+        <SubSection title={t("pages.designGuide.subSection.sidebar")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Sidebar" cssVar="--sidebar" />
-            <Swatch name="Sidebar border" cssVar="--sidebar-border" />
+            <Swatch name={t("pages.designGuide.color.sidebar")} cssVar="--sidebar" />
+            <Swatch name={t("pages.designGuide.color.sidebarBorder")} cssVar="--sidebar-border" />
           </div>
         </SubSection>
 
-        <SubSection title="Chart">
+        <SubSection title={t("pages.designGuide.subSection.chart")}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Chart 1" cssVar="--chart-1" />
-            <Swatch name="Chart 2" cssVar="--chart-2" />
-            <Swatch name="Chart 3" cssVar="--chart-3" />
-            <Swatch name="Chart 4" cssVar="--chart-4" />
-            <Swatch name="Chart 5" cssVar="--chart-5" />
+            <Swatch name={t("pages.designGuide.color.chart1")} cssVar="--chart-1" />
+            <Swatch name={t("pages.designGuide.color.chart2")} cssVar="--chart-2" />
+            <Swatch name={t("pages.designGuide.color.chart3")} cssVar="--chart-3" />
+            <Swatch name={t("pages.designGuide.color.chart4")} cssVar="--chart-4" />
+            <Swatch name={t("pages.designGuide.color.chart5")} cssVar="--chart-5" />
           </div>
         </SubSection>
       </Section>
@@ -279,34 +281,34 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Typography">
+      <Section title={t("pages.designGuide.section.typography")}>
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
+          <h2 className="text-xl font-bold">{t("pages.designGuide.typography.pageTitle")}</h2>
+          <h2 className="text-lg font-semibold">{t("pages.designGuide.typography.sectionTitle")}</h2>
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
+            {t("pages.designGuide.typography.sectionHeading")}
           </h3>
-          <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
-          <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
-          <p className="text-sm">Body text — text-sm</p>
+          <p className="text-sm font-medium">{t("pages.designGuide.typography.cardTitle")}</p>
+          <p className="text-sm font-semibold">{t("pages.designGuide.typography.cardTitleAlt")}</p>
+          <p className="text-sm">{t("pages.designGuide.typography.bodyText")}</p>
           <p className="text-sm text-muted-foreground">
-            Muted description — text-sm text-muted-foreground
+            {t("pages.designGuide.typography.mutedDescription")}
           </p>
           <p className="text-xs text-muted-foreground">
-            Tiny label — text-xs text-muted-foreground
+            {t("pages.designGuide.typography.tinyLabel")}
           </p>
           <p className="text-sm font-mono text-muted-foreground">
-            Mono identifier — text-sm font-mono text-muted-foreground
+            {t("pages.designGuide.typography.monoIdentifier")}
           </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+          <p className="text-2xl font-bold">{t("pages.designGuide.typography.largeStat")}</p>
+          <p className="font-mono text-xs">{t("pages.designGuide.typography.logCodeText")}</p>
         </div>
       </Section>
 
       {/* ============================================================ */}
       {/*  SPACING & RADIUS                                             */}
       {/* ============================================================ */}
-      <Section title="Radius">
+      <Section title={t("pages.designGuide.section.radius")}>
         <div className="flex items-end gap-4 flex-wrap">
           {[
             ["sm", "var(--radius-sm)"],
@@ -329,28 +331,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BUTTONS                                                      */}
       {/* ============================================================ */}
-      <Section title="Buttons">
-        <SubSection title="Variants">
+      <Section title={t("pages.designGuide.section.buttons")}>
+        <SubSection title={t("pages.designGuide.subSection.variants")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="default">Default</Button>
-            <Button variant="secondary">Secondary</Button>
-            <Button variant="outline">Outline</Button>
-            <Button variant="ghost">Ghost</Button>
-            <Button variant="destructive">Destructive</Button>
-            <Button variant="link">Link</Button>
+            <Button variant="default">{t("pages.designGuide.button.default")}</Button>
+            <Button variant="secondary">{t("pages.designGuide.button.secondary")}</Button>
+            <Button variant="outline">{t("pages.designGuide.button.outline")}</Button>
+            <Button variant="ghost">{t("pages.designGuide.button.ghost")}</Button>
+            <Button variant="destructive">{t("pages.designGuide.button.destructive")}</Button>
+            <Button variant="link">{t("pages.designGuide.button.link")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Sizes">
+        <SubSection title={t("pages.designGuide.subSection.sizes")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="xs">Extra Small</Button>
-            <Button size="sm">Small</Button>
-            <Button size="default">Default</Button>
-            <Button size="lg">Large</Button>
+            <Button size="xs">{t("pages.designGuide.button.extraSmall")}</Button>
+            <Button size="sm">{t("pages.designGuide.button.small")}</Button>
+            <Button size="default">{t("pages.designGuide.button.default")}</Button>
+            <Button size="lg">{t("pages.designGuide.button.large")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="Icon buttons">
+        <SubSection title={t("pages.designGuide.subSection.iconButtons")}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" size="icon-xs"><Search /></Button>
             <Button variant="ghost" size="icon-sm"><Search /></Button>
@@ -359,19 +361,19 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="With icons">
+        <SubSection title={t("pages.designGuide.subSection.withIcons")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
-            <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button><Plus /> {t("pages.designGuide.button.newIssue")}</Button>
+            <Button variant="outline"><Upload /> {t("pages.designGuide.button.upload")}</Button>
+            <Button variant="destructive"><Trash2 /> {t("pages.designGuide.button.delete")}</Button>
+            <Button size="sm"><Plus /> {t("pages.designGuide.button.add")}</Button>
           </div>
         </SubSection>
 
-        <SubSection title="States">
+        <SubSection title={t("pages.designGuide.subSection.states")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button disabled>Disabled</Button>
-            <Button variant="outline" disabled>Disabled Outline</Button>
+            <Button disabled>{t("pages.designGuide.button.disabled")}</Button>
+            <Button variant="outline" disabled>{t("pages.designGuide.button.disabledOutline")}</Button>
           </div>
         </SubSection>
       </Section>
@@ -379,14 +381,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BADGES                                                       */}
       {/* ============================================================ */}
-      <Section title="Badges">
-        <SubSection title="Variants">
+      <Section title={t("pages.designGuide.section.badges")}>
+        <SubSection title={t("pages.designGuide.subSection.variants")}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="default">Default</Badge>
-            <Badge variant="secondary">Secondary</Badge>
-            <Badge variant="outline">Outline</Badge>
-            <Badge variant="destructive">Destructive</Badge>
-            <Badge variant="ghost">Ghost</Badge>
+            <Badge variant="default">{t("pages.designGuide.badge.default")}</Badge>
+            <Badge variant="secondary">{t("pages.designGuide.badge.secondary")}</Badge>
+            <Badge variant="outline">{t("pages.designGuide.badge.outline")}</Badge>
+            <Badge variant="destructive">{t("pages.designGuide.badge.destructive")}</Badge>
+            <Badge variant="ghost">{t("pages.designGuide.badge.ghost")}</Badge>
           </div>
         </SubSection>
       </Section>
@@ -394,8 +396,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
-      <Section title="Status System">
-        <SubSection title="StatusBadge (all statuses)">
+      <Section title={t("pages.designGuide.section.statusSystem")}>
+        <SubSection title={t("pages.designGuide.subSection.statusBadgeAllStatuses")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               "active", "running", "paused", "idle", "archived", "planned",
@@ -409,7 +411,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="StatusIcon (interactive)">
+        <SubSection title={t("pages.designGuide.subSection.statusIconInteractive")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
               (s) => (
@@ -422,11 +424,11 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <StatusIcon status={status} onChange={setStatus} />
-            <span className="text-sm">Click the icon to change status (current: {status})</span>
+            <span className="text-sm">{t("pages.designGuide.statusIcon.clickToChange", { current: status })}</span>
           </div>
         </SubSection>
 
-        <SubSection title="PriorityIcon (interactive)">
+        <SubSection title={t("pages.designGuide.subSection.priorityIconInteractive")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
@@ -437,11 +439,11 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <PriorityIcon priority={priority} onChange={setPriority} />
-            <span className="text-sm">Click the icon to change (current: {priority})</span>
+            <span className="text-sm">{t("pages.designGuide.priorityIcon.clickToChange", { current: priority })}</span>
           </div>
         </SubSection>
 
-        <SubSection title="Agent status dots">
+        <SubSection title={t("pages.designGuide.subSection.agentStatusDots")}>
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
@@ -454,7 +456,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Run invocation badges">
+        <SubSection title={t("pages.designGuide.subSection.runInvocationBadges")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
@@ -469,18 +471,16 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="IssueReferencePill">
+        <SubSection title={t("pages.designGuide.subSection.issueReferencePill")}>
           <p className="text-xs text-muted-foreground">
-            Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
-            Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
-            Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
+            {t("pages.designGuide.issueReferencePill.description")}
           </p>
           <div className="flex items-center gap-2 flex-wrap">
-            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: "Identifier only — no status yet" }} />
-            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
-            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
-            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
-            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+            <IssueReferencePill issue={{ id: "demo-1", identifier: "PAP-123", title: t("pages.designGuide.issueReferencePill.identifierOnly") }} />
+            <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: t("pages.designGuide.issueReferencePill.withStatus"), status: "in_progress" }} />
+            <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: t("pages.designGuide.issueReferencePill.doneStatus"), status: "done" }} />
+            <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: t("pages.designGuide.issueReferencePill.blockedStatus"), status: "blocked" }} />
+            <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: t("pages.designGuide.issueReferencePill.removed"), status: "todo" }} />
           </div>
         </SubSection>
       </Section>
@@ -488,38 +488,38 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
-      <Section title="Form Elements">
+      <Section title={t("pages.designGuide.section.formElements")}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Input">
-            <Input placeholder="Default input" />
-            <Input placeholder="Disabled input" disabled className="mt-2" />
+          <SubSection title={t("pages.designGuide.subSection.input")}>
+            <Input placeholder={t("pages.designGuide.input.placeholder")} />
+            <Input placeholder={t("pages.designGuide.input.disabledPlaceholder")} disabled className="mt-2" />
           </SubSection>
 
-          <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+          <SubSection title={t("pages.designGuide.subSection.textarea")}>
+            <Textarea placeholder={t("pages.designGuide.textarea.placeholder")} />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title={t("pages.designGuide.subSection.checkboxLabel")}>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Checkbox id="check1" defaultChecked />
-                <Label htmlFor="check1">Checked item</Label>
+                <Label htmlFor="check1">{t("pages.designGuide.checkbox.checked")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check2" />
-                <Label htmlFor="check2">Unchecked item</Label>
+                <Label htmlFor="check2">{t("pages.designGuide.checkbox.unchecked")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check3" disabled />
-                <Label htmlFor="check3">Disabled item</Label>
+                <Label htmlFor="check3">{t("pages.designGuide.checkbox.disabled")}</Label>
               </div>
             </div>
           </SubSection>
 
-          <SubSection title="Inline Editor">
+          <SubSection title={t("pages.designGuide.subSection.inlineEditor")}>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Title (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("pages.designGuide.inlineEditor.titleSingleLine")}</p>
                 <InlineEditor
                   value={inlineTitle}
                   onSave={setInlineTitle}
@@ -528,7 +528,7 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Body text (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("pages.designGuide.inlineEditor.bodySingleLine")}</p>
                 <InlineEditor
                   value={inlineText}
                   onSave={setInlineText}
@@ -537,13 +537,13 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Description (multiline, auto-sizing)</p>
+                <p className="text-xs text-muted-foreground mb-1">{t("pages.designGuide.inlineEditor.descriptionMultiline")}</p>
                 <InlineEditor
                   value={inlineDesc}
                   onSave={setInlineDesc}
                   as="p"
                   className="text-sm text-muted-foreground"
-                  placeholder="Add a description..."
+                  placeholder={t("pages.designGuide.inlineEditor.addDescription")}
                   multiline
                 />
               </div>
@@ -555,33 +555,33 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
-      <Section title="Select">
+      <Section title={t("pages.designGuide.section.select")}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Default size">
+          <SubSection title={t("pages.designGuide.subSection.defaultSize")}>
             <Select value={selectValue} onValueChange={setSelectValue}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={t("pages.designGuide.select.placeholder")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="backlog">Backlog</SelectItem>
-                <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
+                <SelectItem value="backlog">{t("common.status.backlog")}</SelectItem>
+                <SelectItem value="todo">{t("common.status.todo")}</SelectItem>
+                <SelectItem value="in_progress">{t("common.status.inProgress")}</SelectItem>
+                <SelectItem value="in_review">{t("common.status.inReview")}</SelectItem>
+                <SelectItem value="done">{t("common.status.done")}</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
+            <p className="text-xs text-muted-foreground">{t("pages.designGuide.select.currentValue", { value: selectValue })}</p>
           </SubSection>
-          <SubSection title="Small trigger">
+          <SubSection title={t("pages.designGuide.subSection.smallTrigger")}>
             <Select defaultValue="high">
               <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="critical">{t("common.priority.critical")}</SelectItem>
+                <SelectItem value="high">{t("common.priority.high")}</SelectItem>
+                <SelectItem value="medium">{t("common.priority.medium")}</SelectItem>
+                <SelectItem value="low">{t("common.priority.low")}</SelectItem>
               </SelectContent>
             </Select>
           </SubSection>
@@ -591,34 +591,34 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
-      <Section title="Dropdown Menu">
+      <Section title={t("pages.designGuide.section.dropdownMenu")}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
-              Quick Actions
+              {t("pages.designGuide.dropdownMenu.quickActions")}
               <ChevronDown className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem>
               <Check className="h-4 w-4" />
-              Mark as done
+              {t("pages.designGuide.dropdownMenu.markAsDone")}
               <DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem>
               <BookOpen className="h-4 w-4" />
-              Open docs
+              {t("pages.designGuide.dropdownMenu.openDocs")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
             >
-              Watch issue
+              {t("pages.designGuide.dropdownMenu.watchIssue")}
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
               <Trash2 className="h-4 w-4" />
-              Delete issue
+              {t("pages.designGuide.dropdownMenu.deleteIssue")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -627,17 +627,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  POPOVER                                                      */}
       {/* ============================================================ */}
-      <Section title="Popover">
+      <Section title={t("pages.designGuide.section.popover")}>
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="outline" size="sm">Open Popover</Button>
+            <Button variant="outline" size="sm">{t("pages.designGuide.popover.open")}</Button>
           </PopoverTrigger>
           <PopoverContent className="space-y-2">
-            <p className="text-sm font-medium">Agent heartbeat</p>
+            <p className="text-sm font-medium">{t("pages.designGuide.popover.agentHeartbeat")}</p>
             <p className="text-xs text-muted-foreground">
-              Last run succeeded 24s ago. Next timer run in 9m.
+              {t("pages.designGuide.popover.lastRunInfo")}
             </p>
-            <Button size="xs">Wake now</Button>
+            <Button size="xs">{t("pages.designGuide.popover.wakeNow")}</Button>
           </PopoverContent>
         </Popover>
       </Section>
@@ -645,17 +645,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLLAPSIBLE                                                  */}
       {/* ============================================================ */}
-      <Section title="Collapsible">
+      <Section title={t("pages.designGuide.section.collapsible")}>
         <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
           <CollapsibleTrigger asChild>
             <Button variant="outline" size="sm">
-              {collapsibleOpen ? "Hide" : "Show"} advanced filters
+              {collapsibleOpen ? t("pages.designGuide.collapsible.hide") : t("pages.designGuide.collapsible.show")} {t("pages.designGuide.collapsible.advancedFilters")}
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="rounded-md border border-border p-3">
             <div className="space-y-2">
-              <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+              <Label htmlFor="owner-filter">{t("pages.designGuide.collapsible.owner")}</Label>
+              <Input id="owner-filter" placeholder={t("pages.designGuide.collapsible.filterByAgentName")} />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -664,29 +664,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SHEET                                                        */}
       {/* ============================================================ */}
-      <Section title="Sheet">
+      <Section title={t("pages.designGuide.section.sheet")}>
         <Sheet>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm">Open Side Panel</Button>
+            <Button variant="outline" size="sm">{t("pages.designGuide.sheet.open")}</Button>
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
-              <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
+              <SheetTitle>{t("pages.designGuide.sheet.issueProperties")}</SheetTitle>
+              <SheetDescription>{t("pages.designGuide.sheet.editMetadata")}</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
               <div className="space-y-1">
-                <Label htmlFor="sheet-title">Title</Label>
-                <Input id="sheet-title" defaultValue="Improve onboarding docs" />
+                <Label htmlFor="sheet-title">{t("common.form.title")}</Label>
+                <Input id="sheet-title" defaultValue={t("pages.designGuide.sheet.improveOnboardingDocs")} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="sheet-description">Description</Label>
-                <Textarea id="sheet-description" defaultValue="Capture setup pitfalls and screenshots." />
+                <Label htmlFor="sheet-description">{t("common.form.description")}</Label>
+                <Textarea id="sheet-description" defaultValue={t("pages.designGuide.sheet.capturePitfalls")} />
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("common.actions.cancel")}</Button>
+              <Button>{t("common.actions.save")}</Button>
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -695,12 +695,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
-      <Section title="Scroll Area">
+      <Section title={t("pages.designGuide.section.scrollArea")}>
         <ScrollArea className="h-36 rounded-md border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="rounded-md border border-border p-2 text-sm">
-                Heartbeat run #{i + 1}: completed successfully
+                {t("pages.designGuide.scrollArea.heartbeatRun", { number: i + 1 })}
               </div>
             ))}
           </div>
@@ -710,31 +710,31 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
-      <Section title="Command (CMDK)">
+      <Section title={t("pages.designGuide.section.command")}>
         <div className="rounded-md border border-border">
           <Command>
-            <CommandInput placeholder="Type a command or search..." />
+            <CommandInput placeholder={t("pages.designGuide.command.placeholder")} />
             <CommandList>
-              <CommandEmpty>No results found.</CommandEmpty>
-              <CommandGroup heading="Pages">
+              <CommandEmpty>{t("pages.designGuide.command.empty")}</CommandEmpty>
+              <CommandGroup heading={t("pages.designGuide.command.pages")}>
                 <CommandItem>
                   <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
+                  {t("nav.sidebar.dashboard")}
                 </CommandItem>
                 <CommandItem>
                   <CircleDot className="h-4 w-4" />
-                  Issues
+                  {t("nav.sidebar.issues")}
                 </CommandItem>
               </CommandGroup>
               <CommandSeparator />
-              <CommandGroup heading="Actions">
+              <CommandGroup heading={t("pages.designGuide.command.actions")}>
                 <CommandItem>
                   <CommandIcon className="h-4 w-4" />
-                  Open command palette
+                  {t("pages.designGuide.command.openPalette")}
                 </CommandItem>
                 <CommandItem>
                   <Plus className="h-4 w-4" />
-                  Create new issue
+                  {t("pages.designGuide.command.createIssue")}
                 </CommandItem>
               </CommandGroup>
             </CommandList>
@@ -745,19 +745,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BREADCRUMB                                                   */}
       {/* ============================================================ */}
-      <Section title="Breadcrumb">
+      <Section title={t("pages.designGuide.section.breadcrumb")}>
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Projects</BreadcrumbLink>
+              <BreadcrumbLink href="#">{t("pages.designGuide.breadcrumb.projects")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">{t("pages.designGuide.breadcrumb.paperclipApp")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>{t("pages.designGuide.breadcrumb.issueList")}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -766,29 +766,29 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
-      <Section title="Cards">
-        <SubSection title="Standard Card">
+      <Section title={t("pages.designGuide.section.cards")}>
+        <SubSection title={t("pages.designGuide.subSection.standardCard")}>
           <Card>
             <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
+              <CardTitle>{t("pages.designGuide.card.title")}</CardTitle>
+              <CardDescription>{t("pages.designGuide.card.description")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Card content goes here. This is the main body area.</p>
+              <p className="text-sm">{t("pages.designGuide.card.content")}</p>
             </CardContent>
             <CardFooter className="gap-2">
-              <Button size="sm">Action</Button>
-              <Button variant="outline" size="sm">Cancel</Button>
+              <Button size="sm">{t("pages.designGuide.button.action")}</Button>
+              <Button variant="outline" size="sm">{t("common.actions.cancel")}</Button>
             </CardFooter>
           </Card>
         </SubSection>
 
-        <SubSection title="Metric Cards">
+        <SubSection title={t("pages.designGuide.subSection.metricCards")}>
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
-            <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
-            <MetricCard icon={Zap} value="99.9%" label="Uptime" />
+            <MetricCard icon={Bot} value={12} label={t("pages.designGuide.metricCards.activeAgents")} description={t("pages.designGuide.metricCards.thisWeek")} />
+            <MetricCard icon={CircleDot} value={48} label={t("pages.designGuide.metricCards.openIssues")} />
+            <MetricCard icon={DollarSign} value="$1,234" label={t("pages.designGuide.metricCards.monthlyCost")} description={t("pages.designGuide.metricCards.underBudget")} />
+            <MetricCard icon={Zap} value="99.9%" label={t("pages.designGuide.metricCards.uptime")} />
           </div>
         </SubSection>
       </Section>
@@ -796,45 +796,45 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TABS                                                         */}
       {/* ============================================================ */}
-      <Section title="Tabs">
-        <SubSection title="Default (pill) variant">
+      <Section title={t("pages.designGuide.section.tabs")}>
+        <SubSection title={t("pages.designGuide.subSection.defaultVariant")}>
           <Tabs defaultValue="overview">
             <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="runs">Runs</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="costs">Costs</TabsTrigger>
+              <TabsTrigger value="overview">{t("pages.designGuide.tabs.overview")}</TabsTrigger>
+              <TabsTrigger value="runs">{t("pages.designGuide.tabs.runs")}</TabsTrigger>
+              <TabsTrigger value="config">{t("pages.designGuide.tabs.config")}</TabsTrigger>
+              <TabsTrigger value="costs">{t("pages.designGuide.tabs.costs")}</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
-              <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.overviewContent")}</p>
             </TabsContent>
             <TabsContent value="runs">
-              <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.runsContent")}</p>
             </TabsContent>
             <TabsContent value="config">
-              <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.configContent")}</p>
             </TabsContent>
             <TabsContent value="costs">
-              <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.costsContent")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
 
-        <SubSection title="Line variant">
+        <SubSection title={t("pages.designGuide.subSection.lineVariant")}>
           <Tabs defaultValue="summary">
             <TabsList variant="line">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="comments">Comments</TabsTrigger>
+              <TabsTrigger value="summary">{t("pages.designGuide.tabs.summary")}</TabsTrigger>
+              <TabsTrigger value="details">{t("pages.designGuide.tabs.details")}</TabsTrigger>
+              <TabsTrigger value="comments">{t("pages.designGuide.tabs.comments")}</TabsTrigger>
             </TabsList>
             <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.summaryContent")}</p>
             </TabsContent>
             <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.detailsContent")}</p>
             </TabsContent>
             <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
+              <p className="text-sm text-muted-foreground py-4">{t("pages.designGuide.tabs.commentsContent")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
@@ -843,7 +843,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
-      <Section title="Entity Rows">
+      <Section title={t("pages.designGuide.section.entityRows")}>
         <div className="border border-border rounded-md">
           <EntityRow
             leading={
@@ -853,8 +853,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-001"
-            title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            title={t("pages.designGuide.entityRow.implementAuth")}
+            subtitle={t("pages.designGuide.entityRow.assignedToAlpha")}
             trailing={<StatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -866,8 +866,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-002"
-            title="Set up CI/CD pipeline"
-            subtitle="Completed 2 days ago"
+            title={t("pages.designGuide.entityRow.setUpCICD")}
+            subtitle={t("pages.designGuide.entityRow.completedTwoDays")}
             trailing={<StatusBadge status="done" />}
             onClick={() => {}}
           />
@@ -879,7 +879,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-003"
-            title="Write API documentation"
+            title={t("pages.designGuide.entityRow.writeAPIDocs")}
             trailing={<StatusBadge status="todo" />}
             onClick={() => {}}
           />
@@ -891,8 +891,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-004"
-            title="Deploy to production"
-            subtitle="Blocked by PAP-001"
+            title={t("pages.designGuide.entityRow.deployToProduction")}
+            subtitle={t("pages.designGuide.entityRow.blockedBy001")}
             trailing={<StatusBadge status="blocked" />}
             selected
           />
@@ -962,7 +962,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FILTER BAR                                                   */}
       {/* ============================================================ */}
-      <Section title="Filter Bar">
+      <Section title={t("pages.designGuide.section.filterBar")}>
         <FilterBar
           filters={filters}
           onRemove={(key) => setFilters((f) => f.filter((x) => x.key !== key))}
@@ -979,7 +979,7 @@ export function DesignGuide() {
               ])
             }
           >
-            Reset filters
+            {t("pages.designGuide.filterBar.resetFilters")}
           </Button>
         )}
       </Section>
@@ -987,21 +987,21 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  AVATARS                                                      */}
       {/* ============================================================ */}
-      <Section title="Avatars">
-        <SubSection title="Sizes">
+      <Section title={t("pages.designGuide.section.avatars")}>
+        <SubSection title={t("pages.designGuide.subSection.sizes")}>
           <div className="flex items-center gap-3">
-            <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>DF</AvatarFallback></Avatar>
-            <Avatar size="lg"><AvatarFallback>LG</AvatarFallback></Avatar>
+            <Avatar size="sm"><AvatarFallback>{t("pages.designGuide.avatar.sm")}</AvatarFallback></Avatar>
+            <Avatar><AvatarFallback>{t("pages.designGuide.avatar.df")}</AvatarFallback></Avatar>
+            <Avatar size="lg"><AvatarFallback>{t("pages.designGuide.avatar.lg")}</AvatarFallback></Avatar>
           </div>
         </SubSection>
 
-        <SubSection title="Group">
+        <SubSection title={t("pages.designGuide.subSection.group")}>
           <AvatarGroup>
-            <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>A3</AvatarFallback></Avatar>
-            <AvatarGroupCount>+5</AvatarGroupCount>
+            <Avatar><AvatarFallback>{t("pages.designGuide.avatar.a1")}</AvatarFallback></Avatar>
+            <Avatar><AvatarFallback>{t("pages.designGuide.avatar.a2")}</AvatarFallback></Avatar>
+            <Avatar><AvatarFallback>{t("pages.designGuide.avatar.a3")}</AvatarFallback></Avatar>
+            <AvatarGroupCount>{t("pages.designGuide.avatar.moreCount")}</AvatarGroupCount>
           </AvatarGroup>
         </SubSection>
       </Section>
@@ -1009,44 +1009,44 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
-        <SubSection title="Sizes">
+      <Section title={t("pages.designGuide.section.identity")}>
+        <SubSection title={t("pages.designGuide.subSection.sizes")}>
           <div className="flex items-center gap-6">
-            <Identity name="Agent Alpha" size="sm" />
-            <Identity name="Agent Alpha" />
-            <Identity name="Agent Alpha" size="lg" />
+            <Identity name={t("pages.designGuide.identity.agentAlpha")} size="sm" />
+            <Identity name={t("pages.designGuide.identity.agentAlpha")} />
+            <Identity name={t("pages.designGuide.identity.agentAlpha")} size="lg" />
           </div>
         </SubSection>
 
-        <SubSection title="Initials derivation">
+        <SubSection title={t("pages.designGuide.subSection.initialsDerivation")}>
           <div className="flex flex-col gap-2">
-            <Identity name="CEO Agent" size="sm" />
-            <Identity name="Alpha" size="sm" />
-            <Identity name="Quality Assurance Lead" size="sm" />
+            <Identity name={t("pages.designGuide.identity.ceoAgent")} size="sm" />
+            <Identity name={t("pages.designGuide.identity.alpha")} size="sm" />
+            <Identity name={t("pages.designGuide.identity.qaLead")} size="sm" />
           </div>
         </SubSection>
 
-        <SubSection title="Custom initials">
-          <Identity name="Backend Service" initials="BS" size="sm" />
+        <SubSection title={t("pages.designGuide.subSection.customInitials")}>
+          <Identity name={t("pages.designGuide.identity.backendService")} initials="BS" size="sm" />
         </SubSection>
       </Section>
 
       {/* ============================================================ */}
       {/*  TOOLTIPS                                                     */}
       {/* ============================================================ */}
-      <Section title="Tooltips">
+      <Section title={t("pages.designGuide.section.tooltips")}>
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm">Hover me</Button>
+              <Button variant="outline" size="sm">{t("pages.designGuide.tooltip.hoverMe")}</Button>
             </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            <TooltipContent>{t("pages.designGuide.tooltip.thisIsTooltip")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm"><Settings /></Button>
             </TooltipTrigger>
-            <TooltipContent>Settings</TooltipContent>
+            <TooltipContent>{t("nav.sidebar.settings")}</TooltipContent>
           </Tooltip>
         </div>
       </Section>
@@ -1054,31 +1054,31 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DIALOG                                                       */}
       {/* ============================================================ */}
-      <Section title="Dialog">
+      <Section title={t("pages.designGuide.section.dialog")}>
         <Dialog>
           <DialogTrigger asChild>
-            <Button variant="outline">Open Dialog</Button>
+            <Button variant="outline">{t("pages.designGuide.dialog.open")}</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
+              <DialogTitle>{t("pages.designGuide.dialog.dialogTitle")}</DialogTitle>
               <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
+                {t("pages.designGuide.dialog.dialogDescription")}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+                <Label>{t("common.form.name")}</Label>
+                <Input placeholder={t("pages.designGuide.dialog.enterName")} className="mt-1.5" />
               </div>
               <div>
-                <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
+                <Label>{t("common.form.description")}</Label>
+                <Textarea placeholder={t("pages.designGuide.dialog.describe")} className="mt-1.5" />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{t("common.actions.cancel")}</Button>
+              <Button>{t("common.actions.save")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1087,12 +1087,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
-      <Section title="Empty State">
+      <Section title={t("pages.designGuide.section.emptyState")}>
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
-            message="No items to show. Create your first one to get started."
-            action="Create Item"
+            message={t("pages.designGuide.emptyState.message")}
+            action={t("pages.designGuide.emptyState.action")}
             onAction={() => {}}
           />
         </div>
@@ -1101,12 +1101,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROGRESS BARS                                                */}
       {/* ============================================================ */}
-      <Section title="Progress Bars (Budget)">
+      <Section title={t("pages.designGuide.section.progressBars")}>
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: t("pages.designGuide.progress.underBudget"), pct: 40, color: "bg-green-400" },
+            { label: t("pages.designGuide.progress.warning"), pct: 75, color: "bg-yellow-400" },
+            { label: t("pages.designGuide.progress.overBudget"), pct: 95, color: "bg-red-400" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -1127,21 +1127,21 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
-      <Section title="Log Viewer">
+      <Section title={t("pages.designGuide.section.logViewer")}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
-          <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
-          <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
-          <div className="text-yellow-400">[12:00:05] WARN  Rate limit approaching (80%)</div>
-          <div className="text-foreground">[12:00:08] INFO  Task PAP-001 completed</div>
-          <div className="text-red-400">[12:00:12] ERROR Connection timeout to upstream service</div>
-          <div className="text-blue-300">[12:00:12] SYS   Retrying connection in 5s...</div>
-          <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
+          <div className="text-foreground">[12:00:01] INFO  {t("pages.designGuide.logViewer.agentStarted")}</div>
+          <div className="text-foreground">[12:00:02] INFO  {t("pages.designGuide.logViewer.processingTask")} PAP-001</div>
+          <div className="text-yellow-400">[12:00:05] WARN  {t("pages.designGuide.logViewer.rateLimit")} (80%)</div>
+          <div className="text-foreground">[12:00:08] INFO  {t("pages.designGuide.logViewer.taskCompleted")} PAP-001</div>
+          <div className="text-red-400">[12:00:12] ERROR {t("pages.designGuide.logViewer.connectionTimeout")}</div>
+          <div className="text-blue-300">[12:00:12] SYS   {t("pages.designGuide.logViewer.retryingConnection")}</div>
+          <div className="text-foreground">[12:00:17] INFO  {t("pages.designGuide.logViewer.reconnected")}</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 animate-pulse" />
               <span className="inline-flex h-full w-full rounded-full bg-cyan-400" />
             </span>
-            <span className="text-cyan-400">Live</span>
+            <span className="text-cyan-400">{t("pages.designGuide.logViewer.live")}</span>
           </div>
         </div>
       </Section>
@@ -1149,26 +1149,26 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
-      <Section title="Property Row Pattern">
+      <Section title={t("pages.designGuide.section.propertyRowPattern")}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Status</span>
+            <span className="text-xs text-muted-foreground">{t("common.form.status")}</span>
             <StatusBadge status="active" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Priority</span>
+            <span className="text-xs text-muted-foreground">{t("common.form.priority")}</span>
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">{t("common.form.assignee")}</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
-              <span className="text-xs">Agent Alpha</span>
+              <span className="text-xs">{t("pages.designGuide.propertyRow.agentAlpha")}</span>
             </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Created</span>
-            <span className="text-xs">Jan 15, 2025</span>
+            <span className="text-xs text-muted-foreground">{t("common.form.created")}</span>
+            <span className="text-xs">{t("pages.designGuide.propertyRow.jan152025")}</span>
           </div>
         </div>
       </Section>
@@ -1176,40 +1176,40 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
-      <Section title="Navigation Patterns">
-        <SubSection title="Sidebar nav items">
+      <Section title={t("pages.designGuide.section.navigationPatterns")}>
+        <SubSection title={t("pages.designGuide.subSection.sidebarNavItems")}>
           <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
-              Dashboard
+              {t("nav.sidebar.dashboard")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
-              Issues
+              {t("nav.sidebar.issues")}
               <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
                 12
               </span>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
-              Agents
+              {t("nav.sidebar.issues")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />
-              Projects
+              {t("nav.sidebar.work")}
             </div>
           </div>
         </SubSection>
 
-        <SubSection title="View toggle">
+        <SubSection title={t("pages.designGuide.subSection.viewToggle")}>
           <div className="flex items-center border border-border rounded-md w-fit">
             <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
-              List
+              {t("pages.designGuide.viewToggle.list")}
             </button>
             <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
               <Target className="h-3.5 w-3.5 inline mr-1" />
-              Org
+              {t("pages.designGuide.viewToggle.org")}
             </button>
           </div>
         </SubSection>
@@ -1218,24 +1218,24 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title={t("pages.designGuide.section.groupedList")}>
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
-            <span className="text-sm font-medium">In Progress</span>
+            <span className="text-sm font-medium">{t("common.status.inProgress")}</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
             <EntityRow
               leading={<PriorityIcon priority="high" />}
               identifier="PAP-101"
-              title="Build agent heartbeat system"
+              title={t("pages.designGuide.groupedList.buildHeartbeat")}
               onClick={() => {}}
             />
             <EntityRow
               leading={<PriorityIcon priority="medium" />}
               identifier="PAP-102"
-              title="Add cost tracking dashboard"
+              title={t("pages.designGuide.groupedList.addCostDashboard")}
               onClick={() => {}}
             />
           </div>
@@ -1245,28 +1245,28 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMENT THREAD PATTERN                                       */}
       {/* ============================================================ */}
-      <Section title="Comment Thread Pattern">
+      <Section title={t("pages.designGuide.section.commentThread")}>
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="text-sm font-semibold">{t("pages.designGuide.commentThread.comments", { count: 2 })}</h3>
           <div className="space-y-3">
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Agent</span>
-                <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("pages.designGuide.commentThread.agent")}</span>
+                <span className="text-xs text-muted-foreground">{t("pages.designGuide.commentThread.jan152025")}</span>
               </div>
-              <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
+              <p className="text-sm">{t("pages.designGuide.commentThread.agentMessage")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Human</span>
-                <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
+                <span className="text-xs font-medium text-muted-foreground">{t("pages.designGuide.commentThread.human")}</span>
+                <span className="text-xs text-muted-foreground">{t("pages.designGuide.commentThread.jan162025")}</span>
               </div>
-              <p className="text-sm">API keys have been added to the vault. Please proceed.</p>
+              <p className="text-sm">{t("pages.designGuide.commentThread.humanMessage")}</p>
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
-            <Button size="sm">Comment</Button>
+            <Textarea placeholder={t("pages.designGuide.commentThread.leaveComment")} rows={3} />
+            <Button size="sm">{t("pages.designGuide.commentThread.comment")}</Button>
           </div>
         </div>
       </Section>
@@ -1274,14 +1274,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
-      <Section title="Cost Table Pattern">
+      <Section title={t("pages.designGuide.section.costTable")}>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
               <tr>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Tokens</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("pages.designGuide.costTable.model")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("pages.designGuide.costTable.tokens")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{t("pages.designGuide.costTable.cost")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1296,7 +1296,7 @@ export function DesignGuide() {
                 <td className="px-3 py-2 font-mono">$1.25</td>
               </tr>
               <tr>
-                <td className="px-3 py-2 font-medium">Total</td>
+                <td className="px-3 py-2 font-medium">{t("pages.designGuide.costTable.total")}</td>
                 <td className="px-3 py-2 font-mono">1.7M</td>
                 <td className="px-3 py-2 font-mono font-medium">$19.25</td>
               </tr>
@@ -1308,8 +1308,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SKELETONS                                                    */}
       {/* ============================================================ */}
-      <Section title="Skeletons">
-        <SubSection title="Individual">
+      <Section title={t("pages.designGuide.section.skeletons")}>
+        <SubSection title={t("pages.designGuide.subSection.individual")}>
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-8 w-full max-w-sm" />
@@ -1317,13 +1317,13 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (list)">
+        <SubSection title={t("pages.designGuide.subSection.pageSkeletonList")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="list" />
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (detail)">
+        <SubSection title={t("pages.designGuide.subSection.pageSkeletonDetail")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
           </div>
@@ -1333,14 +1333,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SEPARATOR                                                    */}
       {/* ============================================================ */}
-      <Section title="Separator">
+      <Section title={t("pages.designGuide.section.separator")}>
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">Horizontal</p>
+          <p className="text-sm text-muted-foreground">{t("pages.designGuide.separator.horizontal")}</p>
           <Separator />
           <div className="flex items-center gap-4 h-8">
-            <span className="text-sm">Left</span>
+            <span className="text-sm">{t("pages.designGuide.separator.left")}</span>
             <Separator orientation="vertical" />
-            <span className="text-sm">Right</span>
+            <span className="text-sm">{t("pages.designGuide.separator.right")}</span>
           </div>
         </div>
       </Section>
@@ -1348,26 +1348,26 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ICON REFERENCE                                               */}
       {/* ============================================================ */}
-      <Section title="Common Icons (Lucide)">
+      <Section title={t("pages.designGuide.section.commonIcons")}>
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
           {[
-            ["Inbox", Inbox],
-            ["ListTodo", ListTodo],
-            ["CircleDot", CircleDot],
-            ["Hexagon", Hexagon],
-            ["Target", Target],
-            ["LayoutDashboard", LayoutDashboard],
-            ["Bot", Bot],
-            ["DollarSign", DollarSign],
-            ["History", History],
-            ["Search", Search],
-            ["Plus", Plus],
-            ["Trash2", Trash2],
-            ["Settings", Settings],
-            ["User", User],
-            ["Mail", Mail],
-            ["Upload", Upload],
-            ["Zap", Zap],
+            [t("pages.designGuide.icon.inbox"), Inbox],
+            [t("pages.designGuide.icon.listTodo"), ListTodo],
+            [t("pages.designGuide.icon.circleDot"), CircleDot],
+            [t("pages.designGuide.icon.hexagon"), Hexagon],
+            [t("pages.designGuide.icon.target"), Target],
+            [t("pages.designGuide.icon.layoutDashboard"), LayoutDashboard],
+            [t("pages.designGuide.icon.bot"), Bot],
+            [t("pages.designGuide.icon.dollarSign"), DollarSign],
+            [t("pages.designGuide.icon.history"), History],
+            [t("pages.designGuide.icon.search"), Search],
+            [t("pages.designGuide.icon.plus"), Plus],
+            [t("pages.designGuide.icon.trash2"), Trash2],
+            [t("pages.designGuide.icon.settings"), Settings],
+            [t("pages.designGuide.icon.user"), User],
+            [t("pages.designGuide.icon.mail"), Mail],
+            [t("pages.designGuide.icon.upload"), Upload],
+            [t("pages.designGuide.icon.zap"), Zap],
           ].map(([name, Icon]) => {
             const LucideIcon = Icon as React.FC<{ className?: string }>;
             return (
@@ -1383,15 +1383,14 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
-      <Section title="Keyboard Shortcuts">
+      <Section title={t("pages.designGuide.section.keyboardShortcuts")}>
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
-            ["Cmd+K / Ctrl+K", "Open Command Palette"],
-            ["C", "New Issue (outside inputs)"],
-            ["[", "Toggle Sidebar"],
-            ["]", "Toggle Properties Panel"],
-
-            ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
+            ["Cmd+K / Ctrl+K", t("pages.designGuide.shortcuts.openPalette")],
+            ["C", t("pages.designGuide.shortcuts.newIssue")],
+            ["[", t("pages.designGuide.shortcuts.toggleSidebar")],
+            ["]", t("pages.designGuide.shortcuts.toggleProperties")],
+            ["Cmd+Enter / Ctrl+Enter", t("pages.designGuide.shortcuts.submitComment")],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>
