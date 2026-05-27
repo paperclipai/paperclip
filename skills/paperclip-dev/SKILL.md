@@ -233,13 +233,23 @@ tmux new-session -d -s auth-fix-3102 'pnpm dev'
 
 ### Verifying the server is reachable
 
-After launching, confirm the port is listening before reporting success:
+After launching, wait for the health endpoint to respond before reporting success.
+
+**Critical:** Always derive the health URL from `$PAPERCLIP_API_URL`. Never hardcode `127.0.0.1:3100` or any specific host/port — the server may bind only to a Tailscale or LAN interface where loopback is unreachable.
 
 ```bash
-# Wait briefly for startup, then verify
-sleep 3
-curl -sf http://127.0.0.1:<port>/api/health && echo "Server is up"
-lsof -nP -iTCP:<port> -sTCP:LISTEN
+# Bounded wait — up to 60 s (12 × 5 s polls); exits non-zero on timeout.
+HEALTH_URL="${PAPERCLIP_API_URL%/}/api/health"
+max=12; i=0
+until curl -sf --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; do
+  i=$((i+1))
+  if [ "$i" -ge "$max" ]; then
+    echo "ERROR: server did not respond after $((max * 5))s at $HEALTH_URL" >&2
+    exit 1
+  fi
+  echo "waiting for server... ($i/$max)"; sleep 5
+done
+echo "Server is up at $HEALTH_URL"
 ```
 
 ### Key rules
@@ -249,6 +259,7 @@ lsof -nP -iTCP:<port> -sTCP:LISTEN
 3. **Verify the server is listening** before reporting the URL to anyone.
 4. **Do not use `nohup` or `&` alone** — these are unreliable for agent shells that may have their entire process group killed.
 5. **Clean up when done** — kill the tmux session when the testing is complete.
+6. **Never hardcode `127.0.0.1` or a specific port** in health-check URLs. Always use `${PAPERCLIP_API_URL%/}/api/health`. On non-loopback-only hosts (Tailscale, LAN) the literal `127.0.0.1:3100` is unreachable and the wait loop will wedge indefinitely.
 
 ## Common Mistakes
 
@@ -261,6 +272,8 @@ lsof -nP -iTCP:<port> -sTCP:LISTEN
 | Reseeding while target DB is running | Stop the target server first, or use `--allow-live-target` |
 | Cleaning up with unmerged commits | Merge or push first, or use `--force` if intentionally discarding |
 | Running agents against wrong instance | Verify `PAPERCLIP_API_URL` points to the correct port |
+| Hardcoded `127.0.0.1:3100` in a health-check wait | Use `${PAPERCLIP_API_URL%/}/api/health`; the server may not bind loopback (Tailscale hosts, LAN-only installs) |
+| Unbounded `until curl` wait loop | Always cap with `--max-time` per curl and an outer iteration limit — an unreachable URL wedges the agent indefinitely |
 | CLI command fails | Do NOT work around it — report the error and block (see Hard Rules above) |
 | Agent tries manual postgres operations | NEVER do this — all DB ops go through the CLI (see Hard Rules above) |
 | Dev server dies between heartbeats | Launch in a detached `tmux` session — see "Persistent Dev Servers" above |
