@@ -125,6 +125,34 @@ describe("classifyProcessLossCause", () => {
     expect(result.reason).toContain("signal_3_oom_kill");
     expect(result.reason).toContain("signal_4_api_healthy");
   });
+
+  // GNO-183 regression: agent spoofing via process.stderr.write + process.exit
+  // An agent that writes benign stderr and exits normally must NOT be classified as
+  // infrastructure with primary confidence — it must be marked weak (option 2).
+  it("PoC GNO-183: agent writing benign stderr and calling process.exit(1) is classified weak, not primary infrastructure", () => {
+    // Simulates: process.stderr.write("benign\n"); process.exit(1)
+    const result = classifyProcessLossCause({
+      ...base,
+      stderrExcerpt: "benign\n",
+      exitCode: 1,
+    });
+    // Must still classify as infrastructure (signal #2 fires — clean stderr)
+    expect(result.causeClass).toBe("infrastructure");
+    // But confidence MUST be weak, not primary — the signal is agent-writable
+    expect(result.classifyConfidence).toBe("weak");
+    expect(result.reason).toContain("signal_2_clean_stderr");
+    // signal_3 must NOT fire for exit code 1
+    expect(result.reason).not.toContain("signal_3_oom_kill");
+  });
+
+  // GNO-183 regression: agent spoofing via process.exit(137) alone
+  it("PoC GNO-183: agent calling process.exit(137) alone is classified weak, not primary infrastructure", () => {
+    const result = classifyProcessLossCause({ ...base, exitCode: 137 });
+    expect(result.causeClass).toBe("infrastructure");
+    expect(result.classifyConfidence).toBe("weak");
+    expect(result.reason).toContain("signal_3_oom_kill");
+    expect(result.reason).not.toContain("signal_1_correlation");
+  });
 });
 
 describe("STACK_TRACE_PATTERN", () => {
