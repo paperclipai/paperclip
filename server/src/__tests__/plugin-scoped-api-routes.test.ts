@@ -58,15 +58,20 @@ async function createApp(input: {
   plugin?: Record<string, unknown> | null;
   workerRunning?: boolean;
   workerResult?: unknown;
+  workerError?: unknown;
+  db?: unknown;
 }) {
   const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/plugins.js"),
     import("../middleware/index.js"),
   ]);
 
+  const workerCall = input.workerError !== undefined
+    ? vi.fn().mockRejectedValue(input.workerError)
+    : vi.fn().mockResolvedValue(input.workerResult ?? { status: 200, body: { ok: true } });
   const workerManager = {
     isRunning: vi.fn().mockReturnValue(input.workerRunning ?? true),
-    call: vi.fn().mockResolvedValue(input.workerResult ?? { status: 200, body: { ok: true } }),
+    call: workerCall,
   };
 
   mockRegistry.getById.mockResolvedValue(input.plugin ?? null);
@@ -81,7 +86,7 @@ async function createApp(input: {
   app.use(
     "/api",
     pluginRoutes(
-      {} as never,
+      (input.db ?? {}) as never,
       { installPlugin: vi.fn() } as never,
       undefined,
       undefined,
@@ -405,6 +410,155 @@ describe.sequential("plugin scoped API routes", () => {
     expect(res.status).toBe(503);
     expect(res.body.error).toContain("worker is not running");
     expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  describe("webhook auth dispatch", () => {
+    function webhookManifest(routeKey = "chat.send") {
+      return manifest([
+        {
+          routeKey,
+          method: "POST",
+          path: "/chat",
+          auth: "webhook",
+          capability: "api.routes.register",
+          companyResolution: { from: "body", key: "companyId" },
+        },
+      ]);
+    }
+
+    function dbFindingCompanies(existingIds: string[]) {
+      return {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve(existingIds.map((id) => ({ id }))),
+            }),
+          }),
+        }),
+      };
+    }
+
+    const noneActor = { type: "none" };
+
+    it("returns 404 when the plugin is not found", async () => {
+      const { app, workerManager } = await createApp({
+        actor: noneActor,
+        plugin: null,
+        db: dbFindingCompanies([companyId]),
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/chat`)
+        .send({ companyId, message: "hi" });
+
+      expect(res.status).toBe(404);
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when the manifest body key is missing in the request", async () => {
+      const apiRoutes = webhookManifest();
+      const { app, workerManager } = await createApp({
+        actor: noneActor,
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+        db: dbFindingCompanies([companyId]),
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/chat`)
+        .send({ message: "no companyId here" });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain("Unable to resolve company");
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the resolved companyId does not exist", async () => {
+      const apiRoutes = webhookManifest();
+      const { app, workerManager } = await createApp({
+        actor: noneActor,
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+        db: dbFindingCompanies([]),
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/chat`)
+        .send({ companyId, message: "hi" });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe("Company not found");
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it("dispatches to the plugin worker with a synthetic webhook actor and resolved companyId", async () => {
+      const apiRoutes = webhookManifest("chat.send");
+      const { app, workerManager } = await createApp({
+        actor: noneActor,
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+        db: dbFindingCompanies([companyId]),
+        workerResult: { status: 200, body: { sessionId: "abc" } },
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/chat`)
+        .set("Authorization", "Bearer should-not-forward")
+        .send({ companyId, message: "hello" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ sessionId: "abc" });
+      expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({
+        routeKey: "chat.send",
+        method: "POST",
+        path: "/chat",
+        companyId,
+        body: { companyId, message: "hello" },
+        actor: {
+          actorType: "user",
+          actorId: "webhook:chat.send",
+          agentId: null,
+          userId: null,
+          runId: null,
+        },
+      }));
+      expect(workerManager.call.mock.calls[0]?.[2].headers.authorization).toBeUndefined();
+    });
+
+    it("relays worker bridge errors as 502", async () => {
+      const apiRoutes = webhookManifest();
+      const { JsonRpcCallError } = await import("@paperclipai/plugin-sdk");
+      const { app, workerManager } = await createApp({
+        actor: noneActor,
+        plugin: {
+          id: pluginId,
+          pluginKey: apiRoutes.id,
+          status: "ready",
+          manifestJson: apiRoutes,
+        },
+        db: dbFindingCompanies([companyId]),
+        workerError: new JsonRpcCallError({ code: -32000, message: "plugin exploded" }),
+      });
+
+      const res = await request(app)
+        .post(`/api/plugins/${pluginId}/api/chat`)
+        .send({ companyId, message: "boom" });
+
+      expect(res.status).toBe(502);
+      expect(workerManager.call).toHaveBeenCalled();
+    });
   });
 
   it("rejects manifest routes that try to claim core API paths", () => {

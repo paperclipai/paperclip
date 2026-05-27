@@ -475,7 +475,9 @@ export function pluginRoutes(
       return;
     }
     if (route.auth === "webhook") {
-      throw unprocessable("Webhook-scoped plugin API routes require a signature verifier and are not enabled");
+      // Plugin verifies its own signature/shared-secret inside onApiRequest;
+      // the host's job is to dispatch (mirrors /webhooks/:endpointKey ingestion).
+      return;
     }
     assertAuthenticated(req);
     if (req.actor.type !== "board" && req.actor.type !== "agent") {
@@ -1469,12 +1471,31 @@ export function pluginRoutes(
 
     try {
       assertScopedApiAuth(req, match.route);
+      const isWebhookRoute = match.route.auth === "webhook";
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
         res.status(400).json({ error: "Unable to resolve company for plugin API route" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      if (isWebhookRoute) {
+        // Webhook routes have no authenticated actor, so we cannot ask
+        // assertCompanyAccess to verify membership. Instead, confirm the
+        // resolved companyId actually points at a real company so the
+        // plugin handler isn't handed garbage from the request body.
+        if (typeof (db as { select?: unknown }).select === "function") {
+          const rows = await db
+            .select({ id: companies.id })
+            .from(companies)
+            .where(eq(companies.id, companyId))
+            .limit(1);
+          if (rows.length === 0) {
+            res.status(404).json({ error: "Company not found" });
+            return;
+          }
+        }
+      } else {
+        assertCompanyAccess(req, companyId);
+      }
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
@@ -1487,7 +1508,24 @@ export function pluginRoutes(
         return;
       }
 
-      const actor = getActorInfo(req);
+      const actorPayload: PluginScopedApiRequest["actor"] = isWebhookRoute
+        ? {
+            actorType: "user",
+            actorId: `webhook:${match.route.routeKey}`,
+            agentId: null,
+            userId: null,
+            runId: null,
+          }
+        : (() => {
+            const actor = getActorInfo(req);
+            return {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+              runId: actor.runId,
+            };
+          })();
       const input: PluginScopedApiRequest = {
         routeKey: match.route.routeKey,
         method: req.method,
@@ -1495,13 +1533,7 @@ export function pluginRoutes(
         params: match.params,
         query: normalizeQuery(req.query),
         body: requestBody,
-        actor: {
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-          runId: actor.runId,
-        },
+        actor: actorPayload,
         companyId,
         headers: sanitizePluginRequestHeaders(req),
       };
